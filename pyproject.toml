@@ -21,7 +21,7 @@ dependencies = [
     "pywebpush>=2.0",
     "redis>=5.2",
     "sqlmodel>=0.0.22",
-    "uvicorn[standard]>=0.44",
+    "uvicorn[standard]>=0.51.0",
     "websockets>=13",  # reef surface proxy (reef/api/proxy.py)
     "workos>=6,<7",
 ]
