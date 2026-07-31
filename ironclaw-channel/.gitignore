@@ -1,0 +1,8 @@
+# Rust build output
+/target/
+
+# Built WASM component (rebuild from source; never commit binaries)
+*.wasm
+
+# Packaged install tarballs (produced by package.sh)
+/dist/

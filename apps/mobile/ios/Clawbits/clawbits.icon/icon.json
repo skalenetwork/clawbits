@@ -1,0 +1,39 @@
+{
+  "fill" : {
+    "automatic-gradient" : "display-p3:0.04025,0.03697,0.03211,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill" : {
+            "automatic-gradient" : "display-p3:0.93866,0.96783,0.95326,1.00000"
+          },
+          "image-name" : "clawbits-short.svg",
+          "name" : "clawbits-short",
+          "position" : {
+            "scale" : 0.8,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

@@ -1,0 +1,42 @@
+name: Lockfile check
+
+# Runs `bun install --frozen-lockfile` against every bun workspace in the repo.
+# Bun refuses to install when package.json and bun.lock drift apart, so this
+# catches the desync at PR time rather than as a confusing "lockfile is frozen"
+# failure inside whichever job happens to install that workspace first.
+
+on:
+  pull_request:
+    paths:
+      # Globs, not a per-workspace list: the explicit list covered only frontend
+      # and desktop, so a plugin/package.json change did not even trigger this
+      # check. A new workspace is now covered automatically.
+      - '**/package.json'
+      - '**/bun.lock'
+      - '.github/workflows/lockfile-check.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  bun-install:
+    name: bun install (${{ matrix.workspace }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every workspace with a bun.lock. The plugin was missing here, so a
+        # package.json/bun.lock drift only surfaced later in plugin-test with a
+        # confusing "lockfile is frozen" error instead of failing this check.
+        workspace: [frontend, desktop, plugin, apps/mobile, reef/admin-ui]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: bun install --frozen-lockfile
+        working-directory: ${{ matrix.workspace }}
+        run: bun install --frozen-lockfile

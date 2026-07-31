@@ -1,0 +1,55 @@
+name: clawbits-platform
+label: Clawbits
+kind: platform
+version: 0.6.3
+description: >
+  Hermes gateway adapter for Clawbits. Polls Clawbits Mattermost-style
+  channels and relays human messages to Hermes, then posts Hermes replies
+  back to Clawbits.
+author: Clawbits
+requires_env:
+  - name: CLAWBITS_BASE_URL
+    description: "Clawbits API endpoint, e.g. http://localhost:8000"
+    prompt: "Clawbits API endpoint"
+    password: false
+  - name: CLAWBITS_API_KEY
+    description: "Agent API key"
+    prompt: "Clawbits API key"
+    password: true
+  - name: CLAWBITS_AGENT_ID
+    description: "Clawbits agent id"
+    prompt: "Clawbits agent id"
+    password: false
+optional_env:
+  - name: CLAWBITS_CHANNEL_ID
+    description: "Fallback/operator channel id when channel discovery fails"
+    prompt: "Fallback channel id"
+    password: false
+  - name: CLAWBITS_POLL_INTERVAL
+    description: "Polling interval in seconds (default: 3)"
+    prompt: "Poll interval seconds"
+    password: false
+  - name: CLAWBITS_LIVENESS_INTERVAL
+    description: "Liveness heartbeat interval in seconds (default: 600)"
+    prompt: "Liveness interval seconds"
+    password: false
+  - name: CLAWBITS_IMAGE_ALLOW_PRIVATE_HOSTS
+    description: "Comma-separated hostnames exempt from the image SSRF private-address guard"
+    prompt: "Image private-host allowlist"
+    password: false
+  - name: CLAWBITS_USER_AGENT
+    description: "Override the HTTP User-Agent sent to Clawbits (default: clawbits-hermes-plugin)"
+    prompt: "HTTP User-Agent"
+    password: false
+  - name: CLAWBITS_AGENT_CLI
+    description: "Optional path to bundled agent-cli/clawbits_agent_cli.py (auto-detected)"
+    prompt: "Agent CLI path"
+    password: false
+  - name: CLAWBITS_CHALLENGE_ANSWER
+    description: "Optional Proof-of-Cognition answer for write commands"
+    prompt: "Challenge answer"
+    password: true
+  - name: CLAWBITS_PLUGIN_VERSION
+    description: "Optional version header sent to Clawbits"
+    prompt: "Plugin version"
+    password: false

@@ -1,0 +1,1290 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/fraunces/full.css";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Alpha used for app surfaces when desktop translucency is ON (see
+   * desktop.ts → --app-bg-opacity). Light mode stays noticeably more opaque
+   * than dark so content keeps its contrast over a bright desktop. */
+  --app-bg-opacity-on: 0.72;
+  --background: oklch(0.9437 0.0086 84.5733 / var(--app-bg-opacity, 1));
+  /* Same color as --background but always opaque — for places that paint the
+   * background color as text/ink (e.g. tooltip text on a --foreground surface),
+   * where inheriting the desktop translucency alpha would wash it out. */
+  --background-solid: oklch(0.9437 0.0086 84.5733);
+  --foreground: oklch(0.2350 0 0);
+  /* Two tiers of surface, both translucent on desktop (--app-bg-opacity):
+   * --panel is the big nested layout card (sidebar + content); --card is the
+   * smaller "real" cards inside it, sitting a tier higher (lighter). */
+  --panel: oklch(0.9525 0.0099 87.4719 / var(--app-bg-opacity, 1));
+  --card: oklch(0.9700 0.0075 88.6431 / var(--app-bg-opacity, 1));
+  --card-foreground: oklch(0.2350 0 0);
+  --popover: oklch(0.9583 0.0070 88.6431);
+  --popover-foreground: oklch(0.2350 0 0);
+  --primary: oklch(0.3012 0 0);
+  --primary-foreground: oklch(0.9753 0.0080 98.8778);
+  --secondary: oklch(0.9608 0.0095 93.5694);
+  --secondary-foreground: oklch(0.3012 0 0);
+  --muted: oklch(0.8793 0.0155 90.2473);
+  --muted-foreground: oklch(0.4688 0.0136 84.5932);
+  --accent: oklch(0.9755 0.0067 97.3510);
+  --accent-foreground: oklch(0.3012 0 0);
+  --destructive: oklch(0.5771 0.2152 27.3250);
+  --destructive-foreground: oklch(1.0000 0 0);
+  --border: oklch(0.8500 0.0200 84.5889);
+  --input: oklch(0.8434 0.0231 87.1621);
+  --ring: oklch(0.3012 0 0);
+  --sidebar: oklch(0.9160 0.0112 89.7274 / var(--app-bg-opacity, 1));
+  --sidebar-foreground: oklch(0.2350 0 0);
+  --sidebar-primary: oklch(0.3012 0 0);
+  --sidebar-primary-foreground: oklch(0.9169 0.0175 99.6160);
+  --sidebar-accent: oklch(0.8700 0.0175 92.0000);
+  --sidebar-accent-foreground: oklch(0.2350 0 0);
+  --sidebar-border: oklch(0.8500 0.0200 84.5889);
+  --sidebar-ring: oklch(0.3012 0 0);
+  --radius: 0.625rem;
+  --shadow-x: 0px;
+  --shadow-y: 4px;
+  --shadow-blur: 10px;
+  --shadow-spread: 0px;
+  --shadow-opacity: 0.1;
+  --shadow-color: #000000;
+  --shadow-2xs: 0px 4px 10px 0px hsl(0 0% 0% / 0.05);
+  --shadow-xs: 0px 4px 10px 0px hsl(0 0% 0% / 0.05);
+  --shadow-sm: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 1px 2px -1px hsl(0 0% 0% / 0.10);
+  --shadow: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 1px 2px -1px hsl(0 0% 0% / 0.10);
+  --shadow-md: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 2px 4px -1px hsl(0 0% 0% / 0.10);
+  --shadow-lg: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 4px 6px -1px hsl(0 0% 0% / 0.10);
+  --shadow-xl: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 8px 10px -1px hsl(0 0% 0% / 0.10);
+  --shadow-2xl: 0px 4px 10px 0px hsl(0 0% 0% / 0.25);
+  --tracking-normal: -0.025em;
+  --spacing: 0.25rem;
+  /* @mention text colour for both agents and humans — same hue family
+   * as link blue but with reduced chroma so it sits a tier softer in
+   * the message body. Tuned with light/dark variants below; chroma is
+   * the lever (lightness/hue kept close to the standard blue). */
+  --mention: oklch(0.62 0.13 259);
+
+  /* Unread-badge red — the single "addressed to you" accent shared by the
+   * sidebar and rail (mention pills, DM counts). iOS system red; --mention
+   * blue stays reserved for in-message mention text. */
+  --unread: #FF3B30;
+
+  /* Nav row state fills — derived from --foreground (ink), NOT a grey literal, so
+   * a single definition adapts to light/dark (the .dark class overrides
+   * --foreground on this same :root element, so var() re-resolves). Restraint
+   * over color: hover/active are conveyed by a faint ink wash + weight, never an
+   * accent bar. Used by the Agents sidebar rows, the agent switcher, and
+   * breadcrumb hover. */
+  --sb-hover: color-mix(in oklch, var(--foreground) 6%, transparent);
+  --sb-active: color-mix(in oklch, var(--foreground) 9%, transparent);
+
+  /* Desktop title bar — 0 on web; populated on Tauri via [data-tauri-platform].
+   * --titlebar-height is the y space the minimal title bar occupies (traffic
+   *   lights + back/forward buttons); used by other top-edge UI (sidebar
+   *   header, SiteHeader, AppRail) to clear it.
+   * --titlebar-traffic-clearance is the title bar's left padding so the
+   *   (native, OS-rendered) traffic lights have room before the buttons. */
+  --titlebar-height: 0px;
+  --titlebar-traffic-clearance: 0px;
+
+  /* ── Mobile foundation ────────────────────────────────────────────────
+   * Safe-area insets (notch, Dynamic Island, home indicator). These resolve
+   * to non-zero ONLY because index.html sets viewport-fit=cover; the env()
+   * fallback keeps them a stable 0 on desktop / unsupported engines. Consume
+   * them as ``max(<min>, var(--safe-bottom))`` so chrome never sits flush. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  /* Floating bottom-nav height. Mobile scroll areas reserve this (plus the
+   * safe-area) as bottom padding so the last rows clear the bar, and Sonner
+   * offsets its toasts above it. */
+  --bottom-nav-h: 4rem;
+
+  /* Visual-viewport metrics published at runtime by useViewportVars().
+   * Defaults cover the frame before that effect runs.
+   *  --vvh           : visible viewport height (fallback 100svh = bars expanded);
+   *                    the mobile fixed-viewport shell is sized to this.
+   *  --vv-offset-top : raw visualViewport.offsetTop in px (defensive, for chrome
+   *                    that must follow a visual-viewport pan). 0 when closed. */
+  --vvh: 100svh;
+  --vv-offset-top: 0px;
+
+  /* Liquid-glass material knobs — one source of truth for the bottom nav and
+   * drawers. blur + saturate is what reads as light-bending frosted glass. */
+  --glass-blur: 20px;
+  --glass-saturate: 180%;
+}
+
+html[data-tauri-platform="macos"] {
+  --titlebar-height: 38px;
+  --titlebar-traffic-clearance: 68px;
+}
+
+html[data-tauri-platform="macos"][data-fullscreen="true"] {
+  --titlebar-traffic-clearance: 8px;
+}
+
+/* No custom corner radius on macOS: the window is a standard titled,
+ * transparent NSWindow, so it defers to macOS's own corner mask. We used to
+ * clip the body to a larger radius (with a matching apply_vibrancy radius in
+ * src-tauri/src/lib.rs), but a radius that doesn't match the system mask left
+ * a dark seam tracing the corners. Letting the system mask be the single
+ * source of rounding removes the seam and still looks rounded on modern macOS. */
+
+/* Linux/GTK has no desktop blur; making the body translucent would just
+ * leak the bare window background through. The window is alpha-aware
+ * (tauri.linux.conf.json sets transparent: true so the rounded-corner
+ * pixels can punch through) but the body itself stays fully opaque —
+ * override the user-controlled "transparent background" toggle here
+ * with !important so the inline style set by setAppBgTransparent loses.
+ *
+ * Also reserve the same titlebar height as macOS so the DesktopTitleBar
+ * pill (rendered on Linux, minus the traffic-light pad) doesn't overlap
+ * the sidebar mode switcher. Traffic-light clearance stays 0. */
+html[data-tauri-platform="linux"] {
+  --app-bg-opacity: 1 !important;
+  --titlebar-height: 38px;
+  /* No GTK chrome (decorations: false on Linux), so the window's outer
+   * edge IS our body. Round it to match GNOME's window rounding and
+   * draw a soft edge shadow inset so the window doesn't look bare on
+   * busy wallpapers. The radius matches Mutter's compositor rounding
+   * on GNOME 46 — picking it deliberately so apps don't look like
+   * outliers next to system dialogs. */
+  background: transparent;
+}
+
+html[data-tauri-platform="linux"] body {
+  /* min-height locks the rounded box to the viewport so the bottom
+   * corners are visible even on short content. overflow: hidden clips
+   * children that would otherwise paint into the rounded corners. */
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 100vh;
+  /* Subtle 1px inner border so the rounded edge reads cleanly against
+   * light wallpapers; ~0 cost on dark wallpapers. */
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 6%, transparent);
+}
+
+.dark {
+  /* Dark mode keeps the airier original translucency (see :root note). */
+  --app-bg-opacity-on: 0.4;
+  --background: oklch(0.1591 0 0 / var(--app-bg-opacity, 1));
+  --background-solid: oklch(0.1591 0 0);
+  --foreground: oklch(0.9173 0.0133 82.4015);
+  /* Two tiers of surface (see light mode). --card sits a tier above --panel. */
+  --panel: oklch(0.1822 0 0 / var(--app-bg-opacity, 1));
+  --card: oklch(0.2264 0 0 / var(--app-bg-opacity, 1));
+  --card-foreground: oklch(0.9173 0.0133 82.4015);
+  --popover: oklch(0.2264 0 0);
+  --popover-foreground: oklch(0.9173 0.0133 82.4015);
+  --primary: oklch(0.8769 0.0190 100.1578);
+  --primary-foreground: oklch(0.2264 0 0);
+  --secondary: oklch(0.8445 0.0196 93.6956);
+  --secondary-foreground: oklch(0.2512 0.0037 106.6627);
+  --muted: oklch(0.2850 0 0);
+  --muted-foreground: oklch(0.6348 0.0113 81.7875);
+  --accent: oklch(0 0 0);
+  --accent-foreground: oklch(0.8520 0.0205 100.6306);
+  --destructive: oklch(0.6368 0.2078 25.3313);
+  --destructive-foreground: oklch(1.0000 0 0);
+  --border: oklch(0.2931 0 0);
+  --input: oklch(0.2931 0 0);
+  --ring: oklch(0.8520 0.0205 100.6306);
+  --sidebar: oklch(0.1822 0 0 / var(--app-bg-opacity, 1));
+  --sidebar-foreground: oklch(0.9173 0.0133 82.4015);
+  --sidebar-primary: oklch(0.8520 0.0205 100.6306);
+  --sidebar-primary-foreground: oklch(0.3329 0 0);
+  --sidebar-accent: oklch(0.3329 0 0);
+  --sidebar-accent-foreground: oklch(0.8520 0.0205 100.6306);
+  --sidebar-border: oklch(0.2931 0 0);
+  --sidebar-ring: oklch(0.8520 0.0205 100.6306);
+  --shadow-x: 0px;
+  --shadow-y: 6px;
+  --shadow-blur: 15px;
+  --shadow-spread: 0px;
+  --shadow-opacity: 0.3;
+  --shadow-color: #000000;
+  --shadow-2xs: 0px 6px 15px 0px hsl(0 0% 0% / 0.15);
+  --shadow-xs: 0px 6px 15px 0px hsl(0 0% 0% / 0.15);
+  --shadow-sm: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 1px 2px -1px hsl(0 0% 0% / 0.30);
+  --shadow: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 1px 2px -1px hsl(0 0% 0% / 0.30);
+  --shadow-md: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 2px 4px -1px hsl(0 0% 0% / 0.30);
+  --shadow-lg: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 4px 6px -1px hsl(0 0% 0% / 0.30);
+  --shadow-xl: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 8px 10px -1px hsl(0 0% 0% / 0.30);
+  --shadow-2xl: 0px 6px 15px 0px hsl(0 0% 0% / 0.75);
+  /* Dark-mode mention colour — slightly lighter L than the light-mode
+   * variant to keep contrast against the dark background, same hue, and
+   * a touch lower chroma so it reads as softer than link blue. */
+  --mention: oklch(0.72 0.10 254);
+  /* Dark-mode unread red — the iOS dark-palette variant of --unread. */
+  --unread: #FF453A;
+}
+
+@theme inline {
+  /* Shared reading-column width: the home page and the app chrome (top bar,
+   * command palette, drawers) cap their centered content here via
+   * ``max-w-content`` (replaces the scattered ``max-w-5xl``).
+   * 64rem = 1024px. */
+  --container-content: 64rem;
+  /* Chat reading column: the message list and composer nest inside the
+   * shell's ``max-w-content`` cap but run narrower for a comfortable measure.
+   * 52rem = 832px — after the ~46px avatar gutter that's a ~75-char line,
+   * the sweet spot for reading while leaving room for code and attachments. */
+  --container-chat: 52rem;
+  --color-background: var(--background);
+  --color-background-solid: var(--background-solid);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-mention: var(--mention);
+  --color-unread: var(--unread);
+
+  --font-sans: 'Inter Variable', ui-sans-serif, sans-serif, system-ui;
+  --font-serif: 'Fraunces Variable', serif;
+  --font-mono: 'JetBrains Mono Variable', monospace;
+  /* Rounded/geometric display face for the collectible AgentCard (the bubbly
+   * look in the card mockups). Leads with `ui-rounded` so Apple platforms get
+   * SF Pro Rounded for free; 'Fredoka Variable' sits first so the day we add
+   * `@fontsource-variable/fredoka` it wins everywhere with zero other changes.
+   * Exposed as the `font-rounded` utility. */
+  --font-rounded: 'Fredoka Variable', ui-rounded, 'SF Pro Rounded', 'Baloo 2', system-ui, sans-serif;
+  /* Heading face for the `font-heading` utility (CardTitle, DialogTitle,
+   * ReleaseNotes). It stays on Inter — the editorial serif is reserved for the
+   * few explicit `font-serif` spots (the home hero + sign-in), not every title. */
+  --font-heading: 'Inter Variable', ui-sans-serif, sans-serif, system-ui;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-2xs: var(--shadow-2xs);
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow: var(--shadow);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+  --shadow-2xl: var(--shadow-2xl);
+
+  --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
+  --tracking-tight: calc(var(--tracking-normal) - 0.025em);
+  --tracking-normal: var(--tracking-normal);
+  --tracking-wide: calc(var(--tracking-normal) + 0.025em);
+  --tracking-wider: calc(var(--tracking-normal) + 0.05em);
+  --tracking-widest: calc(var(--tracking-normal) + 0.1em);
+
+  /* Semantic content type-scale — each size pairs with its line-height so
+   * content surfaces name intent (text-body / -caption / -label) instead of
+   * reaching for ad-hoc text-[..]. Values equal the Tailwind steps they
+   * replace (label 11 / caption 12 = xs / body 14 = sm), so adoption is a
+   * rename with no visual shift. The contextual sidebars keep their own denser
+   * sizing on purpose; rolling this scale out app-wide is a follow-up. */
+  --text-label: 0.6875rem;
+  --text-label--line-height: 1rem;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.25rem;
+}
+
+#root {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  text-align: left;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    letter-spacing: var(--tracking-normal);
+    /* Kill scroll-chaining + the pull-to-refresh bounce so the app feels
+     * native on mobile. (The full overflow lock for the chat shell lands with
+     * that shell; this is the safe document-level default.) */
+    overscroll-behavior-y: none;
+  }
+  html {
+    @apply font-sans antialiased;
+    /* Mobile-web app-feel resets: stop iOS inflating text on rotate, remove the
+     * grey tap-flash, and keep the document from rubber-banding. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+  /* Remove the legacy 300ms tap delay + double-tap zoom on controls while
+   * preserving pinch-zoom for accessibility. */
+  button,
+  a,
+  label,
+  summary,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="option"],
+  [role="switch"] {
+    touch-action: manipulation;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="menuitem"]:not([aria-disabled="true"]),
+  [role="tab"]:not([aria-disabled="true"]),
+  [role="option"]:not([aria-disabled="true"]),
+  summary,
+  label[for],
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* iOS Safari/WebKit zooms the page when a FOCUSED input/textarea/select has a
+ * computed font-size below 16px. The modern, accessible fix — what current
+ * mobile-web chat apps do — is to make focusable controls >= 16px on touch
+ * devices, NOT to disable user zoom via maximum-scale/user-scalable (which
+ * fails WCAG 1.4.4 and breaks pinch-zoom). Kept OUTSIDE @layer so it overrides
+ * Tailwind's text-* utilities, which live in @layer utilities. Targets coarse
+ * pointers so desktop keeps its denser type. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  textarea,
+  select,
+  /* The message composer's auto-grow sizer/highlight overlay — a div, so the
+   * tag selectors above miss it. It must track the textarea's size exactly or
+   * the caret-aligned mention highlight drifts. */
+  [data-composer-sizer] {
+    font-size: 16px;
+  }
+}
+
+/* Long-press actions (mobile): suppress native text-selection + the iOS callout
+ * (Copy / Look Up / Share bubble) on any press-and-hold target so the hold opens
+ * our action sheet rather than selecting a word. ``[data-longpress]`` is stamped
+ * by useLongPress on every consumer (message rows, chat/agent list rows, the
+ * pinned strip); ``[data-post-id]`` is kept so a message row's text descendants
+ * are covered even where the long-press handler sits on a different element.
+ * Coarse pointers only, so desktop selection is untouched (Copy lives in the
+ * action sheet). user-select is inherited, so descendants are covered too. */
+@media (pointer: coarse) {
+  [data-post-id],
+  [data-longpress] {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+/* Mobile app shell — a FIXED-VIEWPORT box (MobileShell is position:fixed, sized
+ * to --vvh); inner regions scroll, the document does NOT. Lock html/body so they
+ * can't scroll or rubber-band behind the shell. Scoped to the attribute (only
+ * MobileShell stamps it) + the mobile breakpoint so desktop, Tauri, and
+ * public/login routes keep their normal inner-scroller behavior. */
+@media (width < 48rem) {
+  html[data-mobile-shell],
+  html[data-mobile-shell] body {
+    /* Shell colour fills behind the notch / status bar and below the shell so
+     * the edges read as the app, never a black/white fallback. */
+    background-color: var(--background);
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+}
+
+/* Liquid-glass scrollbars
+ *
+ * Thin, translucent, rounded — blends into any surface. WebKit gets the
+ * pseudo-element styling; Firefox uses the standard `scrollbar-*` props.
+ * Backdrop-filter on the thumb isn't honored by browsers on scrollbar
+ * pseudo-elements, so we emulate the glass feel with a semi-transparent
+ * fill plus a thin highlight ring.
+ */
+/* Reserve scrollbar space on BOTH inline edges so a centered max-w-content
+ * column stays truly centered instead of shifting left under a right-only
+ * gutter. Used by the home <main> scroll area and the chat message list.
+ * (Plain rule, not a Tailwind arbitrary class — ``[scrollbar-gutter:…]`` with
+ * the two-keyword ``stable both-edges`` value silently drops ``both-edges``.) */
+.gutter-stable-both {
+  scrollbar-gutter: stable both-edges;
+}
+/* Hide the scrollbar entirely while keeping the area scrollable. Used by
+ * the sidebar list panes (chats/agents/settings/channel info), where the
+ * track reads as visual noise against the narrow column. Also referenced
+ * by the stock shadcn sidebar content. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--foreground) 15%, transparent) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--foreground) 14%, transparent);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--foreground) 6%, transparent),
+      inset 1px 1px 0 color-mix(in oklch, var(--background) 25%, transparent);
+    transition: background-color 120ms ease;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklch, var(--foreground) 26%, transparent);
+  }
+  *::-webkit-scrollbar-thumb:active {
+    background-color: color-mix(in oklch, var(--foreground) 40%, transparent);
+  }
+
+  .dark, .dark * {
+    scrollbar-color: color-mix(in oklch, var(--foreground) 18%, transparent) transparent;
+  }
+  .dark *::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--foreground) 12%, transparent);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent),
+      inset 1px 1px 0 color-mix(in oklch, var(--foreground) 5%, transparent);
+  }
+  .dark *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklch, var(--foreground) 22%, transparent);
+  }
+  .dark *::-webkit-scrollbar-thumb:active {
+    background-color: color-mix(in oklch, var(--foreground) 36%, transparent);
+  }
+}
+
+/* Hide the TanStack Query devtools floating button */
+.tsqd-open-btn-container {
+  display: none !important;
+}
+
+/* Messages scroll area — reserve a fixed gutter so content width never
+ * changes when the scrollbar appears/disappears. `overflow: overlay` was
+ * removed from modern Chromium, so this is the best portable option.
+ *
+ * ``overflow-anchor: none`` hands scroll-position control entirely to
+ * the virtualizer (virtua, via ``MessageList``). With the browser
+ * default ``auto`` the engine would try to anchor to an element above
+ * the viewport whenever the DOM grows above it, which conflicts with
+ * virtua's own ``shift`` prop on prepend — net result would be visible
+ * jumps when older history loads.
+ */
+.messages-scroll {
+  overflow-anchor: none;
+  /* both-edges so the centered max-w-content message column stays truly
+   * centered (a right-only gutter shifted it left). Matches the home
+   * <main> via .gutter-stable-both. */
+  scrollbar-gutter: stable both-edges;
+  scrollbar-color: color-mix(in oklch, var(--foreground) 7%, transparent) transparent;
+}
+/* This element owns the scroll on every platform now: desktop content card and
+ * the mobile fixed-viewport shell alike (the window no longer scrolls on
+ * mobile). overscroll-behavior:contain stops chaining to the locked document. */
+.messages-scroll {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.messages-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.messages-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklch, var(--foreground) 7%, transparent);
+  box-shadow: none;
+}
+.messages-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklch, var(--foreground) 16%, transparent);
+}
+
+
+/* Reduced-transparency: drop the glass blur for a near-opaque shell fill so the
+ * mobile header / bottom-nav pill / composer stay legible (Apple's iOS 26.1+
+ * accessibility walk-back). Targets the chrome tagged with data-glass. */
+@media (prefers-reduced-transparency: reduce) {
+  [data-glass] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    background-color: color-mix(in oklch, var(--background) 92%, transparent) !important;
+  }
+}
+
+/* Shiki dual-theme tokens — when CodeBlock renders with
+ * ``defaultColor: false``, each token carries both ``--shiki-light``
+ * and ``--shiki-dark`` inline styles. Flip which one is active based
+ * on the page's ``.dark`` class so highlighting follows the app theme.
+ *
+ * Light mode uses the default (no override). Dark mode swaps the
+ * variable, and the ``shiki`` <pre> root carries the dark background.
+ */
+.code-block-shiki .shiki,
+.code-block-shiki .shiki span {
+  background-color: transparent !important;
+  color: var(--shiki-light);
+}
+.dark .code-block-shiki .shiki,
+.dark .code-block-shiki .shiki span {
+  color: var(--shiki-dark);
+}
+
+/* View Transitions API — animated route changes (channel switches,
+ * settings, agents, members, etc.). Browser cross-fades the page root
+ * by default; we tighten the timing so the app feels fast and keep
+ * the sidebar from flickering by giving it a stable name (no name
+ * means it participates in the root fade — bad for persistent chrome).
+ *
+ * React Router v7 wires this up via `viewTransition` prop on NavLink.
+ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 160ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+::view-transition-old(root) {
+  animation-name: vt-fade-out;
+}
+::view-transition-new(root) {
+  animation-name: vt-fade-in;
+}
+@keyframes vt-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes vt-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+/* Stable sidebar shell — doesn't fade. Keeps the active-item highlight
+ * morphing smoothly across channel switches instead of flashing. */
+[data-vt-sidebar] {
+  view-transition-name: vt-sidebar;
+}
+::view-transition-old(vt-sidebar),
+::view-transition-new(vt-sidebar) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+/* The contextual sidebar's scroll list is likewise stable so the active-row
+ * highlight morphs smoothly across channel/agent switches instead of
+ * cross-fading with the routed content. The attribute sits on the SCROLL
+ * CONTAINER, not the whole pane: a view-transition-name makes the element a
+ * backdrop root, which would break the overlaid ContextualHeader's
+ * backdrop-filter (content scrolling behind it wouldn't blur). */
+[data-vt-contextual] {
+  view-transition-name: vt-contextual;
+}
+/* Paint ONLY the new state. The pane is transparent (its background comes from
+ * the card behind), so an old snapshot lingering under the new one
+ * double-exposes the rows whenever the list differs across routes — obvious on
+ * /agents ⇆ /agents/:id, where selecting an agent expands its section tree.
+ * Hiding the old snapshot swaps the list instantly while the page morphs; the
+ * new capture is LIVE, so in-sidebar motion (the disclosure glide, row
+ * stagger) still plays during the transition. */
+::view-transition-old(vt-contextual) {
+  display: none;
+}
+::view-transition-new(vt-contextual) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+/* Chat media viewer: shared-element morph from the tapped chat thumbnail into
+ * the full-screen image (and back on close). The thumbnail and the viewer
+ * `<img>` share `view-transition-name: mm-media`, assigned dynamically at tap
+ * time (see lib/viewTransition.ts); the browser morphs position + size between
+ * them while the dim/blurred backdrop and floating chrome cross-fade via the
+ * `root` group. A longer, expo-out curve makes the image glide rather than
+ * snap. For the common single-image case the thumbnail and full image share an
+ * aspect ratio, so the morph is a clean scale + translate. */
+::view-transition-group(mm-media) {
+  animation-duration: 360ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+::view-transition-old(mm-media),
+::view-transition-new(mm-media) {
+  animation-duration: 360ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Agent card hero morph: clicking a card in the /agents binder grows + glides
+ * it into the centered card on the agent detail page. The clicked grid card and
+ * the detail card share `view-transition-name: agent-card-hero` via this class
+ * — assigned to the SOURCE only while navigating into it (React Router's
+ * useViewTransitionState) so the name stays unique at snapshot time, and carried
+ * permanently by the detail card. The browser interpolates position + size while
+ * the card art cross-fades (grid variant → full variant); the aura + flavor-text
+ * quote sit outside the named element and fade via the `root` group. Same
+ * expo-out glide as the media morph. */
+.vt-agent-card {
+  view-transition-name: agent-card-hero;
+}
+::view-transition-group(agent-card-hero),
+::view-transition-old(agent-card-hero),
+::view-transition-new(agent-card-hero) {
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Automation card hero morph — same mechanism as the agent card: the gallery
+ * card borrows `view-transition-name: automation-hero` while navigating
+ * (lib/viewTransition.ts morphHeroNavigation), the detail hero carries it via
+ * this class. Same expo-out glide. */
+.vt-automation-hero {
+  view-transition-name: automation-hero;
+}
+::view-transition-group(automation-hero),
+::view-transition-old(automation-hero),
+::view-transition-new(automation-hero) {
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Inbox message hero morph — a tapped inbox row glides into the message
+ * view's header on mobile (lib/viewTransition.ts morphHeroNavigation). The
+ * message header carries the name statically via this class (mobile page
+ * variant only); the row borrows it for the duration of the morph. */
+.vt-inbox-message {
+  view-transition-name: inbox-message-hero;
+}
+::view-transition-group(inbox-message-hero),
+::view-transition-old(inbox-message-hero),
+::view-transition-new(inbox-message-hero) {
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Respect reduced motion preference — skip the animation entirely so
+ * route changes are instant. (The media morph is also gated in JS, which
+ * falls back to an instant open/close under reduced motion.) */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root),
+  ::view-transition-group(mm-media),
+  ::view-transition-old(mm-media),
+  ::view-transition-new(mm-media),
+  ::view-transition-group(agent-card-hero),
+  ::view-transition-old(agent-card-hero),
+  ::view-transition-new(agent-card-hero),
+  ::view-transition-group(automation-hero),
+  ::view-transition-old(automation-hero),
+  ::view-transition-new(automation-hero),
+  ::view-transition-group(inbox-message-hero),
+  ::view-transition-old(inbox-message-hero),
+  ::view-transition-new(inbox-message-hero) {
+    animation: none;
+  }
+}
+
+/* Morph-blur shim for the media viewer. While the viewer is opening/closing we
+ * blur the app content (#root) with a plain `filter` instead of leaning on the
+ * viewer's own `backdrop-filter`: a backdrop-filter is NOT painted into the
+ * View-Transition snapshots that freeze the page during the morph, so the
+ * sidebar/rail blur would only appear once the ~360ms morph ends. `filter` IS
+ * captured, and lib/viewTransition.ts toggles the attribute *before*
+ * startViewTransition so the blur is present from the morph's first frame, then
+ * removes it — handing the steady-state blur back to the viewer's
+ * backdrop-filter (12px, matching `backdrop-blur-md`). No transition: the blur
+ * must be fully applied in the captured snapshot, not eased in. The viewer
+ * portals to <body> (a sibling of #root), so it stays sharp above the blur. */
+html[data-media-viewer] #root {
+  filter: blur(12px);
+}
+/* The rail and contextual sidebar must blur in lockstep with the rest of the
+ * page. They normally carry their own `view-transition-name` (vt-sidebar /
+ * vt-contextual) so they stay stable across route changes — but that lifts them
+ * into separate snapshots the #root `filter` above can't reach, leaving them
+ * sharp while the chat content blurs (out of sync). Drop the names for the
+ * duration of the morph so they fold back into the #root snapshot and blur with
+ * everything else. (There's no route change mid-morph, so they don't need the
+ * stable name here.) */
+html[data-media-viewer] [data-vt-sidebar],
+html[data-media-viewer] [data-vt-contextual] {
+  view-transition-name: none;
+}
+
+/* Generic "thinking" motion for agent avatars whose character doesn't have
+ * a dedicated animated SVG variant. The keyframes intentionally keep the
+ * character's overall size the same — only a gentle sway + tilt. The
+ * inner translate(-50%, -50%) preserves the absolute centering that the
+ * AgentFaceAvatar component applies inline.
+ */
+@keyframes agent-thinking-sway {
+  0%, 100% {
+    transform: translate(-50%, -50%) rotate(-3deg) translate(-0.5%, 0);
+  }
+  25% {
+    transform: translate(-50%, -50%) rotate(0deg) translate(0, -1%);
+  }
+  50% {
+    transform: translate(-50%, -50%) rotate(3deg) translate(0.5%, 0);
+  }
+  75% {
+    transform: translate(-50%, -50%) rotate(0deg) translate(0, 1%);
+  }
+}
+.agent-face-thinking {
+  animation: agent-thinking-sway 3.2s ease-in-out infinite;
+  transform-origin: 50% 60%;
+}
+
+/* iMessage-style typing-indicator bounce. Each dot animates the same
+ * keyframes; the cascade comes from a per-dot ``animation-delay`` so
+ * dot 2 lags dot 1 by ~140ms and dot 3 lags dot 2 by another 140ms.
+ * Numbers tuned to match Apple Messages: ~1.2s loop, small 2.5px rise,
+ * with the "rest" portion of the loop (80% of duration) kept low-opacity
+ * so the dot doesn't read as a hover state. */
+@keyframes typing-dot {
+  0%, 70%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-2.5px);
+    opacity: 1;
+  }
+}
+.typing-dot {
+  animation: typing-dot 1.2s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) {
+  animation-delay: 0.14s;
+}
+.typing-dot:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+/* One-shot ring pulse for the composer's agent-target chip. Fires when
+ * an auto-mention first attaches so the user notices that the next
+ * send is now addressed to an agent. Kept here (not Tailwind utilities)
+ * because the keyframe needs a custom color stop referencing the
+ * ``--color-mention`` theme variable. */
+@keyframes composer-target-pulse {
+  0%   { box-shadow: 0 0 0 0   color-mix(in oklab, var(--color-mention) 35%, transparent); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0   transparent; }
+}
+.animate-target-pulse {
+  animation: composer-target-pulse 1.2s ease-out;
+}
+
+/* Typing-indicator row above the composer pill. Slides up + fades in
+ * when a peer starts typing so it doesn't pop into existence. Exit is
+ * intentionally instant — the row unmounts the moment the typing
+ * signal stops, and a flicker on disappear reads more honestly than a
+ * lingering fade that suggests stale state. */
+@keyframes typing-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-typing-row-in {
+  animation: typing-row-in 180ms ease-out;
+}
+
+/* ── Shimmer text ─────────────────────────────────────────────────────────
+ * The "alive" treatment for an agent's rotating "Generating…" gerund while it
+ * drafts a reply (GeneratingRow + the empty streaming draft in MessageRow). A
+ * brighter band sweeps across glyphs that otherwise rest at the muted ink.
+ *
+ * Single-layer construction: the gradient paints the text directly via
+ * ``background-clip: text`` (no ``::before`` + ``content: attr(data-text)``
+ * duplicate). That matters here because the word ROTATES every few seconds —
+ * a duplicate layer would have to be kept in sync with the live string; this
+ * approach just clips whatever text is in the node. Base/highlight follow the
+ * theme tokens, so the effect tracks light/dark automatically (resting glyphs
+ * at --muted-foreground, sweep at the higher-contrast --foreground). Tunable
+ * per-instance via the three local custom properties. */
+.t-shimmer {
+  --shimmer-base: var(--muted-foreground);
+  --shimmer-highlight: var(--foreground);
+  --shimmer-dur: 2.4s;
+  background-image: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 35%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 65%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 200% 100%;
+  /* MUST tile (repeat): the text is painted ONLY by this gradient
+   * (`color: transparent` + `background-clip: text`). With `no-repeat` the
+   * 200%-wide gradient slides off the element as `background-position` travels,
+   * leaving the uncovered side with no fill — i.e. letters vanish one by one.
+   * Repeating tiles the base colour across the whole word so glyphs always have
+   * ink; only the bright highlight band sweeps through (the colour "wave"). The
+   * gradient rests at --shimmer-base at both 0% and 100%, so tile seams are
+   * seamless, and the 200% travel below is exactly one tile, so the loop is too. */
+  background-repeat: repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: t-shimmer var(--shimmer-dur) linear infinite;
+}
+@keyframes t-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+/* Reduced motion: drop the sweep entirely and fall back to flat muted ink so
+ * the label stays fully legible (matches the per-feature opt-out the rest of
+ * the chat animations use). */
+@media (prefers-reduced-motion: reduce) {
+  .t-shimmer {
+    animation: none;
+    -webkit-text-fill-color: var(--shimmer-base);
+    color: var(--shimmer-base);
+  }
+}
+
+/* Word rotation in GeneratingIndicator crossfades instead of swapping: the
+ * outgoing gerund fades + blurs out while the incoming one fades + blurs in
+ * over it (both stacked in one grid cell), so a change reads as a gentle morph
+ * rather than the label disappearing. The fade lives on a WRAPPER element so it
+ * composes with the inner .t-shimmer sweep (each element owns one `animation`).
+ * Duration matches the 600ms unmount timer in GeneratingIndicator. */
+.thinking-word-in {
+  animation: thinking-word-in 600ms ease-out;
+}
+.thinking-word-out {
+  animation: thinking-word-out 600ms ease-out forwards;
+}
+@keyframes thinking-word-in {
+  from { opacity: 0; filter: blur(3px); }
+  to   { opacity: 1; filter: blur(0); }
+}
+@keyframes thinking-word-out {
+  from { opacity: 1; filter: blur(0); }
+  to   { opacity: 0; filter: blur(3px); }
+}
+/* Reduced motion: no crossfade — show the incoming word and hide the outgoing
+ * one immediately so the two stacked layers never read as doubled/blurred. */
+@media (prefers-reduced-motion: reduce) {
+  .thinking-word-in { animation: none; opacity: 1; }
+  .thinking-word-out { animation: none; opacity: 0; }
+}
+
+/* ── Streaming word reveal ──────────────────────────────────────────────────
+ * Expressive per-word entrance for the actively-streaming prose tail
+ * (StreamingMarkdown's ProseTail). Each newly-revealed word blurs + fades in
+ * over ~180ms. Only freshly-mounted word spans carry the animation, so settled
+ * words are never re-animated; `backwards` fill holds the from-state before
+ * start (no full-opacity flash), and fill reverts to no filter afterward so
+ * completed words leave no lingering blur stacking context. The blur is what
+ * masks a burst of words all arriving in one coalesced frame. */
+@keyframes stream-word-in {
+  from { opacity: 0; filter: blur(4px); }
+  to   { opacity: 1; filter: blur(0); }
+}
+.stream-word-in {
+  animation: stream-word-in 180ms ease-out backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stream-word-in { animation: none; }
+}
+
+/* ── Live activity entrance ─────────────────────────────────────────────────
+ * A small rise + scale so a new element feels like it lands rather than blinking
+ * in. Used for the live agent-activity panel's first paint (GeneratingIndicator)
+ * and the tool-timeline card + its rows (ToolTimelineCard) as steps arrive. The
+ * panel's height changes are carried by AnimateHeight; this covers the fade of
+ * the content that appears inside it. */
+@keyframes activity-in {
+  from { opacity: 0; transform: translateY(3px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+.animate-activity-in {
+  animation: activity-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-activity-in { animation: none; }
+}
+
+/* ── Streaming → published settle ──────────────────────────────────────────
+ * When an agent's reply finalises, its body swaps from the live DraftBody
+ * (streamed text + caret, tool-timeline card) to the published markdown. That
+ * swap is abrupt on its own; {@link SettleBody} owns the smoothing: it morphs
+ * the container HEIGHT from the last streaming height to the finished one (so
+ * the tool card collapsing away resizes gently) and applies this fade to the
+ * finished body over the same beat, masking the inline markdown / code
+ * highlight lighting up. Opacity-only — the height morph carries the motion, so
+ * no transform is needed. The tail stays shy of 0 (the streamed text was
+ * already visible — a full fade-from-0 would flash a long reply); ``backwards``
+ * fill holds the from-state before start so there's no full-opacity flash. */
+@keyframes settle-fade {
+  from { opacity: 0.55; }
+  to   { opacity: 1; }
+}
+.animate-settle-fade {
+  animation: settle-fade 260ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-settle-fade { animation: none; }
+}
+
+/* Lightweight prose styles for static legal pages (Terms, Privacy).
+ * No `@tailwindcss/typography` plugin in this project — these rules give
+ * <h3>, <p>, <ul>, <a>, <code>, <strong> sensible defaults inside a
+ * `.terms-prose` container without us having to className every node.
+ */
+.terms-prose h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 1.5rem;
+  color: var(--foreground);
+}
+.terms-prose p + p,
+.terms-prose ul + p,
+.terms-prose p + ul,
+.terms-prose h3 + p,
+.terms-prose h3 + ul {
+  margin-top: 0.75rem;
+}
+.terms-prose ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.terms-prose ul ul {
+  margin-top: 0.4rem;
+}
+.terms-prose li::marker {
+  color: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
+}
+.terms-prose strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+.terms-prose a {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in oklch, var(--foreground) 35%, transparent);
+  transition: text-decoration-color 120ms ease;
+}
+.terms-prose a:hover {
+  text-decoration-color: var(--foreground);
+}
+.terms-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background-color: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--foreground);
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * Command palette (⌘K) — see src/components/command/CommandPalette.tsx.
+ * A restrained "liquid glass" treatment in the spirit of Raycast/Linear:
+ * depth comes from ONE specular top edge, a warm hairline rim, and a single
+ * soft shadow — not heavy blur. All values are warm-tuned for the OKLCH
+ * scheme (warm-white highlight, warm-brown shadow), with a dark-mode pass.
+ * ─────────────────────────────────────────────────────────────────────────── */
+.cmdk-panel {
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.6),                       /* specular top edge */
+    inset 0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent), /* hairline rim */
+    0 2px 4px -2px oklch(0.28 0.03 60 / 0.12),              /* contact shadow */
+    0 24px 56px -16px oklch(0.24 0.035 55 / 0.30),          /* large soft diffuse */
+    0 8px 20px -8px oklch(0.24 0.035 55 / 0.16);            /* mid lift */
+}
+.dark .cmdk-panel {
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    inset 0 0 0 1px oklch(1 0 0 / 0.08),
+    0 2px 6px -2px oklch(0 0 0 / 0.5),
+    0 28px 64px -16px oklch(0 0 0 / 0.7),
+    0 10px 24px -10px oklch(0 0 0 / 0.5);
+}
+
+/* Top + bottom fade so rows dissolve into the panel instead of hard-clipping. */
+.cmdk-scroller {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+}
+
+/* Icon "well": a tile so glyphs sit slightly inset rather than floating. */
+.cmdk-tile {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--foreground) 7%, transparent),
+    inset 0 1px 0 oklch(1 0 0 / 0.35);
+}
+.dark .cmdk-tile {
+  box-shadow:
+    inset 0 0 0 1px oklch(1 0 0 / 0.07),
+    inset 0 1px 0 oklch(1 0 0 / 0.05);
+}
+
+/* Quiet active row: warm tint + barely-there inset ring (no gradient/glow). */
+.cmdk-row {
+  transition: background-color 150ms ease, box-shadow 150ms ease;
+}
+.cmdk-row[data-active="true"] {
+  background: color-mix(in oklch, var(--muted) 85%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 7%, transparent);
+}
+
+/* "verb ↵" action hint — revealed only on the active row. */
+.cmdk-hint {
+  opacity: 0;
+  transform: translateX(4px);
+  transition: opacity 130ms ease, transform 130ms ease;
+}
+.cmdk-row[data-active="true"] .cmdk-hint {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* Keycap chip — subtly raised. */
+.cmdk-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.3rem;
+  border-radius: 5px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--muted-foreground);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent),
+    inset 0 1px 0 oklch(1 0 0 / 0.4),
+    0 1px 1px oklch(0.28 0.03 60 / 0.06);
+}
+.dark .cmdk-kbd {
+  box-shadow:
+    inset 0 0 0 1px oklch(1 0 0 / 0.08),
+    inset 0 1px 0 oklch(1 0 0 / 0.05);
+}
+
+/* Input shimmer — a 1px sweep that only animates after a 1s delay, so fast
+ * queries never flash a loader. */
+.cmdk-loader {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -0.5px;
+  height: 1.5px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklch, var(--primary) 70%, transparent) 50%,
+    transparent
+  );
+  background-size: 45% 100%;
+  background-repeat: no-repeat;
+  animation: cmdk-loader-sweep 1.3s ease-in-out 1s infinite;
+}
+@keyframes cmdk-loader-sweep {
+  0% { background-position: -45% 0; }
+  100% { background-position: 145% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmdk-row,
+  .cmdk-hint { transition: none; }
+  .cmdk-loader { animation: none; opacity: 0.5; }
+}
+
+/* Touch press feedback for rows (no hover on coarse pointers, so the hover/
+ * keyboard active tint never fires from a tap). */
+@media (hover: none) {
+  .cmdk-row:active {
+    background: color-mix(in oklch, var(--muted) 90%, transparent);
+  }
+}
+
+/* ── 3D hover tilt (collectible AgentCard) ──────────────────────────────────
+ * Pointer-tracked perspective tilt + a cursor-following specular glare. Recipe
+ * from transitions.dev (card hover tilt), adapted to live in the stylesheet
+ * (matching the other `t-` transition helpers) instead of self-injecting.
+ *
+ * Two elements: the OUTER .t-tilt is the flat hit area (never transforms, so a
+ * tilting card can't pull its own edges out from under the pointer); the INNER
+ * .t-tilt-card carries the rotateX/Y fed from JS via CSS vars. These classes
+ * set NO border-radius / overflow — clipping (if any) is the card's job. */
+:root {
+  --tilt-perspective: 1000px;
+  --tilt-return: 1000ms;
+  --tilt-return-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --tilt-follow: 400ms;
+  --tilt-follow-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --tilt-glare-opacity: 0.55;
+  --tilt-glare-fade: 300ms;
+  --tilt-glare-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Only take over touch-action on hover-capable pointers (desktop mouse). On
+ * touch devices the tilt is disabled, so leaving touch-action alone keeps the
+ * agent gallery grid scrollable. */
+@media (hover: hover) and (pointer: fine) {
+  .t-tilt {
+    touch-action: none;
+  }
+}
+.t-tilt-card {
+  position: relative;
+  transform: perspective(var(--tilt-perspective)) rotateX(var(--tilt-rx, 0deg))
+    rotateY(var(--tilt-ry, 0deg));
+  transform-style: preserve-3d;
+  transition: transform var(--tilt-return) var(--tilt-return-ease);
+  will-change: transform;
+}
+.t-tilt-card.is-tilting {
+  transition: transform var(--tilt-follow) var(--tilt-follow-ease);
+}
+/* Cursor-tracked specular glare. Unlike the stock recipe this is NOT a full-box
+ * div — AgentCollectibleCard renders the glare as an SVG layer clipped to the
+ * frame's true silhouette (so the glow tracks the actual card shape, not its
+ * bounding rectangle). This rule just drives the fade; the disc's cx/cy read
+ * the cursor vars (--tilt-gx/gy) directly in the SVG. */
+.agentcard-glare {
+  opacity: 0;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  transition: opacity var(--tilt-glare-fade) var(--tilt-glare-ease);
+}
+.t-tilt.is-hover .agentcard-glare {
+  opacity: var(--tilt-glare-opacity);
+}
+@media (prefers-reduced-motion: reduce) {
+  .t-tilt-card {
+    transform: none !important;
+    transition: none !important;
+  }
+  .agentcard-glare {
+    opacity: 0 !important;
+  }
+}
+
+/* Collectible card drop shadow. A CSS `filter` (not an SVG one) so it traces the
+ * card's true scalloped alpha and layers into a soft, distributed stack. The
+ * diffuse layers are tinted to the card's OWN gradient (--card-glow/-2, set per
+ * card from its theme), so the shadow reads as a colored glow that matches the
+ * card instead of a flat grey. A tight neutral contact shadow grounds it; dark
+ * mode adds a faint light rim so even near-black cards separate from the bg. */
+.agentcard-shadow {
+  --card-glow: #888888;
+  --card-glow2: #888888;
+  filter:
+    drop-shadow(0 2px 4px rgba(20, 14, 8, 0.05))
+    drop-shadow(0 14px 30px color-mix(in oklch, var(--card-glow) 13%, transparent))
+    drop-shadow(0 30px 62px color-mix(in oklch, var(--card-glow2) 8%, transparent));
+}
+.dark .agentcard-shadow {
+  filter:
+    drop-shadow(0 2px 6px rgba(0, 0, 0, 0.24))
+    drop-shadow(0 14px 34px color-mix(in oklch, var(--card-glow) 16%, transparent))
+    drop-shadow(0 28px 60px color-mix(in oklch, var(--card-glow2) 10%, transparent))
+    drop-shadow(0 0 1px rgba(255, 255, 255, 0.16));
+}
+
+/* Sidebar disclosure (collapsible sections + inline-expandable nav rows).
+ * Animates a grid track from 0fr→1fr — the one reliable way to transition
+ * height to/from "auto" content. No boxes, no borders: the reveal itself is the
+ * affordance. The clipped inner child fades in to mask the clip edge. Pair a
+ * ONE-element chevron rotated via `.disclosure-chevron`. See the Agents sidebar
+ * and CollapsibleGroup/SidebarNavItem. */
+.disclosure {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.disclosure[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.disclosure > .disclosure-inner {
+  overflow: hidden;
+  min-height: 0;
+  opacity: 0.6;
+  transition: opacity 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.disclosure[data-open="true"] > .disclosure-inner {
+  opacity: 1;
+}
+.disclosure-chevron {
+  transition: transform 150ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.disclosure-chevron[data-open="false"] {
+  transform: rotate(-90deg);
+}
+/* Staggered entrance for freshly-revealed list rows (e.g. inbox preview). The
+ * per-row delay is set inline via --i. */
+.disclosure[data-open="true"] .disclosure-item {
+  animation: disclosure-item-in 200ms ease-out both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+@keyframes disclosure-item-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .disclosure,
+  .disclosure > .disclosure-inner,
+  .disclosure-chevron {
+    transition: none;
+  }
+  .disclosure[data-open="true"] .disclosure-item {
+    animation: none;
+  }
+}

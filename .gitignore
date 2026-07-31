@@ -1,0 +1,106 @@
+# Written for what this repo actually uses: uv + ruff + pytest (Python 3.14),
+# bun + vite (web), cargo + tauri (desktop), expo (mobile). Deliberately not a
+# concatenation of GitHub's language templates — the previous 470-line version
+# was ~half rules for tooling absent from the tree, including an entire
+# JetBrains block whose negations were unreachable because the directory above
+# them was already ignored.
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# The bare .env and the decrypted private keys are never committed.
+.env
+.env.keys
+# Per-env files live in the private clawbits-internal repo and are copied in by
+# scripts/sync_env.sh. Ignored here so a sync can never re-publish them.
+# Leading slash = repo root ONLY: unanchored, these also swallowed
+# apps/mobile/.env.production, which is a tracked public API URL, not a secret.
+/.env.development
+/.env.staging
+/.env.production
+.env.*.local
+.env.local
+.env.test
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ── JavaScript / TypeScript ──────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+*-debug.log*
+
+# ── Rust / Tauri ─────────────────────────────────────────────────────────────
+target/
+# Generated from desktop/icons-src by `bun run tauri icons`; regenerated on
+# every dev/build, so committing them would only produce churn.
+desktop/src-tauri/icons/*
+!desktop/src-tauri/icons/.gitkeep
+
+# ── Mobile (Expo prebuild outputs that are NOT committed) ─────────────────────
+apps/mobile/.expo/
+apps/mobile/ios/build/
+apps/mobile/ios/Pods/
+apps/mobile/android/.gradle/
+apps/mobile/android/app/build/
+apps/mobile/android/build/
+
+# ── macOS ────────────────────────────────────────────────────────────────────
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.AppleDouble
+.LSOverride
+# `Icon?` is the Finder metadata file (literally "Icon\r"). On case-insensitive
+# APFS it also matches any 5-character `icons/` directory, which is how the PWA
+# icons stayed out of git unnoticed — hence the two re-includes below. If either
+# directory is ever renamed, its negation must move with it.
+Icon?
+!desktop/src-tauri/icons/
+!desktop/src-tauri/icons/**
+!frontend/public/icons/
+!frontend/public/icons/**
+
+# ── Editors and agent tooling ────────────────────────────────────────────────
+.idea/
+.vscode/*
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+# Per-developer agent config (settings.local.json, launch.json). Project-wide
+# conventions belong in AGENTS.md, which IS committed.
+.claude/
+.codex/
+
+# ── Local databases and runtime state ────────────────────────────────────────
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+# Clawbits plugin runtime state (per-channel "last seen" watermarks)
+clawbits-channel-state.json
+# Plugin local config
+clawbits.config.json
+
+# ── Local sibling checkouts of related repos, cloned in for cross-repo dev.
+#    Each is its own git repo, not part of this one.
+/ironclaw/
+/openclaw/
+/hermes-agent/
+
+# ── Scratch ──────────────────────────────────────────────────────────────────
+.work/
+.codegraph/
+*.log

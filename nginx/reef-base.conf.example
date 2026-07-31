@@ -1,0 +1,42 @@
+# Reef — base nginx config for prod web-UI exposure (SubdomainProxyExposure).
+#
+# This is the ONE-TIME host setup. Reef itself only writes per-agent server
+# blocks into REEF_NGINX_DIR (default /etc/nginx/reef.d/<sandbox_id>.conf) and
+# runs `nginx -s reload` — see reef/exposure.py. Each per-agent block is a full
+# `server { listen 443 ssl; server_name <hash>.reef.clawbits.ai; ... }` that
+# proxies to 127.0.0.1:<forwarded-port> with WebSocket upgrade headers.
+#
+# Prerequisites (out of Reef's scope):
+#   1. DNS: a wildcard A/AAAA record  *.reef.clawbits.ai → this host's IP
+#            (plus reef.clawbits.ai → same).
+#   2. TLS: a wildcard cert for *.reef.clawbits.ai. Wildcards REQUIRE the
+#      Let's Encrypt DNS-01 challenge, e.g.:
+#        certbot certonly --dns-<provider> -d '*.reef.clawbits.ai' -d reef.clawbits.ai
+#      then point Reef at the files:
+#        REEF_TLS_CERT=/etc/letsencrypt/live/reef.clawbits.ai/fullchain.pem
+#        REEF_TLS_KEY=/etc/letsencrypt/live/reef.clawbits.ai/privkey.pem
+#   3. Reef env: REEF_BASE_DOMAIN=reef.clawbits.ai
+#                REEF_NGINX_DIR=/etc/nginx/reef.d
+#                REEF_SUBDOMAIN_SECRET=<random>   # makes the hash unguessable
+#
+# Put this in the http{} context of /etc/nginx/nginx.conf (or conf.d/), then
+# `mkdir -p /etc/nginx/reef.d`. Reload after Reef writes a block: handled by Reef.
+
+# Pull in every per-agent server block Reef manages.
+include /etc/nginx/reef.d/*.conf;
+
+# Reject any subdomain that isn't a live agent (no default_server match → 444).
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    ssl_certificate     /etc/letsencrypt/live/reef.clawbits.ai/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/reef.clawbits.ai/privkey.pem;
+    return 444;
+}
+
+# Redirect plain HTTP → HTTPS for the whole wildcard.
+server {
+    listen 80 default_server;
+    server_name *.reef.clawbits.ai reef.clawbits.ai;
+    return 301 https://$host$request_uri;
+}

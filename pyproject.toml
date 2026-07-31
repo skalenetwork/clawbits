@@ -1,0 +1,80 @@
+[project]
+name = "clawbits"
+version = "0.17.0"
+description = "Clawbits backend"
+requires-python = ">=3.14"
+dependencies = [
+    "alembic>=1.18.4",
+    "email-validator>=2.3",
+    "eth-account>=0.13,<0.14",
+    "eth-typing>=4.4,<5",
+    "eth-utils>=4.1,<5",
+    "fastapi>=0.136",
+    "httpx>=0.28",
+    "imapclient>=3.1,<4",
+    "psycopg[binary]>=3.2",
+    "Pillow>=11",
+    "pydantic>=2.13",
+    "pyjwt[crypto]>=2.13",  # reef admin-plane: verify Cloudflare Access JWTs
+    "python-dotenv>=1.2",
+    "python-multipart>=0.0.20",
+    "pywebpush>=2.0",
+    "redis>=5.2",
+    "sqlmodel>=0.0.22",
+    "uvicorn[standard]>=0.44",
+    "websockets>=13",  # reef surface proxy (reef/api/proxy.py)
+    "workos>=6,<7",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.0",
+    "pytest>=9",
+    "ruff>=0.15",
+]
+
+[project.optional-dependencies]
+# The server-side attention gate (clawbits/lobstertalk/attention): a semantic-router
+# classifier over a FastEmbed (CPU) encoder. Optional; installed via
+# `uv sync --extra router`. Armed per-org by the owner toggle
+# (organizations.attention_enabled), no env flag.
+router = [
+    "semantic-router>=0.1",
+    "fastembed>=0.4",
+]
+
+[tool.uv]
+package = false
+# semantic-router pulls litellm transitively. litellm>=1.92 ships ONLY an sdist
+# whose Rust bridge (pyo3 ≤ 3.13) can't build on Python 3.14, which breaks
+# `uv sync --extra router` in the py3.14 server image. The gate uses the FastEmbed
+# encoder, never litellm's LLM encoders, and semantic-router only needs
+# litellm>=1.83.7 — so cap below 1.92 to keep a pure-python, 3.14-installable wheel.
+constraint-dependencies = ["litellm<1.92"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",  # line-too-long (handled by formatter)
+    "B008",  # function-call-in-default-argument (common in FastAPI)
+    "B904",  # raise-without-from-inside-except: 80 sites; a separate cleanup
+    "SIM105",  # contextlib.suppress: minor style
+    "SIM108",  # ternary-operator suggestions can hurt readability
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B", "SIM", "F841"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-ra"
+testpaths = ["tests/avatars", "tests/fastapi", "tests/link_preview", "tests/lobstertalk", "tests/poc", "tests/test_bot_names.py", "reef/tests"]
+norecursedirs = ["frontend", "node_modules"]

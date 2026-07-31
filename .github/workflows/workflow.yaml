@@ -1,0 +1,263 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+      - prod
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  build-lint-test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          # Key the ~/.cache/uv cache on the lockfile so it's reused across
+          # runs and only rebuilt when dependencies actually change.
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Bring up the same db / redis / stalwart containers we use locally via
+      # compose, so the Stalwart v0.16 deterministic recovery admin and the
+      # service healthchecks are defined in one place (compose.yaml +
+      # compose.override.yaml) instead of being reimplemented here. `--wait`
+      # blocks until every container is healthy (Stalwart uses the image's
+      # shipped healthcheck), so the tests never race a half-initialised
+      # mailserver. The override publishes the ports (5432/6379/25/465/993/8080)
+      # the runner-side tests connect to on localhost.
+      - name: Start dependency containers
+        # POSTGRES_DB seeds the database the alembic-check step connects to
+        # directly (the pytest harness creates its own DBs via the `postgres`
+        # maintenance DB, so it doesn't depend on this). compose.yaml reads
+        # ${POSTGRES_DB:-clawbits}.
+        env:
+          POSTGRES_DB: clawbits_test
+        run: docker compose -f compose.yaml -f compose.override.yaml up -d --wait --wait-timeout 180 db redis stalwart
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: No plaintext secrets in tracked env files
+        # The regression this guards against already shipped once: three
+        # credentials sat in plaintext in .env.development for months after an
+        # earlier commit of the same file had them dotenvx-encrypted.
+        run: uv run python scripts/check_env_encrypted.py
+
+      - name: Verify db_schema.md is up to date
+        run: |
+          uv run python -m clawbits.db.render_schema
+          if ! git diff --exit-code clawbits/db/db_schema.md; then
+            echo "::error::clawbits/db/db_schema.md is out of date. Run 'uv run python -m clawbits.db.render_schema' and commit the result."
+            exit 1
+          fi
+
+      - name: Verify alembic migrations match models
+        env:
+          CLAWBITS_DATABASE_URL: postgresql+psycopg://clawbits:clawbits@localhost:5432/clawbits_test
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+
+      - name: Run tests
+        env:
+          CLAWBITS_TEST_DATABASE_URL: postgresql+psycopg://clawbits:clawbits@localhost:5432/clawbits_test
+          # Stalwart v0.16 (JMAP mgmt + admin impersonation). Must match the dev
+          # recovery admin pinned in compose.override.yaml (admin:dev-svc-secret).
+          # compose.override.yaml `!override`s Stalwart's published ports onto a
+          # high-port range (see its OrbStack-workaround note: the standard
+          # 25/465/993/8080 host bindings are intentionally dropped): mgmt
+          # 8080->18080, IMAP 993->10993, SMTP 465->10465. CI reaches those over
+          # localhost (the static 172.30.99.10 IP is a macOS-only path). Set here
+          # so the values are present before any module import, regardless of
+          # pytest collection order.
+          STALWART_EMAIL_DOMAIN: mail.clawbits.ai
+          STALWART_SVC_USER: admin
+          STALWART_SVC_PASSWORD: dev-svc-secret
+          STALWART_IMPERSONATE_SEP: "%"
+          STALWART_MGMT_URL: http://localhost:18080
+          STALWART_IMAP_HOST: localhost
+          STALWART_IMAP_PORT: 10993
+          STALWART_IMAP_USE_SSL: "true"
+          STALWART_IMAP_VERIFY_SSL: "false"
+          STALWART_SMTP_HOST: localhost
+          STALWART_SMTP_PORT: 10465
+          STALWART_SMTP_IMPLICIT_TLS: "true"
+          STALWART_SMTP_VERIFY_SSL: "false"
+        run: uv run pytest -q -x        # paths come from pyproject testpaths — one source of truth
+
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          # Cache both bun's global module store and the resolved node_modules
+          # so a warm run links nothing. Keyed on the real lockfile name
+          # (bun.lock, not the obsolete binary bun.lockb) so it invalidates
+          # when deps change; namespaced to `frontend` so it never restores
+          # the plugin job's node_modules.
+          path: |
+            ~/.bun/install/cache
+            frontend/node_modules
+          key: ${{ runner.os }}-bun-frontend-${{ hashFiles('frontend/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-frontend-
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build (tsc + vite)
+        # --bun forces bun's runtime for tsc/vite (which carry
+        # `#!/usr/bin/env node` shebangs) so we don't need setup-node.
+        run: bun --bun run build
+
+      - name: Test (vitest)
+        # `bun run test` maps to bare `vitest`, which watches; `run` forces a
+        # single pass. 19 suites / 164 tests, ~4s.
+        run: bunx vitest run
+
+
+  mobile-typecheck:
+    name: Mobile Typecheck
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            apps/mobile/node_modules
+          key: ${{ runner.os }}-bun-mobile-${{ hashFiles('apps/mobile/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-mobile-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun --bun run typecheck
+
+      - name: Lint
+        run: bun --bun run lint
+
+
+  admin-ui-build:
+    name: Reef Admin UI Build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: reef/admin-ui
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            reef/admin-ui/node_modules
+          key: ${{ runner.os }}-bun-admin-ui-${{ hashFiles('reef/admin-ui/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-admin-ui-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build (tsc + vite)
+        run: bun --bun run build
+
+
+  plugin-test:
+    name: Plugin Test
+    # The publish workflow (publish-clawhub-plugin.yaml) runs plugin tests
+    # inline on pushes to main / test-publish, so we skip the plugin job
+    # here when publish is going to fire to avoid duplicate runs. Pull
+    # requests targeting main still run plugin tests via this job.
+    if: ${{ !(github.event_name == 'push' && github.ref_name == 'main') }}
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: plugin
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          # See the frontend job for rationale. Keyed on plugin/bun.lock and
+          # namespaced to `plugin`.
+          path: |
+            ~/.bun/install/cache
+            plugin/node_modules
+          key: ${{ runner.os }}-bun-plugin-${{ hashFiles('plugin/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-plugin-
+
+      - name: Install plugin dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun --bun run typecheck
+
+      - name: Run plugin tests
+        run: bun run test

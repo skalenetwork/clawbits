@@ -1,0 +1,103 @@
+{
+  "expo": {
+    "name": "Clawbits",
+    "slug": "clawbits-mobile",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "clawbits",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "ai.clawbits.mobile",
+      "buildNumber": "2",
+      "icon": {
+        "light": "./assets/images/ios-icon-light.png",
+        "dark": "./assets/images/ios-icon-dark.png",
+        "tinted": "./assets/images/ios-icon-tinted.png"
+      },
+      "supportsTablet": false,
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": [
+          "twitter"
+        ]
+      }
+    },
+    "android": {
+      "package": "ai.clawbits.mobile",
+      "versionCode": 2,
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO"
+      ]
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "./plugins/with-android-foldable",
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#208AEF",
+          "android": {
+            "image": "./assets/images/splash-icon.png",
+            "imageWidth": 76
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos and videos for chat attachments.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      "expo-image",
+      "expo-web-browser",
+      [
+        "react-native-edge-to-edge",
+        {
+          "android": {
+            "parentTheme": "Default",
+            "enforceNavigationBarContrast": false
+          }
+        }
+      ],
+      "expo-sharing",
+      [
+        "expo-media-library",
+        {
+          "savePhotosPermission": "Allow $(PRODUCT_NAME) to save images from chats to your photo library.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "00f8b67f-3b76-4a73-99b2-98bee13415dc"
+      }
+    },
+    "owner": "dmtkk"
+  }
+}

@@ -1,0 +1,57 @@
+[package]
+name = "clawbits"
+version = "0.17.0"
+description = "Clawbits desktop app"
+authors = ["Clawbits"]
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "clawbits_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "devtools"] }
+tauri-plugin-log = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+tauri-plugin-single-instance = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-autostart = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+window-vibrancy = "0.6"
+# Used only for its `set_application` helper, which swizzles
+# [NSBundle mainBundle].bundleIdentifier process-wide so a dev binary
+# (no .app wrapper) can still deliver NSUserNotifications. Our own
+# delivery code in notifications.rs handles the actual UI.
+mac-notification-sys = "0.6"
+
+# Linux notifications go directly through notify-rust so we can pass
+# `replaces_id` for in-place updates (the Tauri notification plugin
+# doesn't expose it on desktop).
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

@@ -1,0 +1,49 @@
+# Reef operator dashboard (admin-ui) — local-only systemd unit.
+#
+# Serves the built admin-ui SPA + reverse-proxies /api -> the Reef API. Binds
+# LOOPBACK by design (REEF_ADMIN_UI_HOST=127.0.0.1): the dashboard is reached
+# over an SSH local-forward, NEVER the public Cloudflare tunnel. Do NOT add this
+# port to the tunnel — the tunnel maps only the API on :8787. The admin token
+# still gates all data (forwarded to the API, which enforces admin_auth).
+#
+# Prereq: a built dist. The prod box has no node/bun, so build it on your
+# workstation and copy it in:
+#   cd reef/admin-ui && bun install --frozen-lockfile && bun run build
+#   rsync -a reef/admin-ui/dist/  reef@<host>:/opt/reef/reef/admin-ui/dist/
+# (That path is the server's default; REEF_ADMIN_UI_DIR overrides it.)
+#
+# Install: copy to /etc/systemd/system/reef-admin-ui.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now reef-admin-ui
+#
+# Reach it:  ssh -L 8788:127.0.0.1:8788 <host>   then open http://localhost:8788
+
+[Unit]
+Description=Reef operator dashboard (local-only admin-ui)
+Documentation=file:///opt/reef/reef/deploy/README.md
+# Proxies to the API; start after it (loopback connect, soft dependency).
+After=network-online.target reef-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reef
+Group=reef
+WorkingDirectory=/opt/reef
+EnvironmentFile=/etc/reef/reef.env
+ExecStart=/opt/reef/.venv/bin/python -m reef.admin_ui
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+SyslogIdentifier=reef-admin-ui
+
+# Static file server + a loopback HTTP proxy — no state, no privileges needed.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

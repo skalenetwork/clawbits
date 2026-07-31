@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clawbits · trace viewer</title>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b22; --border: #2a3038; --text: #e6edf3;
+    --muted: #8b949e; --accent: #58a6ff;
+    --frontend: #d29922; --server: #58a6ff; --plugin: #3fb950; --other: #8b949e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 13px/1.45 ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+    background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; flex: none;
+  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  header label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #list { width: 340px; border-right: 1px solid var(--border); overflow-y: auto; flex: none; }
+  #detail { flex: 1; overflow: auto; padding: 16px; }
+  .trace-row {
+    padding: 8px 14px; border-bottom: 1px solid var(--border); cursor: pointer;
+  }
+  .trace-row:hover { background: #1c2230; }
+  .trace-row.active { background: #1f2937; border-left: 2px solid var(--accent); }
+  .trace-row .tid { color: var(--accent); word-break: break-all; }
+  .trace-row .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .trace-row .dur { float: right; color: var(--text); }
+  .badge {
+    display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px;
+    margin-right: 3px; color: #0e1117; font-weight: 600;
+  }
+  .b-frontend { background: var(--frontend); }
+  .b-server { background: var(--server); }
+  .b-plugin { background: var(--plugin); }
+  .b-other { background: var(--other); }
+  .empty { color: var(--muted); padding: 24px 16px; }
+  /* waterfall */
+  .wf-head { margin-bottom: 14px; }
+  .wf-head .tid { color: var(--accent); word-break: break-all; }
+  .wf-head .total { color: var(--muted); }
+  .row { display: flex; align-items: center; height: 28px; gap: 10px; }
+  .row .label { width: 200px; flex: none; text-align: right; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .track { position: relative; flex: 1; height: 16px; background: #0a0d12; border-radius: 3px; }
+  .bar {
+    position: absolute; top: 0; height: 16px; border-radius: 3px; min-width: 2px;
+    display: flex; align-items: center; padding: 0 5px; font-size: 11px; color: #0e1117;
+    white-space: nowrap; overflow: visible;
+  }
+  .bar .barlabel { position: absolute; left: calc(100% + 6px); color: var(--text); }
+  .axis { display: flex; height: 18px; gap: 10px; margin-bottom: 4px; }
+  .axis .label { width: 200px; flex: none; }
+  .axis .track { flex: 1; position: relative; color: var(--muted); font-size: 11px; }
+  .axis .track .end { position: absolute; right: 0; }
+  details.attrs { margin-top: 16px; }
+  details.attrs pre { background: var(--panel); border: 1px solid var(--border); padding: 10px; border-radius: 6px; overflow: auto; }
+  .note { color: var(--muted); font-size: 11px; margin-top: 18px; max-width: 640px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Clawbits trace viewer</h1>
+  <span class="sub">end-to-end latency · grouped by trace_id</span>
+  <span class="spacer"></span>
+  <label><input type="checkbox" id="auto" checked /> auto-refresh</label>
+  <span class="sub" id="status"></span>
+</header>
+<main>
+  <div id="list"><div class="empty">loading…</div></div>
+  <div id="detail"><div class="empty">Select a trace on the left.</div></div>
+</main>
+<script>
+const SUBS = ["frontend", "server", "plugin"];
+function subClass(s) { return SUBS.includes(s) ? "b-" + s : "b-other"; }
+function barColor(s) {
+  return { frontend: "var(--frontend)", server: "var(--server)", plugin: "var(--plugin)" }[s] || "var(--other)";
+}
+function fmtMs(ms) {
+  if (ms == null) return "—";
+  if (ms < 1000) return Math.round(ms) + "ms";
+  return (ms / 1000).toFixed(2) + "s";
+}
+function fmtClock(ms) {
+  if (ms == null) return "—";
+  return new Date(ms).toLocaleTimeString([], { hour12: false }) + "." + String(ms % 1000).padStart(3, "0");
+}
+
+let selected = null;
+
+async function loadList() {
+  let data;
+  try {
+    const r = await fetch("/api/trace/traces?limit=100");
+    data = await r.json();
+  } catch (e) {
+    document.getElementById("status").textContent = "fetch error";
+    return;
+  }
+  document.getElementById("status").textContent = data.traces.length + " traces";
+  const el = document.getElementById("list");
+  if (!data.traces.length) {
+    el.innerHTML = '<div class="empty">No traces yet. Send a message in the app, then refresh.</div>';
+    return;
+  }
+  el.innerHTML = data.traces.map((t) => `
+    <div class="trace-row ${t.trace_id === selected ? "active" : ""}" data-id="${encodeURIComponent(t.trace_id)}">
+      <div><span class="dur">${fmtMs(t.total_ms)}</span><span class="tid">${t.trace_id}</span></div>
+      <div class="meta">
+        ${t.subsystems.map((s) => `<span class="badge ${subClass(s)}">${s}</span>`).join("")}
+        ${t.span_count} spans · ${fmtClock(t.t_start_ms)}
+      </div>
+    </div>`).join("");
+  el.querySelectorAll(".trace-row").forEach((row) => {
+    row.addEventListener("click", () => selectTrace(decodeURIComponent(row.dataset.id)));
+  });
+}
+
+async function selectTrace(id) {
+  selected = id;
+  document.querySelectorAll(".trace-row").forEach((r) =>
+    r.classList.toggle("active", decodeURIComponent(r.dataset.id) === id));
+  const r = await fetch("/api/trace/traces/" + encodeURIComponent(id));
+  if (!r.ok) {
+    document.getElementById("detail").innerHTML = '<div class="empty">Trace not found (may have aged out of the ring).</div>';
+    return;
+  }
+  renderWaterfall(await r.json());
+}
+
+function renderWaterfall(trace) {
+  const t0 = trace.t_start_ms;
+  const span = (trace.total_ms && trace.total_ms > 0) ? trace.total_ms : 1;
+  const rows = trace.spans.map((s) => {
+    const start = s.t_start_ms != null ? s.t_start_ms : t0;
+    const dur = s.dur_ms != null ? s.dur_ms : 0;
+    const left = ((start - t0) / span) * 100;
+    const width = Math.max((dur / span) * 100, 0.5);
+    return `
+      <div class="row">
+        <div class="label" title="${s.span}">${s.span}</div>
+        <div class="track">
+          <div class="bar" style="left:${left}%;width:${width}%;background:${barColor(s.subsystem)}">
+            <span class="barlabel">${fmtMs(dur)}</span>
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+  document.getElementById("detail").innerHTML = `
+    <div class="wf-head">
+      <div class="tid">${trace.trace_id}</div>
+      <div class="total">total ${fmtMs(trace.total_ms)} · ${trace.spans.length} spans · start ${fmtClock(t0)}</div>
+    </div>
+    <div class="axis"><div class="label"></div><div class="track"><span>0</span><span class="end">${fmtMs(span)}</span></div></div>
+    ${rows}
+    <details class="attrs"><summary>raw spans</summary><pre>${escapeHtml(JSON.stringify(trace.spans, null, 2))}</pre></details>
+    <div class="note">Bars are positioned by <code>t_start_ms</code> / <code>dur_ms</code> relative to the
+    earliest span. Cross-process timings are exact on a single host; across machines clock skew can shift bars.</div>`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+loadList();
+setInterval(() => {
+  if (document.getElementById("auto").checked) {
+    loadList();
+    if (selected) selectTrace(selected);
+  }
+}, 2500);
+</script>
+</body>
+</html>

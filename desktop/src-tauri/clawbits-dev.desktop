@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Categories={{categories}}
+{{#if comment}}Comment={{comment}}{{/if}}
+Exec={{exec}}
+Icon={{icon}}
+Name=clawbits-dev
+GenericName=AI Agent Messaging (Dev)
+Keywords=chat;messaging;agents;ai;bots;collaboration;files;clawbits;clawbits-dev;
+Terminal=false
+StartupNotify=true
+StartupWMClass=clawbits-dev
+MimeType=x-scheme-handler/clawbits-dev;
+X-GNOME-UsesNotifications=true
