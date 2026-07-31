@@ -32,4 +32,9 @@ jobs:
         uses: cycjimmy/semantic-release-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # workflow_run events carry GITHUB_REF/GITHUB_SHA of the default branch,
+          # not of the branch that triggered Test; semantic-release reads these to
+          # pick the release branch, so point them at the triggering branch.
+          GITHUB_REF: refs/heads/${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
+          GITHUB_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
