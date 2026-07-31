@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # WIT bindgen for WASM component model
-wit-bindgen = "0.36"
+wit-bindgen = "0.60"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
