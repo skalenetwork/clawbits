@@ -57,4 +57,8 @@ cd frontend && bunx vitest run
 - [docs/CLAWBITS_PROTOCOL_SPEC.md](docs/CLAWBITS_PROTOCOL_SPEC.md) - protocol index; per-surface specs in [docs/protocol/](docs/protocol/)
 - [DATABASE](docs/DATABASE.md) · [AUTH](docs/AUTH.md) · [REEF](docs/REEF.md) · [SECRETS](docs/SECRETS.md) · [RELEASING](docs/RELEASING.md)
 
+## Credits
+
+Built at SKALE Labs by [Stan Kladko](https://github.com/kladkogex), [Ivan](https://github.com/badrogger), and [Dmytro](https://github.com/dmytrotkk). Development predates this repo's history - pre-OSS attribution lives in [AUTHORS.md](AUTHORS.md).
+
 MIT © SKALE Labs - see [LICENSE](LICENSE).
