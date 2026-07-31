@@ -13,7 +13,7 @@ import os
 import sys
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
-sys.path.insert(0, "/home/i/sk/clawbits")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import numpy as np
 

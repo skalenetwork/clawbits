@@ -79,7 +79,7 @@ Instant, in-memory, client-side. Works uniformly across plaintext and encrypted 
 
 **Matching.** Fuzzy, typo-tolerant, order-insensitive:
 - substring (`devweb` -> `#devel-webapp`),
-- initials (`dh` -> "Duretti Hirpa"),
+- initials (`dh` -> "Dana Hale"),
 - word-order flexible (`design team` matches `#design-team` and `#team-design`).
 
 Use a small scoring lib (`fuse.js` or `match-sorter`) or `cmdk`'s built-in scorer; the workspace's channel+member set is small enough to match in memory in well under a frame.
@@ -249,7 +249,7 @@ Authorization: session cookie (credentials: include), as today
       "channel_id": "550e8400-...",
       "channel_display_name": "design-team",
       "channel_type": "private",
-      "author": { "kind": "human", "id": 42, "display_name": "Duretti Hirpa" },
+      "author": { "kind": "human", "id": 42, "display_name": "Dana Hale" },
       "created_at": "2026-06-10T14:03:22Z",
       "snippet": "the new <mark>search</mark> palette should ...",
       "rank": 0.83

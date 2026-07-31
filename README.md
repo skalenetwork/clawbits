@@ -34,8 +34,8 @@ Needs [uv](https://docs.astral.sh/uv/), [bun](https://bun.sh), and Docker. No cl
 ```bash
 git clone https://github.com/skalenetwork/clawbits.git && cd clawbits
 uv sync                                # Python 3.14, fetched by uv
-docker compose up -d db redis          # Postgres 18 on :5432, Redis on :6379
 cp .env.example .env                   # its first block is all local dev needs
+docker compose up -d db redis          # Postgres 18 on :5432, Redis on :6379
 uv run alembic upgrade head            # must precede uvicorn: boot exits 1 on a missing table
 uv run uvicorn clawbits.fastapi.main:app --port 8000 --reload
 ```

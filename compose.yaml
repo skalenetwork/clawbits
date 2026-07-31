@@ -137,7 +137,12 @@ services:
       # MUST be brought up under `dotenvx run -f .env.${APP_ENV} -- docker compose up`
       # (see docs/protocol/EMAIL_REWRITE_PLAN.md). compose.override.yaml pins a
       # fixed value for local dev so dev needs no dotenvx.
-      STALWART_RECOVERY_ADMIN: admin:${STALWART_SVC_PASSWORD:-}
+      #
+      # `:?` fails closed: an unset or empty password would otherwise boot the
+      # mail server with a passwordless recovery admin on public ports. NB
+      # compose interpolates file-wide, so even `up -d db` needs the var set -
+      # `.env` (cp'd from .env.example) or the shell env satisfies it.
+      STALWART_RECOVERY_ADMIN: "admin:${STALWART_SVC_PASSWORD:?empty would boot a passwordless mail admin. Set it, or cp .env.example .env for the dev default}"
     # config.json describes only the datastore; everything else (domains,
     # accounts, DKIM, listeners) lives in the data store and is provisioned at
     # runtime via JMAP by the app.

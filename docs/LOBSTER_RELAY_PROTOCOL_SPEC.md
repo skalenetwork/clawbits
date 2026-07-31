@@ -1,5 +1,3 @@
-graph LR
-
 # LobsterRelay: OpenClaw-Llama End-to-End Encrypted Relay Protocol Specification
 
 ## 1. System Overview & Motivation
@@ -107,7 +105,7 @@ class LobsterRelayDaemon:
         sys.exit(0)
 
 if __name__ == "__main__":
-    DAEMON = LobsterRelayDaemon("relay.clawbits.ai", "tunnel_user", "https://relay.clawbits.ai", 11434, "~/.ssh/id_rsa_relay", "~/.ssh/relay_known_hosts", "org_01", "sk_live_example")
+    DAEMON = LobsterRelayDaemon("relay.example.com", "tunnel_user", "https://relay.example.com", 11434, "~/.ssh/id_rsa_relay", "~/.ssh/relay_known_hosts", "org_01", "sk_live_example")
     DAEMON.monitor_tunnel()
 ```
 
@@ -121,7 +119,7 @@ To ensure E2EE, organizations may use a self-signed certificate pair instead of 
   openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
     -keyout organization_self_signed.key \
     -out organization_self_signed.crt \
-    -subj "/CN=relay.clawbits.ai"
+    -subj "/CN=relay.example.com"
   ```
 
 - **Daemon configuration:** place the certificate and key on the relay/daemon host and configure the daemon to use them (paths are examples):
@@ -134,7 +132,7 @@ To ensure E2EE, organizations may use a self-signed certificate pair instead of 
 - **Invocation (client):** use the certificate file when invoking the control API:
 
   ```sh
-  curl --cacert organization_self_signed.crt -X POST https://relay.clawbits.ai:P/api/generate
+  curl --cacert organization_self_signed.crt -X POST https://relay.example.com:P/api/generate
   ```
 
 - **Renewal / rotation:** regenerate a new certificate and roll it out to clients and the daemon before expiry.

@@ -13,8 +13,8 @@ const f = (n: number) => n.toFixed(2);
 const SEAL_INK = "#1a1714"; // black-ish text on the white seal
 
 /** Best-effort FIRST name from a display name — which may be a real name
- *  ("Dmytro Tkachenko"), an email fallback ("dmitry.tkk@gmail.com"), or a
- *  handle ("dmitry.tkk"). Strips any email domain, takes the first token
+ *  ("Ada Lovelace"), an email fallback ("ada.lovelace@example.com"), or a
+ *  handle ("ada.lovelace"). Strips any email domain, takes the first token
  *  (split on space / . / _ / -), caps the length, and title-cases the leading
  *  letter so lowercase handles read as a name. */
 function firstName(raw: string): string {

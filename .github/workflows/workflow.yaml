@@ -48,6 +48,9 @@ jobs:
         # ${POSTGRES_DB:-clawbits}.
         env:
           POSTGRES_DB: clawbits_test
+          # compose.yaml's fail-closed recovery-admin guard interpolates this
+          # at parse time; the actual dev credential is pinned by the override.
+          STALWART_SVC_PASSWORD: dev-svc-secret
         run: docker compose -f compose.yaml -f compose.override.yaml up -d --wait --wait-timeout 180 db redis stalwart
 
       - name: Lint

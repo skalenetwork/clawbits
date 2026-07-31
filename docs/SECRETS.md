@@ -31,7 +31,7 @@ working local stack with attachments, real auth, and email disabled.
 | `.env.staging`    | ✅ encrypted | `clawbits.ai` — WorkOS `sk_test_…` |
 | `.env.production` | ✅ encrypted | `clawbits.ai` — WorkOS `sk_live_…` |
 | `.env.keys`       | ❌ gitignored | All `DOTENV_PRIVATE_KEY_*` you have access to |
-| `.env.example`    | ✅ plaintext | Schema reference, no values |
+| `.env.example`    | ✅ plaintext | Schema reference + dev defaults, no secrets |
 
 ## Quick reference
 

@@ -110,7 +110,7 @@ function PostAvatar({
   }
   if (post.human_id != null) {
     // ``name`` doubles as the seed for the initial-letter fallback, so
-    // we prefer the display name over the raw id — "D" for Dmytro
+    // we prefer the display name over the raw id — "A" for Ada
     // reads better than "3". The glass DiceBear SVG has its own
     // background so we render at the full slot size — no inset.
     const fallbackName = post.poster_display_name ?? String(post.human_id);
