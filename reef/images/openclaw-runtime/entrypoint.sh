@@ -1,0 +1,468 @@
+#!/bin/sh
+# Reef entrypoint for the OpenClaw agent runtime.
+#
+# Validated on microsandbox (M1 Pro, OpenClaw 2026.5.28): a microVM has no
+# systemd, so `openclaw gateway` (the service path) fails — instead we onboard
+# headlessly and run the gateway in the FOREGROUND. No daemon.
+#
+# Per-agent config is injected as env by Reef (see reef.profiles.OpenClawProfile):
+#   OPENCLAW_GATEWAY_TOKEN  (optional)  ANTHROPIC_API_KEY (optional)
+#   OPENAI_API_KEY (optional — the gateway reads it natively for OpenAI models)
+#   NEARAI_API_KEY (optional — wired as a custom OpenAI-compatible provider below)
+#   CLAWBITS_ENDPOINT / CLAWBITS_ORG_ID / CLAWBITS_SIGNUP_TOKEN /
+#   CLAWBITS_AGENT_ID / CLAWBITS_API_KEY / CLAWBITS_CHANNEL_ID  (clawbits channel)
+set -eu
+
+# microsandbox's `--init` handoff runs as root and does not apply the OCI USER.
+# Drop back to the image user before OpenClaw touches ~/.openclaw; otherwise root
+# creates /root or /.openclaw state, plugin CLI discovery breaks, and restarts can
+# fail validation. Docker already starts as node, so this is a no-op there.
+if [ "$(id -u)" = "0" ]; then
+  export HOME=/home/node USER=node LOGNAME=node
+  exec setpriv --reuid node --regid node --init-groups "$0" "$@"
+fi
+
+# The gateway needs an auth token for its loopback control plane. Reef's model
+# is outbound-only — nothing connects IN — so when Reef hasn't pinned one,
+# generate an ephemeral token instead of refusing to boot.
+if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+  OPENCLAW_GATEWAY_TOKEN="$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')"
+fi
+
+# OpenClaw state (config + device identity + sessions + workspace) lives in the
+# image user's home (~/.openclaw) by default — writable by the non-root user.
+# Reef can override OPENCLAW_STATE_DIR to a mounted per-agent volume for
+# persistence across restarts (the volume must be writable by this user).
+[ -n "${OPENCLAW_STATE_DIR:-}" ] && export OPENCLAW_STATE_DIR
+
+# Onboard once per agent. Gate on whether the gateway is configured
+# (gateway.mode) — NOT on openclaw.json existing: the build-time
+# `plugins install` bakes a stub openclaw.json (plugin registration only, no
+# gateway.mode), which would trick a file-existence check into skipping
+# onboarding and leave the gateway refusing to start ("missing gateway.mode").
+# On a restart with persisted config, gateway.mode is already "local" → skip
+# straight to running the gateway.
+#
+# --skip-health: don't wait for a running gateway during setup; we start it
+# ourselves right after (otherwise onboard's health probe fails and `set -e`
+# aborts before the gateway ever launches).
+reef_onboard() {
+  openclaw onboard --non-interactive --accept-risk --flow quickstart --skip-health \
+    --gateway-auth token --gateway-token "${OPENCLAW_GATEWAY_TOKEN}" "$@"
+}
+
+# Provider auth-choice, in reef's registry preference order (reef.providers).
+# Normally exactly ONE provider is injected — the create picker narrows the
+# forwarding. OpenAI needs no auth-choice (the gateway reads OPENAI_API_KEY
+# natively; its model is pinned below).
+did_onboard=""
+if [ "$(openclaw config get gateway.mode 2>/dev/null)" != "local" ]; then
+  did_onboard=1
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    reef_onboard --auth-choice anthropic-api-key --anthropic-api-key "${ANTHROPIC_API_KEY}"
+  elif [ -n "${GEMINI_API_KEY:-}" ]; then
+    # Native env var (GEMINI_API_KEY); the choice also pins Google's default
+    # model, which a create-time REEF_DEFAULT_MODEL overrides below.
+    reef_onboard --auth-choice gemini-api-key --gemini-api-key "${GEMINI_API_KEY}"
+  elif [ -n "${NEARAI_API_KEY:-}" ]; then
+    # NEAR Cloud AI (OpenAI-compatible chat completions at cloud-api.near.ai).
+    # OpenClaw has no built-in nearai provider; --auth-choice custom-api-key
+    # writes models.providers.nearai (baseUrl + the ONE declared model, api
+    # "openai-completions") and sets agents.defaults.model.primary =
+    # nearai/<model>. The custom onboard REQUIRES a model id: use the
+    # create-time pick (stripping an explicit nearai/ prefix — the flag wants
+    # the provider-bare id, which for NEAR is the full HF path like
+    # zai-org/GLM-5.1-FP8), else the known-good default. Pure config write —
+    # no server probe, so no ollama-style unreachable fallback is needed.
+    _near_model="${REEF_DEFAULT_MODEL:-}"
+    _near_model="${_near_model#nearai/}"
+    [ -n "${_near_model}" ] || _near_model="zai-org/GLM-5.1-FP8"
+    reef_onboard --auth-choice custom-api-key \
+      --custom-provider-id nearai \
+      --custom-base-url "https://cloud-api.near.ai/v1" \
+      --custom-model-id "${_near_model}" \
+      --custom-api-key "${NEARAI_API_KEY}" \
+      --custom-compatibility openai
+  elif [ -n "${OLLAMA_HOST:-}" ]; then
+    # OpenClaw has no OLLAMA_HOST env support — `--auth-choice ollama` is the
+    # documented non-interactive path: it probes the server (/api/tags), pulls
+    # the model if absent, writes models.providers.ollama, and sets
+    # agents.defaults.model.primary=ollama/<model>. The probe HARD-FAILS when
+    # the server is unreachable, so fall back to a detached onboard rather
+    # than refusing to boot — the owner can finish setup in the web terminal.
+    _oll_model="${REEF_DEFAULT_MODEL:-}"
+    _oll_model="${_oll_model#ollama/}" # --custom-model-id wants the bare id
+    if [ -n "${_oll_model}" ]; then
+      set -- --auth-choice ollama --custom-base-url "${OLLAMA_HOST}" \
+        --custom-model-id "${_oll_model}"
+    else
+      set -- --auth-choice ollama --custom-base-url "${OLLAMA_HOST}"
+    fi
+    if ! reef_onboard "$@"; then
+      echo "reef-entrypoint: WARNING ollama onboarding failed (server unreachable at ${OLLAMA_HOST}?) — booting without a configured model; finish setup via the web terminal." >&2
+      reef_onboard --auth-choice skip
+    fi
+  else
+    reef_onboard --auth-choice skip
+  fi
+fi
+
+# Plugin loader policy. The image bakes exactly one non-bundled plugin — the
+# clawbits channel (plugin id `clawbits`). Without an explicit allowlist the
+# gateway warns on every boot that discovered plugins "may auto-load" and asks
+# for trusted ids. Pin the allowlist to what we ship. Idempotent — set every boot
+# so it holds on a persisted-config restart.
+#
+# ChatGPT-subscription agents ALSO run through the bundled Codex harness (plugin
+# id `codex`), which ships DISABLED and is BLOCKED by the allowlist. Allow +
+# enable it here — otherwise agentRuntime.id=codex (pinned below) fails at run
+# time with "Requested agent harness 'codex' is not registered". Keyed agents use
+# the direct runtime, so they keep the minimal allowlist.
+if [ "${REEF_OPENAI_AUTH:-}" = "subscription" ]; then
+  openclaw config set plugins.allow '["clawbits","codex"]' --json
+  openclaw config set plugins.entries.codex.enabled true --json
+else
+  openclaw config set plugins.allow '["clawbits"]' --json
+fi
+
+# Default model. A create-time model pick rides in as REEF_DEFAULT_MODEL (a
+# bare id — fully qualified below — or a provider/model id). With nothing
+# configured, OpenClaw falls back to its built-in default (currently
+# `openai/gpt-5.5`, which can hit "Unknown model" when the runtime model catalog
+# lags that bleeding-edge default). So when the agent is
+# OpenAI-only and no model is configured yet, pin a known-good multimodal model.
+# Gate: a fresh onboard always applies REEF_DEFAULT_MODEL (gemini/ollama
+# onboarding auto-sets a primary, which must not shadow the user's explicit
+# create-time pick); restarts only pin when NO primary is set, so a user's
+# later Control-UI choice (persisted across restarts) is never clobbered.
+# Anthropic is left on OpenClaw's own default (it resolves; out of scope here).
+if [ -n "${did_onboard}" ] || ! openclaw config get agents.defaults.model.primary >/dev/null 2>&1; then
+  reef_model="${REEF_DEFAULT_MODEL:-}"
+  reef_runtime=""
+  if [ -z "${reef_model}" ] && [ -n "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] \
+    && [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${OLLAMA_HOST:-}" ]; then
+    reef_model="openai/gpt-5.4"
+  fi
+  # Fully-qualify a bare model id with its provider (`openclaw models set`
+  # wants provider/model; the create-time field carries the bare id). The
+  # single injected provider names the prefix; a provider/model id passes
+  # through untouched (power-user escape hatch).
+  #
+  # nearai is special-cased FIRST: NEAR's bare model ids are HF-style
+  # org/model paths (zai-org/GLM-5.1-FP8), so the generic "contains a slash ⇒
+  # already provider-qualified" rule below would misread them (openclaw's
+  # model-ref parser splits on the FIRST slash — zai-org would parse as the
+  # provider). When the NEAR key is the effective provider (no
+  # higher-preference key present), anything not already nearai/-prefixed
+  # gets the prefix — including NEAR-hosted ids whose first segment collides
+  # with a real provider (openai/gpt-oss-120b → nearai/openai/gpt-oss-120b).
+  if [ -n "${NEARAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] \
+    && [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+    case "${reef_model}" in
+      "" | nearai/*) ;;
+      *) reef_model="nearai/${reef_model}" ;;
+    esac
+  else
+    case "${reef_model}" in
+      "" | */*) ;;
+      *)
+        if [ -n "${ANTHROPIC_API_KEY:-}" ]; then reef_model="anthropic/${reef_model}"
+        elif [ -n "${OPENAI_API_KEY:-}" ]; then reef_model="openai/${reef_model}"
+        elif [ -n "${GEMINI_API_KEY:-}" ]; then reef_model="google/${reef_model}"
+        elif [ -n "${OLLAMA_HOST:-}" ]; then reef_model="ollama/${reef_model}"
+        fi
+        ;;
+    esac
+  fi
+  # OpenClaw 2026.6.5+ routes openai/* agent turns through the Codex harness by
+  # default, even with an API key. Pin the runtime explicitly for ANY effective
+  # openai/* model (the auto-default above AND a user-picked model):
+  #   • ChatGPT-subscription agents (REEF_OPENAI_AUTH=subscription) → the Codex
+  #     harness — that's the whole point, so the owner's OAuth'd ChatGPT plan is
+  #     used. The owner completes `openclaw models auth login --provider openai
+  #     --device-code` in the scoped terminal after boot.
+  #   • Everyone else (API key) → the direct runtime, so Platform quota/billing
+  #     errors are not mislabeled as Codex subscription limits.
+  # Exact-model scope leaves later model choices alone.
+  case "${reef_model}" in
+    openai/*)
+      if [ "${REEF_OPENAI_AUTH:-}" = "subscription" ]; then
+        reef_runtime="codex"
+      else
+        reef_runtime="openclaw"
+      fi
+      ;;
+  esac
+  if [ -n "${reef_model}" ]; then
+    echo "reef-entrypoint: no model configured — pinning default model ${reef_model}" >&2
+    if openclaw models set "${reef_model}" 1>&2 \
+      || openclaw config set agents.defaults.model.primary "${reef_model}" 1>&2; then
+      if [ -n "${reef_runtime}" ]; then
+        openclaw config set \
+          "agents.defaults.models[\"${reef_model}\"].agentRuntime.id" \
+          "${reef_runtime}" 1>&2 \
+          || echo "reef-entrypoint: WARNING could not set ${reef_model} runtime to ${reef_runtime}" >&2
+      fi
+    else
+      echo "reef-entrypoint: WARNING could not set default model ${reef_model}" >&2
+    fi
+  fi
+fi
+
+# Token-based Clawbits enrollment. The one-time signup token
+# (CLAWBITS_SIGNUP_TOKEN, a `human-…` value from the Clawbits "Add agent" prompt)
+# enrolls the agent immediately — no approval step. The signup mints tokens,
+# resolves the owner channel, and prints `openclaw config set/unset` lines, which
+# we eval to persist the minted credentials (exactly the documented manual flow).
+# Run this BEFORE the gateway starts: channel accounts are read during gateway
+# startup, so a background signup races and can leave the agent idle as
+# "not fully configured" until a manual restart.
+reef_clawbits_autosignup() {
+  _ep="${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  echo "reef-clawbits: enrolling in org '${CLAWBITS_ORG_ID}' at ${_ep} with one-time signup token…" >&2
+  # This runs synchronously before the gateway boots, so a slow or unreachable
+  # endpoint must not hang startup forever. Cap it with `timeout`
+  # (REEF_CLAWBITS_SIGNUP_TIMEOUT seconds, default 120; set 0 to disable the cap).
+  # On timeout the agent comes up with no channel rather than never coming up.
+  set -- openclaw clawbits signup --endpoint "${_ep}" --org-id "${CLAWBITS_ORG_ID}" \
+    --signup-token "${CLAWBITS_SIGNUP_TOKEN:-}"
+  _signup_timeout="${REEF_CLAWBITS_SIGNUP_TIMEOUT:-120}"
+  if [ "${_signup_timeout}" != "0" ] && command -v timeout >/dev/null 2>&1; then
+    set -- timeout "${_signup_timeout}" "$@"
+  fi
+  # The signup prints `openclaw config set …` lines that carry the MINTED SECRETS
+  # (apiKey etc.) for us to persist. We eval them, but must NEVER echo the value to
+  # the container log (reef reads logs host-side — that would leak the agent key,
+  # breaking the "reef can't access agent secrets" invariant). So redact the value
+  # of any `config set` line; non-secret lines pass through verbatim.
+  "$@" 2>&1 | while IFS= read -r _line; do
+    case "${_line}" in
+      "openclaw config set "*)
+        eval "${_line}" >/dev/null 2>&1 || true
+        printf 'reef-clawbits: %s <redacted>\n' "$(printf '%s' "${_line}" | cut -d' ' -f1-4)" >&2 ;;
+      "openclaw config unset "*)
+        eval "${_line}" >/dev/null 2>&1 || true
+        printf 'reef-clawbits: %s\n' "${_line}" >&2 ;;
+      *)
+        printf 'reef-clawbits: %s\n' "${_line}" >&2 ;;
+    esac
+  done
+  if openclaw config get channels.clawbits.accounts.default.channelId >/dev/null 2>&1; then
+    echo "reef-clawbits: channel configured — agent enrolled and wired up." >&2
+  else
+    echo "reef-clawbits: enrollment failed or timed out (token invalid, expired, already used, or endpoint unreachable — the token is single-use and short-lived). Recreate the agent with a fresh signup token." >&2
+  fi
+}
+
+# Wire the Clawbits channel. The plugin reads `channels.clawbits.accounts.default.*`
+# from the config store (NOT env), so bridge the injected CLAWBITS_* values before
+# the gateway loads the plugin. An account is "configured" once agentId, apiKey,
+# channelId and orgId are all set (see the plugin's accounts.ts).
+acct="channels.clawbits.accounts.default"
+
+# Identity persistence across an IMAGE UPGRADE (destroy+recreate). The channel
+# config (incl. the minted apiKey) lives in ~/.openclaw, which the image RESETS on
+# a recreate — but the one-time signup token is already spent, so a naive recreate
+# can't re-enroll. So mirror the identity onto the per-agent CONFIG volume
+# (~/.config/openclaw, a named volume that SURVIVES destroy+recreate) and restore
+# from it on recreate instead of re-signing-up. Reef never reads this file (it
+# holds the channel secret) — the credential stays inside the guest, on a volume
+# reef can't decrypt, honouring the "reef can't access agents" model.
+reef_identity_file="${HOME}/.config/openclaw/.reef-clawbits-identity"
+
+reef_persist_clawbits_identity() {
+  # Read the clawbits account DIRECTLY FROM the openclaw config file, NOT via
+  # `openclaw config get`: config get REDACTS secrets in its output (it returns
+  # the literal "__OPENCLAW_REDACTED__" for apiKey), so persisting that output
+  # would mirror a FAKE key and the post-upgrade restore would 401 on every
+  # clawbits call. The stored file keeps the real value (only the CLI redacts).
+  # Couples to openclaw's config layout (channels.clawbits.accounts.default.*) —
+  # guarded below so a schema/path change degrades to "don't persist" rather than
+  # mirroring garbage.
+  _cfg="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}/openclaw.json"
+  [ -f "${_cfg}" ] || return 0
+  _vals=$(node -e '
+    const fs = require("fs");
+    try {
+      const j = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const a = ((((j.channels || {}).clawbits || {}).accounts || {}).default) || {};
+      const s = (x) => (typeof x === "string" ? x : "");
+      const out = [s(a.endpoint), s(a.orgId), s(a.agentId), s(a.apiKey), s(a.channelId)];
+      // Require a COMPLETE identity (org, agentId, apiKey, channelId) and never a
+      // redacted apiKey — otherwise leave the last-good mirror untouched.
+      if (out.slice(1).some((v) => !v)) process.exit(1);
+      if (out.includes("__OPENCLAW_REDACTED__")) process.exit(1);
+      process.stdout.write(out.join("\n"));
+    } catch (e) { process.exit(1); }
+  ' "${_cfg}" 2>/dev/null) || return 0
+  [ -n "${_vals}" ] || return 0
+  mkdir -p "$(dirname "${reef_identity_file}")" 2>/dev/null || return 0
+  # One value per line (none contain newlines): endpoint, orgId, agentId, apiKey, channelId.
+  printf '%s\n' "${_vals}" > "${reef_identity_file}" 2>/dev/null || return 0
+  chmod 600 "${reef_identity_file}" 2>/dev/null || true
+}
+
+reef_restore_clawbits_identity() {
+  [ -f "${reef_identity_file}" ] || return 1
+  _ep=$(sed -n '1p' "${reef_identity_file}")
+  _org=$(sed -n '2p' "${reef_identity_file}")
+  _aid=$(sed -n '3p' "${reef_identity_file}")
+  _key=$(sed -n '4p' "${reef_identity_file}")
+  _ch=$(sed -n '5p' "${reef_identity_file}")
+  [ -n "${_aid}" ] && [ -n "${_key}" ] && [ -n "${_ch}" ] && [ -n "${_org}" ] || return 1
+  openclaw config set "${acct}.endpoint"  "${_ep:-https://clawbits.ai}"
+  openclaw config set "${acct}.orgId"     "${_org}"
+  openclaw config set "${acct}.agentId"   "${_aid}"
+  openclaw config set "${acct}.apiKey"    "${_key}"
+  openclaw config set "${acct}.channelId" "${_ch}"
+}
+
+# Wire the Clawbits channel. The plugin reads `channels.clawbits.accounts.default.*`
+# from the config store (NOT env), so bridge the injected CLAWBITS_* values before
+# the gateway loads the plugin. An account is "configured" once agentId, apiKey,
+# channelId and orgId are all set (see the plugin's accounts.ts).
+if openclaw config get "${acct}.channelId" >/dev/null 2>&1; then
+  # Already wired (config persisted across a same-container stop/start) — leave it.
+  echo "reef-entrypoint: clawbits channel already configured — skipping signup." >&2
+elif reef_restore_clawbits_identity; then
+  # Recreate (image upgrade): ~/.openclaw was reset but the persistent config
+  # volume kept the identity — restore it directly, NO re-signup.
+  echo "reef-entrypoint: restored clawbits identity from the persistent config volume (post-upgrade recreate — no re-signup needed)." >&2
+elif [ -n "${CLAWBITS_AGENT_ID:-}" ] && [ -n "${CLAWBITS_API_KEY:-}" ] \
+  && [ -n "${CLAWBITS_CHANNEL_ID:-}" ] && [ -n "${CLAWBITS_ORG_ID:-}" ]; then
+  # Pre-provisioned: clawbits minted the identity server-side — write the account
+  # directly, no signup/approval loop.
+  openclaw config set "${acct}.endpoint"  "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  openclaw config set "${acct}.orgId"     "${CLAWBITS_ORG_ID}"
+  openclaw config set "${acct}.agentId"   "${CLAWBITS_AGENT_ID}"
+  openclaw config set "${acct}.apiKey"    "${CLAWBITS_API_KEY}"
+  openclaw config set "${acct}.channelId" "${CLAWBITS_CHANNEL_ID}"
+elif [ -n "${CLAWBITS_ORG_ID:-}" ] && [ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ]; then
+  # Org + one-time signup token (the admin-UI "connect to Clawbits" path): seed
+  # the endpoint + org as signup defaults, then enroll synchronously so the
+  # gateway sees a fully configured channel on its first plugin load.
+  openclaw config set channels.clawbits.endpoint "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  openclaw config set channels.clawbits.orgId    "${CLAWBITS_ORG_ID}"
+  reef_clawbits_autosignup
+elif [ -n "${CLAWBITS_ORG_ID:-}" ]; then
+  # Org set but no signup token: seed the defaults, but we can't enroll — signup
+  # now requires a one-time token. Bring the gateway up without a channel and
+  # tell the operator to recreate the agent with a CLAWBITS_SIGNUP_TOKEN.
+  openclaw config set channels.clawbits.endpoint "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  openclaw config set channels.clawbits.orgId    "${CLAWBITS_ORG_ID}"
+  echo "reef-entrypoint: CLAWBITS_ORG_ID set but no CLAWBITS_SIGNUP_TOKEN — skipping signup (it now requires a one-time token from the Clawbits 'Add agent' prompt). Recreate the agent with a signup token to enroll it." >&2
+else
+  echo "reef-entrypoint: no clawbits org set — starting the gateway without a clawbits channel" >&2
+fi
+
+# Mirror the (now-configured) identity onto the persistent config volume so a
+# future image upgrade can restore it without the single-use signup token.
+# Idempotent; a no-op for detached agents or an incomplete identity.
+reef_persist_clawbits_identity
+
+# Re-persist on a short interval as a SECONDARY guard. The boot persist above
+# already captures the real key from the config file, but openclaw can rotate the
+# clawbits apiKey later in the session (it rewrites
+# channels.clawbits.accounts.default.apiKey), and the mirror is what a future
+# image-upgrade restore reads. Backgrounded; the helper reads the real (unredacted)
+# key from the config file and only writes a COMPLETE identity, so it's a safe
+# no-op for detached/unconfigured agents.
+reef_identity_persist_loop() {
+  _iv="${REEF_IDENTITY_PERSIST_INTERVAL:-60}"
+  [ "${_iv}" -gt 0 ] 2>/dev/null || return 0
+  while :; do
+    sleep "${_iv}"
+    reef_persist_clawbits_identity
+  done
+}
+reef_identity_persist_loop &
+
+# --- Volunteered status (versions, …) for Reef to read host-side ------------
+# Write a small, SECRET-FREE status.json to the Reef status mount: once at boot,
+# then on an interval so in-place openclaw/plugin updates surface without a
+# restart. Backgrounded so it never delays the gateway; best-effort. Reef reads
+# this dir host-side (reef/status.py) — it must never contain secrets.
+# REEF_STATUS_INTERVAL=0 → boot-only; unset REEF_STATUS_DIR → disabled.
+reef_write_status() {
+  [ -n "${REEF_STATUS_DIR:-}" ] || return 0
+  mkdir -p "${REEF_STATUS_DIR}" 2>/dev/null || return 0
+  _ocv=$(openclaw --version 2>/dev/null | sed 's/^OpenClaw //' | tr -d '\r')
+  openclaw plugins list --json 2>/dev/null \
+    | REEF_OC_VERSION="${_ocv}" REEF_IMAGE_VERSION="${REEF_IMAGE_VERSION:-}" node -e '
+      let s = "";
+      process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        let plugin = null;
+        try {
+          const j = JSON.parse(s);
+          const p = (j.plugins || []).find((x) => x && x.id === "clawbits");
+          if (p && p.version) plugin = String(p.version);
+        } catch {}
+        const out = {
+          schema: 1,
+          reportedAt: new Date().toISOString(),
+          agent: "openclaw",
+          versions: {
+            image: process.env.REEF_IMAGE_VERSION || null,
+            openclaw: process.env.REEF_OC_VERSION || null,
+            clawbitsPlugin: plugin,
+          },
+        };
+        try {
+          require("fs").writeFileSync(
+            process.env.REEF_STATUS_DIR + "/status.json",
+            JSON.stringify(out, null, 2) + "\n",
+          );
+        } catch {}
+      });
+    ' 2>/dev/null || true
+}
+
+reef_status_loop() {
+  reef_write_status
+  _iv="${REEF_STATUS_INTERVAL:-300}"
+  [ "${_iv}" -gt 0 ] 2>/dev/null || return 0
+  while :; do
+    sleep "${_iv}"
+    reef_write_status
+  done
+}
+reef_status_loop &
+
+# --- Control-UI exposure (Reef-controlled; defaults keep outbound-only) -----
+# To expose the Control UI, Reef sets OPENCLAW_GATEWAY_BIND=lan +
+# OPENCLAW_GATEWAY_AUTH=password (+ OPENCLAW_GATEWAY_PASSWORD, which OpenClaw
+# reads natively — keep it off the argv) and OPENCLAW_PUBLIC_URL = the URL the
+# browser will use. A non-loopback bind is refused without auth, and the
+# browser's origin must be in gateway.controlUi.allowedOrigins or its WS is
+# rejected (seeded with localhost only since v2026.2.26).
+if [ -n "${OPENCLAW_PUBLIC_URL:-}" ]; then
+  openclaw config set gateway.controlUi.allowedOrigins \
+    "[\"${OPENCLAW_PUBLIC_URL}\",\"http://localhost:18789\",\"http://127.0.0.1:18789\"]" --json
+fi
+
+# --- Reef web terminal (full shell by default; defaults OFF) ----------------
+# When Reef sets REEF_TERMINAL_ENABLE, run ttyd serving a real login shell
+# (reef-term.sh → bash -l) so the agent's owner can configure provider/model/
+# channels, or run anything else, through Reef's authenticated web-UI exposure.
+# Backgrounded — the gateway stays the FOREGROUND process so the container's
+# liveness still tracks it (if the terminal dies, the agent is fine).
+# Auth: in dev we pass ttyd --credential; in prod prefer auth at the proxy and
+# keep the password off argv (trusted-proxy SSO later). REEF_TERMINAL_SHELL=openclaw
+# swaps the real shell for the narrow scoped `openclaw`-only one.
+# (Productionizing: supervise both under the image's tini so per-session shells
+# are reaped.)
+if [ -n "${REEF_TERMINAL_ENABLE:-}" ]; then
+  set -- ttyd --writable --port "${REEF_TERMINAL_PORT:-7681}"
+  if [ -n "${REEF_TERMINAL_PASSWORD:-}" ]; then
+    set -- "$@" --credential "reef:${REEF_TERMINAL_PASSWORD}"
+  else
+    echo "reef-entrypoint: REEF_TERMINAL_ENABLE set without REEF_TERMINAL_PASSWORD — serving the terminal WITHOUT auth (dev only; put auth at the proxy in prod)." >&2
+  fi
+  echo "reef-entrypoint: starting Reef web terminal (ttyd) on :${REEF_TERMINAL_PORT:-7681} (shell=${REEF_TERMINAL_SHELL:-full})" >&2
+  "$@" /usr/local/bin/reef-term.sh &
+fi
+
+exec openclaw gateway run \
+  --bind "${OPENCLAW_GATEWAY_BIND:-loopback}" \
+  --auth "${OPENCLAW_GATEWAY_AUTH:-token}" \
+  --force

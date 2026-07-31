@@ -1,0 +1,55 @@
+# Reef admin/fleet API + self-healing reconciler — systemd unit.
+#
+# Install: see reef/deploy/README.md. Copy to /etc/systemd/system/reef-api.service
+# (adjust the paths/User below to your checkout), then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now reef-api
+#
+# This is what makes the reconciler durable: Restart=always brings the API (and
+# thus self-healing) back after a crash, and WantedBy=multi-user.target +
+# After=<runtime> brings it up on boot, so after a host reboot the reconciler
+# restores the whole fleet to its desired state from the durable SQLite store.
+
+[Unit]
+Description=Reef admin/fleet API + self-healing reconciler
+Documentation=file:///opt/reef/reef/deploy/README.md
+# Reef shells out to the container runtime, so wait for it to be up. Using
+# microsandbox instead of Docker? Replace docker.service with your msb unit (or
+# drop it if msb needs no daemon).
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reef
+Group=reef
+# The checkout that contains the `reef/` package + its `.venv` (uv sync).
+WorkingDirectory=/opt/reef
+EnvironmentFile=/etc/reef/reef.env
+ExecStart=/opt/reef/.venv/bin/python -m reef.api
+Restart=always
+RestartSec=3
+# reef holds no long-lived streams; a short stop is fine (cancels the reconciler).
+TimeoutStopSec=15
+
+# Durable state dir for the SQLite store, created + owned by User= at /var/lib/reef.
+# Point REEF_STATE_DIR / REEF_DB_PATH inside it (see reef.env.example).
+StateDirectory=reef
+StateDirectoryMode=0750
+
+# Logs → journald: `journalctl -u reef-api -f`. The app emits reconciler heals at
+# INFO (REEF_LOG_LEVEL).
+SyslogIdentifier=reef-api
+
+# Light hardening. RELAX anything that conflicts with your environment — reef needs
+# the container runtime (docker socket / msb) and, if using subdomain exposure,
+# write access to REEF_NGINX_DIR plus permission to reload nginx.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# ProtectSystem=full     # enable once reef writes nothing outside /var/lib/reef
+# ProtectHome=true       # enable once REEF_DB_PATH is off the service user's home
+
+[Install]
+WantedBy=multi-user.target

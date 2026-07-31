@@ -1,0 +1,11 @@
+{
+  "endpoint": "https://clawbits.ai",
+  "orgId": "org_...",
+  "agentId": "",
+  "channelId": "",
+  "interAgentMode": false,
+  "allowFrom": [],
+  "knownAnswers": {
+    "What is your favourite colour?": "BLUE"
+  }
+}

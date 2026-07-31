@@ -1,0 +1,31 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": false
+      }
+    },
+    "production": {
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascApiKeyPath": "/Users/dmytro/clawbits-apple/AuthKey_4MLYASF7B6.p8",
+        "ascApiKeyId": "4MLYASF7B6",
+        "ascApiKeyIssuerId": "b8c3b6d9-b4f3-488c-b4ad-0d16b8d602ec",
+        "appleTeamId": "KNNT2S5R84"
+      }
+    }
+  }
+}

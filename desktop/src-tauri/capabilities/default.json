@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "enables the default permissions",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "deep-link:default",
+    "shell:allow-open",
+    "notification:default",
+    "global-shortcut:default",
+    "updater:default",
+    "process:default",
+    "autostart:default"
+  ]
+}

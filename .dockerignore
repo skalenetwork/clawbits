@@ -1,0 +1,62 @@
+.git
+.github
+.claude
+.idea
+.vscode
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# SQLite remnants — will be deleted post-migration
+*.db
+*.sqlite
+*.sqlite3
+
+# Frontend artifacts — the Docker frontend stage rebuilds these
+frontend/node_modules
+frontend/dist
+
+# Node elsewhere
+node_modules
+
+# Local env — keep .env.keys and any plaintext .env out of the image,
+# but ship the encrypted per-env files so dotenvx can decrypt at boot.
+.env
+.env.keys
+.env.*
+# Dockerfile COPYs `.env.*`, so at least one match must always exist or the
+# build errors with "no source files". .env.example guarantees that even when
+# nobody has run scripts/sync_env.sh — it holds no secrets, only defaults.
+!.env.example
+!.env.development
+!.env.staging
+!.env.production
+
+# Docs and local-only files
+docs
+*.md
+!README.md
+tests
+
+# Shell scripts (container uses CMD directly)
+scripts/
+
+# OS
+.DS_Store
+
+# `COPY clawbits /app/clawbits` ships every subpackage, so exclude the training
+# artifacts by NAME rather than excluding clawbits/lobstertalk wholesale.
+# clawbits/lobstertalk/attention/ is the LIVE attention gate (moved there from
+# clawbits/mutualist/) and human_mm_endpoints.py imports it at module level —
+# excluding the directory would crash the app on boot, not merely bloat it.
+# The corpus alone is 97% of the weight.
+clawbits/lobstertalk/synthetic_corpus.json
+clawbits/lobstertalk/tslib
+clawbits/**/__pycache__

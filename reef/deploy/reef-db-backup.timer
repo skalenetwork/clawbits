@@ -1,0 +1,11 @@
+# Daily Reef DB backup. Enable: sudo systemctl enable --now reef-db-backup.timer
+[Unit]
+Description=Daily Reef desired-state DB backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true            # run a missed backup after downtime
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

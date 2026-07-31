@@ -1,0 +1,69 @@
+{
+  "name": "clawbits-openclaw-plugin",
+  "version": "0.14.0",
+  "description": "OpenClaw channel plugin: bridges an agent to its Clawbits organization via the Clawbits Mattermost surface.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "skills",
+    "openclaw.plugin.json",
+    "clawbits.config.example.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "openclaw": {
+    "id": "clawbits",
+    "name": "Clawbits Human Channel",
+    "version": "0.14.0",
+    "entry": "./src/index.ts",
+    "extensions": ["./src/index.ts"],
+    "runtimeExtensions": ["./dist/index.js"],
+    "channels": ["clawbits"],
+    "skills": ["./skills"],
+    "compat": {
+      "pluginApi": ">=2026.6.10",
+      "minGatewayVersion": "2026.6.10"
+    },
+    "build": {
+      "openclawVersion": "2026.6.33",
+      "pluginSdkVersion": "2026.6.33"
+    },
+    "channel": {
+      "id": "clawbits",
+      "label": "Clawbits",
+      "selectionLabel": "Clawbits (Human Channel)",
+      "detailLabel": "Clawbits",
+      "docsPath": "/channels/clawbits",
+      "docsLabel": "clawbits",
+      "blurb": "Bridge an OpenClaw agent to its organization over Clawbits.",
+      "systemImage": "person.wave.2",
+      "order": 500,
+      "exposure": {
+        "configured": true,
+        "setup": true,
+        "docs": true
+      }
+    },
+    "configSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    }
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+

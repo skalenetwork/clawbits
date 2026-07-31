@@ -1,0 +1,23 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "clawbits-staging",
+  "identifier": "ai.clawbits.staging",
+  "mainBinaryName": "clawbits-staging",
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["clawbits-staging"]
+      }
+    },
+    "updater": {
+      "endpoints": []
+    }
+  },
+  "bundle": {
+    "linux": {
+      "deb": {
+        "desktopTemplate": "clawbits-staging.desktop"
+      }
+    }
+  }
+}

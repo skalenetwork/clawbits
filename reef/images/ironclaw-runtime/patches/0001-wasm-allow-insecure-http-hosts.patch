@@ -1,0 +1,310 @@
+diff --git a/src/channels/wasm/wrapper.rs b/src/channels/wasm/wrapper.rs
+index 158499542..6b0d81d94 100644
+--- a/src/channels/wasm/wrapper.rs
++++ b/src/channels/wasm/wrapper.rs
+@@ -63,7 +63,8 @@ use crate::secrets::SecretsStore;
+ use crate::secrets::host_matches_pattern;
+ use crate::tools::wasm::credential_injector::{InjectedCredentials, inject_credential};
+ use crate::tools::wasm::{
+-    LogLevel, WasmResourceLimiter, reject_private_ip, ssrf_safe_client_builder,
++    LogLevel, WasmResourceLimiter, insecure_http_hosts, reject_private_ip,
++    reject_private_ip_with_exempt_hosts, ssrf_safe_client_builder,
+ };
+ use ironclaw_common::CredentialName;
+ use ironclaw_safety::LeakDetector;
+@@ -478,7 +479,16 @@ impl near::agent::channel_host::Host for ChannelStoreData {
+         // Resolve hostname and reject private/internal IPs to prevent DNS rebinding.
+         // Test/dev URL rewrites intentionally point at local fake servers.
+         if !allow_private_test_target {
+-            reject_private_ip(&transport_url)?;
++            // Opt-in (IRONCLAW_ALLOW_INSECURE_HTTP_HOSTS): permit operator-named
++            // local hosts (e.g. a local Clawbits at host.microsandbox.internal) so
++            // a channel can reach them over http even though they resolve to a
++            // private IP. Every other host stays subject to the SSRF guard.
++            let insecure_hosts = insecure_http_hosts();
++            if insecure_hosts.is_empty() {
++                reject_private_ip(&transport_url)?;
++            } else {
++                reject_private_ip_with_exempt_hosts(&transport_url, &insecure_hosts)?;
++            }
+         }
+ 
+         // Make the HTTP request using a dedicated single-threaded runtime.
+diff --git a/src/tools/wasm/allowlist.rs b/src/tools/wasm/allowlist.rs
+index 4415b32b8..eca602722 100644
+--- a/src/tools/wasm/allowlist.rs
++++ b/src/tools/wasm/allowlist.rs
+@@ -75,6 +75,10 @@ pub struct AllowlistValidator {
+     patterns: Vec<EndpointPattern>,
+     /// Whether to require HTTPS (default: true).
+     require_https: bool,
++    /// Hostnames permitted over plaintext HTTP (lowercased). Empty by default;
++    /// set via [`AllowlistValidator::allow_insecure_http_hosts`]. Scopes the
++    /// HTTPS exemption to exactly these operator-named local hosts.
++    insecure_http_hosts: Vec<String>,
+ }
+ 
+ impl AllowlistValidator {
+@@ -83,6 +87,7 @@ impl AllowlistValidator {
+         Self {
+             patterns,
+             require_https: true,
++            insecure_http_hosts: Vec::new(),
+         }
+     }
+ 
+@@ -92,6 +97,15 @@ impl AllowlistValidator {
+         self
+     }
+ 
++    /// Permit plaintext HTTP, but only for the given hostnames (e.g. a local
++    /// Clawbits at `host.microsandbox.internal` / `localhost`). Every other host
++    /// still requires HTTPS, so this is a bounded, operator-scoped relaxation.
++    /// Hostnames are matched case-insensitively; callers pass lowercased values.
++    pub fn allow_insecure_http_hosts(mut self, hosts: Vec<String>) -> Self {
++        self.insecure_http_hosts = hosts;
++        self
++    }
++
+     /// Check if a request is allowed.
+     pub fn validate(&self, url: &str, method: &str) -> AllowlistResult {
+         // Check for empty allowlist
+@@ -105,8 +119,12 @@ impl AllowlistValidator {
+             Err(e) => return AllowlistResult::Denied(DenyReason::InvalidUrl(e)),
+         };
+ 
+-        // Check HTTPS requirement
+-        if self.require_https && parsed.scheme != "https" {
++        // Check HTTPS requirement. An operator-named host is exempt (a local
++        // Clawbits reached over http); everything else must be https.
++        if self.require_https
++            && parsed.scheme != "https"
++            && !self.insecure_http_hosts.iter().any(|h| *h == parsed.host)
++        {
+             return AllowlistResult::Denied(DenyReason::InsecureScheme(parsed.scheme.clone()));
+         }
+ 
+@@ -352,6 +370,59 @@ mod tests {
+         assert!(result.is_allowed());
+     }
+ 
++    #[test]
++    fn test_allow_insecure_http_hosts_scoped_to_named_hosts() {
++        let validator = AllowlistValidator::new(vec![
++            EndpointPattern::host("host.microsandbox.internal"),
++            EndpointPattern::host("localhost"),
++        ])
++        .allow_insecure_http_hosts(vec![
++            "host.microsandbox.internal".to_string(),
++            "localhost".to_string(),
++        ]);
++
++        // Plaintext http to a named host (incl. a host-gateway name) is allowed…
++        assert!(
++            validator
++                .validate("http://host.microsandbox.internal:8000/api/agentic", "GET")
++                .is_allowed()
++        );
++        assert!(
++            validator
++                .validate("http://localhost:8000/api/agentic", "GET")
++                .is_allowed()
++        );
++        // …and https is of course still fine.
++        assert!(
++            validator
++                .validate("https://localhost:8000/api/agentic", "GET")
++                .is_allowed()
++        );
++
++        // A host NOT in the insecure set is STILL rejected over http.
++        let pub_validator =
++            AllowlistValidator::new(vec![EndpointPattern::host("api.openai.com")])
++                .allow_insecure_http_hosts(vec!["localhost".to_string()]);
++        let result = pub_validator.validate("http://api.openai.com/v1/chat", "GET");
++        assert!(!result.is_allowed());
++        assert!(matches!(
++            result,
++            super::AllowlistResult::Denied(DenyReason::InsecureScheme(_))
++        ));
++    }
++
++    #[test]
++    fn test_insecure_http_denied_without_opt_in() {
++        // Default (no opt-in): http to localhost is still rejected as insecure.
++        let validator = AllowlistValidator::new(vec![EndpointPattern::host("localhost")]);
++        let result = validator.validate("http://localhost:8000/api", "GET");
++        assert!(!result.is_allowed());
++        assert!(matches!(
++            result,
++            super::AllowlistResult::Denied(DenyReason::InsecureScheme(_))
++        ));
++    }
++
+     #[test]
+     fn test_empty_allowlist() {
+         let validator = AllowlistValidator::new(vec![]);
+diff --git a/src/tools/wasm/host.rs b/src/tools/wasm/host.rs
+index 685b02f19..345b9bfa8 100644
+--- a/src/tools/wasm/host.rs
++++ b/src/tools/wasm/host.rs
+@@ -262,7 +262,14 @@ impl HostState {
+         // Use the allowlist validator
+         use crate::tools::wasm::allowlist::AllowlistValidator;
+ 
+-        let validator = AllowlistValidator::new(capability.allowlist.clone());
++        let mut validator = AllowlistValidator::new(capability.allowlist.clone());
++        // Opt-in (IRONCLAW_ALLOW_INSECURE_HTTP_HOSTS): permit plaintext http to
++        // operator-named local hosts (e.g. a local Clawbits at
++        // host.microsandbox.internal); every other host still requires HTTPS.
++        let insecure_hosts = crate::tools::wasm::insecure_http_hosts();
++        if !insecure_hosts.is_empty() {
++            validator = validator.allow_insecure_http_hosts(insecure_hosts);
++        }
+         let result = validator.validate(url, method);
+ 
+         if result.is_allowed() {
+diff --git a/src/tools/wasm/http_security.rs b/src/tools/wasm/http_security.rs
+index 487c74b9f..27c402bba 100644
+--- a/src/tools/wasm/http_security.rs
++++ b/src/tools/wasm/http_security.rs
+@@ -126,11 +126,53 @@ pub(crate) async fn validate_and_resolve_http_target(
+     })
+ }
+ 
++/// Hosts for which plaintext HTTP and the private-IP SSRF guard are relaxed,
++/// from `IRONCLAW_ALLOW_INSECURE_HTTP_HOSTS` (comma-separated, case-insensitive).
++/// Default empty.
++///
++/// For local/dev topologies where an agent must reach a nearby service over
++/// http — e.g. a local Clawbits at `http://host.microsandbox.internal:8000` or
++/// `http://localhost:8000`. Scope is EXACTLY the named hostnames (matched on the
++/// URL host, before DNS resolution); every other host still requires https and
++/// is still subject to the private-IP guard. Operator-controlled, so it's a
++/// trusted allowlist — not a DNS-rebinding vector.
++pub(crate) fn insecure_http_hosts() -> Vec<String> {
++    parse_insecure_http_hosts(std::env::var("IRONCLAW_ALLOW_INSECURE_HTTP_HOSTS").ok().as_deref())
++}
++
++/// Pure parser for [`insecure_http_hosts`] so the splitting/normalization is
++/// unit-testable without touching the process-global environment.
++fn parse_insecure_http_hosts(value: Option<&str>) -> Vec<String> {
++    value
++        .map(|v| {
++            v.split(',')
++                .map(|h| h.trim().to_ascii_lowercase())
++                .filter(|h| !h.is_empty())
++                .collect()
++        })
++        .unwrap_or_default()
++}
++
+ /// Resolve the URL's hostname and reject connections to private/internal IP addresses.
+ ///
+ /// This prevents DNS rebinding attacks where an attacker-controlled hostname
+ /// passes the allowlist check, then resolves to an internal address.
+ pub(crate) fn reject_private_ip(url: &str) -> Result<(), String> {
++    reject_ip_by_policy(url, &[])
++}
++
++/// Like [`reject_private_ip`], but skips the guard when the URL's hostname is in
++/// `exempt_hosts` (operator-named local hosts). Used on the channel path so a
++/// configured local Clawbits (e.g. `host.microsandbox.internal`, `localhost`)
++/// can be reached over http even though it resolves to a private IP.
++pub(crate) fn reject_private_ip_with_exempt_hosts(
++    url: &str,
++    exempt_hosts: &[String],
++) -> Result<(), String> {
++    reject_ip_by_policy(url, exempt_hosts)
++}
++
++fn reject_ip_by_policy(url: &str, exempt_hosts: &[String]) -> Result<(), String> {
+     let parsed = url::Url::parse(url).map_err(|e| format!("Failed to parse URL: {e}"))?;
+     if !matches!(parsed.scheme(), "http" | "https") {
+         return Err(format!("Unsupported URL scheme: {}", parsed.scheme()));
+@@ -148,6 +190,14 @@ pub(crate) fn reject_private_ip(url: &str) -> Result<(), String> {
+         })
+         .ok_or_else(|| "Failed to parse host from URL".to_string())?;
+ 
++    // Operator-named local host: skip the private-IP guard for it entirely
++    // (matched pre-resolution, so a host-gateway name that resolves to a private
++    // IP is allowed). Everything else falls through to the strict checks.
++    let host_lower = host.to_ascii_lowercase();
++    if exempt_hosts.iter().any(|h| *h == host_lower) {
++        return Ok(());
++    }
++
+     if let Ok(ip) = host.parse::<IpAddr>() {
+         return if is_private_ip(ip) {
+             Err(format!(
+@@ -213,6 +263,55 @@ mod tests {
+     use axum::{Router, serve};
+     use tokio::net::TcpListener;
+ 
++    #[test]
++    fn parse_insecure_http_hosts_cases() {
++        assert_eq!(super::parse_insecure_http_hosts(None), Vec::<String>::new());
++        assert_eq!(super::parse_insecure_http_hosts(Some("")), Vec::<String>::new());
++        assert_eq!(
++            super::parse_insecure_http_hosts(Some("host.microsandbox.internal")),
++            vec!["host.microsandbox.internal".to_string()]
++        );
++        // Trims, lowercases, and drops empty entries.
++        assert_eq!(
++            super::parse_insecure_http_hosts(Some(" Localhost , 127.0.0.1 ,")),
++            vec!["localhost".to_string(), "127.0.0.1".to_string()]
++        );
++    }
++
++    #[test]
++    fn reject_private_ip_exempts_named_hosts_only() {
++        let exempt = vec![
++            "host.microsandbox.internal".to_string(),
++            "localhost".to_string(),
++        ];
++        // A named host (even one that resolves to a private IP) is allowed —
++        // matched pre-resolution, so no DNS is needed here.
++        assert!(
++            super::reject_private_ip_with_exempt_hosts(
++                "http://host.microsandbox.internal:8000/api",
++                &exempt
++            )
++            .is_ok()
++        );
++        assert!(
++            super::reject_private_ip_with_exempt_hosts("http://localhost:8000/api", &exempt).is_ok()
++        );
++        // A NON-exempt private host is still rejected.
++        assert!(
++            super::reject_private_ip_with_exempt_hosts("http://192.168.1.1/admin", &exempt).is_err()
++        );
++        // An empty exempt list is the strict default (loopback blocked).
++        assert!(super::reject_private_ip_with_exempt_hosts("http://127.0.0.1/x", &[]).is_err());
++    }
++
++    #[test]
++    fn reject_private_ip_default_still_blocks_private() {
++        // The default guard must be unchanged: loopback + private stay blocked.
++        assert!(super::reject_private_ip("http://127.0.0.1:8000/api").is_err());
++        assert!(super::reject_private_ip("http://192.168.1.1/admin").is_err());
++        assert!(super::reject_private_ip("https://8.8.8.8/dns-query").is_ok());
++    }
++
+     #[tokio::test]
+     async fn test_ssrf_safe_client_builder_disables_redirects() {
+         async fn final_handler(State(hits): State<Arc<AtomicUsize>>) -> &'static str {
+diff --git a/src/tools/wasm/mod.rs b/src/tools/wasm/mod.rs
+index aebd47a2a..76e19f8e0 100644
+--- a/src/tools/wasm/mod.rs
++++ b/src/tools/wasm/mod.rs
+@@ -121,8 +121,8 @@ pub use credential_injector::{
+ #[cfg(test)]
+ pub(crate) use http_security::is_private_ip;
+ pub(crate) use http_security::{
+-    reject_private_ip, ssrf_safe_client_builder, ssrf_safe_client_builder_for_target,
+-    validate_and_resolve_http_target,
++    insecure_http_hosts, reject_private_ip, reject_private_ip_with_exempt_hosts,
++    ssrf_safe_client_builder, ssrf_safe_client_builder_for_target, validate_and_resolve_http_target,
+ };
+ pub use rate_limiter::{LimitType, RateLimitError, RateLimitResult, RateLimiter};
+ 

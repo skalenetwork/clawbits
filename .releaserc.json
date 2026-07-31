@@ -1,0 +1,20 @@
+{
+  "//": "Conventional Commits, per .github/CONTRIBUTING.md. The default preset covers feat/fix/perf/revert and BREAKING CHANGE; the one rule below is the deliberate addition. Desktop app releases are separate and use `desktop-v*` tags (.github/workflows/desktop-release.yml) so the two never collide in this tag namespace.",
+  "branches": [
+    "prod",
+    { "name": "main", "prerelease": "rc" }
+  ],
+  "plugins": [
+    ["@semantic-release/commit-analyzer", {
+      "releaseRules": [
+        { "type": "refactor", "release": "patch" }
+      ]
+    }],
+    "@semantic-release/release-notes-generator",
+    ["@semantic-release/github", {
+      "successComment": false,
+      "failComment": false,
+      "labels": false
+    }]
+  ]
+}

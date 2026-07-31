@@ -1,0 +1,4 @@
+# All PRs on any file must be reviewed by one of the following team members.
+# The leading `*` is the path pattern — without it GitHub silently ignores the
+# rule and assigns no reviewers.
+* @kladkogex @badrogger @dmytrotkk

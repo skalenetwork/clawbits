@@ -1,0 +1,126 @@
+{
+  "id": "clawbits",
+  "name": "Clawbits Human Channel",
+  "version": "0.14.0",
+  "entry": "./src/index.ts",
+  "extensions": ["./src/index.ts"],
+  "runtimeExtensions": ["./dist/index.js"],
+  "channels": ["clawbits"],
+  "skills": ["./skills"],
+  "channel": {
+    "id": "clawbits",
+    "label": "Clawbits",
+    "selectionLabel": "Clawbits (Human Channel)",
+    "detailLabel": "Clawbits",
+    "docsPath": "/channels/clawbits",
+    "docsLabel": "clawbits",
+    "blurb": "Bridge an OpenClaw agent to its organization over Clawbits.",
+    "systemImage": "person.wave.2",
+    "order": 500,
+    "exposure": {
+      "configured": true,
+      "setup": true,
+      "docs": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "clawbits": {
+      "commands": {
+        "nativeSkillsAutoEnabled": true
+      },
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "endpoint": { "type": "string", "format": "uri", "default": "https://clawbits.ai" },
+          "orgId": { "type": "string" },
+          "org_id": { "type": "string" },
+          "ownerEmail": { "type": "string" },
+          "agentId": { "type": "string" },
+          "apiKey": { "type": "string" },
+          "channelId": { "type": "string" },
+          "interAgentMode": { "type": "boolean", "default": false },
+          "websocketEnabled": { "type": "boolean", "default": true },
+          "pollIntervalMs": { "type": "integer", "minimum": 1, "default": 30000 },
+          "emailEnabled": { "type": "boolean", "default": true },
+          "emailPollIntervalMs": { "type": "integer", "minimum": 30000, "default": 60000 },
+          "websocketReconcileIntervalMs": { "type": "integer", "minimum": 0, "default": 300000 },
+          "inboundQueueTtlMs": { "type": "integer", "minimum": 0, "default": 600000 },
+          "channelContextBacklog": { "type": "integer", "minimum": 0, "default": 100 },
+          "knownAnswers": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "allowFrom": {
+            "type": "array",
+            "description": "Optional inbound sender allowlist. Empty or missing allows everyone. Use values like human:123 or agent:agent_abc; bare numbers alias human:<id>.",
+            "items": { "type": ["string", "number"] }
+          },
+          "defaultTo": { "type": "string" },
+          "defaultAccount": { "type": "string" },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "name": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "endpoint": { "type": "string", "format": "uri", "default": "https://clawbits.ai" },
+                "orgId": { "type": "string" },
+                "org_id": { "type": "string" },
+                "ownerEmail": { "type": "string" },
+                "agentId": { "type": "string" },
+                "apiKey": { "type": "string" },
+                "channelId": { "type": "string" },
+                "interAgentMode": { "type": "boolean", "default": false },
+                "websocketEnabled": { "type": "boolean", "default": true },
+                "pollIntervalMs": { "type": "integer", "minimum": 1, "default": 30000 },
+                "emailEnabled": { "type": "boolean", "default": true },
+                "emailPollIntervalMs": { "type": "integer", "minimum": 30000, "default": 60000 },
+                "websocketReconcileIntervalMs": { "type": "integer", "minimum": 0, "default": 300000 },
+                "inboundQueueTtlMs": { "type": "integer", "minimum": 0, "default": 600000 },
+                "channelContextBacklog": { "type": "integer", "minimum": 0, "default": 100 },
+                "knownAnswers": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" }
+                },
+                "allowFrom": {
+                  "type": "array",
+                  "description": "Optional inbound sender allowlist. Empty or missing allows everyone. Use values like human:123 or agent:agent_abc; bare numbers alias human:<id>.",
+                  "items": { "type": ["string", "number"] }
+                },
+                "defaultTo": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "uiHints": {
+        "endpoint": {
+          "label": "Clawbits API endpoint",
+          "placeholder": "https://clawbits.ai"
+        },
+        "orgId": {
+          "label": "Organization ID",
+          "placeholder": "org_..."
+        },
+        "ownerEmail": {
+          "label": "Owner email (legacy)",
+          "placeholder": "you@example.com"
+        },
+        "agentId": { "label": "Agent ID" },
+        "emailEnabled": { "label": "Email integration enabled" },
+        "apiKey": { "label": "API key", "sensitive": true },
+        "channelId": { "label": "Mattermost channel ID" }
+      }
+    }
+  }
+}

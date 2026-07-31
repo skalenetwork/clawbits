@@ -1,0 +1,396 @@
+name: Desktop release
+
+# Triggers:
+#   - push to `main`      → STAGING build, freeclaws.ai API, pre-release
+#   - push to `prod`      → PROD build, clawbits.ai API, normal release,
+#                           updater `latest.json` updated
+#   - tag `desktop-v*`    → same as prod, explicit version named after the tag
+#   - workflow_dispatch   → manual override (version + channel via inputs)
+#
+# Releases land in this repo under `desktop-v*` tags — deliberately namespaced
+# so they never collide with semantic-release's `v*` code tags, which live in
+# the same tag namespace. Staging uses GitHub's `prerelease` flag so the
+# updater's `releases/latest/` redirect only ever resolves to prod builds.
+
+on:
+  push:
+    branches: [main, prod]
+    tags: ['desktop-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (e.g. 0.1.0). Empty = derive from ref.'
+        required: false
+        type: string
+      channel:
+        description: 'Channel — staging uses freeclaws.ai, prod uses clawbits.ai'
+        required: false
+        type: choice
+        default: prod
+        options: [prod, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: resolve channel + version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      api-url: ${{ steps.compute.outputs.api-url }}
+      release-tag: ${{ steps.compute.outputs.release-tag }}
+      is-prerelease: ${{ steps.compute.outputs.is-prerelease }}
+      channel: ${{ steps.compute.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute
+        id: compute
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          BASE_VERSION=$(jq -r .version desktop/src-tauri/tauri.conf.json)
+          SHA7=${SHA:0:7}
+
+          # Channel: input wins, then ref-derived.
+          if [[ -n "${INPUT_CHANNEL:-}" ]]; then
+            CHANNEL="$INPUT_CHANNEL"
+          elif [[ "$REF" == refs/heads/main ]]; then
+            CHANNEL=staging
+          else
+            CHANNEL=prod
+          fi
+
+          # Version: input wins, then ref-derived.
+          if [[ -n "${INPUT_VERSION:-}" ]]; then
+            VERSION="$INPUT_VERSION"
+          elif [[ "$REF" == refs/tags/desktop-v* ]]; then
+            VERSION="${REF_NAME#desktop-v}"
+          elif [[ "$CHANNEL" == staging ]]; then
+            # Staging gets a per-commit suffix so each merge produces a
+            # unique release. Pre-release flag below keeps prod's
+            # `releases/latest/` redirect untouched.
+            VERSION="${BASE_VERSION}-staging.${SHA7}"
+          else
+            VERSION="$BASE_VERSION"
+          fi
+
+          if [[ "$CHANNEL" == staging ]]; then
+            API_URL="https://freeclaws.ai"
+            IS_PRE=true
+          else
+            API_URL="https://clawbits.ai"
+            IS_PRE=false
+          fi
+
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "api-url=$API_URL" >> "$GITHUB_OUTPUT"
+          echo "release-tag=desktop-v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is-prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+
+          echo "::notice::Building $CHANNEL v$VERSION against $API_URL"
+
+  build:
+    name: build (${{ matrix.platform }})
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-26
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - platform: ubuntu-24.04
+            args: ''
+            rust-targets: ''
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Ubuntu build deps
+        if: matrix.platform == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            patchelf
+
+      - name: Install Rust (curl + rustup, bypasses macos-26 stub cargo)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
+          fi
+          # Prepend so our installed cargo wins over any pre-image stub.
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup default stable
+          if [ -n "${{ matrix.rust-targets }}" ]; then
+            # Matrix string is comma-separated; rustup target add needs space-separated.
+            rustup target add $(echo "${{ matrix.rust-targets }}" | tr ',' ' ')
+          fi
+
+      - name: Verify cargo
+        shell: bash
+        run: |
+          which cargo
+          cargo --version
+          cargo metadata --manifest-path desktop/src-tauri/Cargo.toml --no-deps --format-version 1 > /dev/null
+          echo "cargo metadata OK"
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Resolve channel config overlay
+        id: channel-config
+        env:
+          CHANNEL: ${{ needs.setup.outputs.channel }}
+        run: |
+          # Staging gets its own productName / identifier / bundle-name /
+          # deep-link scheme via tauri.staging.conf.json. Prod uses the
+          # base tauri.conf.json unchanged. (No dev channel in CI — local
+          # only.) Resulting `args` is appended to the matrix args below.
+          if [[ "$CHANNEL" == "staging" ]]; then
+            echo "extra-args=--config src-tauri/tauri.staging.conf.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "extra-args=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write ASC API key (macOS notarization)
+        if: runner.os == 'macOS'
+        run: echo "${{ secrets.APPLE_API_KEY_P8_BASE64 }}" | base64 --decode > "${{ runner.temp }}/asc_api_key.p8"
+
+      - name: Build with Tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # --- macOS Developer ID signing + notarization -----------------------
+          # Signs the .app/.dmg with our Developer ID cert (imported from the
+          # base64 .p12 in APPLE_CERTIFICATE) and notarizes via the App Store
+          # Connect API key (.p8 written to a temp file by the "Write ASC API
+          # key" step above, macOS only). See desktop/SIGNING.md. Inert on
+          # non-macOS runners.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/asc_api_key.p8
+          # --------------------------------------------------------------------
+          VITE_CLAWBITS_API_URL: ${{ needs.setup.outputs.api-url }}
+          # Picks icons-src/<channel>.png; consumed by scripts/build-icons.mjs
+          # via tauri.conf.json's beforeBuildCommand.
+          CLAWBITS_CHANNEL: ${{ needs.setup.outputs.channel }}
+        with:
+          projectPath: desktop
+          args: ${{ matrix.args }} ${{ steps.channel-config.outputs.extra-args }}
+
+      - name: Notarize + staple DMG (macOS)
+        # tauri-action notarizes/staples the .app but NOT the .dmg wrapper, so a
+        # freshly downloaded DMG would still trip Gatekeeper. Notarize + staple
+        # the DMG here using the same ASC API key written above.
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          DMG=$(find desktop/src-tauri/target -path '*/release/bundle/dmg/*.dmg' | head -1)
+          if [ -z "$DMG" ]; then echo "::error::No DMG found to notarize"; exit 1; fi
+          echo "Notarizing $DMG"
+          xcrun notarytool submit "$DMG" --wait \
+            --key "${{ runner.temp }}/asc_api_key.p8" \
+            --key-id "${{ secrets.APPLE_API_KEY }}" \
+            --issuer "${{ secrets.APPLE_API_ISSUER }}"
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            desktop/src-tauri/target/**/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/**/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/**/release/bundle/macos/*.app.tar.gz.sig
+            desktop/src-tauri/target/**/release/bundle/deb/*.deb
+            desktop/src-tauri/target/**/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/**/release/bundle/appimage/*.AppImage.tar.gz
+            desktop/src-tauri/target/**/release/bundle/appimage/*.AppImage.tar.gz.sig
+
+  release:
+    name: publish release
+    needs: [setup, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Releases now land in this repo via GITHUB_TOKEN, so this job needs write.
+    # Scoped here rather than workflow-wide: setup and build stay read-only.
+    permissions:
+      contents: write
+    steps:
+      - name: Download all bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          merge-multiple: true
+
+      - name: List bundles
+        run: ls -la bundles/
+
+      - name: Flatten bundles
+        # actions/upload-artifact preserves the source path, so the files
+        # land at bundles/desktop/src-tauri/target/.../bundle/dmg/*.dmg etc.
+        # Flatten everything to bundles/ so subsequent steps can glob simply.
+        run: |
+          set -euo pipefail
+          find bundles -mindepth 2 -type f \( \
+              -name '*.dmg' -o \
+              -name '*.app.tar.gz' -o \
+              -name '*.app.tar.gz.sig' -o \
+              -name '*.deb' -o \
+              -name '*.AppImage' -o \
+              -name '*.AppImage.tar.gz' -o \
+              -name '*.AppImage.tar.gz.sig' \
+            \) -print -exec mv {} bundles/ \;
+          ls -la bundles/
+
+      - name: Build latest.json (prod only — leaves staging's update channel undisturbed)
+        if: needs.setup.outputs.is-prerelease != 'true'
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+          RELEASE_TAG: ${{ needs.setup.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          # nullglob so unmatched patterns expand to nothing instead of
+          # tripping `set -e` via `ls` exit 2; lets the helpful error
+          # below actually run.
+          shopt -s nullglob
+          mac_sigs=( bundles/*.app.tar.gz.sig )
+          mac_pkgs=( bundles/*.app.tar.gz )
+          MAC_SIG_FILE="${mac_sigs[0]-}"
+          MAC_PKG_FILE="${mac_pkgs[0]-}"
+          if [ -z "$MAC_SIG_FILE" ] || [ -z "$MAC_PKG_FILE" ]; then
+            echo "::error::No macOS updater bundle found — TAURI_SIGNING_PRIVATE_KEY may be missing, or the mac build didn't produce updater artifacts. Bundle dir contents:"
+            ls -la bundles/ || true
+            exit 1
+          fi
+          # Tauri's auto-updater on Linux works for AppImage installs only
+          # (it can't replace a /usr/bin/clawbits binary installed by the
+          # .deb without root). Soft-fail the Linux side: if AppImage
+          # bundling failed, ship the macOS-only latest.json.
+          linux_sigs=( bundles/*.AppImage.tar.gz.sig )
+          linux_pkgs=( bundles/*.AppImage.tar.gz )
+          LINUX_SIG_FILE="${linux_sigs[0]-}"
+          LINUX_PKG_FILE="${linux_pkgs[0]-}"
+          MAC_SIG=$(cat "$MAC_SIG_FILE")
+          MAC_BASENAME=$(basename "$MAC_PKG_FILE")
+          BASE_URL="https://github.com/skalenetwork/clawbits/releases/download/${RELEASE_TAG}"
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          if [ -n "$LINUX_SIG_FILE" ] && [ -n "$LINUX_PKG_FILE" ]; then
+            LINUX_SIG=$(cat "$LINUX_SIG_FILE")
+            LINUX_BASENAME=$(basename "$LINUX_PKG_FILE")
+            jq -n \
+              --arg version "$VERSION" \
+              --arg pub_date "$PUB_DATE" \
+              --arg mac_sig "$MAC_SIG" \
+              --arg mac_url "${BASE_URL}/${MAC_BASENAME}" \
+              --arg linux_sig "$LINUX_SIG" \
+              --arg linux_url "${BASE_URL}/${LINUX_BASENAME}" \
+              '{
+                version: $version,
+                notes: ("Clawbits v" + $version),
+                pub_date: $pub_date,
+                platforms: {
+                  "darwin-aarch64": { signature: $mac_sig, url: $mac_url },
+                  "darwin-x86_64":  { signature: $mac_sig, url: $mac_url },
+                  "linux-x86_64":   { signature: $linux_sig, url: $linux_url }
+                }
+              }' > bundles/latest.json
+          else
+            echo "::warning::No Linux AppImage updater bundle — Linux clients won't auto-update from this release"
+            jq -n \
+              --arg version "$VERSION" \
+              --arg pub_date "$PUB_DATE" \
+              --arg sig "$MAC_SIG" \
+              --arg url "${BASE_URL}/${MAC_BASENAME}" \
+              '{
+                version: $version,
+                notes: ("Clawbits v" + $version),
+                pub_date: $pub_date,
+                platforms: {
+                  "darwin-aarch64": { signature: $sig, url: $url },
+                  "darwin-x86_64":  { signature: $sig, url: $url }
+                }
+              }' > bundles/latest.json
+          fi
+          cat bundles/latest.json
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.setup.outputs.release-tag }}
+          CHANNEL: ${{ needs.setup.outputs.channel }}
+          IS_PRE: ${{ needs.setup.outputs.is-prerelease }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=(
+            bundles/*.dmg
+            bundles/*.app.tar.gz
+            bundles/*.app.tar.gz.sig
+            bundles/*.deb
+            bundles/*.AppImage
+            bundles/*.AppImage.tar.gz
+            bundles/*.AppImage.tar.gz.sig
+          )
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::No bundle files found to publish — check the build job's upload-artifact + Flatten steps"
+            exit 1
+          fi
+          # latest.json only exists on prod releases; include if present.
+          if [ -f bundles/latest.json ]; then
+            FILES+=( bundles/latest.json )
+          fi
+
+          NOTES="Built from ${GITHUB_REPOSITORY}@${SOURCE_SHA} on channel ${CHANNEL}."
+          EXTRA=()
+          if [ "$IS_PRE" = "true" ]; then
+            EXTRA+=( --prerelease )
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            --title "Clawbits $RELEASE_TAG" \
+            --notes "$NOTES" \
+            "${EXTRA[@]}" \
+            "${FILES[@]}"

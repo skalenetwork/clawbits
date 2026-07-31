@@ -1,0 +1,27 @@
+{
+  "name": "clawbits-desktop",
+  "private": true,
+  "version": "0.17.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "CLAWBITS_CHANNEL=dev tauri dev --config src-tauri/tauri.dev.conf.json",
+    "dev:staging": "CLAWBITS_CHANNEL=staging tauri dev --config src-tauri/tauri.staging.conf.json",
+    "dev:prod": "CLAWBITS_CHANNEL=prod tauri dev",
+    "build": "tauri build",
+    "build:dev": "CLAWBITS_CHANNEL=dev tauri build --config src-tauri/tauri.dev.conf.json",
+    "build:staging": "CLAWBITS_CHANNEL=staging tauri build --config src-tauri/tauri.staging.conf.json",
+    "build:prod": "CLAWBITS_CHANNEL=prod tauri build",
+    "icons": "bun scripts/build-icons.mjs",
+    "icons:dev": "bun scripts/build-icons.mjs dev",
+    "icons:staging": "bun scripts/build-icons.mjs staging",
+    "icons:prod": "bun scripts/build-icons.mjs prod"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "sharp": "^0.34.5"
+  }
+}

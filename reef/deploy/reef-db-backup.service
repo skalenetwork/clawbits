@@ -1,0 +1,10 @@
+# Oneshot: snapshot the Reef desired-state DB. Driven by reef-db-backup.timer.
+[Unit]
+Description=Reef desired-state DB backup
+
+[Service]
+Type=oneshot
+User=reef
+Group=reef
+EnvironmentFile=/etc/reef/reef.env
+ExecStart=/opt/reef/reef/deploy/reef-db-backup.sh

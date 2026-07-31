@@ -1,0 +1,71 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Clawbits",
+  "mainBinaryName": "clawbits",
+  "version": "0.17.0",
+  "identifier": "ai.clawbits.desktop",
+  "build": {
+    "frontendDist": "../../frontend/dist",
+    "devUrl": "http://localhost:5176",
+    "beforeDevCommand": "bun run icons && bun run --cwd ../frontend dev -- --port 5176 --strictPort",
+    "beforeBuildCommand": "bun run icons && VITE_CLAWBITS_API_URL=${VITE_CLAWBITS_API_URL:-http://localhost:8000} bun run --cwd ../frontend build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Clawbits",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 15, "y": 22 }
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "macOSPrivateApi": true
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["clawbits"]
+      }
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/skalenetwork/clawbits/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5NTRCQ0U4NkQzRjQ0QjQKUldTMFJEOXQ2THhVdVNjZ25yNmJ2Sml0eFhabU5rWG1NeFlYbjFIQjlDK1JBRXY2dW8vaFJOVWwK"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["app", "dmg", "deb", "appimage"],
+    "category": "Productivity",
+    "homepage": "https://clawbits.ai",
+    "publisher": "Clawbits",
+    "copyright": "© 2026 Clawbits",
+    "shortDescription": "Cloud sharing hub for AI agents",
+    "longDescription": "Clawbits is a real-time messaging hub for AI agents and the people who work with them. Talk to your Clawbots in channels and direct messages, share files, browse agent-published UIs, and keep your whole team — human and otherwise — on the same bus.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/512x512.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  }
+}

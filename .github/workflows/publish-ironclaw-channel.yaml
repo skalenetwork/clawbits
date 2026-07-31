@@ -1,0 +1,152 @@
+name: Publish IronClaw Channel
+
+# Companion to publish-clawhub-plugin.yaml, but for the IronClaw WASM channel in
+# ironclaw-channel/. On a push to main that touches ironclaw-channel/**, this
+# workflow builds the WASM component, packages a self-contained install tarball
+# (wasm + capabilities manifest + Python installer + challenge table), and
+# publishes it as a GitHub Release asset on skalenetwork/clawbits-openclaw-plugin
+# — the same sibling repo the OpenClaw plugin releases into — reusing that repo's
+# PLUGIN_MIRROR_TOKEN. No subtree mirror, no ClawHub. The tarball is what you drop
+# onto a (hosted) IronClaw agent to install the Clawbits channel; a host only
+# needs python3 + ironclaw, no Rust toolchain.
+#
+# Versioning is automatic: major.minor is hand-controlled in
+# ironclaw-channel/clawbits.capabilities.json, while CI stamps the patch as the
+# count of commits touching ironclaw-channel/ (see "Stamp auto version"), so the
+# release tag is `ironclaw-channel-v<major.minor.N>` and every change here
+# publishes a fresh version with no manual bump. The stamp is applied to the CI
+# checkout only, never committed back (no recursive-release loop). Re-running the
+# same commit yields the same version and hits the skip-if-exists guard; the
+# `force` dispatch input re-uploads that version's assets. Bump major/minor by
+# hand only for a deliberate semantic jump.
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Republish even if the version tag already has a release
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'ironclaw-channel/**'
+
+permissions:
+  contents: read # the release lands on clawbits-openclaw-plugin via PLUGIN_MIRROR_TOKEN, not this repo
+
+concurrency:
+  group: publish-ironclaw-channel-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-ironclaw-channel:
+    name: Build + publish IronClaw channel
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history so "Stamp auto version" can count commits touching
+          # ironclaw-channel/. The sibling `ironclaw` checkout is not needed here.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust (wasm32-wasip2)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ironclaw-channel
+
+      - name: Install wasm-tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+
+      - name: Host-side unit tests
+        working-directory: ironclaw-channel
+        run: cargo test
+
+      - name: Stamp auto version (patch = commit count)
+        working-directory: ironclaw-channel
+        run: |
+          set -euo pipefail
+          # major.minor stays hand-controlled in clawbits.capabilities.json; the
+          # patch is derived from the number of commits touching ironclaw-channel/,
+          # so every change here publishes a fresh, unique, monotonic version with
+          # no manual bump. Deterministic + idempotent: the same commit always
+          # yields the same version (a re-run then hits the skip-if-exists guard).
+          # Stamped into the CI checkout only — never committed back.
+          base="$(python3 -c "import json; print('.'.join(json.load(open('clawbits.capabilities.json'))['version'].split('.')[:2]))")"
+          patch="$(git rev-list --count HEAD -- .)"
+          export STAMP_VERSION="${base}.${patch}"
+          echo "auto version = ${STAMP_VERSION}"
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          v = os.environ["STAMP_VERSION"]
+          cap = pathlib.Path("clawbits.capabilities.json")
+          data = json.loads(cap.read_text())
+          data["version"] = v
+          cap.write_text(json.dumps(data, indent=2) + "\n")
+          cargo = pathlib.Path("Cargo.toml")
+          text, n = re.subn(r'(?m)^version = "[^"]+"', f'version = "{v}"', cargo.read_text(), count=1)
+          if n != 1:
+              raise SystemExit("failed to stamp Cargo.toml version")
+          cargo.write_text(text)
+          PY
+
+      - name: Build WASM component
+        working-directory: ironclaw-channel
+        run: ./build.sh
+
+      - name: Package install tarball
+        working-directory: ironclaw-channel
+        run: ./package.sh
+
+      - name: Resolve release tag
+        id: meta
+        working-directory: ironclaw-channel
+        run: |
+          set -euo pipefail
+          version="$(python3 -c "import json; print(json.load(open('clawbits.capabilities.json'))['version'])")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=ironclaw-channel-v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release asset to clawbits-openclaw-plugin
+        working-directory: ironclaw-channel
+        env:
+          # PLUGIN_MIRROR_TOKEN: PAT / GitHub App token with contents:write +
+          # releases on skalenetwork/clawbits-openclaw-plugin — the same secret
+          # publish-clawhub-plugin.yaml uses to release into that repo.
+          GH_TOKEN: ${{ secrets.PLUGIN_MIRROR_TOKEN }}
+          TARGET_REPO: skalenetwork/clawbits-openclaw-plugin
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::Missing required secret PLUGIN_MIRROR_TOKEN (contents:write + releases on $TARGET_REPO)"
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+            if [ "$FORCE" != "true" ]; then
+              echo "::notice::Release $TAG already exists on $TARGET_REPO (this commit's auto version is already published) — push another ironclaw-channel/ change to publish a new version, or dispatch with force=true to re-upload. Skipping."
+              exit 0
+            fi
+            echo "force=true: re-uploading assets to existing release $TAG on $TARGET_REPO"
+          else
+            # --latest=false so this channel release never displaces the OpenClaw
+            # plugin's own release as GitHub's "Latest" on that repo; the
+            # `ironclaw-channel-v*` tag prefix also keeps it clear of the plugin's
+            # `v*` tags.
+            gh release create "$TAG" \
+              --repo "$TARGET_REPO" \
+              --latest=false \
+              --title "IronClaw Clawbits channel v$VERSION" \
+              --notes "Self-contained install tarball for the IronClaw Clawbits WASM channel. Extract it and run \`./clawbits-ironclaw install --endpoint https://clawbits.ai --api-key ck_...\` to add the channel to a (hosted) IronClaw agent (needs python3 + ironclaw, no Rust toolchain)."
+          fi
+          gh release upload "$TAG" dist/* --repo "$TARGET_REPO" --clobber

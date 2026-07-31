@@ -1,0 +1,82 @@
+services:
+  # Dev: expose the app directly for Vite's /api proxy (frontend dev on localhost:5173)
+  # and for direct debugging (curl localhost:8000/api/...).
+  # Staging uses the proxy only — this override is not applied there.
+  app:
+    # Dev override: opt into the dev-auth allow-list. The base compose.yaml
+    # defaults CLAWBITS_ENV to ``production`` (fail-closed for any deploy
+    # that doesn't override). This override is NOT applied in staging/prod.
+    environment:
+      CLAWBITS_ENV: ${CLAWBITS_ENV:-development}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./clawbits:/app/clawbits
+    command: >
+      uvicorn clawbits.fastapi.main:app
+      --host 0.0.0.0 --port 8000 --reload
+      --proxy-headers --forwarded-allow-ips=*
+
+  # Dev: let `bun run build` on the host reflect instantly in the containerized frontend,
+  # without rebuilding the image. If ./frontend/dist is empty, run `bun run build` once.
+  frontend:
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+
+  # Dev: expose Postgres on the standard port so the default CLAWBITS_DATABASE_URL works out of the box.
+  db:
+    ports:
+      - "5432:5432"
+
+  stalwart:
+    # Dev: fixed recovery admin so `docker compose up` works without dotenvx.
+    # Must match STALWART_SVC_PASSWORD in .env.development.
+    environment:
+      STALWART_RECOVERY_ADMIN: admin:dev-svc-secret
+    # 2026-07-03: OrbStack's macOS-side localhost port forwarding is broken
+    # SPECIFICALLY for this container (TCP accepts, all data dropped; fresh
+    # ports/names don't help; nginx on the same network forwards fine; the VM
+    # side is healthy). Dev therefore talks to Stalwart at a STATIC container
+    # IP instead of localhost - OrbStack routes container subnets from the
+    # host natively, which works reliably. Must match STALWART_* in
+    # .env.development + the dev defaults in tests/fastapi/test_email.py and
+    # scripts/seed_dev_mail.py. Published high ports kept as a fallback path
+    # (avoid 25/465/993/8080 - those localhost entries are the corrupted ones).
+    networks:
+      default: {}
+      mail:
+        ipv4_address: 172.30.99.10
+    ports: !override
+      - "10025:25"
+      - "10465:465"
+      - "10993:993"
+      - "18080:8080"
+
+  # Dev: expose Redis on the standard port so local (non-docker) backends can connect.
+  redis:
+    ports:
+      - "6379:6379"
+
+  # Dev: publish the DiceBear sidecar so the HOST-run backend (launch.json
+  # uvicorn) can reach it at http://localhost:3000 (DICEBEAR_BASE in
+  # .env.development). In-cluster deploys use the service name instead.
+  dicebear:
+    ports:
+      - "3000:3000"
+
+  # Dev: skip TLS / cert mount. Staging serves HTTPS via nginx.conf with the
+  # Cloudflare Origin Cert; locally we don't have certs, so use a plain HTTP
+  # config and unbind 443.
+  proxy:
+    volumes: !override
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    ports: !override
+      - "80:80"
+
+# Dev-only fixed-subnet network so Stalwart keeps a STATIC, host-reachable IP
+# across recreates (see the stalwart service note).
+networks:
+  mail:
+    ipam:
+      config:
+        - subnet: 172.30.99.0/24

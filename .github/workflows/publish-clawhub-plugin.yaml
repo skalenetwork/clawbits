@@ -1,0 +1,174 @@
+name: Publish ClawBits Plugin to ClawHub
+
+# Plugin releases are tag-driven, the same way the rest of the repo works
+# (see release.yaml / desktop-release.yml): the version is NOT a hand-bumped
+# source-of-truth in plugin/package.json. Instead, on a push to main that
+# touches plugin/**, this workflow:
+#
+#   1. tests + subtree-splits plugin/ into skalenetwork/clawbits-openclaw-plugin
+#      (the canonical published-source repo) as branch main. The split history
+#      contains plugin commits only, with their original messages.
+#   2. runs semantic-release INSIDE the mirror repo, so the plugin's version
+#      tag (v<version>) and GitHub Release are created in the mirror repo and
+#      are derived from the plugin's own commit history against the mirror's
+#      existing v* tags. (plugin/.releaserc.json lands at the mirror root via
+#      the split, so semantic-release picks it up there.)
+#   3. only if semantic-release cut a new version, stamps that version into the
+#      published artifact and publishes it to ClawHub.
+#
+# No version is committed back to any repo, so there is no recursive release
+# loop (same reason the repo-wide semantic-release in release.yaml has none).
+# A push that doesn't touch plugin/** never starts this workflow; a plugin
+# change whose commits don't warrant a release (per .releaserc rules) is
+# tested + mirrored but not published.
+#
+# Manual dispatch runs the same flow, but semantic-release only cuts a
+# release from the `main` branch (per plugin/.releaserc.json `branches`), so a
+# dispatch from another ref tests + mirrors without publishing.
+#
+# Plugin tests run inline here so this stays the only thing that exercises the
+# plugin on main (workflow.yaml skips its plugin job on push-to-main).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'plugin/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-clawbits-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-plugin:
+    name: Publish plugin
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install plugin dependencies
+        working-directory: plugin
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: plugin
+        run: bun --bun run typecheck
+
+      - name: Run plugin tests
+        working-directory: plugin
+        run: bun run test
+
+      - name: Subtree-split plugin/ and mirror to clawbits-openclaw-plugin
+        id: split
+        env:
+          MIRROR_TOKEN: ${{ secrets.PLUGIN_MIRROR_TOKEN }}
+        run: |
+          if [ -z "$MIRROR_TOKEN" ]; then
+            echo "::error::Missing required secret PLUGIN_MIRROR_TOKEN (PAT or GitHub App token with contents:write + releases on skalenetwork/clawbits-openclaw-plugin)"
+            exit 1
+          fi
+          git config user.email "ci@clawbits.local"
+          git config user.name "ClawBits CI"
+          split_sha="$(git subtree split --prefix=plugin HEAD)"
+          echo "split_sha=$split_sha" >> "$GITHUB_OUTPUT"
+          remote="https://x-access-token:${MIRROR_TOKEN}@github.com/skalenetwork/clawbits-openclaw-plugin.git"
+          # main on the sibling repo is a derived artifact — force-push is expected.
+          # semantic-release (next step) tags this commit and cuts the release.
+          git push --force "$remote" "${split_sha}:refs/heads/main"
+
+      - name: Checkout mirror repo
+        uses: actions/checkout@v6
+        with:
+          repository: skalenetwork/clawbits-openclaw-plugin
+          token: ${{ secrets.PLUGIN_MIRROR_TOKEN }}
+          fetch-depth: 0
+          path: mirror
+
+      - name: Semantic release (version tag + GitHub Release on the mirror)
+        id: semrel
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          working_directory: mirror
+        env:
+          # Tag + release are created on the mirror repo, so semantic-release
+          # authenticates with the mirror token, not the monorepo GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ secrets.PLUGIN_MIRROR_TOKEN }}
+
+      - name: Stamp released version into the artifact
+        if: steps.semrel.outputs.new_release_published == 'true'
+        working-directory: plugin
+        env:
+          VERSION: ${{ steps.semrel.outputs.new_release_version }}
+        run: |
+          bun run - <<'BUN'
+          const fs = require('node:fs');
+          const v = process.env.VERSION;
+          function rewrite(p) {
+            const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+            j.version = v;
+            if (j.openclaw && j.openclaw.version) j.openclaw.version = v;
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+          }
+          rewrite('package.json');
+          rewrite('openclaw.plugin.json');
+          console.log(`Stamped plugin artifact version ${v}`);
+          BUN
+
+      - name: Build plugin
+        if: steps.semrel.outputs.new_release_published == 'true'
+        working-directory: plugin
+        run: bun --bun run build
+
+      - name: Stage publish directory
+        id: pack
+        if: steps.semrel.outputs.new_release_published == 'true'
+        working-directory: plugin
+        run: |
+          rm -rf ../publish/clawbits-openclaw-plugin
+          mkdir -p ../publish/clawbits-openclaw-plugin
+          cp -r dist src docs skills openclaw.plugin.json clawbits.config.example.json package.json ../publish/clawbits-openclaw-plugin/
+          echo "publish_path=publish/clawbits-openclaw-plugin" >> "$GITHUB_OUTPUT"
+
+      # clawhub is invoked via `bunx --bun` rather than a global install:
+      # the package's bin has a `#!/usr/bin/env node` shebang, so a global
+      # symlink would still need node on PATH. `bunx --bun` forces bun's
+      # runtime instead. clawhub stores auth state in $HOME, so login state
+      # persists across the calls below.
+      - name: Authenticate ClawHub CLI
+        if: steps.semrel.outputs.new_release_published == 'true'
+        env:
+          CLAWHUB_API_TOKEN: ${{ secrets.CLAWHUB_API_TOKEN }}
+        run: |
+          if [ -z "$CLAWHUB_API_TOKEN" ]; then
+            echo "::error::Missing required secret CLAWHUB_API_TOKEN"
+            exit 1
+          fi
+          bunx --bun clawhub@latest login --token "$CLAWHUB_API_TOKEN" --no-browser
+
+      - name: Verify ClawHub authentication
+        if: steps.semrel.outputs.new_release_published == 'true'
+        run: bunx --bun clawhub@latest whoami
+
+      - name: Publish package to ClawHub
+        if: steps.semrel.outputs.new_release_published == 'true'
+        working-directory: ${{ github.workspace }}
+        env:
+          VERSION: ${{ steps.semrel.outputs.new_release_version }}
+        run: |
+          bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
+            --family code-plugin \
+            --source-repo "skalenetwork/clawbits-openclaw-plugin" \
+            --source-commit "${{ steps.split.outputs.split_sha }}" \
+            --source-ref "refs/tags/v${VERSION}"

@@ -1,0 +1,52 @@
+# Pre-commit hooks. Install once with:
+#
+#     uv run pre-commit install
+#
+# Then commits automatically run these checks. Skip with `git commit --no-verify`
+# only if you know what you're doing — CI runs the same gates.
+
+repos:
+  # Broad secret scanning. Catches credentials anywhere — source, tests, docs —
+  # not just the env files the local hook below covers.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+
+  # Local hook: regenerate db_schema.md and fail if it changed.
+  # Mirrors the CI guard so drift is caught before push.
+  - repo: local
+    hooks:
+      # Deny-by-default: any key whose NAME looks like a credential must be
+      # empty, a ${VAR} reference, or dotenvx `encrypted:`. This regression
+      # already shipped once — three secrets sat in plaintext in
+      # .env.development for months after an earlier commit had them encrypted.
+      - id: env-encrypted
+        name: No plaintext secrets in tracked .env.* files
+        entry: uv run --frozen python scripts/check_env_encrypted.py
+        language: system
+        files: ^\.env(\..+)?$|^scripts/check_env_encrypted\.py$
+        pass_filenames: false
+
+      - id: db-schema-doc
+        name: Regenerate db_schema.md from models.py
+        entry: uv run --frozen python -m clawbits.db.render_schema
+        language: system
+        files: ^clawbits/db/(models\.py|render_schema\.py|db_schema\.md)$
+        pass_filenames: false
+
+      # Frontend type-check + production build. Runs whenever any file under
+      # frontend/ (excluding node_modules and dist) changes — catches TS
+      # errors and Vite build failures before they reach CI.
+      - id: frontend-build
+        name: Frontend tsc + vite build
+        entry: bash -c 'cd frontend && bun run build'
+        language: system
+        files: ^frontend/(src/|public/|index\.html|package\.json|bun\.lock|tsconfig.*\.json|vite\.config\.|eslint\.config\.)
+        pass_filenames: false

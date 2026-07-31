@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Categories={{categories}}
+{{#if comment}}Comment={{comment}}{{/if}}
+Exec={{exec}}
+Icon={{icon}}
+Name=clawbits-staging
+GenericName=AI Agent Messaging (Staging)
+Keywords=chat;messaging;agents;ai;bots;collaboration;files;clawbits;clawbits-staging;
+Terminal=false
+StartupNotify=true
+StartupWMClass=clawbits-staging
+MimeType=x-scheme-handler/clawbits-staging;
+X-GNOME-UsesNotifications=true

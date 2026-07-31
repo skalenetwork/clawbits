@@ -1,0 +1,136 @@
+diff --git a/crates/ironclaw_llm/src/reasoning_models.rs b/crates/ironclaw_llm/src/reasoning_models.rs
+index 85166ea23..f777807a4 100644
+--- a/crates/ironclaw_llm/src/reasoning_models.rs
++++ b/crates/ironclaw_llm/src/reasoning_models.rs
+@@ -80,6 +80,24 @@ pub fn supports_openai_reasoning(model: &str) -> bool {
+     OPENAI_REASONING_PATTERNS.iter().any(|p| lower.contains(p))
+ }
+ 
++/// OpenAI models that REJECT the legacy `max_tokens` parameter and require
++/// `max_completion_tokens` instead — the gpt-5 family and the o-series reasoning
++/// models. Sending `max_tokens` to these returns HTTP 400 "Unsupported
++/// parameter: 'max_tokens' is not supported with this model."
++///
++/// `gpt-4o` / `gpt-4.1` still accept `max_tokens`, so they are deliberately NOT
++/// listed.
++const REQUIRES_MAX_COMPLETION_TOKENS_PATTERNS: &[&str] = &["gpt-5", "o1", "o3", "o4"];
++
++/// Returns `true` when *model* rejects `max_tokens` and needs
++/// `max_completion_tokens` (OpenAI gpt-5 family / o-series).
++pub fn requires_max_completion_tokens(model: &str) -> bool {
++    let lower = model.to_ascii_lowercase();
++    REQUIRES_MAX_COMPLETION_TOKENS_PATTERNS
++        .iter()
++        .any(|p| lower.contains(p))
++}
++
+ /// Anthropic models that use the `adaptive` thinking mode (4.6+/4.7+).
+ ///
+ /// These models accept `{type: "adaptive"}` and do not require a
+@@ -231,4 +249,29 @@ mod tests {
+         assert!(!has_native_thinking("glm-4v"));
+         assert!(!has_native_thinking("step-3-mini"));
+     }
++
++    // ── requires_max_completion_tokens tests ──
++
++    #[test]
++    fn gpt5_and_o_series_require_max_completion_tokens() {
++        assert!(requires_max_completion_tokens("gpt-5"));
++        assert!(requires_max_completion_tokens("gpt-5-mini"));
++        assert!(requires_max_completion_tokens("gpt-5-nano"));
++        assert!(requires_max_completion_tokens("o1"));
++        assert!(requires_max_completion_tokens("o1-mini"));
++        assert!(requires_max_completion_tokens("o3-mini"));
++        assert!(requires_max_completion_tokens("o4-mini"));
++        assert!(requires_max_completion_tokens("openai/gpt-5-mini"));
++    }
++
++    #[test]
++    fn legacy_openai_models_still_use_max_tokens() {
++        // gpt-4o / gpt-4.1 / non-OpenAI models still accept max_tokens.
++        assert!(!requires_max_completion_tokens("gpt-4o"));
++        assert!(!requires_max_completion_tokens("gpt-4.1"));
++        assert!(!requires_max_completion_tokens("gpt-4o-mini"));
++        assert!(!requires_max_completion_tokens("claude-3-5-sonnet"));
++        assert!(!requires_max_completion_tokens("llama-3.1-70b"));
++        assert!(!requires_max_completion_tokens(""));
++    }
+ }
+diff --git a/crates/ironclaw_llm/src/rig_adapter.rs b/crates/ironclaw_llm/src/rig_adapter.rs
+index 1f5428f89..125b95356 100644
+--- a/crates/ironclaw_llm/src/rig_adapter.rs
++++ b/crates/ironclaw_llm/src/rig_adapter.rs
+@@ -314,11 +314,27 @@ impl<M: CompletionModel> RigAdapter<M> {
+     /// Strip unsupported fields from a `CompletionRequest` in place.
+     fn strip_unsupported_completion_params(&self, req: &mut CompletionRequest) {
+         strip_unsupported_completion_params(&self.unsupported_params, req);
++        self.drop_max_tokens_if_completion_only(&mut req.max_tokens);
+     }
+ 
+     /// Strip unsupported fields from a `ToolCompletionRequest` in place.
+     fn strip_unsupported_tool_params(&self, req: &mut ToolCompletionRequest) {
+         strip_unsupported_tool_params(&self.unsupported_params, req);
++        self.drop_max_tokens_if_completion_only(&mut req.max_tokens);
++    }
++
++    /// Drop `max_tokens` for OpenAI models that reject it (gpt-5 family /
++    /// o-series — they require `max_completion_tokens`). rig-core only serializes
++    /// `max_tokens` and omits it when `None`, so nulling it here avoids the HTTP
++    /// 400 "Unsupported parameter: 'max_tokens'"; OpenAI then applies its own
++    /// default completion cap. Models that still accept `max_tokens` are
++    /// untouched.
++    fn drop_max_tokens_if_completion_only(&self, max_tokens: &mut Option<u32>) {
++        if max_tokens.is_some()
++            && crate::reasoning_models::requires_max_completion_tokens(&self.model_name)
++        {
++            *max_tokens = None;
++        }
+     }
+ }
+ 
+@@ -2592,6 +2608,44 @@ mod tests {
+         assert!(req.max_tokens.is_none(), "max_tokens should be stripped");
+     }
+ 
++    #[test]
++    fn test_gpt5_model_drops_max_tokens_without_explicit_config() {
++        // A gpt-5 / o-series model rejects `max_tokens` (needs
++        // `max_completion_tokens`). The adapter must drop it purely from the
++        // model name — no with_unsupported_params needed — for both the plain
++        // completion and tool-call paths. Legacy models keep max_tokens.
++        use rig::client::CompletionClient;
++        use rig::providers::openai;
++
++        let client: openai::Client = openai::Client::builder()
++            .api_key("test-key")
++            .base_url("http://localhost:0")
++            .build()
++            .unwrap();
++        let client = client.completions_api();
++
++        // gpt-5-mini: max_tokens is dropped (completion + tool paths).
++        let g5 = client.completion_model("gpt-5-mini");
++        let adapter = RigAdapter::new(g5, "gpt-5-mini");
++        let mut req = CompletionRequest::new(vec![ChatMessage::user("hi")]);
++        req.max_tokens = Some(100);
++        adapter.strip_unsupported_completion_params(&mut req);
++        assert!(req.max_tokens.is_none(), "gpt-5 must drop max_tokens");
++
++        let mut treq = ToolCompletionRequest::new(vec![ChatMessage::user("hi")], vec![]);
++        treq.max_tokens = Some(100);
++        adapter.strip_unsupported_tool_params(&mut treq);
++        assert!(treq.max_tokens.is_none(), "gpt-5 tool path must drop max_tokens");
++
++        // gpt-4o: max_tokens is preserved.
++        let g4 = client.completion_model("gpt-4o");
++        let adapter4 = RigAdapter::new(g4, "gpt-4o");
++        let mut req4 = CompletionRequest::new(vec![ChatMessage::user("hi")]);
++        req4.max_tokens = Some(100);
++        adapter4.strip_unsupported_completion_params(&mut req4);
++        assert_eq!(req4.max_tokens, Some(100), "gpt-4o keeps max_tokens");
++    }
++
+     #[test]
+     fn test_unsupported_params_empty_by_default() {
+         use rig::client::CompletionClient;

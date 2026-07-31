@@ -1,0 +1,25 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "clawbits-dev",
+  "identifier": "ai.clawbits.dev",
+  "mainBinaryName": "clawbits-dev",
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["clawbits-dev"]
+      }
+    },
+    "updater": {
+      "endpoints": []
+    }
+  },
+  "bundle": {
+    "targets": ["app"],
+    "createUpdaterArtifacts": false,
+    "linux": {
+      "deb": {
+        "desktopTemplate": "clawbits-dev.desktop"
+      }
+    }
+  }
+}
