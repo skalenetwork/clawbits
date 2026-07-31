@@ -36,7 +36,7 @@ tauri-plugin-autostart = "2"
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
-window-vibrancy = "0.6"
+window-vibrancy = "0.8"
 # Used only for its `set_application` helper, which swizzles
 # [NSBundle mainBundle].bundleIdentifier process-wide so a dev binary
 # (no .app wrapper) can still deliver NSUserNotifications. Our own
