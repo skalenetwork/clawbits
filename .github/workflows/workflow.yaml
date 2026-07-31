@@ -18,12 +18,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           # Key the ~/.cache/uv cache on the lockfile so it's reused across
@@ -110,7 +110,7 @@ jobs:
         working-directory: frontend
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -120,7 +120,7 @@ jobs:
           bun-version: latest
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # Cache both bun's global module store and the resolved node_modules
           # so a warm run links nothing. Keyed on the real lockfile name
@@ -156,7 +156,7 @@ jobs:
         working-directory: apps/mobile
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -166,7 +166,7 @@ jobs:
           bun-version: latest
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.bun/install/cache
@@ -193,7 +193,7 @@ jobs:
         working-directory: reef/admin-ui
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -203,7 +203,7 @@ jobs:
           bun-version: latest
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.bun/install/cache
@@ -232,7 +232,7 @@ jobs:
         working-directory: plugin
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -242,7 +242,7 @@ jobs:
           bun-version: latest
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # See the frontend job for rationale. Keyed on plugin/bun.lock and
           # namespaced to `plugin`.

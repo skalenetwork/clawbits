@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Full history so "Stamp auto version" can count commits touching
           # ironclaw-channel/. The sibling `ironclaw` checkout is not needed here.
@@ -62,7 +62,7 @@ jobs:
           workspaces: ironclaw-channel
 
       - name: Install wasm-tools
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.3
         with:
           tool: wasm-tools
 
