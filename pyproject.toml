@@ -22,7 +22,7 @@ dependencies = [
     "redis>=5.2",
     "sqlmodel>=0.0.22",
     "uvicorn[standard]>=0.44",
-    "websockets>=13",  # reef surface proxy (reef/api/proxy.py)
+    "websockets>=17.0.1",  # reef surface proxy (reef/api/proxy.py)
     "workos>=6,<7",
 ]
 
