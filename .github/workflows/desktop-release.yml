@@ -358,6 +358,9 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job has no checkout, so `gh` can't infer the repo from a git
+          # remote — it must be told explicitly or it exits "not a git repository".
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.setup.outputs.release-tag }}
           CHANNEL: ${{ needs.setup.outputs.channel }}
           IS_PRE: ${{ needs.setup.outputs.is-prerelease }}
@@ -392,5 +395,6 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --title "Clawbits $RELEASE_TAG" \
             --notes "$NOTES" \
+            --target "$SOURCE_SHA" \
             "${EXTRA[@]}" \
             "${FILES[@]}"
