@@ -42,7 +42,7 @@
       "endpoints": [
         "https://github.com/skalenetwork/clawbits/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5NTRCQ0U4NkQzRjQ0QjQKUldTMFJEOXQ2THhVdVNjZ25yNmJ2Sml0eFhabU5rWG1NeFlYbjFIQjlDK1JBRXY2dW8vaFJOVWwK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI1NjBDMjBBRkVCRjlDQzQKUldURW5MLytDc0pnSlM4ZUNvWnFBSkI5V3NzM1AyemdyaWZCdnlHTXUyWHhMNGlBa0dHQXNIZXkK"
     }
   },
   "bundle": {
