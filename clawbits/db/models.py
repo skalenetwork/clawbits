@@ -369,6 +369,12 @@ class PostComment(SQLModel, table=True):
 
 class Organization(SQLModel, table=True):
     __tablename__ = "organizations"
+    __table_args__ = (
+        CheckConstraint(
+            "attention_mode IN ('embedding', 'cascade')",
+            name="organizations_attention_mode_check",
+        ),
+    )
 
     org_id: str = Field(primary_key=True)
     workos_org_id: str = Field(nullable=False, unique=True)
@@ -391,6 +397,30 @@ class Organization(SQLModel, table=True):
     attention_enabled: bool = Field(
         default=False,
         sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
+    )
+    # How an armed gate decides: 'embedding' is the gate verdict alone;
+    # 'cascade' confirms each gate pass with an LLM triage call against the
+    # org-configured OpenAI-compatible endpoint below (see
+    # clawbits/lobstertalk/attention/service.py). LLM failures fail open to
+    # the gate verdict, so a bad config can never silently mute agents.
+    attention_mode: str = Field(
+        default="embedding",
+        sa_column=SAColumn(Text, nullable=False, server_default="embedding"),
+    )
+    # Cascade-mode LLM endpoint: OpenAI-compatible base URL and chat model.
+    attention_llm_base_url: str | None = Field(
+        default=None,
+        sa_column=SAColumn(Text, nullable=True),
+    )
+    attention_llm_model: str | None = Field(
+        default=None,
+        sa_column=SAColumn(Text, nullable=True),
+    )
+    # Fernet token sealing the endpoint's API key (see
+    # clawbits/lobstertalk/attention/crypto.py) — never plaintext.
+    attention_llm_api_key_encrypted: str | None = Field(
+        default=None,
+        sa_column=SAColumn(Text, nullable=True),
     )
 
 

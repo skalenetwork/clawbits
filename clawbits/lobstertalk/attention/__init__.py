@@ -10,6 +10,15 @@ into a reply-only-if-useful agent turn. A nudge that doesn't land (no live
 agent socket) refunds the cooldown; nudges are never queued or replayed.
 See :func:`clawbits.lobstertalk.attention.service._deliver`.
 
+An org can put the gate in ``cascade`` mode, which inserts an LLM confirm
+stage (:mod:`clawbits.lobstertalk.attention.triage`) between the cooldown
+claim and delivery: the gate becomes a cheap recall pre-filter and the model
+votes on whether this agent's input is genuinely needed. Any failure there
+falls back to the gate verdict, so a broken endpoint can't mute anyone — and
+because a call was already paid for, a cascade nudge that doesn't land keeps
+its cooldown instead of refunding it. See the README for the full mode
+description, the endpoint rules, and the spend bound.
+
 Opt-in and off by default, behind three gates: the server must have the
 ``router`` extra installed (:func:`clawbits.lobstertalk.attention.gate.get_gate` returns
 None otherwise), the message's org must have armed

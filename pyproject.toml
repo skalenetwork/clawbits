@@ -41,6 +41,7 @@ dev = [
 router = [
     "semantic-router>=0.1",
     "fastembed>=0.4",
+    "openai>=2",  # cascade-mode LLM triage client (any OpenAI-compatible endpoint)
 ]
 
 [tool.uv]

@@ -21,6 +21,7 @@ import gc
 import os
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlmodel import create_engine
@@ -36,6 +37,9 @@ from tests.fastapi._db_helpers import TEST_DATABASE_URL, ensure_database
 os.environ["CLAWBITS_DATABASE_URL"] = TEST_DATABASE_URL
 # Allow http cookies (TestClient runs over http://testserver).
 os.environ.setdefault("CLAWBITS_INSECURE_COOKIES", "1")
+# A durable secrets key, without which storing an org's LLM API key is
+# (deliberately) refused — see clawbits.lobstertalk.attention.crypto.
+os.environ.setdefault("CLAWBITS_ATTENTION_SECRETS_KEY", Fernet.generate_key().decode())
 # Belt-and-suspenders: even if a developer has WORKOS_API_KEY in their shell,
 # tests must run against the in-memory adapter — never make real HTTP calls.
 os.environ.pop("WORKOS_API_KEY", None)

@@ -1146,6 +1146,24 @@ class TableRead:
         ).first() is not None
 
     @staticmethod
+    def get_org_lobstertalk_config(session: Session, org_id: str) -> dict | None:
+        """The org's full LobsterTalk attention config —
+        ``{enabled, mode, base_url, model, api_key_encrypted}`` — or ``None``
+        for an unknown org (caller decides 404). ``api_key_encrypted`` is the
+        stored Fernet token, never plaintext; callers that need the key decrypt
+        it via :mod:`clawbits.lobstertalk.attention.crypto`."""
+        row = session.get(Organization, org_id)
+        if row is None:
+            return None
+        return {
+            "enabled": bool(row.attention_enabled),
+            "mode": row.attention_mode or "embedding",
+            "base_url": row.attention_llm_base_url,
+            "model": row.attention_llm_model,
+            "api_key_encrypted": row.attention_llm_api_key_encrypted,
+        }
+
+    @staticmethod
     def get_organization_by_workos_id(
         session: Session, workos_org_id: str,
     ) -> dict | None:

@@ -1,7 +1,7 @@
 """Organization data models (GitHub-style orgs)."""
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from clawbits.datastructures.avatar_models import AvatarRef
 
@@ -55,6 +55,60 @@ class SetOrgAttentionRequest(BaseModel):
 class OrgAttentionResponse(BaseModel):
     """The org's current LobsterTalk attention opt-in state."""
     enabled: bool = False
+
+
+class SetOrgLobstertalkRequest(BaseModel):
+    """Owner-set LobsterTalk attention config: the org toggle, the decision
+    mode, and (for cascade mode) the OpenAI-compatible LLM endpoint. The API
+    key is write-only — omit it to keep the stored key, or send
+    ``clear_api_key`` to drop it."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    enabled: bool = Field(description="Whether the LobsterTalk attention gate is armed for this org")
+    mode: Literal["embedding", "cascade"] = Field(
+        default="embedding",
+        description="'embedding' = gate verdict alone; 'cascade' = gate pass confirmed by an LLM triage call",
+    )
+    base_url: str | None = Field(
+        default=None, max_length=2048,
+        description="OpenAI-compatible API base URL (e.g. https://api.openai.com/v1)",
+    )
+    model: str | None = Field(
+        default=None, max_length=256,
+        description="Chat model name at that endpoint",
+    )
+    api_key: str | None = Field(
+        default=None, min_length=1, max_length=4096,
+        description="API key for the endpoint (stored encrypted); omit to keep the current key",
+    )
+    clear_api_key: bool = Field(default=False, description="Drop the stored API key")
+
+    @field_validator("base_url")
+    @classmethod
+    def _normalize_base_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().rstrip("/")
+        if not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("base_url must start with http:// or https://")
+        return v
+
+    @model_validator(mode="after")
+    def _check_cross_field(self) -> SetOrgLobstertalkRequest:
+        if self.mode == "cascade" and not (self.base_url and self.model):
+            raise ValueError("cascade mode requires base_url and model")
+        if self.api_key is not None and self.clear_api_key:
+            raise ValueError("api_key and clear_api_key are mutually exclusive")
+        return self
+
+
+class OrgLobstertalkResponse(BaseModel):
+    """The org's LobsterTalk attention config. The stored API key is never
+    returned — ``api_key_set`` only reports whether one exists."""
+    enabled: bool = False
+    mode: Literal["embedding", "cascade"] = "embedding"
+    base_url: str | None = None
+    model: str | None = None
+    api_key_set: bool = False
 
 
 class OrgResponse(BaseModel):

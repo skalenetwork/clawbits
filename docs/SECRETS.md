@@ -108,6 +108,15 @@ so the encrypted values win over anything compose pre-sets.
 - Don't commit `.env.keys` or any plaintext `.env` (gitignore covers it; don't override).
 - Don't reuse `WORKOS_COOKIE_PASSWORD` across envs — sessions sealed in staging
   shouldn't decrypt in prod.
+- Don't rotate `WORKOS_COOKIE_PASSWORD` without first pinning
+  `CLAWBITS_ATTENTION_SECRETS_KEY` (encrypt like `WORKOS_API_KEY`): org LLM
+  API keys for LobsterTalk cascade are Fernet-encrypted under
+  `CLAWBITS_ATTENTION_SECRETS_KEY`, falling back to the cookie password —
+  rotating the fallback orphans stored keys. Safe degrade (warnings + embedding-only
+  behavior, agents never muted), but org owners must re-enter their keys.
+  With neither variable set the server refuses to store an org LLM key at all
+  (`PUT .../lobstertalk` → 503) rather than sealing it under a per-process key
+  its sibling workers can't read.
 - Don't keep the prod private key on a laptop after it's in Komodo + 1Password.
   Edit prod secrets from a host that already has the key, or pull/edit/push with
   a temporary local key you delete after.

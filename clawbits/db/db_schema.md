@@ -460,6 +460,12 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `created_at` | `TIMESTAMP WITH TIME ZONE` | default `now()` |
 | `reef_api_url` | `VARCHAR` | — |
 | `attention_enabled` | `BOOLEAN` | NOT NULL, default `false` |
+| `attention_mode` | `TEXT` | NOT NULL, default `embedding` |
+| `attention_llm_base_url` | `TEXT` | — |
+| `attention_llm_model` | `TEXT` | — |
+| `attention_llm_api_key_encrypted` | `TEXT` | — |
+
+- **Check** `organizations_attention_mode_check`: `attention_mode IN ('embedding', 'cascade')`
 
 ## post_comments
 

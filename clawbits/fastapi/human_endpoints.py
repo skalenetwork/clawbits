@@ -6,6 +6,7 @@ Authentication itself (magic auth + social OAuth) lives in
 :func:`get_current_human_user` dependency from there directly.
 """
 
+import asyncio
 import logging
 import uuid as _uuid
 from urllib.parse import urlsplit
@@ -48,11 +49,13 @@ from clawbits.datastructures.org_models import (
     CreateOrgRequest,
     OrgAttentionResponse,
     OrgListResponse,
+    OrgLobstertalkResponse,
     OrgMemberResponse,
     OrgMembersListResponse,
     OrgResponse,
     ReefConnectionResponse,
     SetOrgAttentionRequest,
+    SetOrgLobstertalkRequest,
     SetReefConnectionRequest,
 )
 from clawbits.db.models import DISPLAY_NAME_MAX_LENGTH
@@ -69,12 +72,19 @@ from clawbits.email.imap_client import (
 )
 from clawbits.fastapi.session_cookie import stage_session_clear
 from clawbits.fastapi.workos_auth import get_current_human_user
+from clawbits.lobstertalk.attention.crypto import (
+    EphemeralSecretsKeyError,
+    decrypt_secret,
+    encrypt_secret,
+)
+from clawbits.lobstertalk.attention.triage import check_endpoint_allowed
 from clawbits.realtime import (
     fire_and_forget,
     get_bus,
     publish_automation_sync,
     publish_org_added,
 )
+from clawbits.ssrf import HostResolutionError, PrivateAddressError
 
 # ---------------------------------------------------------------------------
 # Response models still used by data endpoints
@@ -106,6 +116,11 @@ def _get_db(request: Request) -> Session:
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
+
+# How long a save waits on resolving an org-supplied LLM host before giving up
+# and letting the (authoritative) call-time check decide. The resolver thread
+# can't be cancelled, so this bounds the *request*, not the lookup.
+ENDPOINT_CHECK_TIMEOUT_SECONDS = 5.0
 
 human_router = APIRouter(tags=["Human"])
 
@@ -1811,6 +1826,116 @@ async def set_org_attention(
             raise HTTPException(status_code=404, detail="Organization not found")
         db.commit()
         return OrgAttentionResponse(enabled=body.enabled)
+
+
+# The "LobsterTalk" settings tab reads/writes the full attention config in one
+# shape: the org toggle plus the cascade-mode LLM endpoint. Supersedes the
+# /attention pair above for the frontend (kept for compatibility). The stored
+# API key is write-only — responses carry only ``api_key_set``.
+
+
+def _lobstertalk_response(cfg: dict) -> OrgLobstertalkResponse:
+    # ``api_key_set`` reports a *usable* key, not merely a stored one. A
+    # ciphertext left behind by a rotated secrets key can't be decrypted, so
+    # cascade would silently run without it — reporting "set" would tell the
+    # owner everything is fine while asking them to fix nothing.
+    token = cfg["api_key_encrypted"]
+    return OrgLobstertalkResponse(
+        enabled=cfg["enabled"],
+        mode=cfg["mode"],
+        base_url=cfg["base_url"],
+        model=cfg["model"],
+        api_key_set=bool(token) and decrypt_secret(token) is not None,
+    )
+
+
+@human_router.get("/api/human/orgs/{org_id}/lobstertalk", response_model=OrgLobstertalkResponse)
+async def get_org_lobstertalk(
+    org_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """The org's LobsterTalk attention config (key redacted to ``api_key_set``).
+    Any member can read."""
+    with _get_db(request) as db:
+        if not TableRead.is_org_member(db, org_id, user["id"]):
+            raise HTTPException(status_code=403, detail="Not a member of this organization")
+        cfg = TableRead.get_org_lobstertalk_config(db, org_id)
+        if cfg is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        return _lobstertalk_response(cfg)
+
+
+@human_router.put("/api/human/orgs/{org_id}/lobstertalk", response_model=OrgLobstertalkResponse)
+async def set_org_lobstertalk(
+    org_id: str,
+    body: SetOrgLobstertalkRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Write the org's LobsterTalk attention config. Owner only.
+
+    Cascade mode requires ``base_url`` and ``model`` atomically in the same
+    request (the settings form submits its whole state). The stored API key
+    changes only when ``api_key`` is sent (encrypted at rest) or
+    ``clear_api_key`` is set; omitting both keeps it.
+
+    A request that arms cascade has its base URL checked here for immediate
+    feedback, and again before every triage call — this one constrains what an
+    owner can save, not where the name resolves later. Requests that don't arm
+    it (turning LobsterTalk off, switching back to embedding) skip the check
+    so a host that has since gone bad can't strand the org."""
+    with _get_db(request) as db:
+        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
+            raise HTTPException(
+                status_code=403, detail="Only organization owners can change LobsterTalk settings"
+            )
+    # Outside the session on purpose: resolution is a network round trip with
+    # no timeout of its own, against a name the caller chose. Doing it while
+    # holding a pooled connection (and an open transaction) would let anyone
+    # tie up the pool by pointing base_url at a deliberately slow nameserver.
+    # Only when this request actually arms cascade — otherwise a config whose
+    # host has since gone bad would make the org unable to turn LobsterTalk
+    # *off*, which is exactly when you most want to.
+    if body.enabled and body.mode == "cascade" and body.base_url:
+        try:
+            await asyncio.wait_for(
+                run_in_threadpool(check_endpoint_allowed, body.base_url),
+                timeout=ENDPOINT_CHECK_TIMEOUT_SECONDS,
+            )
+        except PrivateAddressError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except (HostResolutionError, TimeoutError):
+            # Don't block a save on a name this host can't resolve yet, or
+            # can't resolve quickly (split-horizon DNS, an endpoint not up
+            # yet). The call-time check still refuses to dial anything unsafe.
+            pass
+    with _get_db(request) as db:
+        update_api_key = body.api_key is not None or body.clear_api_key
+        try:
+            api_key_encrypted = encrypt_secret(body.api_key) if body.api_key is not None else None
+        except EphemeralSecretsKeyError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "This server has no durable secrets key configured, so an API key "
+                    "cannot be stored. Set CLAWBITS_ATTENTION_SECRETS_KEY, or use an "
+                    "endpoint that needs no key."
+                ),
+            ) from e
+        if not TableWrite.set_org_lobstertalk_config(
+            db,
+            org_id,
+            enabled=body.enabled,
+            mode=body.mode,
+            base_url=body.base_url,
+            model=body.model,
+            api_key_encrypted=api_key_encrypted,
+            update_api_key=update_api_key,
+        ):
+            raise HTTPException(status_code=404, detail="Organization not found")
+        db.commit()
+        return _lobstertalk_response(TableRead.get_org_lobstertalk_config(db, org_id))
 
 
 class LinkReefVmRequest(BaseModel):

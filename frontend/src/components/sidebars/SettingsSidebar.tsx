@@ -8,6 +8,7 @@ import {
     HashtagIcon as Hash,
     ChartHistogramIcon as UsageChart,
     Link01Icon as LinkIcon,
+    Megaphone01Icon as Megaphone,
 } from "@hugeicons/core-free-icons";
 import {Icon} from "@/components/Icon";
 import {ReefIcon} from "@/components/ReefIcon";
@@ -61,6 +62,16 @@ export function SettingsSidebar() {
                             >
                                 <Icon icon={Hash}/>
                                 <span>Channels</span>
+                            </SidebarMenuButton>
+                        </SidebarMenuItem>
+                        <SidebarMenuItem>
+                            <SidebarMenuButton
+                                render={<NavLink to="/settings/lobstertalk" viewTransition/>}
+                                isActive={pathname === "/settings/lobstertalk"}
+                                tooltip="LobsterTalk"
+                            >
+                                <Icon icon={Megaphone}/>
+                                <span>LobsterTalk</span>
                             </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>

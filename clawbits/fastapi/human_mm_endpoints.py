@@ -1235,6 +1235,7 @@ async def create_post(
                 channel_id=channel_id,
                 context=attention_ctx,
                 author_agent_id=None,
+                engine=getattr(request.app, "_engine", None),
             )
         )
     if usage_reply_payload is not None:

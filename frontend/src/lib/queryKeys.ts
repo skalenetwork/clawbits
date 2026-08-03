@@ -36,6 +36,8 @@ export const queryKeys = {
   agentContactPermissions: (agentId: string) =>
     ["agentContactPermissions", agentId] as const,
   orgSignupRequests: (orgId: string) => ["org", orgId, "signup-requests"] as const,
+  /** The org's LobsterTalk attention config (toggle + mode + LLM connection). */
+  orgLobstertalk: (orgId: string) => ["org", orgId, "lobstertalk"] as const,
   /** The org's stored Reef API URL (clawbits backend). */
   reefConnection: (orgId: string) => ["org", orgId, "reef-connection"] as const,
   /** Browser-direct Reef health probe for the connection's status badge. */
