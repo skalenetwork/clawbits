@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout monorepo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -89,7 +89,7 @@ jobs:
           git push --force "$remote" "${split_sha}:refs/heads/main"
 
       - name: Checkout mirror repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: skalenetwork/clawbits-openclaw-plugin
           token: ${{ secrets.PLUGIN_MIRROR_TOKEN }}
@@ -98,7 +98,7 @@ jobs:
 
       - name: Semantic release (version tag + GitHub Release on the mirror)
         id: semrel
-        uses: cycjimmy/semantic-release-action@v4
+        uses: cycjimmy/semantic-release-action@v6
         with:
           working_directory: mirror
         env:

@@ -43,7 +43,7 @@ jobs:
       is-prerelease: ${{ steps.compute.outputs.is-prerelease }}
       channel: ${{ steps.compute.outputs.channel }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Compute
         id: compute
@@ -114,7 +114,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Ubuntu build deps
         if: matrix.platform == 'ubuntu-24.04'
@@ -191,7 +191,7 @@ jobs:
         run: echo "${{ secrets.APPLE_API_KEY_P8_BASE64 }}" | base64 --decode > "${{ runner.temp }}/asc_api_key.p8"
 
       - name: Build with Tauri
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -234,7 +234,7 @@ jobs:
           xcrun stapler validate "$DMG"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bundles-${{ matrix.platform }}
           if-no-files-found: error
@@ -259,7 +259,7 @@ jobs:
       contents: write
     steps:
       - name: Download all bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: bundles
           merge-multiple: true
