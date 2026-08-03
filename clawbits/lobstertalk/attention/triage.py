@@ -1,4 +1,5 @@
-"""LLM triage: the cascade's confirm stage, run after an embedding-gate pass.
+"""LLM triage: the cascade's confirm stage (run after an embedding-gate pass)
+and llm_only mode's sole filter (run on every post, no gate in front).
 
 The gate (:mod:`clawbits.lobstertalk.attention.gate`) is the cheap recall
 pre-filter; this module is the precision stage, ported from the deleted
@@ -6,9 +7,11 @@ standalone sidecar's decision engine. It asks a per-org-configured
 OpenAI-compatible endpoint one question — given the channel transcript, does
 this agent's input look genuinely needed? — and returns a
 :class:`TriageDecision`, or None when it couldn't decide (unreachable server,
-bad config, unparseable reply). The caller treats None as "fail open to the
-gate verdict": a misconfigured LLM can never silently mute agents, which is
-why every failure path here warns instead of raising.
+bad config, unparseable reply). What the caller does with None is mode-owned
+(see ``service.consider_post``): cascade fails open to the gate verdict — a
+misconfigured LLM can never silently mute agents — while llm_only, with no
+verdict to fall back on, fails closed. Every failure path here warns instead
+of raising either way.
 
 Portability over strictness: plain ``chat.completions`` with the JSON
 instruction embedded in the prompt, parsed by a balanced-brace fallback —
@@ -337,3 +340,63 @@ async def _triage_call(
             agent_id, config.model, config.base_url, e,
         )
         return None
+
+
+async def probe_llm_endpoint(config: LlmTriageConfig) -> tuple[bool, str]:
+    """One live test call against ``config`` for the settings-page healthcheck.
+
+    Exercises the exact stages a real triage call runs — endpoint guard, dial,
+    auth, model, JSON-parseable reply — against a one-line synthetic
+    transcript. Returns ``(ok, detail)`` where ``detail`` names the failing
+    stage in operator terms (it is rendered verbatim in the settings UI).
+    Unlike :func:`triage_decide`, failures are *reported*, not swallowed into
+    a fail-open/closed verdict — a healthcheck that hides the reason would be
+    this feature's own bug. The caller decides what a failure means; nothing
+    here touches nudge delivery."""
+    posts = [{
+        "post_id": 1, "who": "operator", "human_id": 0, "agent_id": None,
+        "created_at": "now",
+        "message": "Healthcheck: is this endpoint configured correctly?",
+    }]
+    try:
+        async with asyncio.timeout(TRIAGE_TIMEOUT_SECONDS):
+            try:
+                await asyncio.to_thread(check_endpoint_allowed, config.base_url)
+            except UnsafeHostError as e:
+                return False, str(e)
+            client = _make_client(config)
+            try:
+                response = await client.chat.completions.create(
+                    model=config.model,
+                    messages=[
+                        {"role": "system", "content": build_system_prompt("healthcheck", None)},
+                        {
+                            "role": "user",
+                            "content": build_user_prompt(
+                                "healthcheck", "healthcheck",
+                                format_transcript(posts, "healthcheck", None),
+                                has_focus=False,
+                            ),
+                        },
+                    ],
+                    temperature=0,
+                    max_tokens=TRIAGE_MAX_TOKENS,
+                )
+            finally:
+                await client.close()
+            content = (response.choices[0].message.content or "") if response.choices else ""
+            raw = extract_json_object(content)
+            if raw is None or not isinstance(raw.get("needs_input"), bool):
+                return False, (
+                    "endpoint answered, but not with the JSON shape triage needs — "
+                    f"try a different model (got: {_one_line(content)[:120]!r})"
+                )
+            return True, f"{config.model} answered correctly"
+    except TimeoutError:
+        return False, (
+            f"no reply within {TRIAGE_TIMEOUT_SECONDS:.0f}s — endpoint unreachable, "
+            "wrong port, or overloaded"
+        )
+    except Exception as e:
+        detail = _one_line(str(e)).strip()[:300]
+        return False, detail or e.__class__.__name__

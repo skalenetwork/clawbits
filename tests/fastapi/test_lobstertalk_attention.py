@@ -108,14 +108,16 @@ def _run(
     triage_decision=None,
     deliver_lands=True,
     calls=None,
+    catchup=False,
 ):
     """Run consider_post with every side effect faked. ``calls`` (an optional
     caller-supplied list) receives ``(step, arg)`` tuples in execution order —
-    claim/transcript/triage/deliver/refund — so cascade tests can assert both
-    what ran and in which order (the claim-before-triage watermark semantics).
-    ``transcript=None`` simulates a failed transcript load; ``triage_decision``
-    may be a single value or a list consumed one per call; ``deliver_lands``
-    False simulates a nudge that found no live agent socket."""
+    claim/pending/transcript/triage/deliver/refund — so cascade tests can
+    assert both what ran and in which order (the claim-before-triage watermark
+    semantics). ``transcript=None`` simulates a failed transcript load;
+    ``triage_decision`` may be a single value or a list consumed one per call;
+    ``deliver_lands`` False simulates a nudge that found no live agent
+    socket."""
     delivered: list[str] = []
     log = calls if calls is not None else []
     decisions = list(triage_decision) if isinstance(triage_decision, list) else None
@@ -139,6 +141,9 @@ def _run(
     async def fake_release(agent_id, channel_id):
         log.append(("refund", agent_id))
 
+    async def fake_pending(agent_id, channel_id, post_id):
+        log.append(("pending", agent_id))
+
     async def fake_deliver(agent_id, *a):
         log.append(("deliver", agent_id))
         if not deliver_lands:
@@ -151,6 +156,7 @@ def _run(
     monkeypatch.setattr(svc, "triage_decide", fake_triage)
     monkeypatch.setattr(svc, "_release_cooldown", fake_release)
     monkeypatch.setattr(svc, "_deliver", fake_deliver)
+    monkeypatch.setattr(svc, "_remember_pending", fake_pending)
     asyncio.run(
         consider_post(
             post=post,
@@ -158,6 +164,7 @@ def _run(
             context=context,
             author_agent_id=author_agent_id,
             engine=engine,
+            catchup=catchup,
         )
     )
     return delivered
@@ -490,6 +497,270 @@ def test_embedding_mode_never_touches_triage(monkeypatch):
     )
     assert delivered == ["Alpha"]
     assert all(step not in ("triage", "transcript") for step, _ in calls)
+
+
+# --- llm_only: no gate, the LLM triage is the sole filter; fails closed ------
+
+
+def _llm_only_ctx(*candidates, llm=_LLM):
+    return AttentionContext(
+        channel_type="public",
+        candidates=tuple(candidates),
+        channel_label="general",
+        mode="llm_only",
+        llm=llm,
+    )
+
+
+def test_llm_only_delivers_without_consulting_the_gate(monkeypatch):
+    """``verdict=None`` simulates an unavailable gate (e.g. no ``router``
+    extra): embedding/cascade would bail before the loop, llm_only must not
+    even ask — and the claim still strictly precedes the triage call."""
+    ctx = _llm_only_ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False))
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "thanks, that worked!", "post_id": 30},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=object(),
+        triage_decision=TriageDecision(needs_input=True, reason="follow-up needed"),
+        calls=calls,
+    )
+    assert delivered == ["Alpha"]
+    assert [step for step, _ in calls] == ["claim", "transcript", "triage", "deliver"]
+
+
+def test_llm_only_triage_no_suppresses_and_keeps_cooldown(monkeypatch):
+    """Same watermark semantics as cascade: a paid "no" consumes the window."""
+    ctx = _llm_only_ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False))
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "any idea why this isn't working?", "post_id": 31},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=object(),
+        triage_decision=TriageDecision(needs_input=False, reason="social"),
+        calls=calls,
+    )
+    assert delivered == []
+    assert all(step not in ("deliver", "refund") for step, _ in calls)
+
+
+def test_llm_only_without_llm_config_fails_closed(monkeypatch):
+    """cascade's fallback is the gate verdict; llm_only has none, so an
+    unusable config delivers nothing — and claims nothing (no cooldown
+    lockout while the org is misconfigured)."""
+    ctx = _llm_only_ctx(
+        AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False), llm=None
+    )
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "any idea why this isn't working?", "post_id": 32},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=object(),
+        calls=calls,
+    )
+    assert delivered == []
+    assert calls == []
+
+
+def test_llm_only_without_engine_fails_closed(monkeypatch):
+    ctx = _llm_only_ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False))
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "any idea why this isn't working?", "post_id": 33},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=None,
+        calls=calls,
+    )
+    assert delivered == []
+    assert calls == []
+
+
+def test_llm_only_transcript_failure_fails_closed_and_refunds(monkeypatch):
+    """Nothing was paid for the candidate when the transcript can't be read,
+    so the claimed cooldown is refunded before bailing — and the remaining
+    candidates are never claimed."""
+    ctx = _llm_only_ctx(
+        AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False),
+        AttentionCandidate("Beta", snoozed=False, inter_agent_mode=False),
+    )
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "any idea why this isn't working?", "post_id": 34},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=object(),
+        transcript=None,
+        calls=calls,
+    )
+    assert delivered == []
+    assert [step for step, _ in calls] == ["claim", "transcript", "refund"]
+    assert not any(agent == "Beta" for _, agent in calls)
+
+
+def test_llm_only_triage_failure_fails_closed_and_keeps_cooldown(monkeypatch):
+    """An undecided triage call was still paid for: the cooldown stays
+    consumed (spend bound) and the remaining candidates are dropped
+    unclaimed — the endpoint would answer them the same way."""
+    ctx = _llm_only_ctx(
+        AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False),
+        AttentionCandidate("Beta", snoozed=False, inter_agent_mode=False),
+    )
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "any idea why this isn't working?", "post_id": 35},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=object(),
+        triage_decision=None,
+        calls=calls,
+    )
+    assert delivered == []
+    assert [step for step, _ in calls] == ["claim", "transcript", "triage"]
+
+
+# --- cooldown catch-up: window-blocked posts are replayed on expiry ---------
+
+
+def test_cooldown_skip_remembers_pending_for_catchup(monkeypatch):
+    """A post blocked by an active window is marked for the catch-up watcher
+    instead of being lost."""
+    ctx = _ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False))
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "help me please", "post_id": 41},
+        context=ctx,
+        author_agent_id=None,
+        on_cooldown=True,
+        calls=calls,
+    )
+    assert delivered == []
+    assert ("pending", "Alpha") in calls
+
+
+def test_catchup_pass_does_not_rechain_pending(monkeypatch):
+    """Losing the claim race during a catch-up replay means a newer live post
+    beat the stale one to the fresh window — re-marking it would resurrect old
+    conversation for as long as traffic continues."""
+    ctx = _llm_only_ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False))
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "help", "post_id": 42},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=object(),
+        on_cooldown=True,
+        catchup=True,
+        calls=calls,
+    )
+    assert delivered == []
+    assert all(step != "pending" for step, _ in calls)
+
+
+def test_parse_cooldown_key():
+    assert svc.parse_cooldown_key("lobstertalk:cd:Alpha:c-1") == ("Alpha", "c-1")
+    assert svc.parse_cooldown_key("lobstertalk:pending:Alpha:c-1") is None
+    assert svc.parse_cooldown_key("user_presence:7") is None
+    assert svc.parse_cooldown_key("lobstertalk:cd:no-separator") is None
+
+
+def test_catchup_pending_runs_scoped_pass(monkeypatch):
+    """The expiry handler GETDELs the marker (single winner across workers)
+    and replays the pass with catchup=True on the narrowed context."""
+
+    class _FakeRedis:
+        def __init__(self):
+            self.deleted: list = []
+
+        async def getdel(self, key):
+            self.deleted.append(key)
+            return "41"
+
+    fake_redis = _FakeRedis()
+
+    class _FakeBus:
+        async def redis_client(self):
+            return fake_redis
+
+    monkeypatch.setattr(svc, "get_bus", lambda: _FakeBus())
+    narrowed = _llm_only_ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False))
+    payload = {"post_id": 41, "message": "missed during cooldown", "agent_id": None}
+    monkeypatch.setattr(
+        svc, "_load_catchup_context", lambda engine, pid, cid, aid: (payload, narrowed)
+    )
+    seen: dict = {}
+
+    async def fake_consider(**kw):
+        seen.update(kw)
+
+    monkeypatch.setattr(svc, "consider_post", fake_consider)
+    asyncio.run(svc._catchup_pending(object(), "Alpha", "c1"))
+    assert fake_redis.deleted == ["lobstertalk:pending:Alpha:c1"]
+    assert seen["catchup"] is True
+    assert seen["post"] is payload and seen["context"] is narrowed
+    assert seen["author_agent_id"] is None
+
+
+def test_catchup_pending_noop_when_nothing_pending(monkeypatch):
+    class _FakeRedis:
+        async def getdel(self, key):
+            return None
+
+    class _FakeBus:
+        async def redis_client(self):
+            return _FakeRedis()
+
+    monkeypatch.setattr(svc, "get_bus", lambda: _FakeBus())
+
+    def _boom(*a):
+        raise AssertionError("nothing pending — must not touch the DB")
+
+    monkeypatch.setattr(svc, "_load_catchup_context", _boom)
+    asyncio.run(svc._catchup_pending(object(), "Alpha", "c1"))
+
+
+def test_nudge_wire_name_is_the_pre_rename_one():
+    """The published event type MUST stay ``mutualist.consider`` until the
+    deployed plugin fleet carries the dual-name filter: every current plugin
+    (openclaw pl0.15.1, deployed hermes adapters) matches only the old name,
+    so "cleaning this up" to ``lobstertalk.consider`` silently mutes nudges
+    fleet-wide. Verified live 2026-08-03. See publish_attention_nudge."""
+    from clawbits.realtime.bus import agent_topic
+    from clawbits.realtime.sse import publish_attention_nudge
+
+    published: dict = {}
+
+    class _FakeBus:
+        async def publish(self, topic, event):
+            published.update(topic=topic, event=event)
+            return 1
+
+    receivers = asyncio.run(
+        publish_attention_nudge(_FakeBus(), "Alpha", "c1", {"post_id": 7})
+    )
+    assert receivers == 1
+    assert published["topic"] == agent_topic("Alpha")
+    assert published["event"]["type"] == "mutualist.consider"
+    assert published["event"]["channel_id"] == "c1"
+    assert published["event"]["data"] == {"post_id": 7}
 
 
 def test_deliver_publishes_nudge_on_agent_topic(monkeypatch):
@@ -979,3 +1250,44 @@ def test_build_context_embedding_skips_profile_lookup(monkeypatch):
     ctx = svc.build_attention_context(session, "c1")
     assert ctx is not None
     assert ctx.candidates[0].description is None
+
+
+def test_build_context_llm_only_resolves_llm_and_descriptions(monkeypatch):
+    """llm_only resolves the LLM config and profile descriptions exactly like
+    cascade — the triage prompt is the same, only the gate in front differs."""
+    monkeypatch.setattr(
+        svc.TableRead,
+        "get_org_lobstertalk_config",
+        lambda session, org_id: _lt_config(
+            mode="llm_only", base_url="http://llm.local/v1", model="m1"
+        ),
+    )
+    _cascade_members(monkeypatch)
+    session = _FakeSession(
+        _channel(display_name="General Chat"),
+        {"On": _agent_row(enabled=True)},
+        profiles={"On": SimpleNamespace(description="Helps with infra.")},
+    )
+    ctx = svc.build_attention_context(session, "c1")
+    assert ctx is not None
+    assert ctx.mode == "llm_only"
+    assert ctx.llm == LlmTriageConfig(
+        base_url="http://llm.local/v1", model="m1", api_key=None
+    )
+    assert ctx.candidates[0].description == "Helps with infra."
+
+
+def test_build_context_llm_only_incomplete_config_leaves_llm_none(monkeypatch):
+    """llm_only without base_url+model (only reachable via direct DB edits —
+    the API validates) snapshots with llm=None; consider_post then fails
+    closed rather than this snapshot downgrading the mode."""
+    monkeypatch.setattr(
+        svc.TableRead,
+        "get_org_lobstertalk_config",
+        lambda session, org_id: _lt_config(mode="llm_only"),
+    )
+    _cascade_members(monkeypatch)
+    session = _FakeSession(_channel(), {"On": _agent_row(enabled=True)})
+    ctx = svc.build_attention_context(session, "c1")
+    assert ctx is not None
+    assert ctx.mode == "llm_only" and ctx.llm is None

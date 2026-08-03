@@ -5,8 +5,10 @@ semantic-router idea as the standalone sidecar, but run inside clawbits.
 Each new post is evaluated against the attention gate; the per-agent pass
 applies the native-handling gates (DM / @mention / own / snooze / inter-agent),
 claims a per-(agent, channel) Redis cooldown, then delivers a targeted
-``lobstertalk.consider`` event on the agent's control topic — the plugin turns it
-into a reply-only-if-useful agent turn. A nudge that doesn't land (no live
+``mutualist.consider`` event (the pre-rename wire name — deployed plugins only
+match that one; see :func:`clawbits.realtime.sse.publish_attention_nudge`) on
+the agent's control topic — the plugin turns it into a reply-only-if-useful
+agent turn. A nudge that doesn't land (no live
 agent socket) refunds the cooldown; nudges are never queued or replayed.
 See :func:`clawbits.lobstertalk.attention.service._deliver`.
 

@@ -19,7 +19,9 @@ and its answer — close in topic — land on opposite sides. Over-long posts ar
 clipped to head + tail before embedding, keeping a trailing ask visible. On a pass it
 applies the native-handling gates (DM / @mention / own / snooze / inter-agent)
 and a Redis per-`(agent, channel)` cooldown, then delivers a targeted
-`lobstertalk.consider` event on the agent's control topic; the plugin dispatches
+`mutualist.consider` event on the agent's control topic (the pre-rename wire
+name, kept on purpose: deployed plugins filter for it exclusively, and current
+plugin builds accept both — see `publish_attention_nudge`); the plugin dispatches
 it as a reply-only-if-useful agent turn (see `service._deliver`). Delivery is
 realtime-only (the agent's WebSocket): a nudge with no live subscriber refunds
 the cooldown and is dropped — stale nudges are noise, so nothing is queued or
@@ -30,9 +32,9 @@ enabled), so the one-time model download (~67MB, cached in the FastEmbed cache
 dir — set `FASTEMBED_CACHE_PATH` to pre-bake it into an image) and any load
 failure land in the boot log, not inside the first post's background task.
 
-## Cascade mode
+## Modes
 
-Per-org, the gate runs in one of two modes (picked in **Settings →
+Per-org, the pass runs in one of three modes (picked in **Settings →
 LobsterTalk**, stored as `organizations.attention_mode`):
 
 - **`embedding`** (default) — the gate verdict above is final.
@@ -46,6 +48,24 @@ LobsterTalk**, stored as `organizations.attention_mode`):
   per channel, so a member creating fresh channels pays a fresh call in each.
   There's no per-org rate limit behind it, which matters if you point cascade
   at a metered endpoint.
+- **`llm_only`** — no embedding gate at all: every post enters the candidate
+  loop as if escalated, and the same per-candidate LLM triage is the sole
+  filter. The cooldown still claims before the call, so spend stays bounded
+  at one call per (agent, channel) window — but where cascade pays nothing in
+  a channel the gate never fires on, llm_only pays in every window with any
+  traffic. Because `evaluate_text` is never called, this mode works without
+  the `router` extra and never downloads the encoder.
+
+**llm_only fails *closed*.** The fail-open rule below is cascade's: its
+fallback is the gate verdict. llm_only has no verdict underneath — failing
+open would nudge every candidate on every post, the exact spend the feature
+exists to prevent — so every confirm-stage failure (missing/unusable config,
+transcript fetch failure, unreachable endpoint, unparseable reply) drops the
+nudge instead, with a warning. A broken endpoint therefore silently mutes
+agents in llm_only mode until it recovers; if that trade reads wrong for your
+org, cascade is the resilient choice. A transcript failure refunds the
+claimed cooldown (nothing was paid); a failed LLM call keeps it (the call was
+paid — same watermark rule as cascade).
 
 The transcript window **ends at the post that tripped the gate**, and that
 line is marked in the prompt. Both matter: the pass runs after the request
@@ -56,11 +76,12 @@ anchor is actually in the window, and every author-controlled field — message
 bodies *and* display names — is flattened to a single line first, since a
 line break in either would let a user forge transcript lines, marker included.
 
-**Fail-open, always.** Anything that goes wrong past the gate — unreachable
-server, invalid or undecryptable API key, missing base URL/model, transcript
-fetch failure, an unparseable reply — logs a warning and falls back to the
-gate verdict, i.e. the nudge goes out. Misconfiguration can degrade cascade
-to embedding behavior; it can never silently mute agents.
+**Cascade fails open, always.** Anything that goes wrong past the gate —
+unreachable server, invalid or undecryptable API key, missing base URL/model,
+transcript fetch failure, an unparseable reply — logs a warning and falls
+back to the gate verdict, i.e. the nudge goes out. Misconfiguration can
+degrade cascade to embedding behavior; it can never silently mute agents.
+(llm_only inverts this — see above.)
 
 Two consequences of that policy worth knowing:
 
@@ -160,7 +181,8 @@ Off by default, behind three gates — all must be on for an agent to be nudged:
 
 - **Server capability:** the `router` extra must be installed
   (`uv sync --extra router`). Without it `get_gate()` returns `None` and the gate
-  is inert — no env flag can force it on.
+  is inert — no env flag can force it on. (`llm_only` mode is the exception:
+  it never touches the gate, so it works without the extra.)
 - **Org opt-in:** the org owner arms `organizations.attention_enabled` from
   **Settings → LobsterTalk** (or `PUT /api/human/orgs/{org_id}/lobstertalk`).
   This is the product switch — it replaced the old `CLAWBITS_ATTENTION_ENABLED`

@@ -523,12 +523,13 @@ export async function deleteReefConnection(orgId: string): Promise<void> {
 }
 
 /** The org's LobsterTalk attention config. ``mode`` picks the pipeline —
- *  ``embedding`` (semantic gate only) or ``cascade`` (gate pass → LLM
- *  confirm); the LLM fields only matter in cascade mode. The API key is
- *  write-only: responses carry ``api_key_set``, never the key itself. */
+ *  ``embedding`` (semantic gate only), ``cascade`` (gate pass → LLM confirm)
+ *  or ``llm_only`` (no gate: every post goes to the LLM, which fails closed
+ *  when unreachable); the LLM fields only matter in the LLM modes. The API
+ *  key is write-only: responses carry ``api_key_set``, never the key itself. */
 export interface OrgLobstertalkSettings {
   enabled: boolean;
-  mode: "embedding" | "cascade";
+  mode: "embedding" | "cascade" | "llm_only";
   base_url: string | null;
   model: string | null;
   api_key_set: boolean;
@@ -551,7 +552,7 @@ async function readErrorDetail(res: Response): Promise<string> {
 
 export interface SetOrgLobstertalkBody {
   enabled: boolean;
-  mode: "embedding" | "cascade";
+  mode: "embedding" | "cascade" | "llm_only";
   base_url?: string | null;
   model?: string | null;
   /** Omit to keep the stored key unchanged; set to replace it. */
@@ -586,6 +587,26 @@ export async function setOrgLobstertalk(
   // unwrapping, since it's the whole diagnosis and it lands in a toast.
   if (!res.ok) throw new Error(await readErrorDetail(res));
   return res.json() as Promise<OrgLobstertalkSettings>;
+}
+
+/** One live probe against the org's *stored* LobsterTalk LLM endpoint.
+ *  ``ok=false`` means the check ran and the endpoint failed — ``detail``
+ *  names the stage (guard, auth, model, JSON shape). Owner-only; spends one
+ *  metered call on the org's key. */
+export interface OrgLobstertalkHealth {
+  ok: boolean;
+  detail: string;
+  latency_ms: number;
+}
+
+export async function checkOrgLobstertalkEndpoint(orgId: string): Promise<OrgLobstertalkHealth> {
+  if (!orgId) throw new Error("orgId is required");
+  const res = await fetch(
+    `/api/human/orgs/${encodeURIComponent(orgId)}/lobstertalk/healthcheck`,
+    { credentials: "include", method: "POST" },
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<OrgLobstertalkHealth>;
 }
 
 export type AgentSignupStatus = "pending_approval" | "approved" | "rejected";

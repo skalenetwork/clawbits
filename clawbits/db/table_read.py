@@ -1137,12 +1137,16 @@ class TableRead:
         return bool(row.attention_enabled) if row else False
 
     @staticmethod
-    def any_org_attention_enabled(session: Session) -> bool:
-        """True if at least one org has the LobsterTalk gate armed. Used at boot to
-        decide whether to warm the (67MB) encoder — a server no org uses skips the
-        download entirely."""
+    def any_org_attention_needs_gate(session: Session) -> bool:
+        """True if at least one org has the LobsterTalk gate armed in a mode that
+        uses the embedding encoder. Used at boot to decide whether to warm the
+        (67MB) encoder — a server whose orgs are all off or llm_only (which never
+        embeds) skips the download entirely."""
         return session.exec(
-            select(Organization.org_id).where(Organization.attention_enabled.is_(True)).limit(1)
+            select(Organization.org_id)
+            .where(Organization.attention_enabled.is_(True))
+            .where(Organization.attention_mode != "llm_only")
+            .limit(1)
         ).first() is not None
 
     @staticmethod

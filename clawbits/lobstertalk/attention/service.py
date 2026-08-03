@@ -4,10 +4,11 @@ then per-agent apply the native-handling gates and a Redis cooldown before
 
 Called fire-and-forget from the post-create path. All DB work happens up front
 in :func:`build_attention_context` (in the request's session); the async pass
-itself touches the gate (CPU, via a thread) and Redis — plus, in cascade mode,
-a short-lived session of its own (opened in a thread against the engine the
-call site passes) to pull the channel transcript for the LLM confirm stage —
-so it can outlive the request without holding the request's session.
+itself touches the gate (CPU, via a thread) and Redis — plus, in the LLM modes
+(cascade, llm_only), a short-lived session of its own (opened in a thread
+against the engine the call site passes) to pull the channel transcript for
+the LLM triage stage — so it can outlive the request without holding the
+request's session.
 """
 
 from __future__ import annotations
@@ -15,15 +16,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import Engine
 from sqlmodel import Session
 
-from clawbits.db.models import Agent, AgentProfile, MmChannel
+from clawbits.db.models import Agent, AgentProfile, MmChannel, MmPost
 from clawbits.db.table_read import TableRead
 from clawbits.lobstertalk.attention.crypto import decrypt_secret
-from clawbits.lobstertalk.attention.gate import cooldown_seconds, evaluate_text
+from clawbits.lobstertalk.attention.gate import Verdict, cooldown_seconds, evaluate_text
 from clawbits.lobstertalk.attention.triage import (
     TRANSCRIPT_POST_LIMIT,
     LlmTriageConfig,
@@ -40,8 +41,8 @@ class AttentionCandidate:
     snoozed: bool
     inter_agent_mode: bool
     # AgentProfile.description, fed to the triage prompt as the agent's
-    # identity. Only fetched in cascade mode; None keeps the embedding
-    # path's cost unchanged.
+    # identity. Only fetched in the LLM modes (cascade, llm_only); None keeps
+    # the embedding path's cost unchanged.
     description: str | None = None
 
 
@@ -49,11 +50,12 @@ class AttentionCandidate:
 class AttentionContext:
     channel_type: str
     candidates: tuple[AttentionCandidate, ...]
-    # Cascade-mode extras, all defaulted so embedding-mode constructors (and
+    # LLM-mode extras, all defaulted so embedding-mode constructors (and
     # pre-cascade tests) stay valid. ``llm`` is None in embedding mode — and
-    # in cascade mode when the org's LLM config is unusable (missing
-    # base_url/model, undecryptable key); consider_post then fails open per
-    # post instead of this snapshot silently downgrading the mode.
+    # in cascade/llm_only when the org's LLM config is unusable (missing
+    # base_url/model, undecryptable key); consider_post then fails per post
+    # (open in cascade, closed in llm_only) instead of this snapshot silently
+    # downgrading the mode.
     channel_label: str = ""
     mode: str = "embedding"
     llm: LlmTriageConfig | None = None
@@ -73,10 +75,11 @@ def build_attention_context(session: Session, channel_id: str) -> AttentionConte
     it with an env check — so the org lookup is ordered first to keep
     the cost near-zero for channels whose org hasn't opted in.
 
-    In cascade mode the LLM config is resolved (key decrypted) here, while we
-    hold a session; an unusable config warns and leaves ``llm=None`` rather
-    than downgrading the mode, so consider_post fails open per post and the
-    misconfig stays visible next to every nudge it affected.
+    In the LLM modes (cascade, llm_only) the LLM config is resolved (key
+    decrypted) here, while we hold a session; an unusable config warns and
+    leaves ``llm=None`` rather than downgrading the mode, so consider_post
+    fails per post — open (gate verdict) in cascade, closed (no nudges) in
+    llm_only — and the misconfig stays visible next to every post it affected.
     """
     channel = session.get(MmChannel, channel_id)
     if channel is None or channel.channel_type == "direct":
@@ -90,12 +93,18 @@ def build_attention_context(session: Session, channel_id: str) -> AttentionConte
         return None
     mode = config["mode"]
     llm: LlmTriageConfig | None = None
-    if mode == "cascade":
+    if mode in ("cascade", "llm_only"):
+        # What an unusable config costs differs by mode: cascade falls back to
+        # the gate verdict (fail open); llm_only has no verdict underneath, so
+        # consider_post fails closed (no nudges) instead.
+        consequence = (
+            "triage will fail open to the gate verdict" if mode == "cascade"
+            else "llm_only will fail closed (no nudges)"
+        )
         if not config["base_url"] or not config["model"]:
             logger.warning(
-                "attention: org %s is in cascade mode without an LLM base_url/model; "
-                "triage will fail open to the gate verdict",
-                channel.org_id,
+                "attention: org %s is in %s mode without an LLM base_url/model; %s",
+                channel.org_id, mode, consequence,
             )
         else:
             token = config["api_key_encrypted"]
@@ -104,11 +113,10 @@ def build_attention_context(session: Session, channel_id: str) -> AttentionConte
                 # decrypt_secret already warned about the token itself; add the
                 # org so the operator knows whose key to re-enter. A stored-but-
                 # unusable key means the endpoint likely requires auth, so don't
-                # call it key-less — leave llm unset (fail open) instead.
+                # call it key-less — leave llm unset instead.
                 logger.warning(
-                    "attention: org %s has an undecryptable LLM API key; "
-                    "triage will fail open to the gate verdict",
-                    channel.org_id,
+                    "attention: org %s has an undecryptable LLM API key; %s",
+                    channel.org_id, consequence,
                 )
             else:
                 llm = LlmTriageConfig(
@@ -127,7 +135,7 @@ def build_attention_context(session: Session, channel_id: str) -> AttentionConte
         # The profile description personalises the triage prompt; skip the
         # extra PK get entirely in embedding mode (no LLM to feed it to).
         description = None
-        if mode == "cascade":
+        if mode in ("cascade", "llm_only"):
             profile = session.get(AgentProfile, agent_id)
             description = profile.description if profile else None
         candidates.append(
@@ -181,6 +189,144 @@ async def _release_cooldown(agent_id: str, channel_id: str) -> None:
         await client.delete(_cooldown_key(agent_id, channel_id))
     except Exception as e:
         logger.warning("attention cooldown refund failed (%s); will expire on TTL", e)
+
+
+# --- cooldown catch-up: posts that land during a window aren't lost ----------
+#
+# A cooldown-skipped post used to vanish: unless someone re-asked after the
+# window, the agent never considered it. Instead, the skip records the newest
+# such post in a short-lived pending marker, and a per-worker watcher bridges
+# the cooldown key's Redis expiration to a deferred re-run of the pass for
+# exactly that (agent, channel). Only the newest post is remembered — the
+# triage transcript already carries everything else that arrived during the
+# window, so replaying each skipped post would just spend extra LLM calls on
+# the same conversation.
+
+
+def _pending_key(agent_id: str, channel_id: str) -> str:
+    return f"lobstertalk:pending:{agent_id}:{channel_id}"
+
+
+def parse_cooldown_key(key: str) -> tuple[str, str] | None:
+    """``(agent_id, channel_id)`` from a cooldown key, else None — so the
+    shared expirations stream can be filtered. Split from the right: channel
+    ids are UUIDs (never contain ``:``), which keeps this correct even if an
+    agent id somehow carried one."""
+    prefix = "lobstertalk:cd:"
+    if not key.startswith(prefix):
+        return None
+    agent_id, sep, channel_id = key[len(prefix):].rpartition(":")
+    if not sep or not agent_id or not channel_id:
+        return None
+    return agent_id, channel_id
+
+
+async def _remember_pending(agent_id: str, channel_id: str, post_id: object) -> None:
+    """Mark ``post_id`` as awaiting a catch-up pass once the active cooldown
+    expires. Overwrites an older marker — newest post wins. TTL is a few
+    windows so an unserviced marker (worker restart, notifications disabled)
+    dies quietly instead of resurrecting a stale conversation much later."""
+    if not isinstance(post_id, int):
+        return
+    try:
+        client = await get_bus().redis_client()
+        await client.set(
+            _pending_key(agent_id, channel_id), str(post_id), ex=cooldown_seconds() * 3
+        )
+    except Exception as e:
+        logger.warning("attention pending marker failed (%s); post %s won't be caught up", e, post_id)
+
+
+def _load_catchup_context(
+    engine: Engine, post_id: int, channel_id: str, agent_id: str
+) -> tuple[dict, AttentionContext] | None:
+    """Serialized post + context for a catch-up pass, or None when it no longer
+    applies (post/channel gone, org disarmed, agent no longer a candidate).
+    The context is narrowed to the one agent whose cooldown expired: other
+    candidates already had their own live pass at the post — replaying it to
+    them would double-consider (or, mid-cooldown, chain pending markers for a
+    post they already saw)."""
+    from clawbits.datastructures.mm_models import MmPostResponse
+
+    with Session(engine) as db:
+        row = db.get(MmPost, post_id)
+        if row is None or row.channel_id != channel_id:
+            return None
+        ctx = build_attention_context(db, channel_id)
+        if ctx is None:
+            return None
+        mine = tuple(c for c in ctx.candidates if c.agent_id == agent_id)
+        if not mine:
+            return None
+        d = TableRead._mm_post_to_dict(db, row, None)
+        d.pop("_raw_created_at", None)
+        return MmPostResponse(**d).model_dump(), replace(ctx, candidates=mine)
+
+
+async def _catchup_pending(engine: Engine, agent_id: str, channel_id: str) -> None:
+    """Run the deferred pass for whatever the expired window left pending.
+
+    GETDEL makes exactly one worker the winner (every worker sees the same
+    expiry event). The replay is the normal pass — fresh cooldown claim,
+    normal triage, llm_only still fails closed — just scoped to this agent,
+    with ``catchup=True`` so a lost claim-race against a newer live post
+    doesn't re-mark this (now older) post forever."""
+    client = await get_bus().redis_client()
+    raw = await client.getdel(_pending_key(agent_id, channel_id))
+    if not raw:
+        return
+    try:
+        post_id = int(raw)
+    except (TypeError, ValueError):
+        return
+    loaded = await asyncio.to_thread(
+        _load_catchup_context, engine, post_id, channel_id, agent_id
+    )
+    if loaded is None:
+        return
+    payload, ctx = loaded
+    logger.info(
+        "attention: catch-up pass for %s in %s (post=%s missed during cooldown)",
+        agent_id, channel_id, post_id,
+    )
+    await consider_post(
+        post=payload,
+        channel_id=channel_id,
+        context=ctx,
+        author_agent_id=payload.get("agent_id"),
+        engine=engine,
+        catchup=True,
+    )
+
+
+async def attention_cooldown_catchup_watcher(engine: Engine) -> None:
+    """Bridge cooldown-key expirations to deferred attention passes.
+
+    Started once per worker by the FastAPI lifespan (same shape as
+    ``user_presence_expiry_watcher``). Exits cleanly when keyspace
+    notifications can't be enabled — catch-up is then best-effort-off and
+    live posts keep working exactly as before."""
+    bus = get_bus()
+    if not await bus.enable_keyspace_notifications():
+        logger.warning(
+            "attention catch-up watcher: keyspace notifications unavailable; "
+            "cooldown-skipped posts will not be replayed"
+        )
+        return
+    logger.info("attention cooldown catch-up watcher: started")
+    try:
+        async for key in bus.subscribe_expirations():
+            parsed = parse_cooldown_key(key)
+            if parsed is None:
+                continue
+            agent_id, channel_id = parsed
+            try:
+                await _catchup_pending(engine, agent_id, channel_id)
+            except Exception as e:
+                logger.warning("attention catch-up failed for %s: %s", key, e)
+    except asyncio.CancelledError:
+        logger.info("attention cooldown catch-up watcher: stopped")
+        raise
 
 
 def _load_transcript(
@@ -241,22 +387,32 @@ async def consider_post(
     context: AttentionContext,
     author_agent_id: str | None,
     engine: Engine | None = None,
+    catchup: bool = False,
 ) -> None:
     """Evaluate one new post and nudge the agents that should look at it.
 
     ``author_agent_id`` is the posting agent, or None for a human post. The gate
-    runs once (the attention route is agent-agnostic in v1); the per-agent loop
-    applies the cheap native-handling gates + cooldown, then — in cascade mode —
+    runs once (the attention route is agent-agnostic in v1) — except in llm_only
+    mode, which skips it and treats every post as escalated; the per-agent loop
+    applies the cheap native-handling gates + cooldown, then — in the LLM modes —
     one LLM triage call per surviving candidate. ``engine`` is only used for the
-    cascade transcript fetch; call sites always pass it, but it defaults to None
-    so embedding-mode callers and tests need not care.
+    transcript fetch; call sites always pass it, but it defaults to None so
+    embedding-mode callers and tests need not care.
     """
     text = (post.get("message") or "").strip()
     if not text:
         return
-    verdict = await asyncio.to_thread(evaluate_text, text)
-    if verdict is None:  # gate unavailable
-        return
+    llm_only = context.mode == "llm_only"
+    if llm_only:
+        # No embedding gate: every post reaches the candidate loop and the
+        # LLM triage below is the sole filter. Works without the ``router``
+        # extra (evaluate_text is never called). The synthetic verdict keeps
+        # the delivery log's shape — route "none", score 0.0.
+        verdict = Verdict(escalate=True, route=None, score=None)
+    else:
+        verdict = await asyncio.to_thread(evaluate_text, text)
+        if verdict is None:  # gate unavailable
+            return
     if not verdict.escalate:
         # INFO on purpose: this line is the tuning telemetry the README points
         # at — at DEBUG you can't tell "gate never fires" from "scores land
@@ -269,19 +425,31 @@ async def consider_post(
         )
         return
 
-    # Cascade confirm-stage state, shared across the candidate loop. The
+    # Confirm-stage state, shared across the candidate loop. Both LLM modes
+    # run it; they part ways on failure: cascade has a gate verdict to fall
+    # back on (fail open — a broken LLM degrades to embedding behavior),
+    # llm_only has nothing underneath, and failing open would nudge every
+    # candidate on every post — so it fails closed (no nudges) instead. The
     # preconditions warn once per escalated post (not per candidate), and the
     # transcript — including a failed fetch — is cached so the DB is hit at
     # most once per post no matter how many candidates survive the gates.
-    cascade = context.mode == "cascade"
-    if cascade and (context.llm is None or engine is None):
+    confirm = llm_only or context.mode == "cascade"
+    if confirm and (context.llm is None or engine is None):
+        reason = (
+            "the LLM config is missing/unusable" if context.llm is None
+            else "no engine was passed"
+        )
+        if llm_only:
+            logger.warning(
+                "attention: llm_only mode in %s but %s; failing closed (no nudges)",
+                channel_id, reason,
+            )
+            return
         logger.warning(
             "attention: cascade mode in %s but %s; failing open to the gate verdict",
-            channel_id,
-            "the LLM config is missing/unusable" if context.llm is None
-            else "no engine was passed",
+            channel_id, reason,
         )
-        cascade = False
+        confirm = False
     transcript: list[dict] | None = None
     transcript_failed = False
     trigger_post_id = post.get("post_id")
@@ -296,24 +464,42 @@ async def consider_post(
         if _mentions(text, c.agent_id):
             continue  # native @mention handling already covers it
         if not await _claim_cooldown(c.agent_id, channel_id):
+            # Remember the newest window-blocked post so the catch-up watcher
+            # replays it when the cooldown expires — except during a catch-up
+            # pass itself: losing the claim race there means a newer post beat
+            # this stale one to the fresh window, and re-marking it would keep
+            # resurrecting old conversation for as long as traffic continues.
+            if not catchup:
+                await _remember_pending(c.agent_id, channel_id, post.get("post_id"))
             # INFO like the other verdict lines: a cooldown skip is otherwise
             # indistinguishable from "gate didn't fire" when testing/tuning.
             logger.info(
-                "attention: cooldown active for %s in %s; skipping nudge",
+                "attention: cooldown active for %s in %s; skipping nudge%s",
                 c.agent_id, channel_id,
+                "" if catchup else " (will catch up when the cooldown expires)",
             )
             continue
         # LLM confirm stage, deliberately *after* the cooldown claim: a triage
         # "no" (below) keeps the cooldown consumed, bounding LLM spend to one
         # call per (agent, channel) window — the sidecar's watermark semantics.
         paid_triage = False
-        if cascade:
+        if confirm:
             if transcript is None and not transcript_failed:
                 transcript = await asyncio.to_thread(
                     _load_transcript, engine, channel_id, trigger_post_id
                 )
                 if transcript is None:  # _load_transcript logged the cause
                     transcript_failed = True
+                    if llm_only:
+                        # Fail closed — and refund: nothing was paid for this
+                        # candidate, so the claim shouldn't lock the agent out
+                        # over a nudge that never happened.
+                        logger.warning(
+                            "attention: no transcript for %s; failing closed (no nudges)",
+                            channel_id,
+                        )
+                        await _release_cooldown(c.agent_id, channel_id)
+                        return
                     logger.warning(
                         "attention: no transcript for %s; failing open to the gate verdict",
                         channel_id,
@@ -346,7 +532,19 @@ async def consider_post(
                 # answer the next identical request the same way, so there's
                 # nothing to gain by re-asking either.
                 if decision is None:
-                    cascade = False
+                    if llm_only:
+                        # Same circuit-break as cascade below, but closed:
+                        # with no gate verdict beneath there is nothing to
+                        # deliver on. The paid cooldown stays consumed (spend
+                        # bound); the remaining candidates are dropped
+                        # unclaimed.
+                        logger.warning(
+                            "attention: triage unavailable in %s; failing closed "
+                            "for the remaining candidates on this post",
+                            channel_id,
+                        )
+                        return
+                    confirm = False
                     logger.warning(
                         "attention: triage unavailable in %s; skipping the confirm "
                         "stage for the remaining candidates on this post",

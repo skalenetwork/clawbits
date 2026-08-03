@@ -451,3 +451,58 @@ def test_client_refuses_redirects_and_closes_its_transport():
         assert inner.is_closed is True
 
     asyncio.run(_check())
+
+
+# --- probe_llm_endpoint: the settings-page healthcheck -----------------------
+
+
+def _probe(monkeypatch, client):
+    monkeypatch.setattr(triage, "_make_client", lambda config: client)
+    monkeypatch.setattr(triage, "check_endpoint_allowed", lambda base_url: None)
+    return asyncio.run(triage.probe_llm_endpoint(_CONFIG))
+
+
+def test_probe_ok(monkeypatch):
+    client = _FakeClient(content='{"needs_input": false, "reason": "healthcheck"}')
+    ok, detail = _probe(monkeypatch, client)
+    assert ok is True
+    assert "m1" in detail
+    assert client.closed is True
+    # Same request shape as a real triage call — model + deterministic sampling.
+    assert client.kwargs["model"] == "m1"
+    assert client.kwargs["temperature"] == 0
+
+
+def test_probe_reports_endpoint_error_detail(monkeypatch):
+    """Unlike triage_decide (which swallows into None), the probe surfaces the
+    failure text — a 401's message is the whole diagnosis."""
+    ok, detail = _probe(monkeypatch, _FakeClient(error=RuntimeError("Error code: 401 - bad key")))
+    assert ok is False
+    assert "401" in detail
+
+
+def test_probe_reports_unparseable_reply(monkeypatch):
+    ok, detail = _probe(monkeypatch, _FakeClient(content="sure, happy to help!"))
+    assert ok is False
+    assert "JSON" in detail
+
+
+def test_probe_refuses_unsafe_endpoint_without_calling_it(monkeypatch):
+    """The guard runs inside the probe: an endpoint the triage path would
+    refuse must fail the healthcheck the same way, without being dialed."""
+    def _refuse(base_url):
+        raise PrivateAddressError("resolves to a private address")
+
+    called = {"n": 0}
+
+    class _Boom:
+        def __getattr__(self, name):
+            called["n"] += 1
+            raise AssertionError("client must not be built for a refused endpoint")
+
+    monkeypatch.setattr(triage, "check_endpoint_allowed", _refuse)
+    monkeypatch.setattr(triage, "_make_client", lambda config: _Boom())
+    ok, detail = asyncio.run(triage.probe_llm_endpoint(_CONFIG))
+    assert ok is False
+    assert "private address" in detail
+    assert called["n"] == 0

@@ -371,7 +371,7 @@ class Organization(SQLModel, table=True):
     __tablename__ = "organizations"
     __table_args__ = (
         CheckConstraint(
-            "attention_mode IN ('embedding', 'cascade')",
+            "attention_mode IN ('embedding', 'cascade', 'llm_only')",
             name="organizations_attention_mode_check",
         ),
     )
@@ -401,8 +401,11 @@ class Organization(SQLModel, table=True):
     # How an armed gate decides: 'embedding' is the gate verdict alone;
     # 'cascade' confirms each gate pass with an LLM triage call against the
     # org-configured OpenAI-compatible endpoint below (see
-    # clawbits/lobstertalk/attention/service.py). LLM failures fail open to
-    # the gate verdict, so a bad config can never silently mute agents.
+    # clawbits/lobstertalk/attention/service.py); 'llm_only' skips the gate
+    # and sends every post to that triage call, which becomes the sole filter.
+    # In cascade, LLM failures fail open to the gate verdict, so a bad config
+    # can never silently mute agents. llm_only has no verdict to fall back on
+    # — it fails closed (no nudges) rather than nudge on every post.
     attention_mode: str = Field(
         default="embedding",
         sa_column=SAColumn(Text, nullable=False, server_default="embedding"),

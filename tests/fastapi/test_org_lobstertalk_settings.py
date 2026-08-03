@@ -233,6 +233,44 @@ def test_put_validation_422s(test_client):
     assert r.status_code == 422
 
 
+def test_llm_only_round_trip_and_validation(test_client, monkeypatch):
+    """llm_only saves and reads back like cascade: same atomic base_url+model
+    requirement, same SSRF guard on the base URL when a request arms it."""
+    owner = register_human(test_client, "lt-llmonly-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-llmonly-org")
+    token = owner["access_token"]
+
+    body = {
+        "enabled": True,
+        "mode": "llm_only",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-test",
+    }
+    r = _put(test_client, org_id, token, body)
+    assert r.status_code == 200, r.text
+    assert r.json()["mode"] == "llm_only" and r.json()["enabled"] is True
+
+    r = test_client.get(
+        f"/api/human/orgs/{org_id}/lobstertalk", headers=_auth(token)
+    )
+    assert r.status_code == 200
+    assert r.json()["mode"] == "llm_only"
+
+    # base_url AND model, atomically — like cascade.
+    r = _put(test_client, org_id, token,
+             {"enabled": True, "mode": "llm_only", "model": "gpt-test"})
+    assert r.status_code == 422
+    r = _put(test_client, org_id, token,
+             {"enabled": True, "mode": "llm_only",
+              "base_url": "https://api.openai.com/v1"})
+    assert r.status_code == 422
+
+    # Arming llm_only runs the same SSRF guard as arming cascade.
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: {"169.254.169.254"})
+    r = _put(test_client, org_id, token, body)
+    assert r.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # Tests: endpoint safety (SSRF guard, durable-key requirement)
 # ---------------------------------------------------------------------------
@@ -374,3 +412,103 @@ def test_api_key_set_reports_usable_not_merely_stored(test_client, monkeypatch):
     )
     assert r.status_code == 200
     assert r.json()["api_key_set"] is False  # honest: re-enter the key
+
+
+# ---------------------------------------------------------------------------
+# Tests: the healthcheck probe endpoint
+# ---------------------------------------------------------------------------
+
+
+def _hc(tc: TestClient, org_id: str, token: str):
+    return tc.post(
+        f"/api/human/orgs/{org_id}/lobstertalk/healthcheck", headers=_auth(token)
+    )
+
+
+def test_healthcheck_probes_stored_config(test_client, monkeypatch):
+    """Happy path: the probe runs against the stored config and its verdict
+    (plus latency) comes back verbatim. The probe itself is faked — its real
+    behavior is covered in test_lobstertalk_triage.py."""
+    import clawbits.fastapi.human_endpoints as he
+
+    owner = register_human(test_client, "lt-hc-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-hc-org")
+    token = owner["access_token"]
+    assert _put(test_client, org_id, token, _CASCADE_BODY).status_code == 200
+
+    seen: list = []
+
+    async def _fake_probe(config):
+        seen.append(config)
+        return True, f"{config.model} answered correctly"
+
+    monkeypatch.setattr(he, "probe_llm_endpoint", _fake_probe)
+    r = _hc(test_client, org_id, token)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert "gpt-test" in body["detail"]
+    assert isinstance(body["latency_ms"], int)
+    assert seen[0].base_url == _CASCADE_BODY["base_url"]
+
+
+def test_healthcheck_reports_probe_failure_as_200(test_client, monkeypatch):
+    """A failing endpoint is a *finding*, not an HTTP error: 200 with ok=false
+    so the UI renders the detail instead of a generic error toast."""
+    import clawbits.fastapi.human_endpoints as he
+
+    owner = register_human(test_client, "lt-hc-fail-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-hc-fail-org")
+    token = owner["access_token"]
+    assert _put(test_client, org_id, token, _CASCADE_BODY).status_code == 200
+
+    async def _fake_probe(config):
+        return False, "Error code: 401 - invalid_api_key"
+
+    monkeypatch.setattr(he, "probe_llm_endpoint", _fake_probe)
+    r = _hc(test_client, org_id, token)
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "401" in r.json()["detail"]
+
+
+def test_healthcheck_owner_only_and_needs_an_endpoint(test_client):
+    owner = register_human(test_client, "lt-hc-gate-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-hc-gate-org")
+
+    # Fresh org: embedding mode — nothing to probe.
+    r = _hc(test_client, org_id, owner["access_token"])
+    assert r.status_code == 422
+
+    member = register_human(test_client, "lt-hc-gate-member@test.com")
+    test_client.post(
+        f"/api/human/orgs/{org_id}/members",
+        json={"email": "lt-hc-gate-member@test.com", "role": "member"},
+        headers=_auth(owner["access_token"]),
+    )
+    assert _hc(test_client, org_id, member["access_token"]).status_code == 403
+
+
+def test_healthcheck_undecryptable_key_fails_without_dialing(test_client, monkeypatch):
+    """A stored-but-undecryptable key (rotated secrets key) is reported as a
+    finding — the endpoint is never dialed with a key we know is wrong."""
+    import clawbits.fastapi.human_endpoints as he
+
+    owner = register_human(test_client, "lt-hc-rot-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-hc-rot-org")
+    token = owner["access_token"]
+    assert _put(test_client, org_id, token, _CASCADE_BODY).status_code == 200
+    with Session(test_client.app._engine) as db:
+        org = db.get(Organization, org_id)
+        org.attention_llm_api_key_encrypted = "not-a-fernet-token"
+        db.add(org)
+        db.commit()
+
+    async def _boom(config):
+        raise AssertionError("probe must not run with an undecryptable key")
+
+    monkeypatch.setattr(he, "probe_llm_endpoint", _boom)
+    r = _hc(test_client, org_id, token)
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "decrypted" in r.json()["detail"]

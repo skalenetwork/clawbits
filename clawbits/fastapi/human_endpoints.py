@@ -8,6 +8,7 @@ Authentication itself (magic auth + social OAuth) lives in
 
 import asyncio
 import logging
+import time
 import uuid as _uuid
 from urllib.parse import urlsplit
 
@@ -49,6 +50,7 @@ from clawbits.datastructures.org_models import (
     CreateOrgRequest,
     OrgAttentionResponse,
     OrgListResponse,
+    OrgLobstertalkHealthResponse,
     OrgLobstertalkResponse,
     OrgMemberResponse,
     OrgMembersListResponse,
@@ -77,7 +79,11 @@ from clawbits.lobstertalk.attention.crypto import (
     decrypt_secret,
     encrypt_secret,
 )
-from clawbits.lobstertalk.attention.triage import check_endpoint_allowed
+from clawbits.lobstertalk.attention.triage import (
+    LlmTriageConfig,
+    check_endpoint_allowed,
+    probe_llm_endpoint,
+)
 from clawbits.realtime import (
     fire_and_forget,
     get_bus,
@@ -1875,16 +1881,17 @@ async def set_org_lobstertalk(
 ):
     """Write the org's LobsterTalk attention config. Owner only.
 
-    Cascade mode requires ``base_url`` and ``model`` atomically in the same
-    request (the settings form submits its whole state). The stored API key
-    changes only when ``api_key`` is sent (encrypted at rest) or
-    ``clear_api_key`` is set; omitting both keeps it.
+    The LLM modes (cascade, llm_only) require ``base_url`` and ``model``
+    atomically in the same request (the settings form submits its whole
+    state). The stored API key changes only when ``api_key`` is sent
+    (encrypted at rest) or ``clear_api_key`` is set; omitting both keeps it.
 
-    A request that arms cascade has its base URL checked here for immediate
-    feedback, and again before every triage call — this one constrains what an
-    owner can save, not where the name resolves later. Requests that don't arm
-    it (turning LobsterTalk off, switching back to embedding) skip the check
-    so a host that has since gone bad can't strand the org."""
+    A request that arms an LLM mode has its base URL checked here for
+    immediate feedback, and again before every triage call — this one
+    constrains what an owner can save, not where the name resolves later.
+    Requests that don't arm one (turning LobsterTalk off, switching back to
+    embedding) skip the check so a host that has since gone bad can't strand
+    the org."""
     with _get_db(request) as db:
         if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
             raise HTTPException(
@@ -1894,10 +1901,10 @@ async def set_org_lobstertalk(
     # no timeout of its own, against a name the caller chose. Doing it while
     # holding a pooled connection (and an open transaction) would let anyone
     # tie up the pool by pointing base_url at a deliberately slow nameserver.
-    # Only when this request actually arms cascade — otherwise a config whose
-    # host has since gone bad would make the org unable to turn LobsterTalk
-    # *off*, which is exactly when you most want to.
-    if body.enabled and body.mode == "cascade" and body.base_url:
+    # Only when this request actually arms an LLM mode — otherwise a config
+    # whose host has since gone bad would make the org unable to turn
+    # LobsterTalk *off*, which is exactly when you most want to.
+    if body.enabled and body.mode in ("cascade", "llm_only") and body.base_url:
         try:
             await asyncio.wait_for(
                 run_in_threadpool(check_endpoint_allowed, body.base_url),
@@ -1936,6 +1943,60 @@ async def set_org_lobstertalk(
             raise HTTPException(status_code=404, detail="Organization not found")
         db.commit()
         return _lobstertalk_response(TableRead.get_org_lobstertalk_config(db, org_id))
+
+
+@human_router.post(
+    "/api/human/orgs/{org_id}/lobstertalk/healthcheck",
+    response_model=OrgLobstertalkHealthResponse,
+)
+async def lobstertalk_healthcheck(
+    org_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Run one live triage-shaped call against the org's *stored* LLM config
+    and report which stage failed, if any. Owner only — it spends a metered
+    call on the org's key. Probes the stored config (not a draft) so the key
+    never travels back through the API; the frontend fires this right after a
+    successful save, when stored == what the owner just typed.
+
+    Config problems the probe can't even attempt (embedding mode, missing
+    endpoint fields) are 422s; problems the probe *finds* (bad key, wrong
+    URL, unusable model) are 200s with ``ok=false`` — the check worked, the
+    endpoint didn't."""
+    with _get_db(request) as db:
+        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
+            raise HTTPException(
+                status_code=403, detail="Only organization owners can test LobsterTalk settings"
+            )
+        cfg = TableRead.get_org_lobstertalk_config(db, org_id)
+    # Session released before the probe: it's a network call against a
+    # caller-chosen host under a 30s deadline — same reason the PUT resolves
+    # DNS outside the session.
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    if cfg["mode"] not in ("cascade", "llm_only"):
+        raise HTTPException(
+            status_code=422, detail="No LLM endpoint to check: the org is in embedding mode"
+        )
+    if not cfg["base_url"] or not cfg["model"]:
+        raise HTTPException(
+            status_code=422, detail="No LLM endpoint to check: base URL and model are not set"
+        )
+    token = cfg["api_key_encrypted"]
+    api_key = decrypt_secret(token) if token else None
+    if token and api_key is None:
+        return OrgLobstertalkHealthResponse(
+            ok=False,
+            detail="stored API key cannot be decrypted (secrets key rotated?) — re-enter it",
+        )
+    started = time.monotonic()
+    ok, detail = await probe_llm_endpoint(
+        LlmTriageConfig(base_url=cfg["base_url"], model=cfg["model"], api_key=api_key)
+    )
+    return OrgLobstertalkHealthResponse(
+        ok=ok, detail=detail, latency_ms=int((time.monotonic() - started) * 1000)
+    )
 
 
 class LinkReefVmRequest(BaseModel):

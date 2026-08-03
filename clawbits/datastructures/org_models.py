@@ -59,14 +59,18 @@ class OrgAttentionResponse(BaseModel):
 
 class SetOrgLobstertalkRequest(BaseModel):
     """Owner-set LobsterTalk attention config: the org toggle, the decision
-    mode, and (for cascade mode) the OpenAI-compatible LLM endpoint. The API
+    mode, and (for the LLM modes) the OpenAI-compatible LLM endpoint. The API
     key is write-only — omit it to keep the stored key, or send
     ``clear_api_key`` to drop it."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: bool = Field(description="Whether the LobsterTalk attention gate is armed for this org")
-    mode: Literal["embedding", "cascade"] = Field(
+    mode: Literal["embedding", "cascade", "llm_only"] = Field(
         default="embedding",
-        description="'embedding' = gate verdict alone; 'cascade' = gate pass confirmed by an LLM triage call",
+        description=(
+            "'embedding' = gate verdict alone; 'cascade' = gate pass confirmed by an "
+            "LLM triage call; 'llm_only' = no gate, every post goes to the LLM triage "
+            "(fails closed when the endpoint is unusable)"
+        ),
     )
     base_url: str | None = Field(
         default=None, max_length=2048,
@@ -94,8 +98,8 @@ class SetOrgLobstertalkRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check_cross_field(self) -> SetOrgLobstertalkRequest:
-        if self.mode == "cascade" and not (self.base_url and self.model):
-            raise ValueError("cascade mode requires base_url and model")
+        if self.mode in ("cascade", "llm_only") and not (self.base_url and self.model):
+            raise ValueError(f"{self.mode} mode requires base_url and model")
         if self.api_key is not None and self.clear_api_key:
             raise ValueError("api_key and clear_api_key are mutually exclusive")
         return self
@@ -105,10 +109,19 @@ class OrgLobstertalkResponse(BaseModel):
     """The org's LobsterTalk attention config. The stored API key is never
     returned — ``api_key_set`` only reports whether one exists."""
     enabled: bool = False
-    mode: Literal["embedding", "cascade"] = "embedding"
+    mode: Literal["embedding", "cascade", "llm_only"] = "embedding"
     base_url: str | None = None
     model: str | None = None
     api_key_set: bool = False
+
+
+class OrgLobstertalkHealthResponse(BaseModel):
+    """Result of one live probe call against the org's stored LobsterTalk LLM
+    endpoint. ``detail`` is operator-facing text naming the failing stage (or
+    confirming success); it never contains the stored key."""
+    ok: bool
+    detail: str = ""
+    latency_ms: int = 0
 
 
 class OrgResponse(BaseModel):
