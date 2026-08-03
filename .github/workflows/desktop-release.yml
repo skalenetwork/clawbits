@@ -97,6 +97,31 @@ jobs:
 
           echo "::notice::Building $CHANNEL v$VERSION against $API_URL"
 
+      - name: Refuse a duplicate release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.compute.outputs.release-tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Prod's version comes from tauri.conf.json alone, so a second push to
+          # `prod` without a version bump collides with the existing tag. Left
+          # to the publish job that surfaces as a ~25-minute build that dies at
+          # the last step; catch it here in seconds instead.
+          #
+          # Re-running the *same* commit is legitimate (e.g. a flaky publish),
+          # so that case passes through — the publish job replaces the assets.
+          EXISTING=$(gh release view "$RELEASE_TAG" --json targetCommitish -q .targetCommitish 2>/dev/null || true)
+          if [ -z "$EXISTING" ]; then
+            echo "No release exists for $RELEASE_TAG — proceeding."
+          elif [ "$EXISTING" = "$SOURCE_SHA" ]; then
+            echo "::notice::$RELEASE_TAG already exists for this commit; its assets will be replaced."
+          else
+            echo "::error::Release $RELEASE_TAG already exists, built from $EXISTING. Bump \"version\" in desktop/src-tauri/tauri.conf.json (or delete that release) before releasing again."
+            exit 1
+          fi
+
   build:
     name: build (${{ matrix.platform }})
     needs: setup
@@ -392,9 +417,19 @@ jobs:
             EXTRA+=( --prerelease )
           fi
 
-          gh release create "$RELEASE_TAG" \
-            --title "Clawbits $RELEASE_TAG" \
-            --notes "$NOTES" \
-            --target "$SOURCE_SHA" \
-            "${EXTRA[@]}" \
-            "${FILES[@]}"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            # Only reachable when the release belongs to this same commit — the
+            # setup job already rejected the forgot-to-bump case. Replace the
+            # assets so a failed publish can be re-run without hand-deleting
+            # the release.
+            echo "::notice::$RELEASE_TAG exists for this commit — replacing its assets"
+            gh release upload "$RELEASE_TAG" --clobber "${FILES[@]}"
+            gh release edit "$RELEASE_TAG" --notes "$NOTES"
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "Clawbits $RELEASE_TAG" \
+              --notes "$NOTES" \
+              --target "$SOURCE_SHA" \
+              "${EXTRA[@]}" \
+              "${FILES[@]}"
+          fi
