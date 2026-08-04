@@ -465,7 +465,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `attention_llm_model` | `TEXT` | — |
 | `attention_llm_api_key_encrypted` | `TEXT` | — |
 
-- **Check** `organizations_attention_mode_check`: `attention_mode IN ('embedding', 'cascade')`
+- **Check** `organizations_attention_mode_check`: `attention_mode IN ('embedding', 'cascade', 'llm_only', 'all')`
 
 ## post_comments
 

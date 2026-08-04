@@ -512,3 +512,25 @@ def test_healthcheck_undecryptable_key_fails_without_dialing(test_client, monkey
     assert r.status_code == 200
     assert r.json()["ok"] is False
     assert "decrypted" in r.json()["detail"]
+
+
+def test_all_mode_round_trip_needs_no_llm_config(test_client):
+    """'all' has no triage, so unlike cascade/llm_only it must save without
+    base_url/model — and the healthcheck has nothing to probe (422)."""
+    owner = register_human(test_client, "lt-all-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-all-org")
+    token = owner["access_token"]
+
+    r = _put(test_client, org_id, token, {"enabled": True, "mode": "all"})
+    assert r.status_code == 200, r.text
+    assert r.json()["mode"] == "all" and r.json()["enabled"] is True
+
+    r = test_client.get(
+        f"/api/human/orgs/{org_id}/lobstertalk", headers=_auth(token)
+    )
+    assert r.status_code == 200
+    assert r.json()["mode"] == "all"
+
+    r = _hc(test_client, org_id, token)
+    assert r.status_code == 422
+    assert "all mode" in r.json()["detail"]

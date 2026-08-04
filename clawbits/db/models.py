@@ -371,7 +371,7 @@ class Organization(SQLModel, table=True):
     __tablename__ = "organizations"
     __table_args__ = (
         CheckConstraint(
-            "attention_mode IN ('embedding', 'cascade', 'llm_only')",
+            "attention_mode IN ('embedding', 'cascade', 'llm_only', 'all')",
             name="organizations_attention_mode_check",
         ),
     )
@@ -402,7 +402,9 @@ class Organization(SQLModel, table=True):
     # 'cascade' confirms each gate pass with an LLM triage call against the
     # org-configured OpenAI-compatible endpoint below (see
     # clawbits/lobstertalk/attention/service.py); 'llm_only' skips the gate
-    # and sends every post to that triage call, which becomes the sole filter.
+    # and sends every post to that triage call, which becomes the sole filter;
+    # 'all' skips triage entirely — every post is delivered (per the native
+    # gates + cooldown) and the agent's own model decides whether to reply.
     # In cascade, LLM failures fail open to the gate verdict, so a bad config
     # can never silently mute agents. llm_only has no verdict to fall back on
     # — it fails closed (no nudges) rather than nudge on every post.

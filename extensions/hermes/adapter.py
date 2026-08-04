@@ -25,6 +25,7 @@ from .cli_client import _ClawbitsCli, _default_cli_path
 from .manifest import PLUGIN_VERSION
 from .media import _download_to_tempfile
 from .messages import (
+    _build_agent_body,
     _Channel,
     _is_user_post,
     _message_id_from_response,
@@ -62,11 +63,14 @@ _ATTENTION_PREAMBLE = (
     "[end Attention]"
 )
 
-# Upper bound on the post-id dedupe window (self._seen). Dedupe only has to
-# cover the RECENT window: the per-channel cursor in _maybe_dispatch already
-# rejects anything at/below its high-water mark, so an id evicted here is still
-# blocked by cursor comparison. This just stops the set from growing without
-# bound on a long-lived agent that has processed hundreds of thousands of posts.
+# Upper bound on the post-id dedupe window (self._seen). The set holds only
+# posts actually DISPATCHED (plus the first-poll backlog seed) — its job is to
+# stop the poll loop and the LobsterTalk nudge path handling the same post
+# twice, not to dedupe the poll loop against itself: the per-channel cursor in
+# _maybe_dispatch already rejects anything at/below its high-water mark, so an
+# id evicted here is still blocked by cursor comparison. This just stops the set
+# from growing without bound on a long-lived agent that has processed hundreds
+# of thousands of posts.
 _SEEN_CAP = 20_000
 
 
@@ -552,7 +556,12 @@ class ClawbitsAdapter(BasePlatformAdapter):
         self._spawn_turn(
             channel_id,
             MessageEvent(
-                text=f"{_ATTENTION_PREAMBLE}\n\n{text}",
+                text=_build_agent_body(
+                    text,
+                    chat_id=channel_id,
+                    agent_id=self.agent_id or None,
+                    attention_preamble=_ATTENTION_PREAMBLE,
+                ),
                 message_type=MessageType.TEXT,
                 source=source,
                 raw_message=post,
@@ -661,10 +670,10 @@ class ClawbitsAdapter(BasePlatformAdapter):
         key = _post_cursor_key(post)
         cursor = self._cursors.setdefault(channel.id, (0, 0, ""))
         if key <= cursor:
-            self._remember(post_id)
+            # Deliberately NOT remembered — see the note below; the cursor
+            # comparison alone already stops the poll loop re-processing this.
             return
         self._cursors[channel.id] = max(cursor, key)
-        self._remember(post_id)
 
         text = str(post.get("message") or "")
         sender_id = str(post.get("agent_id") or post.get("user_id") or post.get("human_id") or "")
@@ -673,6 +682,23 @@ class ClawbitsAdapter(BasePlatformAdapter):
         mentioned = bool(self._mention_re.search(text))
         if is_self or not _is_user_post(post) or not (is_direct or mentioned):
             return
+
+        # Only DISPATCHED posts go in the dedupe set, and only here — past every
+        # skip above. ``self._seen`` exists to stop the poll loop and the
+        # LobsterTalk nudge path double-dispatching the same post; it is not the
+        # poll loop's own dedupe (the per-channel cursor is, which is why the
+        # skips above deliberately don't record anything).
+        #
+        # Marking every post seen the moment we looked at it — as this did
+        # before — silently broke attention nudges: a channel post the agent
+        # isn't mentioned in is skipped here, but the server still runs triage
+        # on it and publishes a nudge seconds later. That nudge then hit
+        # ``post_id in self._seen`` in _dispatch_attention and was dropped, so
+        # the whole feature was inert on this runtime. The poll loop always won
+        # the race — it polls every ~3s while a nudge waits on an LLM triage
+        # call. Mirrors plugin/src/inbound-poller.ts, which records only posts
+        # it actually dispatches for exactly this reason.
+        self._remember(post_id)
 
         # Strip our own @mention from the text the MODEL sees: the mention token
         # is addressing metadata, not content (the fact we were tagged is already
@@ -692,7 +718,14 @@ class ClawbitsAdapter(BasePlatformAdapter):
             message_id=post_id,
         )
         event = MessageEvent(
-            text=event_text,
+            # Same context block as the attention path (and as the OpenClaw
+            # plugin): the agent should know what it is and where it is on
+            # every turn, not only when a nudge brought it here.
+            text=_build_agent_body(
+                event_text,
+                chat_id=channel.id,
+                agent_id=self.agent_id or None,
+            ),
             message_type=MessageType.TEXT,
             source=source,
             raw_message=post,

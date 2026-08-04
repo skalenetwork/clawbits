@@ -131,6 +131,24 @@ describe("SettingsLobstertalkPage", () => {
         release({ok: true, detail: "done", latency_ms: 1});
     });
 
+    it("saves All messages immediately, with no endpoint form or probe", async () => {
+        // 'all' has no triage: picking it persists right away (like embedding),
+        // shows no LLM form, and must not fire the healthcheck — there is
+        // nothing to probe and the server would 422.
+        await renderPage(true);
+        setOrgLobstertalk.mockResolvedValue(settings(true, "all"));
+        fireEvent.click(screen.getByRole("radio", {name: "All messages"}));
+        await waitFor(() => {
+            expect(toastSuccess).toHaveBeenCalledWith("LobsterTalk settings saved");
+        });
+        expect(setOrgLobstertalk).toHaveBeenCalledWith(
+            "org-1",
+            expect.objectContaining({mode: "all", enabled: true}),
+        );
+        expect(checkOrgLobstertalkEndpoint).not.toHaveBeenCalled();
+        expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+    });
+
     it("keeps the toast for saves with no endpoint in play", async () => {
         // Switching to embedding persists immediately and renders no health
         // card — the toast is the only confirmation there.

@@ -523,13 +523,15 @@ export async function deleteReefConnection(orgId: string): Promise<void> {
 }
 
 /** The org's LobsterTalk attention config. ``mode`` picks the pipeline —
- *  ``embedding`` (semantic gate only), ``cascade`` (gate pass → LLM confirm)
- *  or ``llm_only`` (no gate: every post goes to the LLM, which fails closed
- *  when unreachable); the LLM fields only matter in the LLM modes. The API
- *  key is write-only: responses carry ``api_key_set``, never the key itself. */
+ *  ``embedding`` (semantic gate only), ``cascade`` (gate pass → LLM confirm),
+ *  ``llm_only`` (no gate: every post goes to the LLM, which fails closed
+ *  when unreachable) or ``all`` (no triage at all: every post is delivered
+ *  and the agent itself decides whether to reply); the LLM fields only matter
+ *  in cascade/llm_only. The API key is write-only: responses carry
+ *  ``api_key_set``, never the key itself. */
 export interface OrgLobstertalkSettings {
   enabled: boolean;
-  mode: "embedding" | "cascade" | "llm_only";
+  mode: "embedding" | "cascade" | "llm_only" | "all";
   base_url: string | null;
   model: string | null;
   api_key_set: boolean;
@@ -552,7 +554,7 @@ async function readErrorDetail(res: Response): Promise<string> {
 
 export interface SetOrgLobstertalkBody {
   enabled: boolean;
-  mode: "embedding" | "cascade" | "llm_only";
+  mode: "embedding" | "cascade" | "llm_only" | "all";
   base_url?: string | null;
   model?: string | null;
   /** Omit to keep the stored key unchanged; set to replace it. */

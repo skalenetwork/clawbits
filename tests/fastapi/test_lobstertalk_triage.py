@@ -153,9 +153,13 @@ def test_transcript_marks_only_the_real_focus_post():
 
 
 class _FakeClient:
-    """Stands in for AsyncOpenAI: returns preset content (or raises)."""
+    """Stands in for AsyncOpenAI: returns preset content (or raises).
 
-    def __init__(self, content=None, error=None):
+    ``reasoning``/``finish_reason`` model what a *reasoning* endpoint returns —
+    chain-of-thought in a sibling field, ``content`` empty, and
+    ``finish_reason='length'`` when it burned the cap before answering."""
+
+    def __init__(self, content=None, error=None, reasoning=None, finish_reason="stop"):
         self.closed = False
         self.kwargs = None
         outer = self
@@ -165,8 +169,13 @@ class _FakeClient:
                 outer.kwargs = kwargs
                 if error is not None:
                     raise error
+                message = SimpleNamespace(content=content)
+                if reasoning is not None:
+                    message.reasoning = reasoning
                 return SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+                    choices=[
+                        SimpleNamespace(message=message, finish_reason=finish_reason)
+                    ]
                 )
 
         self.chat = SimpleNamespace(completions=_Completions())
@@ -204,7 +213,7 @@ def test_decide_yes(monkeypatch):
     # The request is pinned to the config + deterministic sampling.
     assert client.kwargs["model"] == "m1"
     assert client.kwargs["temperature"] == 0
-    assert client.kwargs["max_tokens"] == triage.TRIAGE_MAX_TOKENS
+    assert client.kwargs["max_tokens"] == triage.triage_max_tokens()
 
 
 def test_decide_no(monkeypatch):
@@ -506,3 +515,73 @@ def test_probe_refuses_unsafe_endpoint_without_calling_it(monkeypatch):
     assert ok is False
     assert "private address" in detail
     assert called["n"] == 0
+
+
+# --- reasoning models: budget exhaustion and reasoning-field verdicts --------
+
+
+def test_max_tokens_is_env_overridable(monkeypatch):
+    """Reasoning models need a bigger budget than the 300 a verdict costs."""
+    assert triage.triage_max_tokens() == triage.DEFAULT_TRIAGE_MAX_TOKENS
+    monkeypatch.setenv("CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS", "2000")
+    assert triage.triage_max_tokens() == 2000
+    monkeypatch.setenv("CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS", "not-a-number")
+    assert triage.triage_max_tokens() == triage.DEFAULT_TRIAGE_MAX_TOKENS
+
+
+def test_decide_reads_verdict_from_reasoning_field(monkeypatch):
+    """Ollama puts chain-of-thought in ``reasoning`` and leaves ``content``
+    empty. A model that finished thinking often states the verdict there —
+    discarding it would fail a call that actually succeeded."""
+    client = _FakeClient(
+        content="",
+        reasoning='I should answer. {"needs_input": true, "reason": "open question"}',
+    )
+    decision = _decide(monkeypatch, client)
+    assert decision == TriageDecision(needs_input=True, reason="open question")
+
+
+def test_decide_empty_reply_at_token_cap_is_none(monkeypatch):
+    """gemma4-shaped failure: all budget spent thinking, no verdict emitted.
+    Undecided, and the caller applies its mode's fail policy."""
+    client = _FakeClient(content="", reasoning="Thinking Process:\n1. Analyze…",
+                         finish_reason="length")
+    assert _decide(monkeypatch, client) is None
+
+
+def test_unparseable_hint_names_the_reasoning_budget_cause():
+    """A blank "unparseable reply: " line is the least actionable thing we can
+    log; the hint must point at the budget knob. Keyed on finish_reason, not
+    on emptiness: by then we may have recovered truncated reasoning text, and
+    keying on empty content would miss the very case this explains."""
+    choice = SimpleNamespace(finish_reason="length")
+    for text, source in (("", "content"), ("Thinking Process:…", "reasoning")):
+        hint = triage._unparseable_hint(choice, source, text)
+        assert "token cap" in hint
+        assert "CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS" in hint
+    assert triage._unparseable_hint(SimpleNamespace(finish_reason="stop"), "content", "x") == ""
+    assert "reasoning" in triage._unparseable_hint(
+        SimpleNamespace(finish_reason="stop"), "reasoning", "x"
+    )
+
+
+def test_probe_reports_reasoning_budget_exhaustion(monkeypatch):
+    """The healthcheck must name this cause too — it's the one failure that
+    otherwise looks like a working endpoint returning nothing."""
+    ok, detail = _probe(
+        monkeypatch,
+        _FakeClient(content="", reasoning="thinking…", finish_reason="length"),
+    )
+    assert ok is False
+    assert "reasoning model" in detail
+    assert "CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS" in detail
+
+
+def test_probe_flags_a_verdict_that_came_from_reasoning(monkeypatch):
+    """Works, but wastefully — say so rather than reporting a clean pass."""
+    ok, detail = _probe(
+        monkeypatch,
+        _FakeClient(content="", reasoning='{"needs_input": false, "reason": "ok"}'),
+    )
+    assert ok is True
+    assert "reasoning" in detail

@@ -64,12 +64,13 @@ class SetOrgLobstertalkRequest(BaseModel):
     ``clear_api_key`` to drop it."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: bool = Field(description="Whether the LobsterTalk attention gate is armed for this org")
-    mode: Literal["embedding", "cascade", "llm_only"] = Field(
+    mode: Literal["embedding", "cascade", "llm_only", "all"] = Field(
         default="embedding",
         description=(
             "'embedding' = gate verdict alone; 'cascade' = gate pass confirmed by an "
             "LLM triage call; 'llm_only' = no gate, every post goes to the LLM triage "
-            "(fails closed when the endpoint is unusable)"
+            "(fails closed when the endpoint is unusable); 'all' = no triage at all — "
+            "every post is delivered and the agent itself decides whether to reply"
         ),
     )
     base_url: str | None = Field(
@@ -109,7 +110,7 @@ class OrgLobstertalkResponse(BaseModel):
     """The org's LobsterTalk attention config. The stored API key is never
     returned — ``api_key_set`` only reports whether one exists."""
     enabled: bool = False
-    mode: Literal["embedding", "cascade", "llm_only"] = "embedding"
+    mode: Literal["embedding", "cascade", "llm_only", "all"] = "embedding"
     base_url: str | None = None
     model: str | None = None
     api_key_set: bool = False

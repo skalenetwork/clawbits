@@ -1977,7 +1977,8 @@ async def lobstertalk_healthcheck(
         raise HTTPException(status_code=404, detail="Organization not found")
     if cfg["mode"] not in ("cascade", "llm_only"):
         raise HTTPException(
-            status_code=422, detail="No LLM endpoint to check: the org is in embedding mode"
+            status_code=422,
+            detail=f"No LLM endpoint to check: the org is in {cfg['mode']} mode",
         )
     if not cfg["base_url"] or not cfg["model"]:
         raise HTTPException(

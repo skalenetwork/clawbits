@@ -47,10 +47,75 @@ TRANSCRIPT_CHAR_BUDGET = 8000
 MESSAGE_CHAR_LIMIT = 300
 TRANSCRIPT_POST_LIMIT = 20
 TRIAGE_TIMEOUT_SECONDS = 30.0
-TRIAGE_MAX_TOKENS = 300
+DEFAULT_TRIAGE_MAX_TOKENS = 300
 # Marks the post that tripped the gate, so the model judges *that* message
 # rather than whatever the channel drifted onto.
 FOCUS_PREFIX = "*** "
+
+
+def triage_max_tokens() -> int:
+    """Output-token cap for one triage call.
+
+    300 is ample for the verdict itself (a well-behaved reply is ~15 tokens),
+    but a *reasoning* model spends this budget thinking first and can hit the
+    cap before emitting any content at all — the reply then comes back with an
+    empty ``content`` and the thinking in a provider-specific field, which
+    reads as "unparseable" and fails the call. Raise
+    ``CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS`` to give such a model room to
+    finish, or (cheaper, and what the README recommends) point the org at a
+    small non-reasoning model."""
+    raw = os.environ.get("CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS", "").strip()
+    try:
+        return int(raw) if raw else DEFAULT_TRIAGE_MAX_TOKENS
+    except ValueError:
+        logger.warning(
+            "bad CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS %r; using %d",
+            raw, DEFAULT_TRIAGE_MAX_TOKENS,
+        )
+        return DEFAULT_TRIAGE_MAX_TOKENS
+
+
+def _unparseable_hint(choice: object, source: str, content: str) -> str:
+    """Short parenthetical naming *why* a reply couldn't be read.
+
+    A blank log line ("unparseable reply: ") is the least actionable thing we
+    can print, and it's exactly what a reasoning model produces when it burns
+    the token cap while thinking. Name that case so the operator reaches for
+    the budget knob or a different model instead of the endpoint config."""
+    finish = getattr(choice, "finish_reason", None)
+    # Budget first: a reasoning model hits the cap mid-thought, so `content` is
+    # empty but we may still have recovered (truncated) reasoning text. Keying
+    # this on emptiness would miss exactly the case it exists to explain.
+    if finish == "length":
+        return (
+            " [hit the token cap before producing a verdict — typical of a reasoning "
+            "model; raise CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS or use a non-reasoning "
+            "model]"
+        )
+    if not content:
+        return f" [empty reply, finish_reason={finish!r}]"
+    if source != "content":
+        return f" [read from {source!r}; the model left content empty]"
+    return ""
+
+
+def _reply_text(message: object) -> tuple[str, str]:
+    """``(content, source)`` for a chat-completion message.
+
+    Reasoning models put their chain-of-thought in a non-standard sibling
+    field (``reasoning`` on Ollama, ``reasoning_content`` elsewhere) and leave
+    ``content`` empty when they run out of budget mid-thought. When content is
+    empty we look there too: a model that *finished* thinking often states the
+    JSON verdict inside its reasoning, which is a correct answer we'd
+    otherwise discard."""
+    content = (getattr(message, "content", None) or "").strip()
+    if content:
+        return content, "content"
+    for field in ("reasoning", "reasoning_content"):
+        value = getattr(message, field, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), field
+    return "", "content"
 
 
 @dataclass(frozen=True)
@@ -321,16 +386,18 @@ async def _triage_call(
                     },
                 ],
                 temperature=0,
-                max_tokens=TRIAGE_MAX_TOKENS,
+                max_tokens=triage_max_tokens(),
             )
         finally:
             await client.close()
-        content = response.choices[0].message.content or ""
+        choice = response.choices[0] if response.choices else None
+        content, source = _reply_text(getattr(choice, "message", None))
         raw = extract_json_object(content)
         if raw is None or not isinstance(raw.get("needs_input"), bool):
             logger.warning(
-                "attention triage: unparseable reply for agent=%s (model=%s base_url=%s): %.200s",
-                agent_id, config.model, config.base_url, content,
+                "attention triage: unparseable reply for agent=%s (model=%s base_url=%s)%s: %.200s",
+                agent_id, config.model, config.base_url,
+                _unparseable_hint(choice, source, content), content,
             )
             return None
         return TriageDecision(needs_input=raw["needs_input"], reason=str(raw.get("reason", "")))
@@ -380,16 +447,34 @@ async def probe_llm_endpoint(config: LlmTriageConfig) -> tuple[bool, str]:
                         },
                     ],
                     temperature=0,
-                    max_tokens=TRIAGE_MAX_TOKENS,
+                    max_tokens=triage_max_tokens(),
                 )
             finally:
                 await client.close()
-            content = (response.choices[0].message.content or "") if response.choices else ""
+            choice = response.choices[0] if response.choices else None
+            content, source = _reply_text(getattr(choice, "message", None))
             raw = extract_json_object(content)
             if raw is None or not isinstance(raw.get("needs_input"), bool):
+                if getattr(choice, "finish_reason", None) == "length":
+                    # The probe's transcript is one line; the real call sends
+                    # up to 20 posts, so a model that only *just* fits here
+                    # would still fail in production. Name the cause.
+                    return False, (
+                        f"{config.model} used its whole {triage_max_tokens()}-token budget "
+                        "thinking and never answered — this is a reasoning model. Use a "
+                        "small non-reasoning model, or raise "
+                        "CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS."
+                    )
                 return False, (
                     "endpoint answered, but not with the JSON shape triage needs — "
                     f"try a different model (got: {_one_line(content)[:120]!r})"
+                )
+            if source != "content":
+                # Verdict recovered from the reasoning field: correct, but the
+                # model is burning tokens it doesn't need to.
+                return True, (
+                    f"{config.model} answered correctly, but only inside its reasoning "
+                    "output — a non-reasoning model would be faster and cheaper"
                 )
             return True, f"{config.model} answered correctly"
     except TimeoutError:

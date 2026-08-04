@@ -30,7 +30,13 @@ const MODE_OPTIONS: {value: AttentionMode; label: string}[] = [
     {value: "embedding", label: "Embedding only"},
     {value: "cascade", label: "Embedding + LLM confirm"},
     {value: "llm_only", label: "LLM only"},
+    {value: "all", label: "All messages"},
 ];
+
+/** Modes that use the org-configured LLM endpoint (and so need the form and
+ *  the post-save probe). ``all`` deliberately isn't one: it has no triage —
+ *  every post is delivered and the agent itself decides. */
+const LLM_MODES: readonly AttentionMode[] = ["cascade", "llm_only"];
 
 export default function SettingsLobstertalkPage() {
     const {activeOrgId} = useAuth();
@@ -80,7 +86,7 @@ export default function SettingsLobstertalkPage() {
                 body.clear_api_key ? "Settings saved, API key removed"
                 : body.api_key ? "Settings saved, API key stored"
                 : "Settings saved";
-            if (body.enabled && body.mode !== "embedding") {
+            if (body.enabled && LLM_MODES.includes(body.mode)) {
                 healthMutation.mutate(saveNote);
             } else {
                 toast.success("LobsterTalk settings saved");
@@ -283,12 +289,12 @@ function TriageSection({
     const selectMode = (next: AttentionMode) => {
         setMode(next);
         if (next === settings.mode) return;
-        // Embedding needs no LLM fields — persist right away. The LLM modes
-        // only take effect on Save (the server requires base URL + model).
-        if (next === "embedding") {
+        // Embedding and All need no LLM fields — persist right away. The LLM
+        // modes only take effect on Save (the server requires base URL + model).
+        if (!LLM_MODES.includes(next)) {
             onSave({
                 enabled: settings.enabled,
-                mode: "embedding",
+                mode: next,
                 base_url: settings.base_url,
                 model: settings.model,
             });
@@ -321,6 +327,9 @@ function TriageSection({
                         local filter; the LLM reads the recent conversation — precise, but
                         one model call each time it's consulted. Cascade asks it only about
                         gate hits; LLM only skips the gate and asks about every message.
+                        All messages skips triage entirely — each message becomes a nudge
+                        (one per cooldown window) and the agent itself decides whether to
+                        reply.
                     </p>
                 </div>
 
@@ -353,7 +362,7 @@ function TriageSection({
                 </div>
             </section>
 
-            {mode !== "embedding" && (
+            {LLM_MODES.includes(mode) && (
                 <section className="space-y-5 rounded-xl border border-border/50 bg-card p-5">
                     <div className="space-y-0.5">
                         <h2 className="text-sm font-semibold">

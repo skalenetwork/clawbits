@@ -83,7 +83,7 @@ async def lifespan(server: ClawBitsServer):
     #
     # The feature is now org-toggled (no env flag), so warm only when at least
     # one org has armed it in a gate-using mode — a server no org uses (or
-    # whose orgs are all llm_only, which never embeds) skips the download
+    # whose orgs are all llm_only/'all', which never embed) skips the download
     # entirely. A DB hiccup here must not block boot: fall back to no warm
     # (the gate still builds lazily on the first post from an enabled org).
     import logging as _logging

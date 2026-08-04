@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import sys
 import types
@@ -167,7 +168,10 @@ def test_poll_dispatches_same_second_post_ids_after_seed() -> None:
     assert adapter.events == []
 
     asyncio.run(poll_and_drain())
-    assert [event.text for event in adapter.events] == ["a", "b"]
+    # Each turn is fronted by the Clawbits context block (parity with the
+    # OpenClaw plugin), so assert on the trailing message text.
+    assert [event.text.rsplit("\n\n", 1)[-1] for event in adapter.events] == ["a", "b"]
+    assert all(e.text.startswith("[Clawbits context]") for e in adapter.events)
 
 
 def test_poll_keeps_receiving_while_a_turn_is_blocked() -> None:
@@ -207,10 +211,13 @@ def test_poll_keeps_receiving_while_a_turn_is_blocked() -> None:
         handled: list[str] = []
 
         async def blocking_handle(event: Any) -> None:
-            handled.append(event.text)
-            if event.text == "question":
+            # The prompt is now fronted by the Clawbits context block; the
+            # message itself is the trailing paragraph.
+            message = event.text.rsplit("\n\n", 1)[-1]
+            handled.append(message)
+            if message == "question":
                 await unblock.wait()  # the "clarify" park: turn 1 waits
-            elif event.text == "answer":
+            elif message == "answer":
                 unblock.set()  # the answer is what unblocks turn 1
 
         adapter.handle_message = blocking_handle
@@ -498,7 +505,7 @@ def test_channel_dispatch_strips_mention_but_keeps_raw() -> None:
         "message": "please help @agent_1 with this", "human_id": 1,
     }))
     assert len(adapter.events) == 1
-    assert adapter.events[0].text == "please help with this"
+    assert adapter.events[0].text.rsplit("\n\n", 1)[-1] == "please help with this"
     assert adapter.events[0].raw_message["message"] == "please help @agent_1 with this"
 
 
@@ -592,3 +599,183 @@ def test_fallback_plugin_version_matches_manifest() -> None:
             break
     assert version is not None, "no version: line found in plugin.yaml"
     assert mod._FALLBACK_PLUGIN_VERSION == version
+
+
+def test_agent_body_names_the_agent_and_matches_plugin_wording() -> None:
+    """Parity with plugin/src/agent-body.ts: same bracketed context block, and
+    the agent is named to itself. Without the name it cannot recognise
+    "Scaleweld, any idea why…" as addressed to it — which is exactly what the
+    server-side triage step nudges on."""
+    mod = _load_hermes_module()
+
+    body = mod._build_agent_body("staging is broken", chat_id="room-9", agent_id="Scaleweld")
+    assert body.startswith("[Clawbits context]")
+    assert "You are the Clawbits agent Scaleweld" in body
+    assert "without an @mention" in body
+    assert "[end Clawbits context]" in body
+    assert body.endswith("\n\nstaging is broken"), "message text trails the prompt"
+    assert "room-9" not in body, "raw channel id never reaches the model"
+
+
+def test_agent_body_session_id_matches_the_plugin_algorithm() -> None:
+    """sha256('clawbits:session:<chat>')[:12] — identical to the plugin's
+    clawbitsSessionId, so an agent reports the same id across a runtime swap."""
+    mod = _load_hermes_module()
+    expected = "sess_" + hashlib.sha256(b"clawbits:session:room-9").hexdigest()[:12]
+
+    assert mod._clawbits_session_id("room-9") == expected
+    assert expected in mod._build_agent_body("hi", chat_id="room-9")
+
+
+def test_agent_body_attention_framing_sits_closest_to_the_ask() -> None:
+    """Context, then the reply-only-if-useful framing, then the message: the
+    instruction nearest the ask carries the most weight (plugin ordering)."""
+    mod = _load_hermes_module()
+
+    body = mod._build_agent_body(
+        "anyone?",
+        chat_id="chan",
+        agent_id="Scaleweld",
+        attention_preamble=mod._ATTENTION_PREAMBLE,
+    )
+    assert body.index("[Clawbits context]") < body.index("[Attention]") < body.index("anyone?")
+
+
+def test_agent_body_without_ids_leaves_text_shape_alone() -> None:
+    """No ids and no framing → context block only, message still trailing."""
+    mod = _load_hermes_module()
+
+    body = mod._build_agent_body("hello")
+    assert "You are the Clawbits agent" not in body
+    assert "session id for this chat" not in body
+    assert body.endswith("\n\nhello")
+
+
+def test_attention_dispatch_carries_context_and_framing() -> None:
+    """The nudge path must ship both blocks — this is the path where the agent
+    most needs to know its own name."""
+    mod = _load_hermes_module()
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "Scaleweld"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    event = {
+        "type": "mutualist.consider",
+        "channel_id": "chan",
+        "data": {"post_id": 11, "message": "staging is down, anyone?", "human_id": 1},
+    }
+
+    async def dispatch_and_drain() -> None:
+        await adapter._dispatch_attention(event)
+        if adapter._turn_tasks:
+            await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(dispatch_and_drain())
+    assert len(adapter.events) == 1
+    text = adapter.events[0].text
+    assert "You are the Clawbits agent Scaleweld" in text
+    assert "[Attention]" in text
+    assert text.endswith("staging is down, anyone?")
+
+
+def test_unaddressed_post_stays_nudgeable_after_polling() -> None:
+    """The bug this guards: the poller used to mark EVERY post seen before
+    deciding whether to dispatch, so a channel post the agent isn't mentioned
+    in landed in ``_seen``. The server still runs triage on that post and
+    publishes a nudge seconds later — which was then dropped as a duplicate,
+    making LobsterTalk inert on this runtime. The poll loop always won the race
+    (~3s poll vs an LLM triage call)."""
+    mod = _load_hermes_module()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_channels(self) -> list[Any]:
+            return [mod._Channel("chan", "public", "General")]
+
+        def get_posts(self, channel_id: str) -> list[dict[str, Any]]:
+            self.calls += 1
+            if self.calls == 1:
+                return []  # seed pass
+            # Not a DM, no @mention → the poller must skip it, not swallow it.
+            return [{
+                "post_id": 7, "created_at": "2026-06-04 12:00:01",
+                "message": "staging is down, anyone?", "human_id": 1,
+            }]
+
+        def set_status(self, channel_id: str, status: str) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "Scaleweld"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+
+    async def scenario() -> None:
+        await adapter._poll_once()          # seed
+        await adapter._poll_once()          # sees the post, must not dispatch
+        await adapter._poll_once()          # and must not remember it via cursor
+        if adapter._turn_tasks:
+            await asyncio.gather(*adapter._turn_tasks)
+        assert adapter.events == [], "unaddressed post must not be dispatched by polling"
+        assert "7" not in adapter._seen, "skipped post must stay nudgeable"
+
+        # Now the server's nudge arrives — it must still get through.
+        await adapter._dispatch_attention({
+            "type": "mutualist.consider",
+            "channel_id": "chan",
+            "data": {"post_id": 7, "message": "staging is down, anyone?", "human_id": 1},
+        })
+        if adapter._turn_tasks:
+            await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert len(adapter.events) == 1, "attention nudge dispatched after the poller skipped it"
+    assert adapter.events[0].text.endswith("staging is down, anyone?")
+
+
+def test_dispatched_post_is_remembered_so_a_nudge_cannot_double_fire() -> None:
+    """The other half of the contract: a post the poller DID dispatch (a DM
+    here) is remembered, so a nudge for the same post is correctly deduped."""
+    mod = _load_hermes_module()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_channels(self) -> list[Any]:
+            return [mod._Channel("chan", "direct", "Chat")]
+
+        def get_posts(self, channel_id: str) -> list[dict[str, Any]]:
+            self.calls += 1
+            if self.calls == 1:
+                return []
+            return [{
+                "post_id": 8, "created_at": "2026-06-04 12:00:01",
+                "message": "hello there", "human_id": 1,
+            }]
+
+        def set_status(self, channel_id: str, status: str) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "Scaleweld"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+
+    async def scenario() -> None:
+        await adapter._poll_once()
+        await adapter._poll_once()
+        if adapter._turn_tasks:
+            await asyncio.gather(*adapter._turn_tasks)
+        assert len(adapter.events) == 1, "DM is dispatched by the poll loop"
+        assert "8" in adapter._seen
+
+        await adapter._dispatch_attention({
+            "type": "mutualist.consider",
+            "channel_id": "chan",
+            "data": {"post_id": 8, "message": "hello there", "human_id": 1},
+        })
+        if adapter._turn_tasks:
+            await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert len(adapter.events) == 1, "nudge for an already-dispatched post is deduped"

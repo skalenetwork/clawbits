@@ -634,6 +634,92 @@ def test_llm_only_triage_failure_fails_closed_and_keeps_cooldown(monkeypatch):
     assert [step for step, _ in calls] == ["claim", "transcript", "triage"]
 
 
+# --- 'all' mode: no gate, no triage — the agent's own model decides ---------
+
+
+def _all_ctx(*candidates):
+    return AttentionContext(
+        channel_type="public",
+        candidates=tuple(candidates),
+        channel_label="general",
+        mode="all",
+    )
+
+
+def test_all_mode_delivers_without_gate_or_triage(monkeypatch):
+    """``verdict=None`` (gate unavailable) and ``engine=None`` (nothing to
+    fetch a transcript with) — 'all' must consult neither: claim → deliver."""
+    ctx = _all_ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False))
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "thanks, that worked!", "post_id": 50},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=None,
+        calls=calls,
+    )
+    assert delivered == ["Alpha"]
+    assert [step for step, _ in calls] == ["claim", "deliver"]
+
+
+def test_all_mode_native_gates_still_apply(monkeypatch):
+    """'all' is not literally everything: own post, @mention (native handling)
+    and snooze still gate, and the cooldown still throttles + marks pending."""
+    ctx = _all_ctx(
+        AttentionCandidate("Snoozy", snoozed=True, inter_agent_mode=False),
+        AttentionCandidate("Tagged", snoozed=False, inter_agent_mode=False),
+        AttentionCandidate("Free", snoozed=False, inter_agent_mode=False),
+    )
+    delivered = _run(
+        monkeypatch,
+        post={"message": "@Tagged look at this", "post_id": 51},
+        context=ctx,
+        author_agent_id=None,
+        verdict=None,
+        engine=None,
+    )
+    assert delivered == ["Free"]
+
+    calls: list = []
+    delivered = _run(
+        monkeypatch,
+        post={"message": "anything at all", "post_id": 52},
+        context=_all_ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False)),
+        author_agent_id=None,
+        verdict=None,
+        engine=None,
+        on_cooldown=True,
+        calls=calls,
+    )
+    assert delivered == []
+    assert ("pending", "Alpha") in calls  # catch-up still covers busy windows
+
+
+def test_build_context_all_mode_skips_llm_and_profiles(monkeypatch):
+    """'all' needs neither the LLM config nor profile descriptions (there is
+    no triage prompt to feed) — the snapshot stays as cheap as embedding's."""
+
+    class _NoProfiles:
+        def get(self, key):
+            raise AssertionError("profile lookup should not run in 'all' mode")
+
+    monkeypatch.setattr(
+        svc.TableRead,
+        "get_org_lobstertalk_config",
+        lambda session, org_id: _lt_config(mode="all"),
+    )
+    _cascade_members(monkeypatch)
+    session = _FakeSession(
+        _channel(), {"On": _agent_row(enabled=True)}, profiles=_NoProfiles()
+    )
+    ctx = svc.build_attention_context(session, "c1")
+    assert ctx is not None
+    assert ctx.mode == "all" and ctx.llm is None
+    assert ctx.candidates[0].description is None
+
+
 # --- cooldown catch-up: window-blocked posts are replayed on expiry ---------
 
 

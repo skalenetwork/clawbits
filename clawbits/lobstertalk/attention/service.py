@@ -403,11 +403,13 @@ async def consider_post(
     if not text:
         return
     llm_only = context.mode == "llm_only"
-    if llm_only:
-        # No embedding gate: every post reaches the candidate loop and the
-        # LLM triage below is the sole filter. Works without the ``router``
-        # extra (evaluate_text is never called). The synthetic verdict keeps
-        # the delivery log's shape — route "none", score 0.0.
+    if llm_only or context.mode == "all":
+        # No embedding gate: every post reaches the candidate loop. llm_only
+        # puts the LLM triage below in front of delivery; 'all' delivers
+        # outright — the agent's own model is the triage, under the runtimes'
+        # reply-only-if-useful attention framing. Both work without the
+        # ``router`` extra (evaluate_text is never called). The synthetic
+        # verdict keeps the delivery log's shape — route "none", score 0.0.
         verdict = Verdict(escalate=True, route=None, score=None)
     else:
         verdict = await asyncio.to_thread(evaluate_text, text)

@@ -1233,6 +1233,45 @@ describe("buildAgentBody (session id)", () => {
   });
 });
 
+describe("buildAgentBody (agent identity)", () => {
+  const body = (agentId?: string, attention?: boolean) =>
+    buildAgentBody("Scaleweld, any idea why staging broke?", undefined, undefined,
+      undefined, undefined, undefined, attention, agentId);
+
+  it("names the agent to itself inside the context block", () => {
+    const out = body("Scaleweld");
+    assert.ok(out.includes("You are the Clawbits agent Scaleweld"), "agent is named");
+    assert.ok(out.includes("without an @mention"), "plain-name addressing is explained");
+    const ctxEnd = out.indexOf("[end Clawbits context]");
+    assert.ok(ctxEnd > out.indexOf("You are the Clawbits agent"), "inside the context block");
+  });
+
+  it("is present on the attention path, where it matters most", () => {
+    // Server-side triage nudges partly *because* a message names the agent
+    // without an @mention; without the name the agent reads it as addressed to
+    // someone else and correctly answers NO_REPLY.
+    const out = body("Scaleweld", true);
+    assert.ok(out.includes("You are the Clawbits agent Scaleweld"));
+    assert.ok(out.includes("[Attention]"), "attention framing still applied");
+  });
+
+  it("omits the line when no agent id is given (prompt unchanged)", () => {
+    const out = body(undefined);
+    assert.ok(!out.includes("You are the Clawbits agent"));
+    assert.strictEqual(buildAgentBody("hello"), buildAgentBody("hello", undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined));
+  });
+
+  it("combines with the session id in one context block", () => {
+    const sid = clawbitsSessionId("room-9");
+    const out = buildAgentBody("hi", undefined, undefined, sid, undefined, undefined,
+      undefined, "Scaleweld");
+    assert.ok(out.includes("You are the Clawbits agent Scaleweld"));
+    assert.ok(out.includes(sid));
+    assert.strictEqual(out.match(/\[Clawbits context\]/g)?.length, 1, "one context block");
+  });
+});
+
 describe("buildAgentBody (channel history)", () => {
   const ctx = [
     { postId: "a", senderId: "human:7", text: "we shipped the build", createAt: 1700000000000, isSelf: false },
