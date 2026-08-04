@@ -93,7 +93,7 @@ from clawbits.realtime import (
     publish_automation_sync,
     publish_org_added,
 )
-from clawbits.ssrf import HostResolutionError, PrivateAddressError
+from clawbits.ssrf import HostResolutionError, PrivateAddressError, arun_guarded
 
 # ---------------------------------------------------------------------------
 # Response models still used by data endpoints
@@ -130,6 +130,36 @@ logger = logging.getLogger(__name__)
 # and letting the (authoritative) call-time check decide. The resolver thread
 # can't be cancelled, so this bounds the *request*, not the lookup.
 ENDPOINT_CHECK_TIMEOUT_SECONDS = 5.0
+
+# --- Lightweight in-process rate limiting -----------------------------------
+# The LobsterTalk save/healthcheck endpoints are owner-only but self-service: a
+# save resolves a caller-chosen DNS name (a slow nameserver ties up a resolver
+# slot) and a healthcheck spends a metered LLM call. Neither should be free to
+# hammer. This is a per-process sliding window keyed by org — with ``--workers
+# N`` the real ceiling is N× these numbers, which is fine for what it guards
+# (one owner looping an endpoint) and costs no Redis round-trip on the hot path.
+_RATE_BUCKETS: dict[str, list[float]] = {}
+_LOBSTERTALK_SAVE_LIMIT = 20
+_LOBSTERTALK_HEALTH_LIMIT = 6  # spends a metered LLM call — tighter than saves
+_LOBSTERTALK_RATE_WINDOW_S = 60.0
+
+
+def _rate_limit(key: str, *, limit: int, window_s: float = _LOBSTERTALK_RATE_WINDOW_S) -> None:
+    """Raise 429 when ``key`` has already been hit ``limit`` times in the last
+    ``window_s`` seconds; otherwise record this hit and return. Buckets that
+    fall empty are dropped so the map can't grow without bound across orgs."""
+    now = time.monotonic()
+    cutoff = now - window_s
+    hits = [t for t in _RATE_BUCKETS.get(key, ()) if t >= cutoff]
+    if len(hits) >= limit:
+        # The retry hint rides in the detail, not a Retry-After header: the
+        # app's global HTTPException handler rebuilds the response and drops
+        # exc.headers, so a header here would never reach the client.
+        retry = max(1, int(window_s - (now - hits[0])))
+        raise HTTPException(status_code=429, detail=f"Too many requests; retry in ~{retry}s")
+    hits.append(now)
+    _RATE_BUCKETS[key] = hits
+
 
 human_router = APIRouter(tags=["Human"])
 
@@ -1902,17 +1932,22 @@ async def set_org_lobstertalk(
             raise HTTPException(
                 status_code=403, detail="Only organization owners can change LobsterTalk settings"
             )
+    # Owner-only, but self-service: cap how fast one org can drive the DNS
+    # resolution below (a caller-chosen, possibly-slow nameserver).
+    _rate_limit(f"lt-save:{org_id}", limit=_LOBSTERTALK_SAVE_LIMIT)
     # Outside the session on purpose: resolution is a network round trip with
     # no timeout of its own, against a name the caller chose. Doing it while
     # holding a pooled connection (and an open transaction) would let anyone
     # tie up the pool by pointing base_url at a deliberately slow nameserver.
+    # It runs on the dedicated SSRF resolver pool (arun_guarded), so a stuck
+    # getaddrinfo can't starve the default executor DB/Redis work shares.
     # Only when this request actually arms an LLM mode — otherwise a config
     # whose host has since gone bad would make the org unable to turn
     # LobsterTalk *off*, which is exactly when you most want to.
     if body.enabled and body.mode in ("cascade", "llm_only") and body.base_url:
         try:
             await asyncio.wait_for(
-                run_in_threadpool(check_endpoint_allowed, body.base_url),
+                arun_guarded(check_endpoint_allowed, body.base_url),
                 timeout=ENDPOINT_CHECK_TIMEOUT_SECONDS,
             )
         except PrivateAddressError as e:
@@ -1923,6 +1958,14 @@ async def set_org_lobstertalk(
             # yet). The call-time check still refuses to dial anything unsafe.
             pass
     with _get_db(request) as db:
+        # Re-check ownership in the *write* transaction. The check above ran in
+        # an earlier session and the DNS resolution between them is a network
+        # round trip — long enough for the caller to be demoted. Without this a
+        # just-removed owner could still land the write (a classic TOCTOU).
+        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
+            raise HTTPException(
+                status_code=403, detail="Only organization owners can change LobsterTalk settings"
+            )
         update_api_key = body.api_key is not None or body.clear_api_key
         try:
             api_key_encrypted = encrypt_secret(body.api_key) if body.api_key is not None else None
@@ -1947,8 +1990,23 @@ async def set_org_lobstertalk(
             cooldown_seconds=body.cooldown_seconds,
         ):
             raise HTTPException(status_code=404, detail="Organization not found")
+        org_row = TableRead.get_organization(db, org_id)
         db.commit()
-        return _lobstertalk_response(TableRead.get_org_lobstertalk_config(db, org_id))
+        response = _lobstertalk_response(TableRead.get_org_lobstertalk_config(db, org_id))
+    # After commit, outside the session: record who changed the config that
+    # governs whether channel transcripts (private channels included) get
+    # shipped to an org-controlled endpoint. Best-effort; never blocks the save.
+    audit.lobstertalk_config_updated(
+        request,
+        actor_user=user,
+        workos_org_id=(org_row or {}).get("workos_org_id", ""),
+        enabled=body.enabled,
+        mode=body.mode,
+        base_url=body.base_url,
+        api_key_changed=update_api_key,
+        cooldown_seconds=body.cooldown_seconds,
+    )
+    return response
 
 
 @human_router.post(
@@ -1976,6 +2034,10 @@ async def lobstertalk_healthcheck(
                 status_code=403, detail="Only organization owners can test LobsterTalk settings"
             )
         cfg = TableRead.get_org_lobstertalk_config(db, org_id)
+    # Each probe spends a metered LLM call against the org's key — cap the rate
+    # so this can't be looped into a spend amplifier. (After the owner check so
+    # a rejected non-owner never fills the bucket.)
+    _rate_limit(f"lt-health:{org_id}", limit=_LOBSTERTALK_HEALTH_LIMIT)
     # Session released before the probe: it's a network call against a
     # caller-chosen host under a 30s deadline — same reason the PUT resolves
     # DNS outside the session.

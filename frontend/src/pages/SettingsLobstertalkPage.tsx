@@ -172,28 +172,35 @@ export default function SettingsLobstertalkPage() {
                         />
                     </div>
 
-                    {/* Triage config only matters while the gate is armed —
-                        with it off nothing runs, so don't show knobs for it.
-                        Keyed on the saved config so a successful save (or an
-                        outside change) re-seeds the form by remount — the
-                        server's normalized values win, the key input clears. */}
-                    {settings.enabled && (
-                        <>
-                            <TriageSection
-                                key={[settings.mode, settings.base_url ?? "", settings.model ?? "", String(settings.api_key_set)].join("\0")}
-                                settings={settings}
-                                pending={saveMutation.isPending}
-                                onSave={(body) => { saveMutation.mutate(body); }}
-                            />
-                            <EndpointHealth mutation={healthMutation}/>
-                            <CooldownSection
-                                key={String(settings.cooldown_seconds ?? "default")}
-                                settings={settings}
-                                pending={saveMutation.isPending}
-                                onSave={(body) => { saveMutation.mutate(body); }}
-                            />
-                        </>
+                    {/* Config stays editable even while LobsterTalk is off. A
+                        stored endpoint that has since become unreachable or
+                        private — or that an operator dropped from the allow-list
+                        — must still be fixable, and re-enabling resubmits it, so
+                        hiding the form would strand the org with a config it can
+                        neither use nor repair. Keyed on the saved config so a
+                        successful save (or an outside change) re-seeds the form
+                        by remount — the server's normalized values win, the key
+                        input clears. The endpoint health card is enabled-only:
+                        a disabled config isn't probed. */}
+                    {!settings.enabled && (
+                        <p className="text-xs text-muted-foreground">
+                            LobsterTalk is off. You can still edit the triage configuration below;
+                            changes take effect when you turn it back on.
+                        </p>
                     )}
+                    <TriageSection
+                        key={[settings.mode, settings.base_url ?? "", settings.model ?? "", String(settings.api_key_set)].join("\0")}
+                        settings={settings}
+                        pending={saveMutation.isPending}
+                        onSave={(body) => { saveMutation.mutate(body); }}
+                    />
+                    {settings.enabled && <EndpointHealth mutation={healthMutation}/>}
+                    <CooldownSection
+                        key={String(settings.cooldown_seconds ?? "default")}
+                        settings={settings}
+                        pending={saveMutation.isPending}
+                        onSave={(body) => { saveMutation.mutate(body); }}
+                    />
                 </>
             )}
         </div>

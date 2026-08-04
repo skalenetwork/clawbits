@@ -81,10 +81,14 @@ describe("SettingsLobstertalkPage", () => {
         expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
     });
 
-    it("hides the triage mode picker when attention is disabled", async () => {
+    it("keeps the triage config editable when attention is disabled", async () => {
+        // A stored endpoint that has gone bad must stay repairable while off —
+        // hiding the form would strand the org (it can't fix the URL, and
+        // re-enabling just resubmits the broken one). So the picker and the
+        // LLM fields stay on screen; only the post-save health card is hidden.
         await renderPage(false);
-        expect(screen.queryByRole("radiogroup", {name: "Triage mode"})).not.toBeInTheDocument();
-        expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+        expect(screen.getByRole("radiogroup", {name: "Triage mode"})).toBeInTheDocument();
+        expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
     });
 
     it("shows the LLM endpoint form in llm_only mode", async () => {

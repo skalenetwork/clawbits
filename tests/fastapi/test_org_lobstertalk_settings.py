@@ -572,3 +572,108 @@ def test_cooldown_override_round_trip_and_bounds(test_client):
         r = _put(test_client, org_id, token,
                  {"enabled": True, "mode": "all", "cooldown_seconds": bad})
         assert r.status_code == 422, bad
+
+
+# ---------------------------------------------------------------------------
+# Tests: hardening — URL-secret validation, ownership recheck, rate limits
+# ---------------------------------------------------------------------------
+
+
+def test_put_rejects_credentials_query_or_fragment_in_base_url(test_client):
+    """#8: userinfo, a query string and a fragment are each a place a secret
+    can hide in the base URL — which is echoed to every member and logged on
+    failure. Reject them at validation time (422)."""
+    owner = register_human(test_client, "lt-urlsec-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-urlsec-org")
+    token = owner["access_token"]
+    for bad in (
+        "https://user:sk-secret@api.openai.com/v1",  # userinfo
+        "https://api.openai.com/v1?api_key=sk-secret",  # query
+        "https://api.openai.com/v1#sk-secret",  # fragment
+    ):
+        r = _put(test_client, org_id, token, {**_CASCADE_BODY, "base_url": bad})
+        assert r.status_code == 422, bad
+
+
+def test_put_rechecks_owner_in_the_write_transaction(test_client, monkeypatch):
+    """#6 (TOCTOU): ownership is checked once before the DNS resolution and
+    again in the write transaction. Simulate a demotion landing in between —
+    the write must be refused, and nothing written."""
+    import clawbits.fastapi.human_endpoints as he
+
+    owner = register_human(test_client, "lt-toctou-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-toctou-org")
+    token = owner["access_token"]
+
+    calls = {"n": 0}
+
+    def _demote_after_first(session, oid, uid):
+        calls["n"] += 1
+        return "owner" if calls["n"] == 1 else "member"  # demoted mid-request
+
+    monkeypatch.setattr(he.TableRead, "get_org_member_role", _demote_after_first)
+    r = _put(test_client, org_id, token, _CASCADE_BODY)
+    assert r.status_code == 403
+    assert calls["n"] >= 2, "must re-check ownership in the write transaction"
+    monkeypatch.undo()
+
+    # Nothing was written — still the embedding-mode defaults.
+    got = test_client.get(
+        f"/api/human/orgs/{org_id}/lobstertalk", headers=_auth(token)
+    ).json()
+    assert got["mode"] == "embedding" and got["enabled"] is False
+
+
+def test_healthcheck_is_rate_limited(test_client, monkeypatch):
+    """#7: each probe spends a metered LLM call, so it can't be looped freely.
+    Per-org window — the org is unique to this test, so the ceiling is clean."""
+    import clawbits.fastapi.human_endpoints as he
+
+    owner = register_human(test_client, "lt-hcrate-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-hcrate-org")
+    token = owner["access_token"]
+    assert _put(test_client, org_id, token, _CASCADE_BODY).status_code == 200
+
+    async def _fake_probe(config):
+        return True, "ok"
+
+    monkeypatch.setattr(he, "probe_llm_endpoint", _fake_probe)
+    for _ in range(he._LOBSTERTALK_HEALTH_LIMIT):
+        assert _hc(test_client, org_id, token).status_code == 200
+    r = _hc(test_client, org_id, token)
+    assert r.status_code == 429
+    assert "retry" in r.json()["detail"].lower()  # hint rides in the detail
+
+
+def test_rate_limit_helper_blocks_after_the_limit():
+    """#7 unit: the sliding-window helper allows ``limit`` hits, then 429s."""
+    from fastapi import HTTPException
+
+    import clawbits.fastapi.human_endpoints as he
+
+    key = "unit-test-rate-key"
+    he._RATE_BUCKETS.pop(key, None)
+    try:
+        for _ in range(3):
+            he._rate_limit(key, limit=3, window_s=100)
+        with pytest.raises(HTTPException) as ei:
+            he._rate_limit(key, limit=3, window_s=100)
+        assert ei.value.status_code == 429
+    finally:
+        he._RATE_BUCKETS.pop(key, None)
+
+
+def test_main_loads_dotenv_before_clawbits_imports():
+    """#3 regression: crypto reads its secrets key at *import* time, so the
+    server entrypoint must call load_dotenv() before the first ``from clawbits``
+    import. Otherwise a key present only in .env is invisible and storing an org
+    key 503s — silently. Asserted on source order so the fix can't quietly
+    regress under an import reshuffle."""
+    import pathlib
+
+    import clawbits.fastapi.main as main_mod
+
+    lines = pathlib.Path(main_mod.__file__).read_text().splitlines()
+    call_line = next(i for i, ln in enumerate(lines) if ln.strip() == "load_dotenv()")
+    import_line = next(i for i, ln in enumerate(lines) if ln.strip().startswith("from clawbits"))
+    assert call_line < import_line

@@ -1,5 +1,6 @@
 """Organization data models (GitHub-style orgs)."""
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -103,6 +104,20 @@ class SetOrgLobstertalkRequest(BaseModel):
         v = v.strip().rstrip("/")
         if not (v.startswith("http://") or v.startswith("https://")):
             raise ValueError("base_url must start with http:// or https://")
+        # An OpenAI-compatible base URL is scheme://host[:port]/path and nothing
+        # more. Userinfo, a query string and a fragment are each a place a secret
+        # can ride along — and this value is handed back to *every* org member on
+        # GET and written to the server log on a triage failure. Reject them here
+        # rather than store, echo and log them. (The SDK builds request URLs by
+        # appending to the base and drops a base-URL query anyway, so this
+        # forbids nothing that would otherwise have worked.)
+        parts = urlsplit(v)
+        if parts.username or parts.password or "@" in parts.netloc:
+            raise ValueError("base_url must not contain credentials (user:pass@…)")
+        if parts.query:
+            raise ValueError("base_url must not contain a query string")
+        if parts.fragment:
+            raise ValueError("base_url must not contain a fragment")
         return v
 
     @model_validator(mode="after")

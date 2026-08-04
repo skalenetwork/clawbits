@@ -31,14 +31,15 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
 from clawbits.ssrf import (
     PrivateAddressError,
     UnsafeHostError,
+    arun_guarded,
     check_host_is_public,
     dialed_host,
+    make_guarded_async_client,
     parse_url,
+    redact_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -282,10 +283,15 @@ def _make_client(config: LlmTriageConfig):
     ``router`` extra. Key-less compat servers (Ollama) still require a
     non-empty ``api_key``, hence the ``"unused"`` placeholder.
 
-    ``follow_redirects=False`` is load-bearing: the SDK's default client
-    follows them, which would let an allowed public endpoint bounce the
-    request — body and all — to a private address that
-    :func:`check_endpoint_allowed` just cleared it of."""
+    The client comes from :func:`make_guarded_async_client`, which does two
+    load-bearing things. It never follows redirects: the SDK's default client
+    does, which would let an allowed public endpoint bounce the request — body
+    and all — to a private address that :func:`check_endpoint_allowed` just
+    cleared it of. And its transport pins the vetted IP, so a name that
+    resolves public at check time can't be rebound to a private address for the
+    actual dial — the residual the plain resolve-then-connect guard couldn't
+    close. The operator allowlist is threaded through so a self-hosted model on
+    a private address still connects."""
     from openai import AsyncOpenAI
 
     return AsyncOpenAI(
@@ -293,8 +299,9 @@ def _make_client(config: LlmTriageConfig):
         api_key=config.api_key or "unused",
         timeout=TRIAGE_TIMEOUT_SECONDS,
         max_retries=0,
-        http_client=httpx.AsyncClient(
-            timeout=TRIAGE_TIMEOUT_SECONDS, follow_redirects=False
+        http_client=make_guarded_async_client(
+            allow_hosts=_allowed_private_hosts(),
+            timeout=TRIAGE_TIMEOUT_SECONDS,
         ),
     )
 
@@ -340,7 +347,7 @@ async def triage_decide(
     except TimeoutError:
         logger.warning(
             "attention triage: timed out after %.0fs for agent=%s (model=%s base_url=%s)",
-            TRIAGE_TIMEOUT_SECONDS, agent_id, config.model, config.base_url,
+            TRIAGE_TIMEOUT_SECONDS, agent_id, config.model, redact_url(config.base_url),
         )
         return None
 
@@ -362,11 +369,11 @@ async def _triage_call(
         # here, so a config that was safe when stored can't quietly become an
         # internal address later. getaddrinfo blocks, hence the thread.
         try:
-            await asyncio.to_thread(check_endpoint_allowed, config.base_url)
+            await arun_guarded(check_endpoint_allowed, config.base_url)
         except UnsafeHostError as e:
             logger.warning(
                 "attention triage: refusing endpoint for agent=%s (base_url=%s): %s",
-                agent_id, config.base_url, e,
+                agent_id, redact_url(config.base_url), e,
             )
             return None
         client = _make_client(config)
@@ -396,7 +403,7 @@ async def _triage_call(
         if raw is None or not isinstance(raw.get("needs_input"), bool):
             logger.warning(
                 "attention triage: unparseable reply for agent=%s (model=%s base_url=%s)%s: %.200s",
-                agent_id, config.model, config.base_url,
+                agent_id, config.model, redact_url(config.base_url),
                 _unparseable_hint(choice, source, content), content,
             )
             return None
@@ -404,7 +411,7 @@ async def _triage_call(
     except Exception as e:
         logger.warning(
             "attention triage failed for agent=%s (model=%s base_url=%s): %s",
-            agent_id, config.model, config.base_url, e,
+            agent_id, config.model, redact_url(config.base_url), e,
         )
         return None
 
@@ -428,7 +435,7 @@ async def probe_llm_endpoint(config: LlmTriageConfig) -> tuple[bool, str]:
     try:
         async with asyncio.timeout(TRIAGE_TIMEOUT_SECONDS):
             try:
-                await asyncio.to_thread(check_endpoint_allowed, config.base_url)
+                await arun_guarded(check_endpoint_allowed, config.base_url)
             except UnsafeHostError as e:
                 return False, str(e)
             client = _make_client(config)

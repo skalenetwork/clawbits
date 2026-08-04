@@ -2,10 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
-[options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P7D"
-
 [manifest]
 constraints = [{ name = "litellm", specifier = "<1.92" }]
 
@@ -352,6 +348,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "imapclient" },
+    { name = "openai" },
     { name = "pillow" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -369,7 +366,6 @@ dependencies = [
 [package.optional-dependencies]
 router = [
     { name = "fastembed" },
-    { name = "openai" },
     { name = "semantic-router" },
 ]
 
@@ -391,7 +387,7 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'router'", specifier = ">=0.4" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "imapclient", specifier = ">=3.1,<4" },
-    { name = "openai", marker = "extra == 'router'", specifier = ">=2" },
+    { name = "openai", specifier = ">=2" },
     { name = "pillow", specifier = ">=11" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.13" },

@@ -7,8 +7,10 @@ parse/fail-open behavior, not any provider. Every failure path must yield None
 (the caller treats it as "fail open to the gate verdict")."""
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from clawbits import ssrf
@@ -585,3 +587,169 @@ def test_probe_flags_a_verdict_that_came_from_reasoning(monkeypatch):
     )
     assert ok is True
     assert "reasoning" in detail
+
+
+# --- #8: URL redaction in logs ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # userinfo, query and fragment each stripped — every place a secret rides
+        ("https://user:sk-secret@h.example.com/v1?token=abc#frag", "https://h.example.com/v1"),
+        ("https://h.example.com:8443/v1", "https://h.example.com:8443/v1"),  # non-default port kept
+        ("http://h.example.com/", "http://h.example.com/"),
+        ("https://0177.0.0.1/v1", "<unparseable-url>"),  # httpx refuses it → placeholder
+    ],
+)
+def test_redact_url_drops_secret_bearing_parts(raw, expected):
+    assert ssrf.redact_url(raw) == expected
+
+
+def test_triage_failure_log_redacts_base_url(monkeypatch, caplog):
+    """A base_url that carries a secret in userinfo/query must not reach the
+    server log when a call fails — the log echoes base_url on every failure."""
+    secret_cfg = LlmTriageConfig(
+        base_url="https://user:sk-secret@api.openai.com/v1?token=abc",
+        model="m1",
+        api_key=None,
+    )
+    monkeypatch.setattr(triage, "check_endpoint_allowed", lambda base_url: None)
+    monkeypatch.setattr(
+        triage, "_make_client", lambda config: _FakeClient(error=RuntimeError("boom"))
+    )
+    with caplog.at_level("WARNING"):
+        decision = asyncio.run(
+            triage_decide(
+                config=secret_cfg,
+                agent_id="Alpha",
+                description=None,
+                channel_id="c1",
+                channel_label="general",
+                posts=[_post("hi", human_id=1, who="Carol")],
+            )
+        )
+    assert decision is None
+    blob = "\n".join(r.getMessage() for r in caplog.records)
+    assert "sk-secret" not in blob and "token=abc" not in blob
+    assert "api.openai.com" in blob  # the useful, non-secret part still logged
+
+
+# --- #7: resolution is isolated onto a dedicated pool ------------------------
+
+
+def test_arun_guarded_runs_on_the_dedicated_resolver_pool():
+    """getaddrinfo can't be cancelled, so its threads must not run on the
+    default executor DB/Redis work shares — they get their own named pool."""
+    name = asyncio.run(ssrf.arun_guarded(lambda: threading.current_thread().name))
+    assert name.startswith("ssrf-resolve")
+
+
+# --- #5: IP pinning closes the resolve-then-connect (rebind) gap -------------
+
+
+def test_pick_pinned_ip_returns_public_and_prefers_ipv4(monkeypatch):
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: {"2606:4700::1111", "93.184.216.34"})
+    assert ssrf._pick_pinned_ip("h.example.com") == "93.184.216.34"
+
+
+def test_pick_pinned_ip_rejects_when_any_address_is_private(monkeypatch):
+    """All-or-nothing, same as the pre-check: one private answer poisons the
+    set, so a split public/private response can't sneak the private one in."""
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: {"93.184.216.34", "10.0.0.5"})
+    with pytest.raises(ssrf.PrivateAddressError):
+        ssrf._pick_pinned_ip("rebind.example.com")
+
+
+def test_make_client_dials_through_the_pinning_transport(monkeypatch):
+    """#5 end of the wiring: the triage client's transport is the pinning one,
+    carrying the operator allowlist, and still refuses redirects."""
+    monkeypatch.setenv("CLAWBITS_ATTENTION_LLM_ALLOW_HOSTS", "ollama.internal")
+
+    async def _check():
+        client = triage._make_client(_CONFIG)
+        inner = client._client
+        try:
+            assert isinstance(inner._transport, ssrf.PinnedAsyncTransport)
+            assert inner._transport._allow_hosts == frozenset({"ollama.internal"})
+            assert inner.follow_redirects is False
+        finally:
+            await client.close()
+
+    asyncio.run(_check())
+
+
+def test_pinned_transport_dials_vetted_ip_with_original_sni(monkeypatch):
+    """The heart of the fix: the transport rewrites the *dialed* host to the
+    vetted IP but keeps the original hostname as the TLS SNI / cert name and in
+    the Host header, so the connection can't be retargeted between check and
+    connect, and certificate verification is unchanged."""
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: {"93.184.216.34"})
+    captured = {}
+
+    async def _fake_super(self, request):
+        captured["host"] = request.url.host
+        captured["sni"] = request.extensions.get("sni_hostname")
+        captured["header_host"] = request.headers.get("host")
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _fake_super)
+    transport = ssrf.PinnedAsyncTransport()
+
+    async def _run():
+        await transport.handle_async_request(
+            httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        )
+
+    asyncio.run(_run())
+    assert captured["host"] == "93.184.216.34"
+    assert captured["sni"] == "api.openai.com"
+    assert captured["header_host"] == "api.openai.com"
+
+
+def test_pinned_transport_refuses_a_rebind_to_a_private_address(monkeypatch):
+    """DNS rebinding: the name resolves to a private address at connect time.
+    The transport must refuse to dial it — never reaching the real super()."""
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: {"169.254.169.254"})
+
+    async def _must_not_dial(self, request):
+        raise AssertionError("must not dial a rebound private address")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _must_not_dial)
+    transport = ssrf.PinnedAsyncTransport()
+
+    async def _run():
+        with pytest.raises(ssrf.PrivateAddressError):
+            await transport.handle_async_request(
+                httpx.Request("POST", "https://rebind.attacker.tld/v1/chat/completions")
+            )
+
+    asyncio.run(_run())
+
+
+def test_pinned_transport_dials_allowlisted_host_by_name(monkeypatch):
+    """An operator-allowlisted host (self-hosted Ollama) keeps its intended
+    private address: dialed by name, never pinned."""
+
+    def _boom(host):
+        raise AssertionError("an allowlisted host must not be resolved for pinning")
+
+    monkeypatch.setattr(ssrf, "_pick_pinned_ip", _boom)
+    captured = {}
+
+    async def _fake_super(self, request):
+        captured["host"] = request.url.host
+        captured["sni"] = request.extensions.get("sni_hostname")
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _fake_super)
+    transport = ssrf.PinnedAsyncTransport(allow_hosts={"ollama.internal"})
+
+    async def _run():
+        await transport.handle_async_request(
+            httpx.Request("POST", "http://ollama.internal:11434/v1/chat/completions")
+        )
+
+    asyncio.run(_run())
+    assert captured["host"] == "ollama.internal"
+    assert captured["sni"] is None

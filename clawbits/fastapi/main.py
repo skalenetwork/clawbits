@@ -5,13 +5,24 @@ import threading
 from contextlib import asynccontextmanager
 
 import uvicorn
-
-# Load environment variables
-from dotenv import load_dotenv
 from fastapi import HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+# Load .env BEFORE importing anything under ``clawbits``. Order is load-bearing:
+# ``clawbits.lobstertalk.attention.crypto`` reads its Fernet secrets key from
+# the environment at *import* time, and the ``from clawbits.fastapi ...``
+# imports below pull it in transitively. With load_dotenv() left until after
+# those imports (where it used to live), a key present only in ``.env`` — the
+# documented ``cp .env.example .env`` + ``uvicorn`` startup — was invisible:
+# storing an org API key 503'd and the miss was silent. dotenvx-based startup
+# injects the environment before the process starts, so it was unaffected
+# either way. (E402 on the clawbits imports below is expected and ignored for
+# this entrypoint in pyproject — the whole point is to run a statement first.)
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from clawbits.cloudflare.setup_r2 import provision_r2_on_startup
 from clawbits.fastapi.avatar_endpoints import avatar_router
@@ -35,8 +46,6 @@ from clawbits.realtime import (
     start_push_dispatcher,
     stop_push_dispatcher,
 )
-
-load_dotenv()
 
 # Custom FileResponse with cache-busting headers
 class NoCacheFileResponse(FileResponse):

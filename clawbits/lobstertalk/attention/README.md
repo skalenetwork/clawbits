@@ -159,14 +159,18 @@ httpx's `.host`: for an internationalised name those differ, and vetting the
 decoded form while connecting to the punycode form would check the wrong host
 entirely.
 
-**Known residual:** the address is verified by resolving the name, then the
-client resolves it again when it connects — an attacker who runs the
-authoritative nameserver for their own domain can answer those two queries
-differently and reach an internal address anyway. Closing it properly means
-pinning the vetted IP into the connection, which httpx doesn't expose without
-a custom transport; every resolve-then-connect guard in this repo (including
-link previews) shares the gap. Treat network egress policy as the real
-control on a shared deployment.
+**DNS rebinding — closed for triage.** A plain resolve-then-connect guard
+verifies the name, then the client resolves it *again* to connect, so an
+attacker running the authoritative nameserver for their own domain could answer
+those two queries differently and reach an internal address. The triage client
+no longer has that gap: it dials through `PinnedAsyncTransport`
+(`clawbits/ssrf.py`), which resolves and vets the host itself and connects to
+the **vetted IP**, carrying the original hostname through as the TLS SNI / cert
+name so certificate verification is unchanged. (Link-preview unfurling still
+uses the plain guard, so keep network egress policy as the backstop there on a
+shared deployment.) Resolution for both the save-time check and the pinning
+transport runs on a small dedicated thread pool, so a hostile nameserver's
+uncancellable `getaddrinfo` threads can't starve the executor DB/Redis share.
 
 A self-hosted model is the legitimate exception, so the operator opts specific
 hostnames out — by name, not by weakening the rule:
@@ -180,6 +184,30 @@ entry is a hostname, so it isn't port-scoped — allowing `localhost` allows
 every port on it, which on a multi-tenant box hands each org a way to POST at
 anything on loopback. Prefer a name that only resolves to the model host, and
 leave the list empty on a shared deployment.
+
+### What the endpoint receives — and the private-channel caveat
+
+A cascade/`llm_only` triage call sends the endpoint the **recent channel
+transcript** (up to the last ~20 posts: message bodies and author display
+names) for any channel that has a LobsterTalk-enabled agent member — **private
+channels included**. The endpoint is chosen by the org *owner*, who need not be
+a member of that channel. A malicious or careless owner can therefore point the
+endpoint at a server they control and observe messages from private channels
+they aren't in. This is inherent to "an org-configured model reads channel
+context"; the controls around it are:
+
+- **Owner-only + audited.** Only an org owner can set the endpoint, and every
+  write emits an `organization.lobstertalk_updated` audit event (actor, mode,
+  redacted endpoint, whether the key changed) — so "who pointed our transcripts
+  where, and when" is answerable after the fact.
+- **Egress-constrained.** The endpoint must be https and resolve to a public
+  address (see above), which bounds *where* transcripts can go but does not, by
+  itself, stop an owner from exfiltrating to a public host they own.
+- **Recommended follow-ups (not yet implemented):** a per-channel LLM opt-in
+  and an in-channel disclosure to members that an external model may read the
+  channel. Until those land, treat "arm an LLM mode" as an org-wide decision to
+  share private-channel context with the configured endpoint, and prefer
+  `embedding` mode for orgs with sensitive private channels.
 
 ### The API key at rest
 
