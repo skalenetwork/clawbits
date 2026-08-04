@@ -1165,6 +1165,7 @@ class TableRead:
             "base_url": row.attention_llm_base_url,
             "model": row.attention_llm_model,
             "api_key_encrypted": row.attention_llm_api_key_encrypted,
+            "cooldown_seconds": row.attention_cooldown_seconds,
         }
 
     @staticmethod

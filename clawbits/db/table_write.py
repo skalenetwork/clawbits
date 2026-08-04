@@ -1475,6 +1475,7 @@ class TableWrite:
         model: str | None,
         api_key_encrypted: str | None,
         update_api_key: bool,
+        cooldown_seconds: int | None = None,
     ) -> bool:
         """Write the org's LobsterTalk attention config. The stored API key is
         write-only: the key column changes only when ``update_api_key`` is True
@@ -1488,6 +1489,7 @@ class TableWrite:
         row.attention_mode = mode
         row.attention_llm_base_url = base_url
         row.attention_llm_model = model
+        row.attention_cooldown_seconds = cooldown_seconds
         if update_api_key:
             row.attention_llm_api_key_encrypted = api_key_encrypted
         session.flush()

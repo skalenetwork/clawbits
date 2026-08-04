@@ -45,6 +45,8 @@ function settings(
         base_url: "https://api.openai.com/v1",
         model: "gpt-4o-mini",
         api_key_set: true,
+        cooldown_seconds: null,
+        default_cooldown_seconds: 30,
     };
 }
 
@@ -147,6 +149,46 @@ describe("SettingsLobstertalkPage", () => {
         );
         expect(checkOrgLobstertalkEndpoint).not.toHaveBeenCalled();
         expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+    });
+
+    it("saves a cooldown override and preserves it on other saves", async () => {
+        await renderPage(true);
+        const stored = {...settings(true), cooldown_seconds: 60};
+        setOrgLobstertalk.mockResolvedValue(stored);
+        getOrgLobstertalk.mockResolvedValue(stored); // post-save refetch result
+        const input = screen.getByLabelText("Nudge cooldown in seconds");
+        expect(input).toHaveAttribute("placeholder", "30 (server default)");
+        fireEvent.change(input, {target: {value: "60"}});
+        fireEvent.click(screen.getByRole("button", {name: "Save cooldown"}));
+        await waitFor(() => {
+            expect(setOrgLobstertalk).toHaveBeenCalledWith(
+                "org-1",
+                expect.objectContaining({cooldown_seconds: 60}),
+            );
+        });
+        // Wait for the refetch to land (the section remounts showing 60), then
+        // check the triage form's own save carries the stored override — the
+        // PUT is whole-state, so omitting it would silently clear the cooldown.
+        await waitFor(() => {
+            expect(screen.getByLabelText("Nudge cooldown in seconds")).toHaveValue(60);
+        });
+        setOrgLobstertalk.mockClear();
+        fireEvent.click(screen.getByRole("button", {name: "Save"}));
+        await waitFor(() => {
+            expect(setOrgLobstertalk).toHaveBeenCalledWith(
+                "org-1",
+                expect.objectContaining({mode: "cascade", cooldown_seconds: 60}),
+            );
+        });
+    });
+
+    it("rejects an out-of-range cooldown without saving", async () => {
+        await renderPage(true);
+        const input = screen.getByLabelText("Nudge cooldown in seconds");
+        fireEvent.change(input, {target: {value: "3"}});
+        expect(screen.getByText(/between 5 and 3600/)).toBeInTheDocument();
+        expect(screen.getByRole("button", {name: "Save cooldown"})).toBeDisabled();
+        expect(setOrgLobstertalk).not.toHaveBeenCalled();
     });
 
     it("keeps the toast for saves with no endpoint in play", async () => {

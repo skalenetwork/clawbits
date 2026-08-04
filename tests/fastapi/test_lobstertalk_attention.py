@@ -123,7 +123,7 @@ def _run(
     decisions = list(triage_decision) if isinstance(triage_decision, list) else None
     monkeypatch.setattr(svc, "evaluate_text", lambda text: verdict)
 
-    async def fake_claim(agent_id, channel_id):
+    async def fake_claim(agent_id, channel_id, ttl_seconds):
         log.append(("claim", agent_id))
         return not on_cooldown
 
@@ -141,7 +141,7 @@ def _run(
     async def fake_release(agent_id, channel_id):
         log.append(("refund", agent_id))
 
-    async def fake_pending(agent_id, channel_id, post_id):
+    async def fake_pending(agent_id, channel_id, post_id, cooldown_ttl):
         log.append(("pending", agent_id))
 
     async def fake_deliver(agent_id, *a):
@@ -894,7 +894,7 @@ def test_failed_delivery_refunds_cooldown(monkeypatch):
         svc, "evaluate_text", lambda text: Verdict(True, "needs_attention", 0.9)
     )
 
-    async def fake_claim(agent_id, channel_id):
+    async def fake_claim(agent_id, channel_id, ttl_seconds):
         return True
 
     async def fake_deliver(agent_id, *a):
@@ -1377,3 +1377,57 @@ def test_build_context_llm_only_incomplete_config_leaves_llm_none(monkeypatch):
     ctx = svc.build_attention_context(session, "c1")
     assert ctx is not None
     assert ctx.mode == "llm_only" and ctx.llm is None
+
+
+# --- per-org cooldown override ----------------------------------------------
+
+
+def test_effective_cooldown_prefers_org_override(monkeypatch):
+    """Org value wins; None falls back to the server resolver (env → 300)."""
+    monkeypatch.setattr(svc, "cooldown_seconds", lambda: 77)
+    with_override = AttentionContext(
+        channel_type="public", candidates=(), cooldown_seconds=45
+    )
+    without = AttentionContext(channel_type="public", candidates=())
+    assert svc._effective_cooldown(with_override) == 45
+    assert svc._effective_cooldown(without) == 77
+
+
+def test_claim_and_pending_use_the_org_window(monkeypatch):
+    """The Redis claim's TTL and the pending marker's 3x TTL both derive from
+    the org-resolved window — a 60s org in a 300s-default server must not set
+    300s keys."""
+
+    class _FakeRedis:
+        def __init__(self):
+            self.sets: list = []
+
+        async def set(self, key, value, ex=None, nx=None):
+            self.sets.append((key, ex, nx))
+            return True
+
+    fake = _FakeRedis()
+
+    class _FakeBus:
+        async def redis_client(self):
+            return fake
+
+    monkeypatch.setattr(svc, "get_bus", lambda: _FakeBus())
+    assert asyncio.run(svc._claim_cooldown("Alpha", "c1", 60)) is True
+    asyncio.run(svc._remember_pending("Alpha", "c1", 9, 60))
+    assert fake.sets == [
+        ("lobstertalk:cd:Alpha:c1", 60, True),
+        ("lobstertalk:pending:Alpha:c1", 180, None),
+    ]
+
+
+def test_build_context_carries_org_cooldown(monkeypatch):
+    monkeypatch.setattr(
+        svc.TableRead,
+        "get_org_lobstertalk_config",
+        lambda session, org_id: _lt_config(cooldown_seconds=60),
+    )
+    _cascade_members(monkeypatch)
+    session = _FakeSession(_channel(), {"On": _agent_row(enabled=True)})
+    ctx = svc.build_attention_context(session, "c1")
+    assert ctx is not None and ctx.cooldown_seconds == 60

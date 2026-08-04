@@ -464,6 +464,9 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `attention_llm_base_url` | `TEXT` | — |
 | `attention_llm_model` | `TEXT` | — |
 | `attention_llm_api_key_encrypted` | `TEXT` | — |
+| `attention_cooldown_seconds` | `INTEGER` | — |
+
+- **Check** `organizations_attention_cooldown_check`: `attention_cooldown_seconds IS NULL OR attention_cooldown_seconds BETWEEN 5 AND 3600`
 
 - **Check** `organizations_attention_mode_check`: `attention_mode IN ('embedding', 'cascade', 'llm_only', 'all')`
 

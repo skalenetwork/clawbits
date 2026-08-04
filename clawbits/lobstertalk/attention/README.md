@@ -215,7 +215,7 @@ Off by default, behind three gates — all must be on for an agent to be nudged:
 uv sync --extra router                  # semantic-router + FastEmbed (CPU) — required
 CLAWBITS_ATTENTION_THRESHOLD=0.41       # optional: vestigial floor — real messages score ~0.52+; tune utterances, not this
 CLAWBITS_ATTENTION_EMBED_MODEL=         # optional FastEmbed model override (default bge-small)
-CLAWBITS_ATTENTION_COOLDOWN_SECONDS=300 # optional: per-(agent, channel) nudge cooldown
+CLAWBITS_ATTENTION_COOLDOWN_SECONDS=300 # optional: per-(agent, channel) nudge cooldown (server default; orgs can override 5..3600 in Settings → LobsterTalk)
 CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS=300 # optional: output cap per triage call; raise only for a reasoning model
 ```
 

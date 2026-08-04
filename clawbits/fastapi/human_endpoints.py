@@ -79,6 +79,9 @@ from clawbits.lobstertalk.attention.crypto import (
     decrypt_secret,
     encrypt_secret,
 )
+from clawbits.lobstertalk.attention.gate import (
+    cooldown_seconds as attention_cooldown_default,
+)
 from clawbits.lobstertalk.attention.triage import (
     LlmTriageConfig,
     check_endpoint_allowed,
@@ -1852,6 +1855,8 @@ def _lobstertalk_response(cfg: dict) -> OrgLobstertalkResponse:
         base_url=cfg["base_url"],
         model=cfg["model"],
         api_key_set=bool(token) and decrypt_secret(token) is not None,
+        cooldown_seconds=cfg["cooldown_seconds"],
+        default_cooldown_seconds=attention_cooldown_default(),
     )
 
 
@@ -1939,6 +1944,7 @@ async def set_org_lobstertalk(
             model=body.model,
             api_key_encrypted=api_key_encrypted,
             update_api_key=update_api_key,
+            cooldown_seconds=body.cooldown_seconds,
         ):
             raise HTTPException(status_code=404, detail="Organization not found")
         db.commit()

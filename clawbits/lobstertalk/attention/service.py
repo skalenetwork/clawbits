@@ -59,6 +59,10 @@ class AttentionContext:
     channel_label: str = ""
     mode: str = "embedding"
     llm: LlmTriageConfig | None = None
+    # Effective per-(agent, channel) cooldown for this org. None = resolve the
+    # server default (env → code default) at use time, so contexts built by
+    # older tests/callers keep today's behavior.
+    cooldown_seconds: int | None = None
 
 
 def build_attention_context(session: Session, channel_id: str) -> AttentionContext | None:
@@ -154,6 +158,7 @@ def build_attention_context(session: Session, channel_id: str) -> AttentionConte
         channel_label=channel.display_name or channel.name,
         mode=mode,
         llm=llm,
+        cooldown_seconds=config.get("cooldown_seconds"),
     )
 
 
@@ -165,18 +170,24 @@ def _cooldown_key(agent_id: str, channel_id: str) -> str:
     return f"lobstertalk:cd:{agent_id}:{channel_id}"
 
 
-async def _claim_cooldown(agent_id: str, channel_id: str) -> bool:
+async def _claim_cooldown(agent_id: str, channel_id: str, ttl_seconds: int) -> bool:
     """Atomically check+set the per-(agent, channel) cooldown. Returns True when
-    we claimed it (proceed to nudge), False when it was already held (skip)."""
+    we claimed it (proceed to nudge), False when it was already held (skip).
+    ``ttl_seconds`` is the org-resolved window (see :func:`_effective_cooldown`)."""
     try:
         client = await get_bus().redis_client()
         claimed = await client.set(
-            _cooldown_key(agent_id, channel_id), "1", ex=cooldown_seconds(), nx=True
+            _cooldown_key(agent_id, channel_id), "1", ex=ttl_seconds, nx=True
         )
         return bool(claimed)
     except Exception as e:  # Redis hiccup: don't silently nudge in a loop
         logger.warning("attention cooldown check failed (%s); skipping nudge", e)
         return False
+
+
+def _effective_cooldown(context: AttentionContext) -> int:
+    """The org's cooldown override, else the server default (env → 300)."""
+    return context.cooldown_seconds or cooldown_seconds()
 
 
 async def _release_cooldown(agent_id: str, channel_id: str) -> None:
@@ -221,17 +232,20 @@ def parse_cooldown_key(key: str) -> tuple[str, str] | None:
     return agent_id, channel_id
 
 
-async def _remember_pending(agent_id: str, channel_id: str, post_id: object) -> None:
+async def _remember_pending(
+    agent_id: str, channel_id: str, post_id: object, cooldown_ttl: int
+) -> None:
     """Mark ``post_id`` as awaiting a catch-up pass once the active cooldown
     expires. Overwrites an older marker — newest post wins. TTL is a few
-    windows so an unserviced marker (worker restart, notifications disabled)
-    dies quietly instead of resurrecting a stale conversation much later."""
+    windows (of the org-resolved ``cooldown_ttl``) so an unserviced marker
+    (worker restart, notifications disabled) dies quietly instead of
+    resurrecting a stale conversation much later."""
     if not isinstance(post_id, int):
         return
     try:
         client = await get_bus().redis_client()
         await client.set(
-            _pending_key(agent_id, channel_id), str(post_id), ex=cooldown_seconds() * 3
+            _pending_key(agent_id, channel_id), str(post_id), ex=cooldown_ttl * 3
         )
     except Exception as e:
         logger.warning("attention pending marker failed (%s); post %s won't be caught up", e, post_id)
@@ -465,14 +479,16 @@ async def consider_post(
             continue
         if _mentions(text, c.agent_id):
             continue  # native @mention handling already covers it
-        if not await _claim_cooldown(c.agent_id, channel_id):
+        if not await _claim_cooldown(c.agent_id, channel_id, _effective_cooldown(context)):
             # Remember the newest window-blocked post so the catch-up watcher
             # replays it when the cooldown expires — except during a catch-up
             # pass itself: losing the claim race there means a newer post beat
             # this stale one to the fresh window, and re-marking it would keep
             # resurrecting old conversation for as long as traffic continues.
             if not catchup:
-                await _remember_pending(c.agent_id, channel_id, post.get("post_id"))
+                await _remember_pending(
+                    c.agent_id, channel_id, post.get("post_id"), _effective_cooldown(context)
+                )
             # INFO like the other verdict lines: a cooldown skip is otherwise
             # indistinguishable from "gate didn't fire" when testing/tuning.
             logger.info(

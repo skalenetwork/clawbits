@@ -374,6 +374,11 @@ class Organization(SQLModel, table=True):
             "attention_mode IN ('embedding', 'cascade', 'llm_only', 'all')",
             name="organizations_attention_mode_check",
         ),
+        CheckConstraint(
+            "attention_cooldown_seconds IS NULL "
+            "OR attention_cooldown_seconds BETWEEN 5 AND 3600",
+            name="organizations_attention_cooldown_check",
+        ),
     )
 
     org_id: str = Field(primary_key=True)
@@ -426,6 +431,14 @@ class Organization(SQLModel, table=True):
     attention_llm_api_key_encrypted: str | None = Field(
         default=None,
         sa_column=SAColumn(Text, nullable=True),
+    )
+    # Per-org override of the per-(agent, channel) nudge cooldown window, in
+    # seconds (bounded 5..3600 by the CHECK above). NULL inherits the
+    # server-wide default (CLAWBITS_ATTENTION_COOLDOWN_SECONDS, code default
+    # 300) — the resolution happens in build_attention_context.
+    attention_cooldown_seconds: int | None = Field(
+        default=None,
+        sa_column=SAColumn(Integer, nullable=True),
     )
 
 

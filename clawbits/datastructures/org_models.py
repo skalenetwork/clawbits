@@ -86,6 +86,14 @@ class SetOrgLobstertalkRequest(BaseModel):
         description="API key for the endpoint (stored encrypted); omit to keep the current key",
     )
     clear_api_key: bool = Field(default=False, description="Drop the stored API key")
+    cooldown_seconds: int | None = Field(
+        default=None, ge=5, le=3600,
+        description=(
+            "Per-(agent, channel) nudge cooldown override in seconds; null "
+            "inherits the server default. Bounded 5..3600 — 0 would disable "
+            "throttling entirely, which in 'all' mode means a turn per message."
+        ),
+    )
 
     @field_validator("base_url")
     @classmethod
@@ -114,6 +122,11 @@ class OrgLobstertalkResponse(BaseModel):
     base_url: str | None = None
     model: str | None = None
     api_key_set: bool = False
+    # The org's cooldown override (null = inheriting) plus the server default
+    # it would inherit — so the UI can label the empty field truthfully
+    # instead of guessing what "default" means on this deployment.
+    cooldown_seconds: int | None = None
+    default_cooldown_seconds: int = 300
 
 
 class OrgLobstertalkHealthResponse(BaseModel):

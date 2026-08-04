@@ -110,6 +110,7 @@ export default function SettingsLobstertalkPage() {
             mode: settings.mode,
             base_url: settings.base_url,
             model: settings.model,
+            cooldown_seconds: settings.cooldown_seconds,
         });
     };
 
@@ -185,11 +186,88 @@ export default function SettingsLobstertalkPage() {
                                 onSave={(body) => { saveMutation.mutate(body); }}
                             />
                             <EndpointHealth mutation={healthMutation}/>
+                            <CooldownSection
+                                key={String(settings.cooldown_seconds ?? "default")}
+                                settings={settings}
+                                pending={saveMutation.isPending}
+                                onSave={(body) => { saveMutation.mutate(body); }}
+                            />
                         </>
                     )}
                 </>
             )}
         </div>
+    );
+}
+
+/** Per-(agent, channel) nudge cooldown. Applies in every mode — it is the
+ *  throttle in front of triage/delivery, and in "All messages" mode it is the
+ *  ONLY throttle. Empty inherits the server default; messages landing inside
+ *  a window are caught up when it expires. */
+function CooldownSection({
+    settings,
+    pending,
+    onSave,
+}: {
+    settings: OrgLobstertalkSettings;
+    pending: boolean;
+    onSave: (body: SetOrgLobstertalkBody) => void;
+}) {
+    const [raw, setRaw] = useState(
+        settings.cooldown_seconds === null ? "" : String(settings.cooldown_seconds),
+    );
+    const parsed = raw.trim() === "" ? null : Number(raw);
+    const invalid = parsed !== null && (!Number.isInteger(parsed) || parsed < 5 || parsed > 3600);
+    const dirty = parsed !== settings.cooldown_seconds;
+
+    const submit = (e: React.SyntheticEvent) => {
+        e.preventDefault();
+        if (invalid) return;
+        onSave({
+            enabled: settings.enabled,
+            mode: settings.mode,
+            base_url: settings.base_url,
+            model: settings.model,
+            cooldown_seconds: parsed,
+        });
+    };
+
+    return (
+        <section className="space-y-4 rounded-xl border border-border/50 bg-card p-5">
+            <div className="space-y-0.5">
+                <h2 className="text-sm font-semibold">Nudge cooldown</h2>
+                <p className="text-xs text-muted-foreground">
+                    Minimum seconds between nudges per agent per channel — the spend
+                    throttle in every mode. Messages arriving inside the window are
+                    caught up when it expires. Leave empty for the server default
+                    ({settings.default_cooldown_seconds}s).
+                </p>
+            </div>
+            <form onSubmit={submit} className="flex max-w-md items-center gap-2">
+                <Input
+                    id="lobstertalk-cooldown"
+                    type="number"
+                    inputMode="numeric"
+                    min={5}
+                    max={3600}
+                    step={1}
+                    value={raw}
+                    onChange={(e) => { setRaw(e.target.value); }}
+                    placeholder={`${String(settings.default_cooldown_seconds)} (server default)`}
+                    aria-label="Nudge cooldown in seconds"
+                    disabled={pending}
+                    className="max-w-[180px]"
+                />
+                <Button type="submit" disabled={pending || invalid || !dirty}>
+                    {pending ? "Saving…" : "Save cooldown"}
+                </Button>
+            </form>
+            {invalid && (
+                <p className="text-xs text-destructive">
+                    Must be a whole number between 5 and 3600 seconds.
+                </p>
+            )}
+        </section>
     );
 }
 
@@ -297,6 +375,7 @@ function TriageSection({
                 mode: next,
                 base_url: settings.base_url,
                 model: settings.model,
+                cooldown_seconds: settings.cooldown_seconds,
             });
         }
     };
@@ -310,6 +389,7 @@ function TriageSection({
             mode,
             base_url: baseUrl.trim() || null,
             model: model.trim() || null,
+            cooldown_seconds: settings.cooldown_seconds,
         };
         const key = apiKey.trim();
         if (clearKey) body.clear_api_key = true;

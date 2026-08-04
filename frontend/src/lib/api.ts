@@ -535,6 +535,10 @@ export interface OrgLobstertalkSettings {
   base_url: string | null;
   model: string | null;
   api_key_set: boolean;
+  /** Per-(agent, channel) nudge cooldown override in seconds; null inherits
+   *  ``default_cooldown_seconds`` (the server-resolved default). */
+  cooldown_seconds: number | null;
+  default_cooldown_seconds: number;
 }
 
 /** FastAPI's ``{"detail": "..."}``, falling back to the raw body. */
@@ -561,6 +565,9 @@ export interface SetOrgLobstertalkBody {
   api_key?: string;
   /** Deletes the stored key. Mutually exclusive with `api_key`. */
   clear_api_key?: boolean;
+  /** Cooldown override in seconds (5–3600); null/omitted inherits the server
+   *  default. Whole-state semantics: omitting on a save clears the override. */
+  cooldown_seconds?: number | null;
 }
 
 export async function getOrgLobstertalk(orgId: string): Promise<OrgLobstertalkSettings> {

@@ -67,12 +67,17 @@ def test_lobstertalk_defaults(test_client):
         f"/api/human/orgs/{org_id}/lobstertalk", headers=_auth(owner["access_token"])
     )
     assert r.status_code == 200, r.text
-    assert r.json() == {
+    body = r.json()
+    # default_cooldown_seconds is the env-resolved server default — assert its
+    # shape, not its value, so the suite passes under any env override.
+    assert isinstance(body.pop("default_cooldown_seconds"), int)
+    assert body == {
         "enabled": False,
         "mode": "embedding",
         "base_url": None,
         "model": None,
         "api_key_set": False,
+        "cooldown_seconds": None,
     }
 
 
@@ -90,12 +95,15 @@ def test_owner_cascade_round_trip_key_write_only(test_client):
         {**_CASCADE_BODY, "base_url": "https://api.openai.com/v1/", "api_key": plaintext},
     )
     assert r.status_code == 200, r.text
-    assert r.json() == {
+    body = r.json()
+    assert isinstance(body.pop("default_cooldown_seconds"), int)
+    assert body == {
         "enabled": True,
         "mode": "cascade",
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-test",
         "api_key_set": True,
+        "cooldown_seconds": None,
     }
     assert plaintext not in r.text
 
@@ -534,3 +542,33 @@ def test_all_mode_round_trip_needs_no_llm_config(test_client):
     r = _hc(test_client, org_id, token)
     assert r.status_code == 422
     assert "all mode" in r.json()["detail"]
+
+
+def test_cooldown_override_round_trip_and_bounds(test_client):
+    """The org cooldown override saves, reads back alongside the server
+    default, clears back to inherit, and rejects out-of-range values."""
+    owner = register_human(test_client, "lt-cd-owner@test.com")
+    org_id = _make_org(test_client, owner["access_token"], "lt-cd-org")
+    token = owner["access_token"]
+
+    r = test_client.get(
+        f"/api/human/orgs/{org_id}/lobstertalk", headers=_auth(token)
+    )
+    assert r.json()["cooldown_seconds"] is None
+    assert isinstance(r.json()["default_cooldown_seconds"], int)
+
+    r = _put(test_client, org_id, token,
+             {"enabled": True, "mode": "all", "cooldown_seconds": 60})
+    assert r.status_code == 200, r.text
+    assert r.json()["cooldown_seconds"] == 60
+
+    # Whole-state PUT without the field clears the override (form semantics).
+    r = _put(test_client, org_id, token, {"enabled": True, "mode": "all"})
+    assert r.status_code == 200
+    assert r.json()["cooldown_seconds"] is None
+
+    # Bounds: 0 would disable throttling; huge values effectively mute.
+    for bad in (0, 4, 3601):
+        r = _put(test_client, org_id, token,
+                 {"enabled": True, "mode": "all", "cooldown_seconds": bad})
+        assert r.status_code == 422, bad
