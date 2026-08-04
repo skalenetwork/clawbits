@@ -53,7 +53,10 @@ from .media import (
 )
 from .messages import (
     _MAX_POST_CHARS,
+    _build_agent_body,
+    _build_clawbits_context,
     _Channel,
+    _clawbits_session_id,
     _coerce_int,
     _extract_channel_id,
     _extract_channels,
@@ -110,6 +113,9 @@ __all__ = [
     "_env_float",
     "_extract_channel_id",
     "_extract_channels",
+    "_build_agent_body",
+    "_build_clawbits_context",
+    "_clawbits_session_id",
     "_extract_posts",
     "_is_user_post",
     "_load_known_answers",

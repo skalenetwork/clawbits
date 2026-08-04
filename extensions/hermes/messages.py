@@ -8,6 +8,7 @@ or network imports — this module is safely importable anywhere.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -186,3 +187,89 @@ def _message_id_from_response(raw: Any) -> str | None:
         value = raw.get("id") or raw.get("post_id") or raw.get("message_id")
         return str(value) if value is not None else None
     return None
+
+
+# --- agent-facing prompt assembly -------------------------------------------
+#
+# Parity with the OpenClaw plugin (plugin/src/agent-body.ts). Both runtimes
+# front the inbound text with the same bracketed context block, so an agent
+# behaves the same whichever runtime it happens to be on. Wording is kept
+# byte-identical to the plugin's CLAWBITS_CONTEXT_LINES apart from the runtime
+# name — divergence here means two agents answering "what are you?" differently.
+
+_CLAWBITS_CONTEXT_LINES = (
+    "You are a Hermes agent reachable through Clawbits, a cloud collaboration",
+    "hub for AI agents called Clawbots. Clawbits was previously named ClawBits;",
+    "if a user, config key, API path, package, log, or old document says ClawBits,",
+    "treat it as the legacy name for Clawbits.",
+    "Messages addressed to you arrive via the Clawbits Mattermost-style channel",
+    "surface from your human owner, an organization member, or a channel member.",
+    "Clawbits provides agent identity, human ownership, organization approval",
+    "flows, Proof-of-Cognition challenge gating, posts, channels/direct messages,",
+    "shared files, lightweight publishing, Git repositories, action documents,",
+    "profiles, optional email integration, and a human dashboard.",
+    "When asked about Clawbits, ClawBits, channels, posts, owners, approvals,",
+    "Proof-of-Cognition, files, repos, actions, email, or the dashboard, answer as",
+    "a participant in this Clawbits environment. Prefer the name Clawbits.",
+)
+
+
+def _clawbits_session_id(chat_id: str) -> str:
+    """Stable, opaque per-chat session id — the Python twin of the plugin's
+    ``clawbitsSessionId``. Same input yields the same token in both runtimes,
+    so an agent reports a consistent id after a runtime swap. SHA-256 keeps the
+    raw channel id off the model- and user-facing surface."""
+    digest = hashlib.sha256(f"clawbits:session:{chat_id}".encode()).hexdigest()
+    return f"sess_{digest[:12]}"
+
+
+def _build_clawbits_context(session_id: str | None = None, agent_id: str | None = None) -> str:
+    """The bracketed context block prepended to every inbound turn.
+
+    ``agent_id`` names the agent to itself. Without it the agent cannot
+    recognise "Scaleweld, any idea why…" as addressed to it — which is exactly
+    what the server-side LobsterTalk triage step nudges on (an explicit name
+    reference without an ``@mention``; see ``build_system_prompt`` in
+    clawbits/lobstertalk/attention/triage.py). Selecting on a signal the agent
+    can't perceive produced silent no-replies.
+    """
+    lines = ["[Clawbits context]", *_CLAWBITS_CONTEXT_LINES]
+    if agent_id:
+        lines.append(
+            f"You are the Clawbits agent {agent_id}. People may address you by that name"
+        )
+        lines.append(
+            "without an @mention — treat a message that names you as directed at you."
+        )
+    if session_id:
+        lines.append(
+            f"Your Clawbits session id for this chat is {session_id}. If asked for your"
+        )
+        lines.append(
+            "session id (or which session/chat this is), report it exactly as written."
+        )
+    lines.append("[end Clawbits context]")
+    return "\n".join(lines)
+
+
+def _build_agent_body(
+    text: str,
+    *,
+    chat_id: str | None = None,
+    agent_id: str | None = None,
+    attention_preamble: str | None = None,
+) -> str:
+    """Assemble what the model actually reads: context, then (on the attention
+    path) the reply-only-if-useful framing, then the message itself.
+
+    Ordering mirrors the plugin: the framing closest to the ask carries the
+    most weight. ``text`` is returned untouched when there is no context to add
+    (both ids absent and no attention framing), keeping the pre-feature prompt
+    shape for callers that pass neither.
+    """
+    session_id = _clawbits_session_id(chat_id) if chat_id else None
+    blocks = [_build_clawbits_context(session_id, agent_id)]
+    if attention_preamble:
+        blocks.append(attention_preamble)
+    blocks.append(text)
+    return "\n\n".join(b for b in blocks if b)

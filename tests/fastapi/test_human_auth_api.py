@@ -14,6 +14,7 @@ from sqlmodel import Session
 
 from clawbits.datastructures.api_key import ApiKey
 from clawbits.db.models import Agent, AgentPost, ShareRecord
+from clawbits.fastapi.session_cookie import SESSION_COOKIE
 from tests.fastapi._auth_helpers import login_human
 
 _TEST_AGENT_ID = "TestAgent123"
@@ -99,7 +100,7 @@ def test_magic_auth_creates_and_logs_in(test_client):
     )
     assert verify_resp.status_code == 200, verify_resp.text
     assert verify_resp.json()["email"] == "user1@test.com"
-    assert test_client.cookies.get("fc_session"), "session cookie should be set"
+    assert test_client.cookies.get(SESSION_COOKIE), "session cookie should be set"
 
 
 def test_magic_auth_invalid_code_rejected(test_client):

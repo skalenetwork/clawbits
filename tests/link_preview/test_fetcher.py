@@ -14,7 +14,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from clawbits.link_preview import fetcher
+from clawbits import ssrf
 from clawbits.link_preview.fetcher import (
     MAX_BYTES,
     FetchError,
@@ -40,22 +40,16 @@ def test_rejects_missing_host():
 
 def test_rejects_private_address():
     # Bypass DNS by patching getaddrinfo to return a loopback IP, then
-    # confirm the SSRF guard fires before we hit the network.
-    with patch.object(
-        fetcher.socket,
-        "getaddrinfo",
-        return_value=[(0, 0, 0, "", ("127.0.0.1", 0))],
-    ):
+    # confirm the SSRF guard fires before we hit the network. The guard
+    # itself lives in clawbits.ssrf (shared with the LobsterTalk LLM
+    # endpoint), so that's the module whose socket we patch.
+    with patch.object(ssrf, "_resolve", return_value={"127.0.0.1"}):
         with pytest.raises(FetchError, match="private address"):
             asyncio.run(fetch_html("http://internal.example/"))
 
 
 def test_rejects_link_local_address():
-    with patch.object(
-        fetcher.socket,
-        "getaddrinfo",
-        return_value=[(0, 0, 0, "", ("169.254.169.254", 0))],
-    ):
+    with patch.object(ssrf, "_resolve", return_value={"169.254.169.254"}):
         with pytest.raises(FetchError, match="private address"):
             asyncio.run(fetch_html("http://aws-metadata.example/"))
 
@@ -166,8 +160,4 @@ def _async_client_with_transport(transport: httpx.MockTransport):
 def _allow_public_addresses():
     """Patch DNS to return a public-looking IP so the SSRF guard doesn't
     reject our mock host."""
-    return patch.object(
-        fetcher.socket,
-        "getaddrinfo",
-        return_value=[(0, 0, 0, "", ("93.184.216.34", 0))],
-    )
+    return patch.object(ssrf, "_resolve", return_value={"93.184.216.34"})
