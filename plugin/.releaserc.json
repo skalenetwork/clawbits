@@ -1,7 +1,8 @@
 {
-  "//": "Runs INSIDE the mirror repo skalenetwork/clawbits-openclaw-plugin (see .github/workflows/publish-clawhub-plugin.yaml), so these v* tags live in that repo's namespace, not this one. Conventional Commits; the default preset covers feat/fix/perf/revert and BREAKING CHANGE.",
-  "repositoryUrl": "https://github.com/skalenetwork/clawbits-openclaw-plugin.git",
-  "tagFormat": "v${version}",
+  "//": "Runs from plugin/ against THIS repo (see .github/workflows/publish-clawhub-plugin.yaml). `extends` scopes commit analysis + release notes to commits touching plugin/; without it commit-analyzer would read the whole monorepo history and a backend feat: would bump the plugin. Tags live in the plugin-v* namespace so they never collide with the repo-wide v* (.releaserc.json) or desktop-v* (desktop-release.yml). Conventional Commits; the default preset covers feat/fix/perf/revert and BREAKING CHANGE.",
+  "extends": "semantic-release-monorepo",
+  "repositoryUrl": "https://github.com/skalenetwork/clawbits.git",
+  "tagFormat": "plugin-v${version}",
   "branches": [
     "main"
   ],
