@@ -63,15 +63,18 @@ export default function SettingsLobstertalkPage() {
     // ``saveNote`` (the mutation variable) is what the save just did — the
     // card's pending line shows it, so these saves get no separate success
     // toast that would declare victory before the verdict is in.
+    // Both mutations carry their target org in the *variables* rather than
+    // reading ``activeOrgId`` when they settle. The org is bound at click time,
+    // so switching orgs during a slow save can't make the follow-up probe spend
+    // the new org's metered LLM call — or invalidate the wrong cache key.
     const healthMutation = useMutation({
-        mutationFn: (saveNote: string) => {
-            void saveNote; // rendered from mutation.variables, not used here
-            return checkOrgLobstertalkEndpoint(activeOrgId ?? "");
-        },
+        mutationFn: ({orgId}: {orgId: string; note: string}) =>
+            checkOrgLobstertalkEndpoint(orgId),
     });
 
     const saveMutation = useMutation({
-        mutationFn: (body: SetOrgLobstertalkBody) => setOrgLobstertalk(activeOrgId ?? "", body),
+        mutationFn: ({orgId, body}: {orgId: string; body: SetOrgLobstertalkBody}) =>
+            setOrgLobstertalk(orgId, body),
         // The org list is the source of truth for ``attention_enabled``
         // (useActiveOrg reads it), so refetch it alongside our own config.
         // Success feedback: a save that arms an LLM endpoint hands off to the
@@ -81,19 +84,18 @@ export default function SettingsLobstertalkPage() {
         // toggle-off) show no card, so they keep the toast; without it the
         // form remount (key input clears by design — it's write-only) reads
         // as a reset, not a confirmed save.
-        onSuccess: (_data, body) => {
+        onSuccess: (_data, {orgId, body}) => {
             const saveNote =
                 body.clear_api_key ? "Settings saved, API key removed"
                 : body.api_key ? "Settings saved, API key stored"
                 : "Settings saved";
             if (body.enabled && LLM_MODES.includes(body.mode)) {
-                healthMutation.mutate(saveNote);
+                healthMutation.mutate({orgId, note: saveNote});
             } else {
                 toast.success("LobsterTalk settings saved");
                 healthMutation.reset(); // no endpoint in play — drop stale status
             }
-            if (!activeOrgId) return;
-            void queryClient.invalidateQueries({queryKey: queryKeys.orgLobstertalk(activeOrgId)});
+            void queryClient.invalidateQueries({queryKey: queryKeys.orgLobstertalk(orgId)});
             void queryClient.invalidateQueries({queryKey: queryKeys.orgs});
         },
         onError: (err: unknown) => {
@@ -104,13 +106,16 @@ export default function SettingsLobstertalkPage() {
     // The toggle persists the server-stored state — not the possibly-dirty
     // triage form — so an unfinished cascade draft can never 422 the flip.
     const toggleEnabled = (next: boolean) => {
-        if (!settings) return;
+        if (!settings || !activeOrgId) return;
         saveMutation.mutate({
-            enabled: next,
-            mode: settings.mode,
-            base_url: settings.base_url,
-            model: settings.model,
-            cooldown_seconds: settings.cooldown_seconds,
+            orgId: activeOrgId,
+            body: {
+                enabled: next,
+                mode: settings.mode,
+                base_url: settings.base_url,
+                model: settings.model,
+                cooldown_seconds: settings.cooldown_seconds,
+            },
         });
     };
 
@@ -158,9 +163,10 @@ export default function SettingsLobstertalkPage() {
                             <div className="min-w-0">
                                 <p className="text-sm font-medium">LobsterTalk attention</p>
                                 <p className="mt-0.5 text-xs text-muted-foreground">
-                                    Let agents chime into channel messages they weren't tagged in when a
-                                    triage step flags one they can help with. Each agent's operator still
-                                    opts in per agent.
+                                    Let agents chime into messages they weren't tagged in when a triage
+                                    step flags one they can help with. Applies to{" "}
+                                    <strong>public channels only</strong> — private channels and DMs are
+                                    never read. Each agent's operator still opts in per agent.
                                 </p>
                             </div>
                         </div>
@@ -192,14 +198,14 @@ export default function SettingsLobstertalkPage() {
                         key={[settings.mode, settings.base_url ?? "", settings.model ?? "", String(settings.api_key_set)].join("\0")}
                         settings={settings}
                         pending={saveMutation.isPending}
-                        onSave={(body) => { saveMutation.mutate(body); }}
+                        onSave={(body) => { saveMutation.mutate({orgId: activeOrgId, body}); }}
                     />
                     {settings.enabled && <EndpointHealth mutation={healthMutation}/>}
                     <CooldownSection
                         key={String(settings.cooldown_seconds ?? "default")}
                         settings={settings}
                         pending={saveMutation.isPending}
-                        onSave={(body) => { saveMutation.mutate(body); }}
+                        onSave={(body) => { saveMutation.mutate({orgId: activeOrgId, body}); }}
                     />
                 </>
             )}
@@ -224,7 +230,7 @@ function CooldownSection({
         settings.cooldown_seconds === null ? "" : String(settings.cooldown_seconds),
     );
     const parsed = raw.trim() === "" ? null : Number(raw);
-    const invalid = parsed !== null && (!Number.isInteger(parsed) || parsed < 5 || parsed > 3600);
+    const invalid = parsed !== null && (!Number.isInteger(parsed) || parsed < 30 || parsed > 3600);
     const dirty = parsed !== settings.cooldown_seconds;
 
     const submit = (e: React.SyntheticEvent) => {
@@ -255,7 +261,7 @@ function CooldownSection({
                     id="lobstertalk-cooldown"
                     type="number"
                     inputMode="numeric"
-                    min={5}
+                    min={30}
                     max={3600}
                     step={1}
                     value={raw}
@@ -271,7 +277,7 @@ function CooldownSection({
             </form>
             {invalid && (
                 <p className="text-xs text-destructive">
-                    Must be a whole number between 5 and 3600 seconds.
+                    Must be a whole number between 30 and 3600 seconds.
                 </p>
             )}
         </section>
@@ -286,7 +292,7 @@ function CooldownSection({
 function EndpointHealth({
     mutation,
 }: {
-    mutation: UseMutationResult<OrgLobstertalkHealth, Error, string>;
+    mutation: UseMutationResult<OrgLobstertalkHealth, Error, {orgId: string; note: string}>;
 }) {
     if (mutation.status === "idle") return null;
     const health = mutation.data;
@@ -296,7 +302,7 @@ function EndpointHealth({
     // While pending, the save confirmation lives here (these saves toast
     // nothing) — the note then yields to the verdict's detail.
     const detail = pending
-        ? `${mutation.variables ?? "Settings saved"} — testing the endpoint with one live call.`
+        ? `${mutation.variables?.note ?? "Settings saved"} — testing the endpoint with one live call.`
         : mutation.isError
             ? errMsg(mutation.error)
             : health?.detail ?? "";

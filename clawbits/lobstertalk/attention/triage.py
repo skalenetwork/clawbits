@@ -25,6 +25,7 @@ gate.py's lazy-import style), so importing this module never requires the
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -98,6 +99,20 @@ def _unparseable_hint(choice: object, source: str, content: str) -> str:
     if source != "content":
         return f" [read from {source!r}; the model left content empty]"
     return ""
+
+
+def _content_digest(content: str) -> str:
+    """Identify an unparseable reply without reproducing it.
+
+    The reply is model output generated from a prompt containing the channel
+    transcript — a malformed one (especially recovered *reasoning* text) can
+    quote private-channel messages straight back, and the server log is a much
+    wider audience than the channel. Length plus a short hash is enough to tell
+    "same broken reply every time" from "different each call", which is all the
+    log was doing with the text. The settings-page healthcheck still shows a
+    real excerpt: that one probes a synthetic one-line transcript, so there is
+    no channel content in it, and the operator needs to see what came back."""
+    return f"len={len(content)} sha256={hashlib.sha256(content.encode()).hexdigest()[:12]}"
 
 
 def _reply_text(message: object) -> tuple[str, str]:
@@ -402,9 +417,9 @@ async def _triage_call(
         raw = extract_json_object(content)
         if raw is None or not isinstance(raw.get("needs_input"), bool):
             logger.warning(
-                "attention triage: unparseable reply for agent=%s (model=%s base_url=%s)%s: %.200s",
+                "attention triage: unparseable reply for agent=%s (model=%s base_url=%s)%s: %s",
                 agent_id, config.model, redact_url(config.base_url),
-                _unparseable_hint(choice, source, content), content,
+                _unparseable_hint(choice, source, content), _content_digest(content),
             )
             return None
         return TriageDecision(needs_input=raw["needs_input"], reason=str(raw.get("reason", "")))

@@ -567,8 +567,17 @@ def test_cooldown_override_round_trip_and_bounds(test_client):
     assert r.status_code == 200
     assert r.json()["cooldown_seconds"] is None
 
-    # Bounds: 0 would disable throttling; huge values effectively mute.
-    for bad in (0, 4, 3601):
+    # 30 is the floor, and it must be accepted (boundaries are where off-by-one
+    # lives — a `gt=30` slip would pass every other assertion here).
+    r = _put(test_client, org_id, token,
+             {"enabled": True, "mode": "all", "cooldown_seconds": 30})
+    assert r.status_code == 200, r.text
+    assert r.json()["cooldown_seconds"] == 30
+
+    # Bounds: below the floor a busy channel becomes a turn-per-message
+    # firehose (and a call-per-message bill in the LLM modes); huge values
+    # effectively mute. 29 is the raise-specific case — it was legal at 5.
+    for bad in (0, 4, 29, 3601):
         r = _put(test_client, org_id, token,
                  {"enabled": True, "mode": "all", "cooldown_seconds": bad})
         assert r.status_code == 422, bad

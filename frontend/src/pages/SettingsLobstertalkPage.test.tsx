@@ -3,8 +3,11 @@ import {fireEvent, render, screen, waitFor} from "@testing-library/react";
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
 import type {OrgLobstertalkSettings, SetOrgLobstertalkBody} from "@/lib/api";
 
+// Mutable so a test can simulate the user switching orgs mid-save (the page
+// re-renders with a new activeOrgId while a mutation is still in flight).
+const auth = {activeOrgId: "org-1"};
 vi.mock("@/context/AuthContext", () => ({
-    useAuth: () => ({activeOrgId: "org-1"}),
+    useAuth: () => ({activeOrgId: auth.activeOrgId}),
 }));
 
 vi.mock("@/hooks/useActiveOrg", () => ({
@@ -66,6 +69,7 @@ async function renderPage(enabled: boolean, mode?: OrgLobstertalkSettings["mode"
 
 describe("SettingsLobstertalkPage", () => {
     beforeEach(() => {
+        auth.activeOrgId = "org-1";
         getOrgLobstertalk.mockReset();
         setOrgLobstertalk.mockReset();
         toastSuccess.mockReset();
@@ -189,8 +193,10 @@ describe("SettingsLobstertalkPage", () => {
     it("rejects an out-of-range cooldown without saving", async () => {
         await renderPage(true);
         const input = screen.getByLabelText("Nudge cooldown in seconds");
-        fireEvent.change(input, {target: {value: "3"}});
-        expect(screen.getByText(/between 5 and 3600/)).toBeInTheDocument();
+        // 29 is the interesting value: it was accepted under the old 5s floor,
+        // so this pins the raise rather than just "some small number is bad".
+        fireEvent.change(input, {target: {value: "29"}});
+        expect(screen.getByText(/between 30 and 3600/)).toBeInTheDocument();
         expect(screen.getByRole("button", {name: "Save cooldown"})).toBeDisabled();
         expect(setOrgLobstertalk).not.toHaveBeenCalled();
     });
@@ -232,5 +238,45 @@ describe("SettingsLobstertalkPage", () => {
             expect(screen.getByRole("status")).toHaveTextContent("Endpoint check failed");
         });
         expect(screen.getByRole("status")).toHaveTextContent("Error code: 401 - invalid_api_key");
+    });
+
+    it("probes the org that was saved, not one switched to mid-save", async () => {
+        // The save and its follow-up probe must stay bound to the org that was
+        // active when the user clicked. Reading activeOrgId when the mutation
+        // settles would spend the *newly* selected org's metered LLM call and
+        // invalidate the wrong cache key.
+        getOrgLobstertalk.mockResolvedValue(settings(true));
+        let release: (v: unknown) => void = () => {};
+        setOrgLobstertalk.mockImplementation(
+            () => new Promise((resolve) => { release = resolve; }),
+        );
+        const client = new QueryClient({defaultOptions: {queries: {retry: false}}});
+        // A fresh element each time: React bails out of re-rendering when the
+        // element is referentially identical, which would silently defeat the
+        // org switch this test depends on.
+        const tree = () => (
+            <QueryClientProvider client={client}>
+                <SettingsLobstertalkPage/>
+            </QueryClientProvider>
+        );
+        const {rerender} = render(tree());
+        await screen.findByLabelText("LobsterTalk attention for this organization");
+
+        fireEvent.click(screen.getByRole("button", {name: "Save"}));
+        await waitFor(() => {
+            expect(setOrgLobstertalk).toHaveBeenCalledWith("org-1", expect.anything());
+        });
+
+        auth.activeOrgId = "org-2";   // user switches orgs while the save is in flight
+        rerender(tree());
+        await waitFor(() => {   // the switch really reached the component
+            expect(getOrgLobstertalk).toHaveBeenCalledWith("org-2");
+        });
+        release(settings(true));
+
+        await waitFor(() => {
+            expect(checkOrgLobstertalkEndpoint).toHaveBeenCalled();
+        });
+        expect(checkOrgLobstertalkEndpoint).toHaveBeenCalledWith("org-1");
     });
 });

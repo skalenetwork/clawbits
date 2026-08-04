@@ -951,18 +951,23 @@ def _wire_attention_fakes(monkeypatch):
     return sentinel, calls
 
 
-def _agent_with_channel(test_client):
-    from tests.fastapi.conftest import _create_agent
+def _make_channel(test_client, agent, name, channel_type="public"):
     from tests.fastapi.test_mattermost import _write_headers
 
-    agent = _create_agent(test_client)
     r = test_client.post(
         "/api/agentic/mm/channels",
-        json={"name": "lobstertalk-wire", "channel_type": "public"},
+        json={"name": name, "channel_type": channel_type},
         headers=_write_headers(test_client, agent["api_key"]),
     )
     assert r.status_code == 200, r.text
-    return agent, r.json()["channel_id"]
+    return r.json()["channel_id"]
+
+
+def _agent_with_channel(test_client):
+    from tests.fastapi.conftest import _create_agent
+
+    agent = _create_agent(test_client)
+    return agent, _make_channel(test_client, agent, "lobstertalk-wire")
 
 
 def _agent_post(test_client, agent, ch_id, body):
@@ -1224,6 +1229,43 @@ def test_build_context_none_for_dm(monkeypatch):
     assert ctx is None
 
 
+def test_build_context_none_for_private_channel(monkeypatch):
+    """LobsterTalk is public-channels-only, in *every* mode.
+
+    Not a preference — an access-control boundary. An org owner who isn't a
+    channel member cannot read a private channel through the API, but a
+    cascade/llm_only pass would ship its recent transcript to an endpoint that
+    owner configured. Excluding the channel from the pass entirely is what keeps
+    the LLM config from being a way around channel membership. Asserted with an
+    org that is fully armed and an eligible agent present, so only the channel
+    type can be what produced the None."""
+    channel = _channel(channel_type="private")
+    monkeypatch.setattr(
+        svc.TableRead,
+        "get_org_lobstertalk_config",
+        lambda session, org_id: _lt_config(mode="cascade", base_url="https://x/v1", model="m"),
+    )
+    monkeypatch.setattr(
+        svc.TableRead, "get_mm_channel_members", lambda session, cid: [{"agent_id": "On"}]
+    )
+    session = _FakeSession(channel, {"On": _agent_row(enabled=True)})
+    assert svc.build_attention_context(session, "c1") is None
+
+
+def test_build_context_public_channel_still_runs(monkeypatch):
+    """Control for the two exclusions above: the same setup on a public channel
+    must still produce a context, so those tests prove the type check and not a
+    broken fixture."""
+    monkeypatch.setattr(
+        svc.TableRead, "get_org_lobstertalk_config", lambda session, org_id: _lt_config()
+    )
+    monkeypatch.setattr(
+        svc.TableRead, "get_mm_channel_members", lambda session, cid: [{"agent_id": "On"}]
+    )
+    session = _FakeSession(_channel(), {"On": _agent_row(enabled=True)})
+    assert svc.build_attention_context(session, "c1") is not None
+
+
 # --- build_attention_context: cascade-mode LLM config resolution -------------
 
 
@@ -1393,32 +1435,65 @@ def test_effective_cooldown_prefers_org_override(monkeypatch):
     assert svc._effective_cooldown(without) == 77
 
 
-def test_claim_and_pending_use_the_org_window(monkeypatch):
-    """The Redis claim's TTL and the pending marker's 3x TTL both derive from
-    the org-resolved window — a 60s org in a 300s-default server must not set
-    300s keys."""
+class _FakeRedis:
+    """Records SETs and answers TTL from what was actually stored, so the
+    pending marker's sizing can be asserted against the live cooldown key."""
 
-    class _FakeRedis:
-        def __init__(self):
-            self.sets: list = []
+    def __init__(self, preset_ttls: dict[str, int] | None = None):
+        self.sets: list = []
+        self.ttls: dict[str, int] = dict(preset_ttls or {})
 
-        async def set(self, key, value, ex=None, nx=None):
-            self.sets.append((key, ex, nx))
-            return True
+    async def set(self, key, value, ex=None, nx=None):
+        self.sets.append((key, ex, nx))
+        if ex is not None:
+            self.ttls[key] = ex
+        return True
 
-    fake = _FakeRedis()
+    async def ttl(self, key):
+        return self.ttls.get(key, -2)  # -2 = no such key, like Redis
 
+
+def _fake_bus(monkeypatch, fake):
     class _FakeBus:
         async def redis_client(self):
             return fake
 
     monkeypatch.setattr(svc, "get_bus", lambda: _FakeBus())
+
+
+def test_claim_and_pending_use_the_org_window(monkeypatch):
+    """The Redis claim's TTL and the pending marker both derive from the
+    org-resolved window — a 60s org in a 300s-default server must not set
+    300s keys."""
+    fake = _FakeRedis()
+    _fake_bus(monkeypatch, fake)
     assert asyncio.run(svc._claim_cooldown("Alpha", "c1", 60)) is True
     asyncio.run(svc._remember_pending("Alpha", "c1", 9, 60))
     assert fake.sets == [
         ("lobstertalk:cd:Alpha:c1", 60, True),
         ("lobstertalk:pending:Alpha:c1", 180, None),
     ]
+
+
+def test_pending_outlives_a_cooldown_key_longer_than_the_new_window(monkeypatch):
+    """Regression: lowering the org cooldown leaves the *live* key holding the
+    old, longer TTL. Sizing the marker off the new window (30s → 90s) would let
+    it die ~an hour before the expiration event that services it, so the
+    catch-up would silently never happen. It must outlive the real key."""
+    fake = _FakeRedis({"lobstertalk:cd:Alpha:c1": 3600})  # set under the old 3600s config
+    _fake_bus(monkeypatch, fake)
+    asyncio.run(svc._remember_pending("Alpha", "c1", 9, 30))  # org since lowered to the 30s floor
+    (_key, ex, _nx) = fake.sets[-1]
+    assert ex > 3600, f"pending marker ({ex}s) must outlive the live cooldown key (3600s)"
+
+
+def test_pending_falls_back_to_the_window_when_the_cooldown_key_is_gone(monkeypatch):
+    """TTL -2 (key expired between the failed claim and this write) must not
+    poison the arithmetic — fall back to the configured window."""
+    fake = _FakeRedis()  # no cooldown key at all
+    _fake_bus(monkeypatch, fake)
+    asyncio.run(svc._remember_pending("Alpha", "c1", 9, 60))
+    assert fake.sets[-1] == ("lobstertalk:pending:Alpha:c1", 180, None)
 
 
 def test_build_context_carries_org_cooldown(monkeypatch):
@@ -1431,3 +1506,37 @@ def test_build_context_carries_org_cooldown(monkeypatch):
     session = _FakeSession(_channel(), {"On": _agent_row(enabled=True)})
     ctx = svc.build_attention_context(session, "c1")
     assert ctx is not None and ctx.cooldown_seconds == 60
+
+
+def test_build_context_excludes_private_channels_end_to_end(test_client):
+    """The real builder over real rows, not SimpleNamespace stand-ins.
+
+    Same org, same agent, same arming — only ``channel_type`` differs. The
+    public channel is the control: if the arming below were wrong, it would come
+    back None too and this test would fail rather than quietly proving nothing.
+    Guards the access-control boundary end to end, so a future refactor of the
+    predicate can't silently re-admit private channels."""
+    from sqlmodel import Session as _Session
+
+    from clawbits.db.models import Agent, Organization
+    from tests.fastapi.conftest import _create_agent
+
+    agent = _create_agent(test_client)
+    public_id = _make_channel(test_client, agent, "lt-public-scope", "public")
+    private_id = _make_channel(test_client, agent, "lt-private-scope", "private")
+
+    engine = test_client.app._engine
+    with _Session(engine) as db:
+        row = db.get(Agent, agent["agent_id"])
+        row.lobstertalk_enabled = True          # operator opt-in
+        org = db.get(Organization, row.org_id)
+        org.attention_enabled = True            # org opt-in
+        db.add(row)
+        db.add(org)
+        db.commit()
+
+    with _Session(engine) as db:
+        assert svc.build_attention_context(db, public_id) is not None, (
+            "control failed: the public channel should produce a context"
+        )
+        assert svc.build_attention_context(db, private_id) is None

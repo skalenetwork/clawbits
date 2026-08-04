@@ -648,17 +648,34 @@ def test_arun_guarded_runs_on_the_dedicated_resolver_pool():
 # --- #5: IP pinning closes the resolve-then-connect (rebind) gap -------------
 
 
-def test_pick_pinned_ip_returns_public_and_prefers_ipv4(monkeypatch):
-    monkeypatch.setattr(ssrf, "_resolve", lambda host: {"2606:4700::1111", "93.184.216.34"})
-    assert ssrf._pick_pinned_ip("h.example.com") == "93.184.216.34"
+def test_vetted_addresses_keeps_every_public_answer_in_resolver_order(monkeypatch):
+    """All of them, in order: the transport dials them in turn, and resolver
+    order is the system's RFC 6724 preference — the same order a normal client
+    would have tried."""
+    monkeypatch.setattr(
+        ssrf, "_resolve", lambda host: ["2606:4700::1111", "93.184.216.34"]
+    )
+    assert ssrf._vetted_addresses("h.example.com") == ["2606:4700::1111", "93.184.216.34"]
 
 
-def test_pick_pinned_ip_rejects_when_any_address_is_private(monkeypatch):
+def test_resolve_dedups_but_preserves_order(monkeypatch):
+    """getaddrinfo repeats an address once per socket type; collapsing to a set
+    would have thrown the ordering away with the duplicates."""
+    infos = [
+        (None, None, None, None, ("93.184.216.34", 0)),
+        (None, None, None, None, ("2606:4700::1111", 0)),
+        (None, None, None, None, ("93.184.216.34", 0)),
+    ]
+    monkeypatch.setattr(ssrf.socket, "getaddrinfo", lambda *a, **k: infos)
+    assert ssrf._resolve("h.example.com") == ["93.184.216.34", "2606:4700::1111"]
+
+
+def test_vetted_addresses_rejects_when_any_address_is_private(monkeypatch):
     """All-or-nothing, same as the pre-check: one private answer poisons the
     set, so a split public/private response can't sneak the private one in."""
     monkeypatch.setattr(ssrf, "_resolve", lambda host: {"93.184.216.34", "10.0.0.5"})
     with pytest.raises(ssrf.PrivateAddressError):
-        ssrf._pick_pinned_ip("rebind.example.com")
+        ssrf._vetted_addresses("rebind.example.com")
 
 
 def test_make_client_dials_through_the_pinning_transport(monkeypatch):
@@ -734,7 +751,7 @@ def test_pinned_transport_dials_allowlisted_host_by_name(monkeypatch):
     def _boom(host):
         raise AssertionError("an allowlisted host must not be resolved for pinning")
 
-    monkeypatch.setattr(ssrf, "_pick_pinned_ip", _boom)
+    monkeypatch.setattr(ssrf, "_vetted_addresses", _boom)
     captured = {}
 
     async def _fake_super(self, request):
@@ -753,3 +770,223 @@ def test_pinned_transport_dials_allowlisted_host_by_name(monkeypatch):
     asyncio.run(_run())
     assert captured["host"] == "ollama.internal"
     assert captured["sni"] is None
+
+
+def test_pinned_transport_fails_over_to_the_next_vetted_address(monkeypatch):
+    """Dialing a literal IP costs us the multi-address retry anyio would do for
+    a name, so the transport has to do it: a dead first front-end must not take
+    the endpoint down when another A record answers."""
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: ["93.184.216.34", "93.184.216.35"])
+    tried = []
+
+    async def _fake_super(self, request):
+        tried.append(request.url.host)
+        if request.url.host == "93.184.216.34":
+            raise httpx.ConnectError("connection refused")
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _fake_super)
+    transport = ssrf.PinnedAsyncTransport()
+
+    async def _run():
+        r = await transport.handle_async_request(
+            httpx.Request("POST", "https://api.openai.com/v1/chat", json={"a": 1})
+        )
+        assert r.status_code == 200
+
+    asyncio.run(_run())
+    assert tried == ["93.184.216.34", "93.184.216.35"]  # in resolver order
+
+
+def test_pinned_transport_raises_when_every_address_refuses(monkeypatch):
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: ["93.184.216.34", "93.184.216.35"])
+
+    async def _fake_super(self, request):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _fake_super)
+    transport = ssrf.PinnedAsyncTransport()
+
+    async def _run():
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(
+                httpx.Request("POST", "https://api.openai.com/v1/chat", json={"a": 1})
+            )
+
+    asyncio.run(_run())
+
+
+def test_pinned_transport_does_not_retry_a_read_error(monkeypatch):
+    """Only connect-time failures are safe to retry — a read/write error may
+    mean the server already acted on the request, so a retry could double-submit."""
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: ["93.184.216.34", "93.184.216.35"])
+    tried = []
+
+    async def _fake_super(self, request):
+        tried.append(request.url.host)
+        raise httpx.ReadError("connection reset mid-response")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _fake_super)
+    transport = ssrf.PinnedAsyncTransport()
+
+    async def _run():
+        with pytest.raises(httpx.ReadError):
+            await transport.handle_async_request(
+                httpx.Request("POST", "https://api.openai.com/v1/chat", json={"a": 1})
+            )
+
+    asyncio.run(_run())
+    assert len(tried) == 1
+
+
+def test_pinned_transport_does_not_replay_a_streaming_body(monkeypatch):
+    """A streaming body is consumed by the first attempt; replaying it would
+    send an empty one, so a non-buffered request gets a single address."""
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: ["93.184.216.34", "93.184.216.35"])
+    tried = []
+
+    async def _fake_super(self, request):
+        tried.append(request.url.host)
+        raise httpx.ConnectError("connection refused")
+
+    async def _body():
+        yield b'{"a": 1}'
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _fake_super)
+    transport = ssrf.PinnedAsyncTransport()
+
+    async def _run():
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(
+                httpx.Request("POST", "https://api.openai.com/v1/chat", content=_body())
+            )
+
+    asyncio.run(_run())
+    assert len(tried) == 1
+
+
+# --- #5 guard: the httpcore SNI contract, proven over real TLS ---------------
+
+
+def _self_signed_localhost(tmp_path):
+    """A self-signed cert valid for the *name* ``localhost`` and for no IP.
+
+    No IP SAN is the point: a handshake that verifies against 127.0.0.1 must
+    fail, so a passing connection proves the hostname reached TLS."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = tmp_path / "cert.pem"
+    key_pem = tmp_path / "key.pem"
+    cert_pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_pem.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    return cert_pem, key_pem
+
+
+async def _serve_tls(cert_pem, key_pem):
+    """One-shot HTTPS server on loopback. Returns (server, port)."""
+    import ssl
+
+    async def _handle(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert_pem), str(key_pem))
+    server = await asyncio.start_server(_handle, "127.0.0.1", 0, ssl=ctx)
+    return server, server.sockets[0].getsockname()[1]
+
+
+def test_pinned_transport_tls_verifies_against_the_hostname_not_the_ip(tmp_path, monkeypatch):
+    """The load-bearing contract, proven for real: we dial 127.0.0.1 but the
+    certificate is only valid for the name ``localhost``, so the handshake can
+    only succeed if ``sni_hostname`` reached httpcore and became the TLS
+    server_hostname. If a future httpx/httpcore stops forwarding that extension
+    this test fails here instead of in production. The negative control below
+    dials the same server by IP and must fail, proving the assertion has teeth."""
+    import ssl
+
+    cert_pem, key_pem = _self_signed_localhost(tmp_path)
+    # Loopback is normally refused; this test is about TLS, not the IP policy.
+    monkeypatch.setattr(ssrf, "_resolve", lambda host: ["127.0.0.1"])
+    monkeypatch.setattr(ssrf, "_is_unsafe", lambda ip: False)
+
+    async def _run():
+        server, port = await _serve_tls(cert_pem, key_pem)
+        verify = ssl.create_default_context(cafile=str(cert_pem))
+        try:
+            transport = ssrf.PinnedAsyncTransport(verify=verify)
+            async with httpx.AsyncClient(transport=transport) as client:
+                r = await client.get(f"https://localhost:{port}/")
+            assert r.status_code == 200
+
+            # Negative control: same server, same trust store, dialed by IP —
+            # the cert carries no IP SAN, so verification must fail.
+            plain = httpx.AsyncHTTPTransport(verify=verify)
+            async with httpx.AsyncClient(transport=plain) as client:
+                with pytest.raises(httpx.ConnectError):
+                    await client.get(f"https://127.0.0.1:{port}/")
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("field", ["content", "reasoning"])
+def test_unparseable_reply_is_logged_as_a_digest_not_as_text(monkeypatch, caplog, field):
+    """The reply is model output generated from a prompt containing the channel
+    transcript, so a malformed one can quote private messages straight back —
+    and the server log is a far wider audience than the channel. Both carriers
+    are covered: ``content`` and the reasoning sibling field, which
+    ``_reply_text`` falls back to and which is the more likely one to echo the
+    conversation verbatim."""
+    secret = "PATIENT-ZERO-SALARY-IS-90000"
+    client = _FakeClient(**{field: f"hmm, the channel said {secret}, so..."}) if field == "content" \
+        else _FakeClient(content="", reasoning=f"hmm, the channel said {secret}, so...")
+
+    with caplog.at_level("WARNING"):
+        assert _decide(monkeypatch, client) is None
+
+    blob = "\n".join(r.getMessage() for r in caplog.records)
+    assert secret not in blob, "raw model output must not reach the log"
+    assert "sha256=" in blob and "len=" in blob, "the digest should replace it"
+
+
+def test_content_digest_is_stable_and_distinguishing():
+    """The digest has to do the one job the text was doing: telling 'the same
+    broken reply every time' apart from 'a different one each call'."""
+    assert triage._content_digest("abc") == triage._content_digest("abc")
+    assert triage._content_digest("abc") != triage._content_digest("abd")
+    assert triage._content_digest("") == "len=0 " + triage._content_digest("")[6:]

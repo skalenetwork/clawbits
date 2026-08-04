@@ -105,8 +105,14 @@ def redact_url(url: str | httpx.URL) -> str:
     return f"{u.scheme}://{host}{port}{u.path}"
 
 
-def _resolve(host: str) -> set[str]:
-    """Every address ``host`` resolves to.
+def _resolve(host: str) -> list[str]:
+    """Every address ``host`` resolves to, in resolver order, deduplicated.
+
+    Order is preserved (rather than collapsing into a set) because it is
+    meaningful: ``getaddrinfo`` returns addresses in RFC 6724 destination order,
+    which is what a normal client dials in turn. :func:`_vetted_addresses` hands
+    that order to the pinning transport so failover matches system preference.
+    Callers that only need membership (``check_host_is_public``) are unaffected.
 
     Its own function so tests can stub resolution by patching *this* name.
     Patching ``socket.getaddrinfo`` instead would redirect the whole process
@@ -121,7 +127,7 @@ def _resolve(host: str) -> set[str]:
         # ("xn--" + 100 chars). That's still just "this name doesn't resolve",
         # and it must not escape as an unhandled 500 from the save handler.
         raise HostResolutionError(f"DNS lookup failed: {exc}") from exc
-    return {info[4][0] for info in infos}
+    return list(dict.fromkeys(info[4][0] for info in infos))
 
 
 def check_host_is_public(host: str, *, allow_hosts: Collection[str] = ()) -> None:
@@ -208,12 +214,17 @@ async def arun_guarded[T](func: Callable[..., T], /, *args: object) -> T:
     return await loop.run_in_executor(_resolver_executor, partial(func, *args))
 
 
-def _pick_pinned_ip(host: str) -> str:
-    """Resolve ``host``, reject if *any* address is non-public, and return one
-    vetted address to dial. Same all-or-nothing policy as
-    :func:`check_host_is_public`; an IPv4 result is preferred for the pinned
-    dial because it needs no bracket handling. Raises
-    :class:`HostResolutionError` if the name yields no usable address."""
+def _vetted_addresses(host: str) -> list[str]:
+    """Every address ``host`` resolves to, in resolver order, once they have
+    *all* been proven public.
+
+    All-or-nothing, like :func:`check_host_is_public`: a single private answer
+    rejects the whole set, so a split public/private response can't smuggle the
+    private one through. Returning the full list (not one pick) is what lets the
+    pinning transport fail over — dialing a literal IP costs us the multi-address
+    retry ``anyio.connect_tcp`` would otherwise do for a name, so a single dead
+    front-end would take the endpoint down. Raises :class:`HostResolutionError`
+    if the name yields no usable address."""
     safe: list[str] = []
     for addr in _resolve(host):
         try:
@@ -225,8 +236,7 @@ def _pick_pinned_ip(host: str) -> str:
         safe.append(addr)
     if not safe:
         raise HostResolutionError(f"no usable address for {host!r}")
-    safe.sort(key=lambda a: ":" in a)  # IPv4 (no colon) first
-    return safe[0]
+    return safe
 
 
 class PinnedAsyncTransport(httpx.AsyncHTTPTransport):
@@ -248,17 +258,34 @@ class PinnedAsyncTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         raw = request.url.raw_host
         host = raw.decode("ascii") if raw else ""
-        if host and host.lower() not in self._allow_hosts:
-            # Raises UnsafeHostError on a rebind to a private address — httpx
-            # surfaces it as the request's failure, which the caller already
-            # treats as "couldn't reach the endpoint".
-            ip = await arun_guarded(_pick_pinned_ip, host)
-            request.url = request.url.copy_with(host=ip)
-            # SNI + cert name stay the real host; only the dialed address is
-            # the pinned IP. httpx forwards this extension to httpcore, which
-            # uses it as the TLS server_hostname.
-            request.extensions = {**request.extensions, "sni_hostname": host}
-        return await super().handle_async_request(request)
+        if not host or host.lower() in self._allow_hosts:
+            return await super().handle_async_request(request)
+        # Raises UnsafeHostError on a rebind to a private address — httpx
+        # surfaces it as the request's failure, which the caller already
+        # treats as "couldn't reach the endpoint".
+        addresses = await arun_guarded(_vetted_addresses, host)
+        # Failing over re-sends the body, which is only safe when httpx buffered
+        # it (``_content`` is set for bytes/json/form bodies and absent for a
+        # streaming one). Replaying a consumed stream would send an empty body,
+        # so a streaming request gets the first address and no retry.
+        if not hasattr(request, "_content"):
+            addresses = addresses[:1]
+        # SNI + cert name stay the real host; only the dialed address is the
+        # pinned IP. httpx forwards this extension to httpcore, which uses it as
+        # the TLS server_hostname — so certificate verification is unchanged.
+        request.extensions = {**request.extensions, "sni_hostname": host}
+        original = request.url
+        last: Exception | None = None
+        for addr in addresses:
+            request.url = original.copy_with(host=addr)  # brackets IPv6 for us
+            try:
+                return await super().handle_async_request(request)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                # Connect-time only: a read/write failure may already have been
+                # acted on by the server, so retrying it could double-submit.
+                last = exc
+        raise last  # _vetted_addresses raised if the list were empty
+
 
 
 def make_guarded_async_client(

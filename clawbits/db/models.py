@@ -376,7 +376,7 @@ class Organization(SQLModel, table=True):
         ),
         CheckConstraint(
             "attention_cooldown_seconds IS NULL "
-            "OR attention_cooldown_seconds BETWEEN 5 AND 3600",
+            "OR attention_cooldown_seconds BETWEEN 30 AND 3600",
             name="organizations_attention_cooldown_check",
         ),
     )
@@ -433,7 +433,7 @@ class Organization(SQLModel, table=True):
         sa_column=SAColumn(Text, nullable=True),
     )
     # Per-org override of the per-(agent, channel) nudge cooldown window, in
-    # seconds (bounded 5..3600 by the CHECK above). NULL inherits the
+    # seconds (bounded 30..3600 by the CHECK above). NULL inherits the
     # server-wide default (CLAWBITS_ATTENTION_COOLDOWN_SECONDS, code default
     # 300) — the resolution happens in build_attention_context.
     attention_cooldown_seconds: int | None = Field(

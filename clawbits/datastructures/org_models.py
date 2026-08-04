@@ -88,11 +88,13 @@ class SetOrgLobstertalkRequest(BaseModel):
     )
     clear_api_key: bool = Field(default=False, description="Drop the stored API key")
     cooldown_seconds: int | None = Field(
-        default=None, ge=5, le=3600,
+        default=None, ge=30, le=3600,
         description=(
             "Per-(agent, channel) nudge cooldown override in seconds; null "
-            "inherits the server default. Bounded 5..3600 — 0 would disable "
-            "throttling entirely, which in 'all' mode means a turn per message."
+            "inherits the server default. Bounded 30..3600 — the floor is what "
+            "keeps a busy channel from becoming a turn-per-message firehose "
+            "(and, in the LLM modes, a call-per-message bill); huge values "
+            "effectively mute the feature."
         ),
     )
 

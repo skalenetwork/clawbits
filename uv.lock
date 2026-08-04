@@ -2,6 +2,10 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[options]
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "P7D"
+
 [manifest]
 constraints = [{ name = "litellm", specifier = "<1.92" }]
 
@@ -385,7 +389,7 @@ requires-dist = [
     { name = "eth-utils", specifier = ">=4.1,<5" },
     { name = "fastapi", specifier = ">=0.136" },
     { name = "fastembed", marker = "extra == 'router'", specifier = ">=0.4" },
-    { name = "httpx", specifier = ">=0.28" },
+    { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "imapclient", specifier = ">=3.1,<4" },
     { name = "openai", specifier = ">=2" },
     { name = "pillow", specifier = ">=11" },

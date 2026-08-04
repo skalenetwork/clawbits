@@ -4,6 +4,10 @@ Decides, at post-creation time, whether a channel message warrants an agent's
 input — a cheap embedding classifier that runs **inside** the clawbits server:
 no sidecar process, no per-agent model server.
 
+Scope: **public channels only**, in every mode. Private channels and DMs never
+enter the pass — see [Public channels only](#public-channels-only) for why that
+is an access-control boundary rather than a setting.
+
 ## How it works
 
 Each new human post is embedded once (FastEmbed / bge-small, CPU) and routed by
@@ -185,29 +189,39 @@ every port on it, which on a multi-tenant box hands each org a way to POST at
 anything on loopback. Prefer a name that only resolves to the model host, and
 leave the list empty on a shared deployment.
 
-### What the endpoint receives — and the private-channel caveat
+### Public channels only
 
-A cascade/`llm_only` triage call sends the endpoint the **recent channel
-transcript** (up to the last ~20 posts: message bodies and author display
-names) for any channel that has a LobsterTalk-enabled agent member — **private
-channels included**. The endpoint is chosen by the org *owner*, who need not be
-a member of that channel. A malicious or careless owner can therefore point the
-endpoint at a server they control and observe messages from private channels
-they aren't in. This is inherent to "an org-configured model reads channel
-context"; the controls around it are:
+**The attention pass runs on `public` channels and nothing else** — in every
+mode, including plain `embedding`. Private channels and DMs never enter it:
+`build_attention_context` returns None for them, so no gate, no triage, no
+nudge.
 
-- **Owner-only + audited.** Only an org owner can set the endpoint, and every
-  write emits an `organization.lobstertalk_updated` audit event (actor, mode,
-  redacted endpoint, whether the key changed) — so "who pointed our transcripts
-  where, and when" is answerable after the fact.
-- **Egress-constrained.** The endpoint must be https and resolve to a public
-  address (see above), which bounds *where* transcripts can go but does not, by
-  itself, stop an owner from exfiltrating to a public host they own.
-- **Recommended follow-ups (not yet implemented):** a per-channel LLM opt-in
-  and an in-channel disclosure to members that an external model may read the
-  channel. Until those land, treat "arm an LLM mode" as an org-wide decision to
-  share private-channel context with the configured endpoint, and prefer
-  `embedding` mode for orgs with sensitive private channels.
+That boundary exists because the alternative is an access-control escalation,
+not merely a privacy preference. An org owner who is not a member of a private
+channel **cannot read it through the API** — `_require_human_member` has no
+owner bypass, and `join_channel` refuses anything that isn't public. But a
+cascade/`llm_only` pass sends the **recent transcript** (up to ~20 posts:
+message bodies and author display names) to an endpoint that same owner
+configures. Running it on private channels would therefore hand owners exactly
+the content the product denies them, at an endpoint they control. Excluding
+private channels is what keeps the LLM config from becoming a way around
+channel membership.
+
+Two consequences worth stating plainly:
+
+- **A private channel gets no nudges at all**, even in `embedding` mode where
+  nothing leaves the server. The rule is deliberately coarse — one predicate,
+  no per-mode subtlety to get wrong later — and it means "is this channel
+  private?" is the only question anyone has to answer about LobsterTalk and
+  confidentiality.
+- **Public channels are readable by any org member anyway** (they can self-join),
+  so the transcript reaching an owner-configured endpoint discloses nothing the
+  owner could not already read. That is why the same export is fine there.
+
+What still applies to the endpoint itself: only an org owner can set it, every
+write emits an `organization.lobstertalk_updated` audit event (actor, mode,
+redacted endpoint, whether the key changed), and the URL must be https to a
+public address (see above).
 
 ### The API key at rest
 
@@ -243,7 +257,7 @@ Off by default, behind three gates — all must be on for an agent to be nudged:
 uv sync --extra router                  # semantic-router + FastEmbed (CPU) — required
 CLAWBITS_ATTENTION_THRESHOLD=0.41       # optional: vestigial floor — real messages score ~0.52+; tune utterances, not this
 CLAWBITS_ATTENTION_EMBED_MODEL=         # optional FastEmbed model override (default bge-small)
-CLAWBITS_ATTENTION_COOLDOWN_SECONDS=300 # optional: per-(agent, channel) nudge cooldown (server default; orgs can override 5..3600 in Settings → LobsterTalk)
+CLAWBITS_ATTENTION_COOLDOWN_SECONDS=300 # optional: per-(agent, channel) nudge cooldown (server default; orgs can override 30..3600 in Settings → LobsterTalk)
 CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS=300 # optional: output cap per triage call; raise only for a reasoning model
 ```
 

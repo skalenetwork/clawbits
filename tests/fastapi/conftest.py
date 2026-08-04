@@ -20,6 +20,7 @@ from __future__ import annotations
 import gc
 import os
 
+import dotenv
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -32,6 +33,24 @@ from clawbits.datastructures.known_answers import get_answer_for_question
 from clawbits.db import models  # noqa: F401 — ensure metadata is populated
 from tests.fastapi._auth_helpers import auth_headers, login_human
 from tests.fastapi._db_helpers import TEST_DATABASE_URL, ensure_database
+
+# Tests must see the environment CI sees: a clean one. ``.env`` is gitignored,
+# so it exists on developer machines and never in CI — and
+# ``clawbits.fastapi.main`` calls ``load_dotenv()`` at import time, *before* its
+# own clawbits imports (deliberately: modules that read env at import, like the
+# attention secrets key, must see it). That makes a local ``.env`` leak into
+# every import-time env read. The sharpest edge is ``CLAWBITS_ENV=development``,
+# which renames the session cookie to ``fc_session_dev``; the login helper then
+# reads an absent ``fc_session``, returns an empty bearer token, and requests
+# silently fall back to the TestClient's cookie jar — i.e. the *wrong user*, so
+# ACL tests pass a 403 check as 200 instead of failing loudly.
+#
+# Neutralise the loader rather than enumerate the vars: any key in ``.env``
+# (dev-auth signals, LLM allow-lists, cloud creds) would otherwise change
+# behavior under test. Safe to do here because ``main`` is imported lazily,
+# inside the ``test_client`` fixture below, long after this module body runs —
+# so its ``from dotenv import load_dotenv`` binds to this no-op.
+dotenv.load_dotenv = lambda *args, **kwargs: False
 
 # Pin the test DB URL before *any* clawbits module imports the engine.
 os.environ["CLAWBITS_DATABASE_URL"] = TEST_DATABASE_URL

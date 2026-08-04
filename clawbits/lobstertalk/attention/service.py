@@ -68,9 +68,9 @@ class AttentionContext:
 def build_attention_context(session: Session, channel_id: str) -> AttentionContext | None:
     """Snapshot the channel's LobsterTalk-enabled agent members for the pass.
 
-    Returns None (skip) when the channel is a DM, its org hasn't armed the
-    attention gate, or it has no agent member with LobsterTalk enabled — cheap
-    early-outs that avoid scheduling a pass with nothing to do. The org's
+    Returns None (skip) when the channel isn't **public**, its org hasn't armed
+    the attention gate, or it has no agent member with LobsterTalk enabled —
+    cheap early-outs that avoid scheduling a pass with nothing to do. The org's
     LobsterTalk config (one PK get, carrying the enabled flag plus the
     mode/LLM settings) is the product switch (owner-toggled; it replaced the
     old ``CLAWBITS_ATTENTION_ENABLED`` env flag); the per-agent
@@ -86,7 +86,17 @@ def build_attention_context(session: Session, channel_id: str) -> AttentionConte
     llm_only — and the misconfig stays visible next to every post it affected.
     """
     channel = session.get(MmChannel, channel_id)
-    if channel is None or channel.channel_type == "direct":
+    # Public channels only — the single gate for the whole feature, in every
+    # mode. Private channels are excluded outright rather than merely opted out
+    # of the LLM stage, because the exposure is an access-control escalation,
+    # not a preference: an org owner who is not a channel member cannot read a
+    # private channel through the API (``_require_human_member`` has no owner
+    # bypass, and ``join_channel`` refuses non-public channels), yet cascade /
+    # llm_only would ship that channel's recent transcript — message bodies and
+    # author names — to an endpoint the owner controls. DMs were already out;
+    # this puts private channels on the same side of the line, so no attention
+    # pass ever reads a channel its org's owner couldn't open themselves.
+    if channel is None or channel.channel_type != "public":
         return None
     # Org opt-in gate: cheap PK lookup, bail before the member enumeration.
     # org_id is nullable (legacy/org-less channels) — treat missing as disabled.
@@ -236,16 +246,26 @@ async def _remember_pending(
     agent_id: str, channel_id: str, post_id: object, cooldown_ttl: int
 ) -> None:
     """Mark ``post_id`` as awaiting a catch-up pass once the active cooldown
-    expires. Overwrites an older marker — newest post wins. TTL is a few
-    windows (of the org-resolved ``cooldown_ttl``) so an unserviced marker
-    (worker restart, notifications disabled) dies quietly instead of
-    resurrecting a stale conversation much later."""
+    expires. Overwrites an older marker — newest post wins.
+
+    The marker must outlive the cooldown key that will wake it, so its TTL is
+    built from that key's *actual* remaining TTL rather than the configured
+    window. Those diverge whenever the org lowers its cooldown: the live key
+    still holds the old (longer) TTL, so sizing the marker off the new value
+    would let it expire long before the expiration event fires, and the
+    catch-up would silently never happen. Redis ``TTL`` returns -2 (key gone,
+    it expired under us) or -1 (no expiry set); both fall back to the
+    configured window. The trailing couple of windows are slack so an
+    unserviced marker (worker restart, notifications disabled) still dies
+    quietly instead of resurrecting a stale conversation much later."""
     if not isinstance(post_id, int):
         return
     try:
         client = await get_bus().redis_client()
+        remaining = await client.ttl(_cooldown_key(agent_id, channel_id))
+        base = remaining if isinstance(remaining, int) and remaining > 0 else cooldown_ttl
         await client.set(
-            _pending_key(agent_id, channel_id), str(post_id), ex=cooldown_ttl * 3
+            _pending_key(agent_id, channel_id), str(post_id), ex=base + 2 * cooldown_ttl
         )
     except Exception as e:
         logger.warning("attention pending marker failed (%s); post %s won't be caught up", e, post_id)
