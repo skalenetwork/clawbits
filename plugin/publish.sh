@@ -3,13 +3,15 @@
 # package (ClawPack format, /api/v1/packages namespace).
 #
 # MANUAL ESCAPE HATCH. Normal releases are cut by CI
-# (.github/workflows/publish-clawhub-plugin.yaml): the version is tag-driven
-# via semantic-release against this repo's plugin-v* tags, so the `version` in
-# plugin/package.json + openclaw.plugin.json is only a placeholder, not the
-# source of truth. Because of that, this script will NOT read a version from
-# those files — you must pass one explicitly so an out-of-date placeholder
-# can't ship by accident. The supplied version is stamped into the staged
-# artifact (the working-tree files are left untouched).
+# (.github/workflows/publish-clawhub-plugin.yaml), which derives the version
+# automatically: major.minor from plugin/package.json, patch from the count of
+# commits touching plugin/. The patch in those files is therefore stale between
+# CI runs, so this script will NOT read a version from them — you must pass one
+# explicitly so a stale patch can't ship by accident. The supplied version is
+# stamped into the staged artifact (the working-tree files are left untouched).
+#
+# To mirror what CI would publish from the current checkout:
+#   bash plugin/publish.sh --version "$(node -p "require('./plugin/package.json').version.split('.').slice(0,2).join('.')").$(git rev-list --count HEAD -- plugin)"
 #
 # Usage:
 #   bash plugin/publish.sh --version X.Y.Z            # build + publish + verify

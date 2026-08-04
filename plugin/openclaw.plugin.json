@@ -1,7 +1,7 @@
 {
   "id": "clawbits",
   "name": "Clawbits Human Channel",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "entry": "./src/index.ts",
   "extensions": ["./src/index.ts"],
   "runtimeExtensions": ["./dist/index.js"],

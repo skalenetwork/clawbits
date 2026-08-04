@@ -1,36 +1,29 @@
 name: Publish ClawBits Plugin to ClawHub
 
-# Plugin releases are tag-driven, the same way the rest of the repo works
-# (see release.yaml / desktop-release.yml): the version is NOT a hand-bumped
-# source-of-truth in plugin/package.json. Instead, on a push to main that
+# Plugin releases are automatic and message-agnostic, the same way the IronClaw
+# channel works (see publish-ironclaw-channel.yaml). On a push to main that
 # touches plugin/**, this workflow:
 #
 #   1. tests + typechecks plugin/.
-#   2. runs semantic-release from plugin/ against THIS repo, so the plugin's
-#      version tag (plugin-v<version>) and GitHub Release are created here.
-#      plugin/.releaserc.json extends `semantic-release-monorepo`, which scopes
-#      commit analysis and release notes to commits touching plugin/. Without
-#      it commit-analyzer would read the whole monorepo history and a backend
-#      `feat:` would bump the plugin.
-#   3. only if semantic-release cut a new version, stamps that version into the
-#      published artifact and publishes it to ClawHub.
+#   2. stamps a version: major.minor is hand-controlled in plugin/package.json,
+#      the patch is the count of commits touching plugin/. Every plugin change
+#      therefore ships a fresh, unique, monotonic version with no manual bump
+#      and no dependency on commit-message format. Deterministic + idempotent:
+#      the same commit always yields the same version, and a re-run hits the
+#      skip-if-published guard below. Stamped into the CI checkout only, never
+#      committed back, so there is no recursive release loop.
+#   3. publishes the staged artifact to ClawHub, unless that version is already
+#      on the registry.
 #
-# Tag namespaces are kept apart on purpose: repo-wide releases use `v*`
-# (.releaserc.json), the desktop app uses `desktop-v*`, the plugin uses
-# `plugin-v*`. Nothing collides.
+# Bump major/minor by hand in plugin/package.json + plugin/openclaw.plugin.json
+# only for a deliberate semantic jump; the patch takes care of itself.
 #
-# No version is committed back, so there is no recursive release loop (same
-# reason the repo-wide semantic-release in release.yaml has none): the trigger
-# is scoped to plugin/**, and semantic-release only creates a tag and a GitHub
-# Release, never a commit.
+# ClawHub is the registry of record for the plugin — no git tag or GitHub
+# Release is cut here, and the published package carries the real commit SHA as
+# its provenance, so any version is traceable back to a commit.
 #
-# A push that doesn't touch plugin/** never starts this workflow; a plugin
-# change whose commits don't warrant a release (per .releaserc rules) is
-# tested but not published.
-#
-# Manual dispatch runs the same flow, but semantic-release only cuts a
-# release from the `main` branch (per plugin/.releaserc.json `branches`), so a
-# dispatch from another ref tests without publishing.
+# A push that doesn't touch plugin/** never starts this workflow. Manual
+# dispatch from any ref runs the same flow.
 #
 # Plugin tests run inline here so this stays the only thing that exercises the
 # plugin on main (workflow.yaml skips its plugin job on push-to-main).
@@ -42,7 +35,7 @@ on:
       - 'plugin/**'
 
 permissions:
-  contents: write # semantic-release creates the plugin-v* tag + GitHub Release on this repo
+  contents: read
 
 concurrency:
   group: publish-clawbits-${{ github.ref_name }}
@@ -56,6 +49,7 @@ jobs:
       - name: Checkout monorepo
         uses: actions/checkout@v6
         with:
+          # Full history so "Stamp auto version" can count commits touching plugin/.
           fetch-depth: 0
           persist-credentials: false
 
@@ -76,30 +70,19 @@ jobs:
         working-directory: plugin
         run: bun run test
 
-      - name: Semantic release (plugin-v* tag + GitHub Release on this repo)
-        id: semrel
-        uses: cycjimmy/semantic-release-action@v4
-        with:
-          working_directory: plugin
-          # semantic-release-monorepo is a shareable config (referenced from
-          # plugin/.releaserc.json `extends`) and still has to be installed
-          # here. It overrides analyzeCommits/generateNotes so only commits
-          # touching plugin/ count toward the plugin's version and notes.
-          extra_plugins: semantic-release-monorepo
-        env:
-          # Tag + release land on this repo now, so the built-in token is enough
-          # — no PLUGIN_MIRROR_TOKEN in the plugin release path.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Stamp released version into the artifact
-        if: steps.semrel.outputs.new_release_published == 'true'
+      - name: Stamp auto version (patch = commit count)
+        id: version
         working-directory: plugin
-        env:
-          VERSION: ${{ steps.semrel.outputs.new_release_version }}
         run: |
-          bun run - <<'BUN'
+          set -euo pipefail
+          base="$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version.split('.').slice(0,2).join('.')")"
+          patch="$(git rev-list --count HEAD -- .)"
+          version="${base}.${patch}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Plugin version: $version"
+          node - "$version" <<'NODE'
           const fs = require('node:fs');
-          const v = process.env.VERSION;
+          const v = process.argv[2];
           function rewrite(p) {
             const j = JSON.parse(fs.readFileSync(p, 'utf8'));
             j.version = v;
@@ -109,16 +92,36 @@ jobs:
           rewrite('package.json');
           rewrite('openclaw.plugin.json');
           console.log(`Stamped plugin artifact version ${v}`);
-          BUN
+          NODE
+
+      - name: Skip if this version is already on ClawHub
+        id: guard
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-plugin/versions" 2>/dev/null || true)"
+          already=false
+          if [ -n "$versions_json" ]; then
+            already="$(node -e "
+              const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+              const versions = (data.items || []).map(x => x.version);
+              console.log(versions.includes(process.argv[1]) ? 'true' : 'false');
+            " "$VERSION" <<<"$versions_json")"
+          fi
+          echo "already=$already" >> "$GITHUB_OUTPUT"
+          if [ "$already" = "true" ]; then
+            echo "::notice::Version $VERSION is already on the registry; skipping publish. It will bump on the next commit touching plugin/."
+          fi
 
       - name: Build plugin
-        if: steps.semrel.outputs.new_release_published == 'true'
+        if: steps.guard.outputs.already != 'true'
         working-directory: plugin
         run: bun --bun run build
 
       - name: Stage publish directory
         id: pack
-        if: steps.semrel.outputs.new_release_published == 'true'
+        if: steps.guard.outputs.already != 'true'
         working-directory: plugin
         run: |
           rm -rf ../publish/clawbits-openclaw-plugin
@@ -132,7 +135,7 @@ jobs:
       # runtime instead. clawhub stores auth state in $HOME, so login state
       # persists across the calls below.
       - name: Authenticate ClawHub CLI
-        if: steps.semrel.outputs.new_release_published == 'true'
+        if: steps.guard.outputs.already != 'true'
         env:
           CLAWHUB_API_TOKEN: ${{ secrets.CLAWHUB_API_TOKEN }}
         run: |
@@ -143,17 +146,15 @@ jobs:
           bunx --bun clawhub@latest login --token "$CLAWHUB_API_TOKEN" --no-browser
 
       - name: Verify ClawHub authentication
-        if: steps.semrel.outputs.new_release_published == 'true'
+        if: steps.guard.outputs.already != 'true'
         run: bunx --bun clawhub@latest whoami
 
       - name: Publish package to ClawHub
-        if: steps.semrel.outputs.new_release_published == 'true'
+        if: steps.guard.outputs.already != 'true'
         working-directory: ${{ github.workspace }}
-        env:
-          VERSION: ${{ steps.semrel.outputs.new_release_version }}
         run: |
           bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
             --family code-plugin \
             --source-repo "${{ github.repository }}" \
             --source-commit "${{ github.sha }}" \
-            --source-ref "refs/tags/plugin-v${VERSION}"
+            --source-ref "${{ github.ref }}"
