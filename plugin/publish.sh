@@ -4,7 +4,7 @@
 #
 # MANUAL ESCAPE HATCH. Normal releases are cut by CI
 # (.github/workflows/publish-clawhub-plugin.yaml): the version is tag-driven
-# via semantic-release against the mirror repo's git tags, so the `version` in
+# via semantic-release against this repo's plugin-v* tags, so the `version` in
 # plugin/package.json + openclaw.plugin.json is only a placeholder, not the
 # source of truth. Because of that, this script will NOT read a version from
 # those files — you must pass one explicitly so an out-of-date placeholder
@@ -30,7 +30,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLUGIN_DIR="$REPO_ROOT/plugin"
 PUBLISH_DIR="$REPO_ROOT/publish/clawbits-openclaw-plugin"
 REGISTRY_API="https://clawhub.ai/api/v1"
-SOURCE_REPO_DEFAULT="skalenetwork/clawbits-openclaw-plugin"
+SOURCE_REPO_DEFAULT="skalenetwork/clawbits"
 MIN_CLAWHUB_MINOR=12
 
 DRY_RUN=false

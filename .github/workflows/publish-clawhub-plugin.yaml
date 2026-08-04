@@ -5,26 +5,32 @@ name: Publish ClawBits Plugin to ClawHub
 # source-of-truth in plugin/package.json. Instead, on a push to main that
 # touches plugin/**, this workflow:
 #
-#   1. tests + subtree-splits plugin/ into skalenetwork/clawbits-openclaw-plugin
-#      (the canonical published-source repo) as branch main. The split history
-#      contains plugin commits only, with their original messages.
-#   2. runs semantic-release INSIDE the mirror repo, so the plugin's version
-#      tag (v<version>) and GitHub Release are created in the mirror repo and
-#      are derived from the plugin's own commit history against the mirror's
-#      existing v* tags. (plugin/.releaserc.json lands at the mirror root via
-#      the split, so semantic-release picks it up there.)
+#   1. tests + typechecks plugin/.
+#   2. runs semantic-release from plugin/ against THIS repo, so the plugin's
+#      version tag (plugin-v<version>) and GitHub Release are created here.
+#      plugin/.releaserc.json extends `semantic-release-monorepo`, which scopes
+#      commit analysis and release notes to commits touching plugin/. Without
+#      it commit-analyzer would read the whole monorepo history and a backend
+#      `feat:` would bump the plugin.
 #   3. only if semantic-release cut a new version, stamps that version into the
 #      published artifact and publishes it to ClawHub.
 #
-# No version is committed back to any repo, so there is no recursive release
-# loop (same reason the repo-wide semantic-release in release.yaml has none).
+# Tag namespaces are kept apart on purpose: repo-wide releases use `v*`
+# (.releaserc.json), the desktop app uses `desktop-v*`, the plugin uses
+# `plugin-v*`. Nothing collides.
+#
+# No version is committed back, so there is no recursive release loop (same
+# reason the repo-wide semantic-release in release.yaml has none): the trigger
+# is scoped to plugin/**, and semantic-release only creates a tag and a GitHub
+# Release, never a commit.
+#
 # A push that doesn't touch plugin/** never starts this workflow; a plugin
 # change whose commits don't warrant a release (per .releaserc rules) is
-# tested + mirrored but not published.
+# tested but not published.
 #
 # Manual dispatch runs the same flow, but semantic-release only cuts a
 # release from the `main` branch (per plugin/.releaserc.json `branches`), so a
-# dispatch from another ref tests + mirrors without publishing.
+# dispatch from another ref tests without publishing.
 #
 # Plugin tests run inline here so this stays the only thing that exercises the
 # plugin on main (workflow.yaml skips its plugin job on push-to-main).
@@ -36,7 +42,7 @@ on:
       - 'plugin/**'
 
 permissions:
-  contents: read
+  contents: write # semantic-release creates the plugin-v* tag + GitHub Release on this repo
 
 concurrency:
   group: publish-clawbits-${{ github.ref_name }}
@@ -70,41 +76,20 @@ jobs:
         working-directory: plugin
         run: bun run test
 
-      - name: Subtree-split plugin/ and mirror to clawbits-openclaw-plugin
-        id: split
-        env:
-          MIRROR_TOKEN: ${{ secrets.PLUGIN_MIRROR_TOKEN }}
-        run: |
-          if [ -z "$MIRROR_TOKEN" ]; then
-            echo "::error::Missing required secret PLUGIN_MIRROR_TOKEN (PAT or GitHub App token with contents:write + releases on skalenetwork/clawbits-openclaw-plugin)"
-            exit 1
-          fi
-          git config user.email "ci@clawbits.local"
-          git config user.name "ClawBits CI"
-          split_sha="$(git subtree split --prefix=plugin HEAD)"
-          echo "split_sha=$split_sha" >> "$GITHUB_OUTPUT"
-          remote="https://x-access-token:${MIRROR_TOKEN}@github.com/skalenetwork/clawbits-openclaw-plugin.git"
-          # main on the sibling repo is a derived artifact — force-push is expected.
-          # semantic-release (next step) tags this commit and cuts the release.
-          git push --force "$remote" "${split_sha}:refs/heads/main"
-
-      - name: Checkout mirror repo
-        uses: actions/checkout@v6
-        with:
-          repository: skalenetwork/clawbits-openclaw-plugin
-          token: ${{ secrets.PLUGIN_MIRROR_TOKEN }}
-          fetch-depth: 0
-          path: mirror
-
-      - name: Semantic release (version tag + GitHub Release on the mirror)
+      - name: Semantic release (plugin-v* tag + GitHub Release on this repo)
         id: semrel
         uses: cycjimmy/semantic-release-action@v4
         with:
-          working_directory: mirror
+          working_directory: plugin
+          # semantic-release-monorepo is a shareable config (referenced from
+          # plugin/.releaserc.json `extends`) and still has to be installed
+          # here. It overrides analyzeCommits/generateNotes so only commits
+          # touching plugin/ count toward the plugin's version and notes.
+          extra_plugins: semantic-release-monorepo
         env:
-          # Tag + release are created on the mirror repo, so semantic-release
-          # authenticates with the mirror token, not the monorepo GITHUB_TOKEN.
-          GITHUB_TOKEN: ${{ secrets.PLUGIN_MIRROR_TOKEN }}
+          # Tag + release land on this repo now, so the built-in token is enough
+          # — no PLUGIN_MIRROR_TOKEN in the plugin release path.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Stamp released version into the artifact
         if: steps.semrel.outputs.new_release_published == 'true'
@@ -169,6 +154,6 @@ jobs:
         run: |
           bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
             --family code-plugin \
-            --source-repo "skalenetwork/clawbits-openclaw-plugin" \
-            --source-commit "${{ steps.split.outputs.split_sha }}" \
-            --source-ref "refs/tags/v${VERSION}"
+            --source-repo "${{ github.repository }}" \
+            --source-commit "${{ github.sha }}" \
+            --source-ref "refs/tags/plugin-v${VERSION}"
