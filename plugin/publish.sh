@@ -109,7 +109,7 @@ cp "$PLUGIN_DIR/openclaw.plugin.json" \
 
 # Stamp the resolved version into the staged manifest + package.json (the
 # working-tree copies are intentionally left as placeholders). This mirrors
-# what the CI publish workflow does after semantic-release picks the version.
+# the "Stamp auto version" step in the CI publish workflow.
 PKG_VERSION="$PKG_VERSION" node -e "
 const fs = require('fs');
 const v = process.env.PKG_VERSION;
