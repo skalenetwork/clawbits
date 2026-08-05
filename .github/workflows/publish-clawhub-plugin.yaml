@@ -23,7 +23,7 @@ name: Publish ClawBits Plugin to ClawHub
 # its provenance, so any version is traceable back to a commit.
 #
 # A push that doesn't touch plugin/** never starts this workflow. Manual
-# dispatch from any ref runs the same flow.
+# dispatch from any ref runs the same flow, but only main publishes.
 #
 # Plugin tests run inline here so this stays the only thing that exercises the
 # plugin on main (workflow.yaml skips its plugin job on push-to-main).
@@ -94,12 +94,24 @@ jobs:
           console.log(`Stamped plugin artifact version ${v}`);
           NODE
 
-      - name: Skip if this version is already on ClawHub
+      # Two independent reasons not to publish, resolved into one output so the
+      # publish steps below share a single condition:
+      #   1. not on main — a workflow_dispatch from a feature branch would
+      #      otherwise compute a version off that branch's commit count and ship
+      #      it to ClawHub as a real release. Dispatch elsewhere tests + stages
+      #      only. (The push trigger is already main-only.)
+      #   2. the version is already on the registry — makes re-runs idempotent.
+      - name: Decide whether to publish
         id: guard
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
+          if [ "${{ github.ref_name }}" != "main" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Ref ${{ github.ref_name }} is not main; testing and staging only, nothing will be published."
+            exit 0
+          fi
           versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-plugin/versions" 2>/dev/null || true)"
           already=false
           if [ -n "$versions_json" ]; then
@@ -109,19 +121,22 @@ jobs:
               console.log(versions.includes(process.argv[1]) ? 'true' : 'false');
             " "$VERSION" <<<"$versions_json")"
           fi
-          echo "already=$already" >> "$GITHUB_OUTPUT"
           if [ "$already" = "true" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Version $VERSION is already on the registry; skipping publish. It will bump on the next commit touching plugin/."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Will publish $VERSION"
           fi
 
       - name: Build plugin
-        if: steps.guard.outputs.already != 'true'
+        if: steps.guard.outputs.publish == 'true'
         working-directory: plugin
         run: bun --bun run build
 
       - name: Stage publish directory
         id: pack
-        if: steps.guard.outputs.already != 'true'
+        if: steps.guard.outputs.publish == 'true'
         working-directory: plugin
         run: |
           rm -rf ../publish/clawbits-openclaw-plugin
@@ -135,7 +150,7 @@ jobs:
       # runtime instead. clawhub stores auth state in $HOME, so login state
       # persists across the calls below.
       - name: Authenticate ClawHub CLI
-        if: steps.guard.outputs.already != 'true'
+        if: steps.guard.outputs.publish == 'true'
         env:
           CLAWHUB_API_TOKEN: ${{ secrets.CLAWHUB_API_TOKEN }}
         run: |
@@ -146,11 +161,11 @@ jobs:
           bunx --bun clawhub@latest login --token "$CLAWHUB_API_TOKEN" --no-browser
 
       - name: Verify ClawHub authentication
-        if: steps.guard.outputs.already != 'true'
+        if: steps.guard.outputs.publish == 'true'
         run: bunx --bun clawhub@latest whoami
 
       - name: Publish package to ClawHub
-        if: steps.guard.outputs.already != 'true'
+        if: steps.guard.outputs.publish == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
