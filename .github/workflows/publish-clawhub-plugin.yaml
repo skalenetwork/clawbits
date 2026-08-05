@@ -35,7 +35,7 @@ on:
       - 'plugin/**'
 
 permissions:
-  contents: read
+  contents: write # "Publish GitHub Release" creates the plugin-v* tag + release on this repo
 
 concurrency:
   group: publish-clawbits-${{ github.ref_name }}
@@ -143,6 +143,55 @@ jobs:
           mkdir -p ../publish/clawbits-openclaw-plugin
           cp -r dist src docs skills openclaw.plugin.json clawbits.config.example.json package.json ../publish/clawbits-openclaw-plugin/
           echo "publish_path=publish/clawbits-openclaw-plugin" >> "$GITHUB_OUTPUT"
+
+      # The GitHub Release is cut BEFORE the ClawHub publish on purpose: the two
+      # are independent distribution channels, so a registry-side failure (auth,
+      # ownership, outage) still leaves an installable tarball on the release.
+      # Both steps are individually idempotent, so a re-run converges — whichever
+      # of the two already succeeded is skipped.
+      - name: Package release tarball
+        id: tarball
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset="clawbits-openclaw-plugin-${VERSION}.tgz"
+          tar -czf "$asset" -C publish clawbits-openclaw-plugin
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          ls -lh "$asset"
+
+      - name: Publish GitHub Release
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          # Tag + release land on this repo, so the built-in token suffices
+          # (permissions: contents: write above).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ASSET: ${{ steps.tarball.outputs.asset }}
+        run: |
+          set -euo pipefail
+          TAG="plugin-v${VERSION}"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists; skipping creation and re-uploading the asset."
+          else
+            # --latest=false so a plugin release never displaces the repo's own
+            # v* release as GitHub's "Latest"; the `plugin-v*` prefix also keeps
+            # it clear of `v*` (.releaserc.json) and `desktop-v*`.
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --latest=false \
+              --target "${{ github.sha }}" \
+              --title "Clawbits OpenClaw plugin v$VERSION" \
+              --notes "OpenClaw channel plugin bridging an agent to its Clawbits organization.
+
+          Install from ClawHub:
+          \`\`\`
+          openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --acknowledge-clawhub-risk
+          \`\`\`
+          Or install the attached tarball directly: extract it and run \`openclaw plugins install <dir>\`."
+          fi
+          gh release upload "$TAG" "$ASSET" --repo "${{ github.repository }}" --clobber
 
       # clawhub is invoked via `bunx --bun` rather than a global install:
       # the package's bin has a `#!/usr/bin/env node` shebang, so a global
