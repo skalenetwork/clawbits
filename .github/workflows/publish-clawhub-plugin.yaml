@@ -35,7 +35,7 @@ on:
       - 'plugin/**'
 
 permissions:
-  contents: write # "Publish GitHub Release" creates the plugin-v* tag + release on this repo
+  contents: write # "Publish GitHub Release" creates the openclaw-plugin-v* tag + release on this repo
 
 concurrency:
   group: publish-clawbits-${{ github.ref_name }}
@@ -171,13 +171,14 @@ jobs:
           ASSET: ${{ steps.tarball.outputs.asset }}
         run: |
           set -euo pipefail
-          TAG="plugin-v${VERSION}"
+          TAG="openclaw-plugin-v${VERSION}"
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "::notice::Release $TAG already exists; skipping creation and re-uploading the asset."
           else
             # --latest=false so a plugin release never displaces the repo's own
-            # v* release as GitHub's "Latest"; the `plugin-v*` prefix also keeps
-            # it clear of `v*` (.releaserc.json) and `desktop-v*`.
+            # v* release as GitHub's "Latest"; the `openclaw-plugin-v*` prefix
+            # also keeps it clear of `v*` (.releaserc.json), `desktop-v*`, and
+            # `ironclaw-channel-v*`.
             gh release create "$TAG" \
               --repo "${{ github.repository }}" \
               --latest=false \
