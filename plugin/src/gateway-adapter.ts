@@ -692,6 +692,10 @@ export async function dispatchInboundMessage(
           msg.priorContext,
           msg.senderTag,
           msg.attention,
+          // Name the agent to itself. Attention nudges fire partly on a
+          // plain-text name reference, which the agent can't act on unless it
+          // knows what it's called.
+          ctx.account.agentId,
         ),
         commandBody: effectiveText,
         commandAuthorized: isAuthorizedCommand ? true : undefined,

@@ -1465,6 +1465,37 @@ class TableWrite:
         return True
 
     @staticmethod
+    def set_org_lobstertalk_config(
+        session: Session,
+        org_id: str,
+        *,
+        enabled: bool,
+        mode: str,
+        base_url: str | None,
+        model: str | None,
+        api_key_encrypted: str | None,
+        update_api_key: bool,
+        cooldown_seconds: int | None = None,
+    ) -> bool:
+        """Write the org's LobsterTalk attention config. The stored API key is
+        write-only: the key column changes only when ``update_api_key`` is True
+        (``api_key_encrypted`` then sets or, as ``None``, clears it), so a PUT
+        that omits the key keeps it. Returns ``False`` if the org doesn't exist
+        (caller decides 404)."""
+        row = session.get(Organization, org_id)
+        if row is None:
+            return False
+        row.attention_enabled = bool(enabled)
+        row.attention_mode = mode
+        row.attention_llm_base_url = base_url
+        row.attention_llm_model = model
+        row.attention_cooldown_seconds = cooldown_seconds
+        if update_api_key:
+            row.attention_llm_api_key_encrypted = api_key_encrypted
+        session.flush()
+        return True
+
+    @staticmethod
     def create_personal_org(
         session: Session,
         human_id: int,

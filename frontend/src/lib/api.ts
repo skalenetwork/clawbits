@@ -292,7 +292,7 @@ export async function updatePrivacySettings(
 
 export type ConnectorStatus = "connected" | "available" | "coming_soon";
 
-export type Connector = {
+export interface Connector {
   provider: string;
   label: string;
   status: ConnectorStatus;
@@ -302,9 +302,9 @@ export type Connector = {
   display_name: string | null;
   avatar_url: string | null;
   connected_at: string | null;
-};
+}
 
-export type ConnectorsList = { connectors: Connector[] };
+export interface ConnectorsList { connectors: Connector[] }
 
 export type ConnectResult =
   | { status: "connected"; connector: Connector; url?: null }
@@ -522,23 +522,100 @@ export async function deleteReefConnection(orgId: string): Promise<void> {
   if (!res.ok) throw new Error(await res.text());
 }
 
-/** The org's LobsterTalk attention opt-in. Owner-toggled; replaced the old
- *  server-wide CLAWBITS_ATTENTION_ENABLED env flag. */
-export interface OrgAttention {
+/** The org's LobsterTalk attention config. ``mode`` picks the pipeline —
+ *  ``embedding`` (semantic gate only), ``cascade`` (gate pass → LLM confirm),
+ *  ``llm_only`` (no gate: every post goes to the LLM, which fails closed
+ *  when unreachable) or ``all`` (no triage at all: every post is delivered
+ *  and the agent itself decides whether to reply); the LLM fields only matter
+ *  in cascade/llm_only. The API key is write-only: responses carry
+ *  ``api_key_set``, never the key itself. */
+export interface OrgLobstertalkSettings {
   enabled: boolean;
+  mode: "embedding" | "cascade" | "llm_only" | "all";
+  base_url: string | null;
+  model: string | null;
+  api_key_set: boolean;
+  /** Per-(agent, channel) nudge cooldown override in seconds; null inherits
+   *  ``default_cooldown_seconds`` (the server-resolved default). */
+  cooldown_seconds: number | null;
+  default_cooldown_seconds: number;
 }
 
-/** Arm/disarm the org's LobsterTalk attention gate. Owner-only on the server. */
-export async function setOrgAttention(orgId: string, enabled: boolean): Promise<OrgAttention> {
+/** FastAPI's ``{"detail": "..."}``, falling back to the raw body. */
+async function readErrorDetail(res: Response): Promise<string> {
+  const text = await res.text();
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && "detail" in parsed) {
+      const {detail} = parsed;
+      if (typeof detail === "string") return detail;
+    }
+  } catch {
+    // Not JSON — fall through to the raw body.
+  }
+  return text;
+}
+
+export interface SetOrgLobstertalkBody {
+  enabled: boolean;
+  mode: "embedding" | "cascade" | "llm_only" | "all";
+  base_url?: string | null;
+  model?: string | null;
+  /** Omit to keep the stored key unchanged; set to replace it. */
+  api_key?: string;
+  /** Deletes the stored key. Mutually exclusive with `api_key`. */
+  clear_api_key?: boolean;
+  /** Cooldown override in seconds (5–3600); null/omitted inherits the server
+   *  default. Whole-state semantics: omitting on a save clears the override. */
+  cooldown_seconds?: number | null;
+}
+
+export async function getOrgLobstertalk(orgId: string): Promise<OrgLobstertalkSettings> {
   if (!orgId) throw new Error("orgId is required");
-  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/attention`, {
+  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/lobstertalk`, {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<OrgLobstertalkSettings>;
+}
+
+/** Save the org's LobsterTalk config. Owner-only on the server. */
+export async function setOrgLobstertalk(
+  orgId: string,
+  body: SetOrgLobstertalkBody,
+): Promise<OrgLobstertalkSettings> {
+  if (!orgId) throw new Error("orgId is required");
+  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/lobstertalk`, {
     credentials: "include",
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<OrgAttention>;
+  // The endpoint rejects unsafe base URLs (422) and refuses to store a key
+  // with no server secrets key (503) with a human-readable ``detail`` — worth
+  // unwrapping, since it's the whole diagnosis and it lands in a toast.
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<OrgLobstertalkSettings>;
+}
+
+/** One live probe against the org's *stored* LobsterTalk LLM endpoint.
+ *  ``ok=false`` means the check ran and the endpoint failed — ``detail``
+ *  names the stage (guard, auth, model, JSON shape). Owner-only; spends one
+ *  metered call on the org's key. */
+export interface OrgLobstertalkHealth {
+  ok: boolean;
+  detail: string;
+  latency_ms: number;
+}
+
+export async function checkOrgLobstertalkEndpoint(orgId: string): Promise<OrgLobstertalkHealth> {
+  if (!orgId) throw new Error("orgId is required");
+  const res = await fetch(
+    `/api/human/orgs/${encodeURIComponent(orgId)}/lobstertalk/healthcheck`,
+    { credentials: "include", method: "POST" },
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<OrgLobstertalkHealth>;
 }
 
 export type AgentSignupStatus = "pending_approval" | "approved" | "rejected";
@@ -1391,12 +1468,12 @@ export async function searchMessages(
 // ourselves and reuse the cached JSON when the server says "no change".
 // Key = the request URL (channel + paging); we never see the same URL
 // twice for different users in this single-user-per-tab app.
-type MmPostListPayload = {
+interface MmPostListPayload {
   posts: MmChannelPost[];
   total: number;
   limit: number;
   offset: number;
-};
+}
 const postListEtagCache = new Map<string, { etag: string; data: MmPostListPayload }>();
 
 export async function listMmChannelPosts(
@@ -1455,7 +1532,7 @@ export async function listMmPostsAround(
 export interface MmChannelEvent {
   event_id: number;
   channel_id: string;
-  event_type: "member.added" | "member.removed" | string;
+  event_type: string;
   actor_human_id: number | null;
   actor_agent_id: string | null;
   actor_display_name: string | null;
@@ -1532,7 +1609,7 @@ export async function getDevAuthEnabled(): Promise<boolean> {
     const res = await fetch("/api/auth/dev/enabled", { credentials: "include" });
     if (!res.ok) return false;
     const json = (await res.json()) as { enabled: boolean };
-    return Boolean(json.enabled);
+    return json.enabled;
   } catch {
     return false;
   }
@@ -1589,6 +1666,18 @@ export async function setMmChannelPinned(
   return res.json() as Promise<MmPinResponse>;
 }
 
+export interface AgentSettingsResponse {
+  agent_id: string;
+  inter_agent_mode_enabled: boolean;
+  snoozed: boolean;
+  inter_agent_message_limit: number;
+  lobstertalk_enabled: boolean;
+  lobstertalk_ollama_host: string | null;
+  lobstertalk_ollama_model: string | null;
+  lobstertalk_interval_seconds: number;
+  lobstertalk_message_limit: number;
+}
+
 export async function updateAgentSettings(
   orgId: string,
   agentId: string,
@@ -1604,17 +1693,7 @@ export async function updateAgentSettings(
     lobstertalk_interval_seconds?: number;
     lobstertalk_message_limit?: number;
   },
-): Promise<{
-  agent_id: string;
-  inter_agent_mode_enabled: boolean;
-  snoozed: boolean;
-  inter_agent_message_limit: number;
-  lobstertalk_enabled: boolean;
-  lobstertalk_ollama_host: string | null;
-  lobstertalk_ollama_model: string | null;
-  lobstertalk_interval_seconds: number;
-  lobstertalk_message_limit: number;
-}> {
+): Promise<AgentSettingsResponse> {
   const res = await fetch(
     `/api/human/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/settings`,
     {
@@ -1625,7 +1704,7 @@ export async function updateAgentSettings(
     },
   );
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  return res.json() as Promise<AgentSettingsResponse>;
 }
 
 /** Rename an agent (operator-only). Replaces the generated nickname; the
@@ -1661,7 +1740,7 @@ export async function regenerateAgentDescription(
     { credentials: "include", method: "POST" },
   );
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  return res.json() as Promise<{ agent_id: string; description_regen_pending: boolean }>;
 }
 
 /** Manually set an agent's public description (operator or org owner).
@@ -1954,7 +2033,7 @@ export async function createMmChannelPost(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(span),
-    }).catch(() => {});
+    }).catch(() => undefined);
   } catch {
     /* a trace breadcrumb must never break a send */
   }
@@ -2059,7 +2138,7 @@ async function extractError(res: Response): Promise<string> {
   } catch {
     /* not JSON */
   }
-  return text || res.statusText || `${res.status}`;
+  return text || res.statusText || String(res.status);
 }
 
 export async function requestMmFileUpload(
@@ -2197,16 +2276,16 @@ export function putToR2(
     }
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`R2 upload failed: ${xhr.status} ${xhr.statusText}`));
+      else reject(new Error(`R2 upload failed: ${String(xhr.status)} ${xhr.statusText}`));
     };
-    xhr.onerror = () => reject(new Error("R2 upload network error"));
-    xhr.onabort = () => reject(new DOMException("Upload aborted", "AbortError"));
+    xhr.onerror = () => { reject(new Error("R2 upload network error")); };
+    xhr.onabort = () => { reject(new DOMException("Upload aborted", "AbortError")); };
     if (signal) {
       if (signal.aborted) {
         xhr.abort();
         return;
       }
-      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+      signal.addEventListener("abort", () => { xhr.abort(); }, { once: true });
     }
     xhr.send(body);
   });

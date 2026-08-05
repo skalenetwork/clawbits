@@ -356,6 +356,10 @@ export async function dispatchInboundEmail(
     undefined,
     undefined,
     clawbitsSessionId(conversationId),
+    undefined,
+    undefined,
+    undefined,
+    ctx.account.agentId,
   );
 
   // The buffered-block dispatcher can call `deliver` several times for one turn

@@ -2610,6 +2610,7 @@ class ClawBitsServer(FastAPI):
                         channel_id=channel_id,
                         context=attention_ctx,
                         author_agent_id=agent_id,
+                        engine=self._engine,
                     )
                 )
             return response
@@ -3737,6 +3738,7 @@ class ClawBitsServer(FastAPI):
                             channel_id=channel_id,
                             context=attention_ctx,
                             author_agent_id=agent_id,
+                            engine=self._engine,
                         )
                     )
             return response

@@ -1,28 +1,9 @@
 {
   "id": "clawbits",
   "name": "Clawbits Human Channel",
-  "version": "0.14.0",
-  "entry": "./src/index.ts",
-  "extensions": ["./src/index.ts"],
-  "runtimeExtensions": ["./dist/index.js"],
+  "version": "0.15.0",
   "channels": ["clawbits"],
   "skills": ["./skills"],
-  "channel": {
-    "id": "clawbits",
-    "label": "Clawbits",
-    "selectionLabel": "Clawbits (Human Channel)",
-    "detailLabel": "Clawbits",
-    "docsPath": "/channels/clawbits",
-    "docsLabel": "clawbits",
-    "blurb": "Bridge an OpenClaw agent to its organization over Clawbits.",
-    "systemImage": "person.wave.2",
-    "order": 500,
-    "exposure": {
-      "configured": true,
-      "setup": true,
-      "docs": true
-    }
-  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

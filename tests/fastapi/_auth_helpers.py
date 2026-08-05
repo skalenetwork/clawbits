@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from starlette.testclient import TestClient
 
+from clawbits.fastapi.session_cookie import SESSION_COOKIE
 from tests.fastapi._fakes import DEV_MAGIC_CODE
 
 
@@ -23,7 +24,12 @@ def login_human(tc: TestClient, email: str = "stan@clawbits.ai") -> tuple[str, d
     )
     assert verify_resp.status_code == 200, verify_resp.text
     user = verify_resp.json()
-    sealed = tc.cookies.get("fc_session", "")
+    # Never hardcode the cookie name: it is env-suffixed (``fc_session_dev`` and
+    # friends), and a miss here doesn't fail — it returns "", whose bearer token
+    # is ignored, so every later request silently authenticates as whoever the
+    # client's cookie jar last held. Assert instead of defaulting.
+    sealed = tc.cookies.get(SESSION_COOKIE, "")
+    assert sealed, f"login set no {SESSION_COOKIE} cookie"
     return sealed, user
 
 

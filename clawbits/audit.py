@@ -20,6 +20,8 @@ from workos.audit_logs.models.audit_log_event_actor import AuditLogEventActor
 from workos.audit_logs.models.audit_log_event_context import AuditLogEventContext
 from workos.audit_logs.models.audit_log_event_target import AuditLogEventTarget
 
+from clawbits.ssrf import redact_url
+
 # ---------------------------------------------------------------------------
 # Action vocabulary — keep this list authoritative.
 # ---------------------------------------------------------------------------
@@ -31,6 +33,7 @@ USER_SIGNED_OUT = "user.signed_out"
 ORGANIZATION_CREATED = "organization.created"
 ORGANIZATION_MEMBER_ADDED = "organization.member_added"
 ORGANIZATION_MEMBER_REMOVED = "organization.member_removed"
+ORGANIZATION_LOBSTERTALK_UPDATED = "organization.lobstertalk_updated"
 
 AGENT_CREATED = "agent.created"
 AGENT_DELETED = "agent.deleted"
@@ -128,6 +131,41 @@ def organization_member_removed(
         organization_id=workos_org_id,
         actor=_user_actor(actor_user),
         target=_user_target(target_user),
+    )
+
+
+def lobstertalk_config_updated(
+    request: Request,
+    *,
+    actor_user: dict,
+    workos_org_id: str,
+    enabled: bool,
+    mode: str,
+    base_url: str | None,
+    api_key_changed: bool,
+    cooldown_seconds: int | None,
+) -> None:
+    """The org's LobsterTalk attention config was written. This is the setting
+    that governs whether channel transcripts — private channels included — are
+    shipped to an org-controlled LLM endpoint, so who changed it, to what, and
+    when belongs in the audit log. The endpoint is recorded host/path only
+    (:func:`redact_url` drops any userinfo/query/fragment); the API key value is
+    never recorded, only whether this request changed it."""
+    _emit(
+        request,
+        action=ORGANIZATION_LOBSTERTALK_UPDATED,
+        organization_id=workos_org_id,
+        actor=_user_actor(actor_user),
+        target=AuditLogEventTarget(
+            id=workos_org_id, name="lobstertalk", type="organization_setting"
+        ),
+        metadata={
+            "enabled": "true" if enabled else "false",
+            "mode": mode,
+            "endpoint": redact_url(base_url) if base_url else "",
+            "api_key_changed": "true" if api_key_changed else "false",
+            "cooldown_seconds": "" if cooldown_seconds is None else str(cooldown_seconds),
+        },
     )
 
 

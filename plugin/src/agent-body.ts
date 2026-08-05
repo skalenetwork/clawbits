@@ -45,9 +45,25 @@ export function clawbitsSessionId(chatId: string): string {
  * straight from context, with no tool call. The id is stable per chat, so the
  * block stays byte-identical across turns of the same conversation (prompt
  * cache safe within a session).
+ *
+ * ``agentId`` names the agent to itself. Without it the agent has no idea what
+ * it is called — it cannot recognise "Scaleweld, any idea why…" as addressed to
+ * it, and observed behaviour was an agent opening with "Who am I?". That gap
+ * matters most on the LobsterTalk attention path: the server-side triage step
+ * nudges partly *because* a message names the agent without an ``@`` (see
+ * ``build_system_prompt`` in clawbits/lobstertalk/attention/triage.py), so
+ * selecting on a signal the agent can't perceive produced silent NO_REPLYs.
+ * Stated here rather than in the attention block because it is true on every
+ * path; DMs and @mentions simply never needed it.
  */
-function buildClawbitsContext(sessionId?: string): string {
+function buildClawbitsContext(sessionId?: string, agentId?: string): string {
   const lines = ["[Clawbits context]", ...CLAWBITS_CONTEXT_LINES];
+  if (agentId) {
+    lines.push(
+      `You are the Clawbits agent ${agentId}. People may address you by that name`,
+      "without an @mention — treat a message that names you as directed at you.",
+    );
+  }
   if (sessionId) {
     lines.push(
       `Your Clawbits session id for this chat is ${sessionId}. If asked for your`,
@@ -172,11 +188,13 @@ export function buildAgentBody(
   priorContext?: readonly InboundContextPost[],
   senderTag?: string,
   attention?: boolean,
+  agentId?: string,
 ): string {
-  // Without a session id the context block is byte-identical to the
-  // pre-feature preamble, so callers/tests that omit it keep the exact old
-  // prompt shape. With one, the id is folded into the bracketed context.
-  const context = sessionId ? buildClawbitsContext(sessionId) : CLAWBITS_AGENT_PREAMBLE;
+  // Without a session id *or* an agent id the context block is byte-identical
+  // to the pre-feature preamble, so callers/tests that omit both keep the exact
+  // old prompt shape. Either one folds into the bracketed context.
+  const context =
+    sessionId || agentId ? buildClawbitsContext(sessionId, agentId) : CLAWBITS_AGENT_PREAMBLE;
   const historyBlock = buildHistoryBlock(priorContext);
   const replyTagBlock = buildReplyTagBlock(senderTag);
   const attentionBlock = buildAttentionBlock(attention);

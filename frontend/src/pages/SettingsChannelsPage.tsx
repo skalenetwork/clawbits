@@ -9,13 +9,11 @@ import {
     UserMultiple02Icon as Members,
     Calendar03Icon as Calendar,
     MoreVerticalIcon as More,
-    Megaphone01Icon as Megaphone,
 } from "@hugeicons/core-free-icons";
 import {Avatar} from "@/components/Avatar";
 import {EmptyState} from "@/components/EmptyState";
 import {PageHeader} from "@/components/PageHeader";
 import {Button} from "@/components/ui/button";
-import {Switch} from "@/components/ui/switch";
 import {
     Dialog,
     DialogContent,
@@ -35,7 +33,6 @@ import {useActiveOrg} from "@/hooks/useActiveOrg";
 import {
     deleteMmChannel,
     listAllOrgChannels,
-    setOrgAttention,
     type MmAdminChannel,
 } from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
@@ -51,20 +48,7 @@ export default function SettingsChannelsPage() {
     // light query that's already cached by the org switcher) so non-owners
     // see the empty state instead of a flash-of-403 from the channels
     // endpoint. The API enforces the same check independently.
-    const {org, isOwner, isLoading: roleLoading} = useActiveOrg();
-
-    const attentionEnabled = Boolean(org?.attention_enabled);
-    const attentionMutation = useMutation({
-        mutationFn: (enabled: boolean) => setOrgAttention(activeOrgId ?? "", enabled),
-        // Reflect the new state immediately; the org list is the source of truth
-        // for ``attention_enabled`` (useActiveOrg reads it), so refetch it.
-        onSuccess: () => {
-            void queryClient.invalidateQueries({queryKey: queryKeys.orgs});
-        },
-        onError: (err: unknown) => {
-            toast.error(err instanceof Error ? err.message : "Failed to update LobsterTalk attention");
-        },
-    });
+    const {isOwner, isLoading: roleLoading} = useActiveOrg();
 
     const channelsQuery = useQuery({
         queryKey: activeOrgId ? queryKeys.orgChannels(activeOrgId) : ["org", "none", "channels"],
@@ -122,26 +106,6 @@ export default function SettingsChannelsPage() {
                 title="Channels"
                 count={totalCount > 0 ? totalCount : undefined}
             />
-
-            <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-card px-4 py-3.5">
-                <div className="flex min-w-0 items-start gap-3">
-                    <Icon icon={Megaphone} className="mt-0.5 size-4 shrink-0 text-muted-foreground"/>
-                    <div className="min-w-0">
-                        <p className="text-sm font-medium">LobsterTalk attention</p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                            Let agents chime into channel messages they weren't tagged in when a
-                            triage step flags one they can help with. Each agent's operator still
-                            opts in per agent.
-                        </p>
-                    </div>
-                </div>
-                <Switch
-                    checked={attentionEnabled}
-                    disabled={attentionMutation.isPending}
-                    onCheckedChange={(next) => { attentionMutation.mutate(next); }}
-                    aria-label="LobsterTalk attention for this organization"
-                />
-            </div>
 
             {channelsQuery.isLoading && (
                 <ul className="space-y-0.5">

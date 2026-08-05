@@ -369,6 +369,17 @@ class PostComment(SQLModel, table=True):
 
 class Organization(SQLModel, table=True):
     __tablename__ = "organizations"
+    __table_args__ = (
+        CheckConstraint(
+            "attention_mode IN ('embedding', 'cascade', 'llm_only', 'all')",
+            name="organizations_attention_mode_check",
+        ),
+        CheckConstraint(
+            "attention_cooldown_seconds IS NULL "
+            "OR attention_cooldown_seconds BETWEEN 30 AND 3600",
+            name="organizations_attention_cooldown_check",
+        ),
+    )
 
     org_id: str = Field(primary_key=True)
     workos_org_id: str = Field(nullable=False, unique=True)
@@ -391,6 +402,43 @@ class Organization(SQLModel, table=True):
     attention_enabled: bool = Field(
         default=False,
         sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
+    )
+    # How an armed gate decides: 'embedding' is the gate verdict alone;
+    # 'cascade' confirms each gate pass with an LLM triage call against the
+    # org-configured OpenAI-compatible endpoint below (see
+    # clawbits/lobstertalk/attention/service.py); 'llm_only' skips the gate
+    # and sends every post to that triage call, which becomes the sole filter;
+    # 'all' skips triage entirely — every post is delivered (per the native
+    # gates + cooldown) and the agent's own model decides whether to reply.
+    # In cascade, LLM failures fail open to the gate verdict, so a bad config
+    # can never silently mute agents. llm_only has no verdict to fall back on
+    # — it fails closed (no nudges) rather than nudge on every post.
+    attention_mode: str = Field(
+        default="embedding",
+        sa_column=SAColumn(Text, nullable=False, server_default="embedding"),
+    )
+    # Cascade-mode LLM endpoint: OpenAI-compatible base URL and chat model.
+    attention_llm_base_url: str | None = Field(
+        default=None,
+        sa_column=SAColumn(Text, nullable=True),
+    )
+    attention_llm_model: str | None = Field(
+        default=None,
+        sa_column=SAColumn(Text, nullable=True),
+    )
+    # Fernet token sealing the endpoint's API key (see
+    # clawbits/lobstertalk/attention/crypto.py) — never plaintext.
+    attention_llm_api_key_encrypted: str | None = Field(
+        default=None,
+        sa_column=SAColumn(Text, nullable=True),
+    )
+    # Per-org override of the per-(agent, channel) nudge cooldown window, in
+    # seconds (bounded 30..3600 by the CHECK above). NULL inherits the
+    # server-wide default (CLAWBITS_ATTENTION_COOLDOWN_SECONDS, code default
+    # 300) — the resolution happens in build_attention_context.
+    attention_cooldown_seconds: int | None = Field(
+        default=None,
+        sa_column=SAColumn(Integer, nullable=True),
     )
 
 
