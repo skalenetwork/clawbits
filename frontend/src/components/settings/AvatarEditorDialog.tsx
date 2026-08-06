@@ -49,7 +49,7 @@ function validateLocally(file: File): string | null {
         return "Use a PNG, JPEG, WebP, or GIF.";
     }
     if (file.size > MAX_MB * 1024 * 1024) {
-        return `File is too big — max ${String(MAX_MB)} MB.`;
+        return `File is too big - max ${String(MAX_MB)} MB.`;
     }
     return null;
 }
@@ -175,7 +175,7 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
             // Defensive — onCropComplete fires synchronously after the
             // Cropper mounts, so this would only happen if the user
             // managed to click Save before the layout pass.
-            toast.error("Couldn't read crop — try again");
+            toast.error("Couldn't read crop - try again");
             return;
         }
         try {
@@ -200,7 +200,7 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
                     <DialogDescription>
                         {file
                             ? "Drag to reposition, pinch or scroll to zoom."
-                            : "Upload an image — you can crop and zoom before saving."}
+                            : "Upload an image - you can crop and zoom before saving."}
                     </DialogDescription>
                 </DialogHeader>
 
@@ -353,7 +353,7 @@ function CropperPanel({
         <div className="space-y-3">
             {/* Fixed-height cropping viewport. react-easy-crop measures
                 its parent so we MUST give the container an explicit size
-                — without ``relative`` + height it renders 0×0 and silently
+                - without ``relative`` + height it renders 0×0 and silently
                 shows nothing. */}
             <div className="relative h-64 overflow-hidden rounded-xl bg-black/90">
                 <Cropper

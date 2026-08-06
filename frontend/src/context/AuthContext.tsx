@@ -88,7 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           const orgId = await getPersonalOrgId();
           if (!cancelled) setPersonalOrgId(orgId);
-        } catch { /* personal org may not exist yet — ignore */ }
+        } catch { /* personal org may not exist yet - ignore */ }
       } finally {
         if (!cancelled) setLoading(false);
       }

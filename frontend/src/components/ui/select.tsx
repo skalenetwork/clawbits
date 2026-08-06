@@ -88,7 +88,11 @@ function SelectItem({
       data-slot="select-item"
       className={cn(
         "relative flex w-full cursor-pointer items-center gap-2 rounded-lg py-2 pl-3 pr-8 text-sm",
-        "outline-none select-none data-highlighted:bg-(--sb-hover) data-disabled:pointer-events-none data-disabled:opacity-50",
+        // bg-accent is the shared menu-focus wash (see --accent in index.css), so
+        // a highlighted row here matches dropdown-menu and context-menu exactly.
+        // Was bg-(--sb-hover), one rung lighter, which made selects read fainter
+        // than every other menu in the app.
+        "outline-none select-none data-highlighted:bg-accent data-disabled:pointer-events-none data-disabled:opacity-50",
         className,
       )}
       {...props}

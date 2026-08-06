@@ -1,0 +1,72 @@
+{
+  "geo": {
+    "lockup": {
+      "vbW": 4082,
+      "vbH": 672,
+      "inkW": 4070.6,
+      "inkH": 671.58
+    },
+    "mark": {
+      "w": 759.02,
+      "h": 671.58
+    },
+    "word": {
+      "x": 809.6,
+      "y": 9,
+      "w": 3261,
+      "h": 653.8
+    },
+    "X": 142.56,
+    "markGap": 50.6
+  },
+  "files": [
+    {
+      "file": "clawbits-long.svg",
+      "bytes": 4744
+    },
+    {
+      "file": "clawbits-long-inverted.svg",
+      "bytes": 4762
+    },
+    {
+      "file": "clawbits-long-current.svg",
+      "bytes": 4807
+    },
+    {
+      "file": "clawbits-short.svg",
+      "bytes": 1673
+    },
+    {
+      "file": "clawbits-short-inverted.svg",
+      "bytes": 1675
+    },
+    {
+      "file": "clawbits-short-current.svg",
+      "bytes": 1680
+    },
+    {
+      "file": "clawbits-stacked.svg",
+      "bytes": 4893
+    },
+    {
+      "file": "clawbits-stacked-inverted.svg",
+      "bytes": 4893
+    },
+    {
+      "file": "clawbits-mark-square.svg",
+      "bytes": 1943
+    },
+    {
+      "file": "clawbits-mark-square-inverted.svg",
+      "bytes": 1943
+    },
+    {
+      "file": "brand.json",
+      "bytes": 3298
+    },
+    {
+      "file": "clawbits-brand-kit.zip",
+      "bytes": 37679
+    }
+  ]
+}

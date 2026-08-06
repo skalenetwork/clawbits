@@ -62,7 +62,7 @@ export function ListRow({
         <div className="flex shrink-0 items-center py-2.5">{leading}</div>
       )}
       {/* The divider sits on the content+trailing wrapper, not the leading
-          slot, so it's inset — it begins at the text and leaves the avatar
+          slot, so it's inset - it begins at the text and leaves the avatar
           column clear (Telegram style). */}
       <div
         className={cn(

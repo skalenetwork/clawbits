@@ -1512,7 +1512,7 @@ export default function ChannelPage() {
       return;
     }
     if (!windowPosts.some((p) => p.post_id === postId)) {
-      toast.info("Couldn't find that message — it may have been deleted.");
+      toast.info("Couldn't find that message - it may have been deleted.");
       return;
     }
     // The endpoint over-scans then trims to ``radius`` per side, so a full
@@ -2147,7 +2147,7 @@ export default function ChannelPage() {
           composer) but above the card background, thanks to the column's
           ``isolate``; pointer-events-none keeps scrolling unobstructed. */}
       {/* Channel header — avatar + name on the left, pins + members on the
-          right — portaled into the unified header bar (see PageHeader) so it
+          right - portaled into the unified header bar (see PageHeader) so it
           lines up with the sidebar header like every other page. */}
       <PageHeader
         leading={
@@ -2261,7 +2261,7 @@ export default function ChannelPage() {
           everything from anchor-on-prepend to load-older triggering.
           Clicking empty space focuses the composer. ``min-h-0`` is
           required so the flex child can shrink below the natural
-          content height — otherwise the scroll container expands to
+          content height - otherwise the scroll container expands to
           fit every row and the page itself becomes the scroller. */}
       <div
         onClick={(e) => {

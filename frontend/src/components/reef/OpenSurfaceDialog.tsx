@@ -52,7 +52,7 @@ export function OpenSurfaceDialog({
   useEffect(() => {
     if (detailQuery.error instanceof ReefAuthError) {
       onAuthReject();
-      toast.error("Reef rejected the token — re-enter it");
+      toast.error("Reef rejected the token - re-enter it");
       onClose();
     }
   }, [detailQuery.error, onAuthReject, onClose]);

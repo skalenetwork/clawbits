@@ -53,7 +53,7 @@ export class ReefAuthError extends Error {
 
 /** Reef couldn't be reached at all (tunnel down, wrong URL, CORS, offline). */
 export class ReefUnreachableError extends Error {
-  constructor(message = "Can't reach Reef — is the tunnel up and the URL correct?") {
+  constructor(message = "Can't reach Reef - is the tunnel up and the URL correct?") {
     super(message)
     this.name = "ReefUnreachableError"
   }

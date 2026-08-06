@@ -50,7 +50,7 @@ export interface RankJumpBackInInput {
 const W_FRECENCY = 0.45;
 const W_RECENCY = 0.25;
 // Attention boosts, added on top of the 0..0.70 base.
-const B_DRAFT = 0.6; // you were mid-reply — the strongest "resume" signal
+const B_DRAFT = 0.6; // you were mid-reply - the strongest "resume" signal
 const B_INCOMING_UNREAD = 0.35; // it's your turn (someone replied)
 const B_AGENT = 0.15; // …and the replier was an agent (core to this product)
 const B_DM = 0.1; // …in a direct message (higher-signal than a busy channel)

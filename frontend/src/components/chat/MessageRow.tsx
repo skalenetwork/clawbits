@@ -83,7 +83,7 @@ function PostAvatar({
   size?: number;
   presence?: PresenceMap;
   /** Only the latest post picks up "typing/generating" animation from
-      presence — otherwise every old message from the same agent would
+      presence - otherwise every old message from the same agent would
       animate whenever they're currently active. */
   isLatest?: boolean;
 }) {
@@ -1411,7 +1411,7 @@ export function MessageRow({
           </span>
         )}
         {/* Own bubbles paint on a fixed accent fill, so their body must read as
-            white in BOTH themes — override MessageMarkdown's ``text-foreground``
+            white in BOTH themes - override MessageMarkdown's ``text-foreground``
             root and the ``text-mention`` tint (both otherwise flip dark in light
             mode and wash out on the accent). Scoped to the body group so the
             colored author name and the meta line keep their own colors. */}
@@ -1476,7 +1476,7 @@ export function MessageRow({
           {hasMedia && (
             <div className="flex w-80 max-w-full flex-col">
               {/* Attachment-only: the media IS the message, so carry the group
-                  sender name above it and the meta row below — there's no bubble
+                  sender name above it and the meta row below - there's no bubble
                   to hold them. Captioned media keeps both in the bubble instead. */}
               {!hasBubbleBody && showName && (
                 <span className="mb-0.5 truncate text-[13px] font-semibold text-muted-foreground">

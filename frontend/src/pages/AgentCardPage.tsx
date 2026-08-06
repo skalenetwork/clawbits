@@ -229,7 +229,7 @@ export default function AgentCardPage() {
                 />
               )}
               {/* Hidden for runtimes without a cron reconciler (hermes/
-                  ironclaw) — unless stuck rows still exist to clean up. */}
+                  ironclaw) - unless stuck rows still exist to clean up. */}
               {isOperator &&
                 (supportsAutomations(profile.agent_type) || automationsCount > 0) && (
                 <CardNavButton

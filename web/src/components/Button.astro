@@ -1,0 +1,99 @@
+---
+/**
+ * The three button styles on the site:
+ *
+ * primary - near-black fill, cream label. The default CTA on light ground.
+ * inverse - cream fill, near-black label. The CTA on the dark shader
+ *           canvases, where a black button would vanish.
+ * ghost   - raised light fill, no border (the "Learn more" tier).
+ *
+ * Corners are the APP's radius (--radius-btn = rounded-lg = 10px), not full
+ * pills - owner call, so the landing's buttons feel like the product's. No
+ * gradients, no glow, no shadow.
+ */
+
+interface Props {
+  href: string;
+  variant?: "primary" | "inverse" | "ghost";
+  size?: "sm" | "md";
+  external?: boolean;
+  class?: string;
+}
+
+const {
+  href,
+  variant = "primary",
+  size = "md",
+  external = false,
+  class: className = "",
+} = Astro.props;
+
+const rel = external ? "noopener noreferrer" : undefined;
+const target = external ? "_blank" : undefined;
+---
+
+<a href={href} rel={rel} target={target} class:list={["btn", variant, size, className]}>
+  <slot />
+</a>
+
+<style>
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: var(--radius-btn);
+    font-weight: 500;
+    white-space: nowrap;
+    text-decoration: none;
+    transition:
+      background-color 180ms var(--ease-out-expo),
+      color 180ms var(--ease-out-expo),
+      opacity 180ms var(--ease-out-expo),
+      scale 120ms var(--ease-out-expo);
+  }
+
+  /* Slight press-in, like the product's buttons. */
+  .btn:active {
+    scale: 0.97;
+  }
+
+  .sm {
+    height: 2rem;
+    padding-inline: 0.875rem;
+    font-size: 0.8125rem;
+  }
+
+  .md {
+    height: 2.5rem;
+    padding-inline: 1.25rem;
+    font-size: 1rem;
+  }
+
+  .primary {
+    background: var(--color-paper);
+    color: var(--color-ink);
+  }
+
+  .primary:hover {
+    background: #2a2c2f;
+  }
+
+  .inverse {
+    background: var(--color-ink);
+    color: var(--color-paper);
+  }
+
+  .inverse:hover {
+    background: #e9e4d8;
+  }
+
+  .ghost {
+    background: var(--color-ink-raised);
+    color: var(--color-paper);
+  }
+
+  .ghost:hover {
+    background: #edebe8;
+  }
+</style>

@@ -159,7 +159,7 @@ export function GeneratingIndicator({
       <div className="animate-activity-in">
         <StatusLine spinner={spinner} showSpinner label={label} />
         {/* Footers sit BELOW the status line (end of the block): captured
-            reasoning first, then tools — the order they happen in. Each is a
+            reasoning first, then tools - the order they happen in. Each is a
             quiet, self-hiding disclosure line. */}
         {thinkingSteps && <ThinkingTimelineCard steps={thinkingSteps} />}
         {hasTools && toolSteps && <ToolTimelineCard steps={toolSteps} />}

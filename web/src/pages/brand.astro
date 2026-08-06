@@ -1,0 +1,1166 @@
+---
+/**
+ * /brand - the brand kit.
+ *
+ * The concept in one line: the brand documented using the brand, with the
+ * construction lines left in.
+ *
+ * THE GOVERNING RULE, and the only thing standing between this page and a
+ * decorative dotted-line theme: every dashed line on this page measures
+ * something real, and every number printed beside one comes from
+ * src/generated/brand-manifest.json, which scripts/build-brand-assets.mjs
+ * writes by measuring the actual files. A dashed rule used as a divider, a
+ * dot leader in a table, or a dimension line under a number nobody measured
+ * are all forbidden here. If you cannot say what a line measures, delete it.
+ *
+ * The unit is X: the dot on the "i", 142.56 master units. Clear space, the
+ * icon padding and the stacked lockup's gap are all 1X, which is why those
+ * three things visibly agree.
+ *
+ * CSP NOTE: style-src carries hashes and NOT 'unsafe-inline', so inline
+ * style="" attributes are dropped in production (there are zero in the built
+ * site). Every diagram label is therefore positioned by a real class below,
+ * never by an inline custom property.
+ */
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import Base from "../layouts/Base.astro";
+import Button from "../components/Button.astro";
+import HugeIcon from "../components/HugeIcon.astro";
+import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
+import { SITE } from "../config";
+import manifest from "../generated/brand-manifest.json";
+/* Raw imports, not fs reads: `import.meta.url` in an Astro page resolves to the
+ * compiled chunk at build time, not to this source file, so a relative fs read
+ * breaks the moment the page is prerendered. Vite's ?raw inlines the file at
+ * build time and is the only thing that survives both dev and build. */
+import longSvg from "../../public/brand/clawbits-long.svg?raw";
+import shortSvg from "../../public/brand/clawbits-short.svg?raw";
+import stackedSvg from "../../public/brand/clawbits-stacked.svg?raw";
+import squareSvg from "../../public/brand/clawbits-mark-square.svg?raw";
+
+const { geo, files } = manifest;
+const bytes = Object.fromEntries(files.map((f) => [f.file, f.bytes]));
+const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`;
+const kitBytes = bytes["clawbits-brand-kit.zip"];
+
+/* The masters, inlined once as <symbol>s. The lockup appears a dozen times on
+ * this page; at 4.6 KB of path data each, <use> is the difference between a
+ * 30 KB page and a 300 KB one. fill="currentColor" so a cell can colour the
+ * mark by setting `color`, which is also exactly what the -current.svg
+ * variants do for anyone inlining them. */
+const paths = (svg: string) => [...svg.matchAll(/<path d="([^"]+)"/g)].map((m) => m[1]);
+const LOCKUP = paths(longSvg);
+const MARK = paths(shortSvg);
+
+/* The stacked and icon builds are not just path lists: their artwork sits
+ * inside transformed <g>s that carry the scaling and centring. So they are
+ * inlined whole rather than path-by-path, with their fills swapped for
+ * currentColor. Without this the tier grid rendered the horizontal lockup in
+ * both the Stacked and Icon rows - it showed the wrong file for half the
+ * tiers it was documenting. */
+const inner = (svg: string) =>
+  svg
+    .replace(/^[\s\S]*?<svg[^>]*>/, "")
+    .replace(/<\/svg>\s*$/, "")
+    .replace(/fill="#[0-9a-fA-F]{6}"/g, 'fill="currentColor"');
+const vb = (svg: string) => svg.match(/viewBox="([^"]+)"/)?.[1] ?? "";
+
+const STACKED = { inner: inner(stackedSvg), vb: vb(stackedSvg) };
+const SQUARE = { inner: inner(squareSvg), vb: vb(squareSvg) };
+
+/** Which symbol and viewBox each tier draws with. */
+const ART = {
+  lockup: { id: "cb-lockup", vb: `0 0 ${geo.lockup.vbW} ${geo.lockup.vbH}` },
+  mark: { id: "cb-mark", vb: "0 0 760 760" },
+  stacked: { id: "cb-stacked", vb: STACKED.vb },
+  icon: { id: "cb-square", vb: SQUARE.vb },
+} as const;
+
+/* Grouped by the job the colour does, not listed flat. The group heading
+ * carries the role, which is what let the per-swatch role line go - nine
+ * swatches each explaining themselves was most of the text in this section. */
+const colours = [
+  {
+    n: "Surfaces",
+    items: [
+      { n: "Paper", hex: "#f2efe8" },
+      { n: "Raised", hex: "#f8f7f2" },
+      { n: "Canvas", hex: "#141311" },
+    ],
+  },
+  {
+    n: "Ink",
+    note: "Text on dark is #f7f5f1, never #ffffff - pure white on our warm black reads as a cold edge.",
+    items: [
+      { n: "Ink", hex: "#0c0d0e" },
+      { n: "Muted", hex: "#6f7176" },
+      { n: "Faint", hex: "#9d9fa5" },
+      { n: "On canvas", hex: "#f7f5f1" },
+    ],
+  },
+  {
+    n: "Accent",
+    note: "Links, eyebrows and focus. The mark never wears it.",
+    items: [
+      { n: "Signal", hex: "#c0394f" },
+      { n: "Signal deep", hex: "#a82840" },
+    ],
+  },
+  {
+    n: "Candy",
+    note: "A moving field on dark canvases. A surface the mark sits on, never a fill it is made of.",
+    items: [
+      { n: "Strawberry", hex: "#e8425c" },
+      { n: "Grape", hex: "#8f5bd6" },
+      { n: "Blue", hex: "#4a8fe0" },
+      { n: "Orange", hex: "#f09a3f" },
+      { n: "Rust", hex: "#b03927" },
+    ],
+  },
+];
+
+const tiers = [
+  {
+    name: "Lockup",
+    file: "clawbits-long",
+    when: "The default. Use it wherever horizontal space allows.",
+    kind: "lockup" as const,
+  },
+  {
+    name: "Mark",
+    file: "clawbits-short",
+    when: "Only where the name is already established, or in a square slot below ~48 px.",
+    kind: "mark" as const,
+  },
+  {
+    name: "Stacked",
+    file: "clawbits-stacked",
+    when: "Narrow, square-ish slots: sponsor grids, splash screens, ad units.",
+    kind: "stacked" as const,
+  },
+  {
+    name: "Icon",
+    file: "clawbits-mark-square",
+    when: "Avatars, favicons, app icons. Carries its own padding - use it instead of cropping the mark.",
+    kind: "icon" as const,
+  },
+];
+
+const misuse = [
+  { t: "Don't stretch it", c: "squash" },
+  { t: "Don't recolour it", c: "recolour" },
+  { t: "Don't rotate it", c: "rotate" },
+  { t: "Don't add effects", c: "effect" },
+  { t: "Don't crowd it", c: "crowd" },
+  { t: "Don't retype the name", c: "retype" },
+  { t: "Don't rebuild the lockup", c: "respace" },
+  { t: "Don't put it on a busy ground", c: "busy" },
+];
+
+const readme = `<picture>
+  <source media="(prefers-color-scheme: dark)"
+          srcset="https://clawbits.ai/brand/clawbits-long-inverted.svg">
+  <img alt="Clawbits" width="220"
+       src="https://clawbits.ai/brand/clawbits-long.svg">
+</picture>`;
+
+const boilerplate = SITE.description;
+---
+
+<Base
+  title="Brand"
+  description="The Clawbits logo, colours, type and the rules that go with them. Download the kit."
+  ogImage="/og/og-clawbits-brand.png"
+  nav="overlay"
+>
+  {/* One hidden copy of each master. Everything below is a <use> of these. */}
+  <svg width="0" height="0" aria-hidden="true" class="defs">
+    <symbol id="cb-lockup" viewBox={`0 0 ${geo.lockup.vbW} ${geo.lockup.vbH}`}>
+      {LOCKUP.map((d) => <path d={d} fill="currentColor" />)}
+    </symbol>
+    <symbol id="cb-mark" viewBox="0 0 760 760">
+      {MARK.map((d) => <path d={d} fill="currentColor" />)}
+    </symbol>
+    <symbol id="cb-stacked" viewBox={STACKED.vb} set:html={STACKED.inner} />
+    <symbol id="cb-square" viewBox={SQUARE.vb} set:html={SQUARE.inner} />
+  </svg>
+
+  {/* ── Sheet 00 · Cover ─────────────────────────────────────────────────
+      The lockup on the hardest ground we own. If the mark survives the candy
+      shader it survives anything, so the cover is a proof rather than a
+      decoration - and it puts the file above every rule, which is what most
+      visitors came for. */}
+  <div class="frame">
+    <section class="canvas">
+      <div class="shader" aria-hidden="true">
+        <ShaderBackdrop client:only="react" />
+      </div>
+
+      <div class="cover">
+        <h1 class="display display-hero">Clawbits brand</h1>
+        <p class="lede">
+          The mark, the colours, the type, and the rules that go with them.
+        </p>
+        <div class="cta">
+          <Button href="/brand/clawbits-brand-kit.zip" variant="inverse">Download the kit</Button>
+        </div>
+        <p class="meta">{files.length - 1} files &middot; SVG &middot; {kb(kitBytes)}</p>
+      </div>
+    </section>
+  </div>
+
+  <div class="rails">
+    {/* ── Sheet 01 · Naming ──────────────────────────────────────────────
+        First because it is the most violated rule in practice and the
+        cheapest to state. Text before artwork. */}
+    <section class="block">
+      <h2 class="sec-title">Naming</h2>
+      <p class="say">
+        Always <b>Clawbits</b> - one word, capital C.
+      </p>
+      <ul class="names">
+        <li class="ok"><span>Clawbits</span></li>
+        <li class="no"><span>ClawBits</span></li>
+        <li class="no"><span>Claw Bits</span></li>
+        <li class="no"><span>CLAWBITS</span></li>
+        <li class="no"><span>clawbits</span></li>
+      </ul>
+      <p class="note">
+        Lowercase only inside identifiers: <code>clawbits.ai</code>, <code>@clawbitsai</code>.
+        The wordmark is drawn lowercase - that is the drawing, not the spelling.
+      </p>
+    </section>
+
+    {/* ── Sheet 02 · The marks ───────────────────────────────────────────
+        Labelled by the situation that triggers them, not by filename, and
+        each proved on both grounds as a pair of cells sharing one edge. The
+        layout teaches the light/dark rule so no caption has to. */}
+    <section class="block">
+      <h2 class="sec-title">The marks</h2>
+      <p class="say">Four tiers. Pick by the space you are in, not by the file you want.</p>
+      <p class="marks-rule">
+        Whichever you use, leave clear space around it - at least a fifth of its height on every
+        side. Nothing sets into that margin.
+      </p>
+
+      {tiers.map((t) => (
+        <div class="tier">
+          <div class="tier-h">
+            <h3>{t.name}</h3>
+            <p>{t.when}</p>
+          </div>
+          <div class="pair">
+            <div class="cell light">
+              <svg class={`art art-${t.kind}`} viewBox={ART[t.kind].vb} aria-hidden="true">
+                <use href={`#${ART[t.kind].id}`} />
+              </svg>
+            </div>
+            <div class="cell dark">
+              <svg class={`art art-${t.kind}`} viewBox={ART[t.kind].vb} aria-hidden="true">
+                <use href={`#${ART[t.kind].id}`} />
+              </svg>
+            </div>
+          </div>
+          <div class="acts">
+            <a href={`/brand/${t.file}.svg`} download>
+              <HugeIcon icon={Download01Icon} size={14} />On light
+            </a>
+            <a href={`/brand/${t.file}-inverted.svg`} download>
+              <HugeIcon icon={Download01Icon} size={14} />On dark
+            </a>
+            {(t.kind === "lockup" || t.kind === "mark") && (
+              <button type="button" class="copy" data-src={`/brand/${t.file}-current.svg`}>
+                <HugeIcon icon={Copy01Icon} size={14} /><span class="lbl">Copy inline SVG</span>
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+
+    </section>
+
+
+
+    {/* ── Sheet 05 · Misuse ──────────────────────────────────────────────
+        Staged live from the real artwork rather than pre-baked as images, so
+        every violation is exactly the file it claims to be, mistreated. */}
+    <section class="block">
+      <h2 class="sec-title">Misuse</h2>
+      <p class="say">Don't do these.</p>
+      <div class="bad">
+        {misuse.map((m) => (
+          <figure class={`b b-${m.c}`}>
+            <div class="b-art">
+              <svg class="lock" viewBox={`0 0 ${geo.lockup.vbW} ${geo.lockup.vbH}`} aria-hidden="true"><use href="#cb-lockup" /></svg>
+            </div>
+            <figcaption>{m.t}</figcaption>
+          </figure>
+        ))}
+      </div>
+    </section>
+
+    {/* ── Colour ─────────────────────────────────────────────────────────*/}
+    <section class="block">
+      <h2 class="sec-title">Colour</h2>
+      <p class="say">Warm paper, near-black ink, one accent. Click to copy.</p>
+
+      {colours.map((g) => (
+        <div class="cgroup">
+          <h3 class="cg-n">{g.n}</h3>
+          <div class="sw">
+            {g.items.map((c) => (
+              <button type="button" class="s" data-copy={c.hex} aria-label={`Copy ${c.hex}`}>
+                {/* The feedback lives in a sibling overlay, never in this
+                    button's text - see .s[data-done] .chip::after. */}
+                <span class={`chip chip-${c.hex.slice(1)}`}></span>
+                <span class="s-n">{c.n}</span>
+                <span class="s-h">{c.hex}</span>
+              </button>
+            ))}
+          </div>
+          {g.note && <p class="cg-note">{g.note}</p>}
+        </div>
+      ))}
+    </section>
+
+    {/* ── Sheet 08 · Type ────────────────────────────────────────────────*/}
+    <section class="block">
+      <h2 class="sec-title">Type</h2>
+      <div class="type">
+        <p class="spec-a">Aa</p>
+        <div>
+          <h3 class="sub">Geist</h3>
+          <p class="note">
+            Everything is set in Geist. Open source under the SIL Open Font License, so you can
+            use it in your own materials about Clawbits.
+          </p>
+
+        </div>
+      </div>
+    </section>
+
+
+    {/* ── Sheet 09 · Embedding ───────────────────────────────────────────
+        The highest-utility thing on the page. Most people who use this kit
+        are putting the mark in a README, and a plain <img> of the black file
+        is invisible on GitHub's dark theme. */}
+    <section class="block">
+      <h2 class="sec-title">Embedding</h2>
+      <p class="say">
+        In a README, use <code>&lt;picture&gt;</code> so the mark follows the reader's theme - a
+        bare <code>&lt;img&gt;</code> of the black file disappears on dark.
+      </p>
+      <div class="code">
+        <pre><code>{readme}</code></pre>
+        <button type="button" class="copy copy-code" data-copy={readme}>
+          <HugeIcon icon={Copy01Icon} size={14} /><span class="lbl">Copy</span>
+        </button>
+      </div>
+      <p class="note">
+        <a href="/brand/brand.json"><code>/brand/brand.json</code></a> carries the same rules as
+        structured data, so an agent can fetch the right file without reading this page.
+      </p>
+    </section>
+
+    {/* ── Sheet 10 · Voice ───────────────────────────────────────────────*/}
+    <section class="block">
+      <h2 class="sec-title">Voice</h2>
+      <p class="say">Copy these rather than paraphrasing.</p>
+      <div class="quote">
+        <p class="tag">Agents don't plug in here.<br />They belong here.</p>
+        <button type="button" class="copy" data-copy="Agents don't plug in here. They belong here.">
+          <HugeIcon icon={Copy01Icon} size={14} /><span class="lbl">Copy</span>
+        </button>
+      </div>
+      <div class="quote quote-b">
+        <p class="boiler">{boilerplate}</p>
+        <button type="button" class="copy" data-copy={boilerplate}>
+          <HugeIcon icon={Copy01Icon} size={14} /><span class="lbl">Copy</span>
+        </button>
+      </div>
+    </section>
+
+    {/* ── Files ──────────────────────────────────────────────────────────
+        Sizes read off disk by the build script. The page cannot print a byte
+        count that disagrees with the file it links to. */}
+    <section class="block">
+      <h2 class="sec-title">Files</h2>
+      <table class="mani">
+        <tbody>
+          {files.filter((f) => f.file !== "clawbits-brand-kit.zip").map((f) => (
+            <tr>
+              <td>
+                <a href={`/brand/${f.file}`} download>
+                  <HugeIcon icon={Download01Icon} size={14} />{f.file}
+                </a>
+              </td>
+              <td class="n">{kb(f.bytes)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div class="cta cta-l">
+        <Button href="/brand/clawbits-brand-kit.zip">Download all &middot; {kb(kitBytes)}</Button>
+      </div>
+    </section>
+
+    {/* ── Using them ─────────────────────────────────────────────────────
+        Deliberately short: Clawbits is MIT and self-hostable, and a page of
+        trademark prose would say less than these three sentences. */}
+    <section class="block">
+      <h2 class="sec-title">Using them</h2>
+      <p class="say">Don't alter these files in any way.</p>
+      <p class="note">
+        No recolouring, stretching, rotating, or adding effects. Use them to refer to Clawbits,
+        not to name your own product. The code is MIT; these files are not the code.
+        OpenClaw, IronClaw and Hermes appear elsewhere on this site because Clawbits runs them -
+        those marks belong to their projects and follow their rules, not these.
+      </p>
+      <p class="note">
+        Anything this page does not cover: <a href={`mailto:brand@${SITE.domain}`}>brand@{SITE.domain}</a>.
+      </p>
+    </section>
+  </div>
+
+  {/* The page's closing rule, full-bleed like the homepage's. */}
+  <div class="outro"></div>
+</Base>
+
+<script>
+  /* Copy buttons. Two kinds: data-copy carries a literal string, data-src
+   * fetches a file from our own origin (connect-src 'self') and copies its
+   * text. Both fall back to doing nothing visible rather than throwing. */
+  const flash = (b: HTMLElement, msg: string) => {
+    /* data-done is always set - it is the only feedback the colour swatches
+       get, and CSS draws it as an overlay on the chip.
+       The text swap happens ONLY when the button carries a .lbl span. Writing
+       to b.textContent instead would delete every child the button has: the
+       copy glyph on the text buttons, and the chip plus both labels on a
+       swatch, which is exactly how a single click used to destroy a swatch. */
+    b.setAttribute("data-done", "");
+    const label = b.querySelector<HTMLElement>(".lbl");
+    const was = label?.textContent;
+    if (label) label.textContent = msg;
+    setTimeout(() => {
+      if (label) label.textContent = was ?? "";
+      b.removeAttribute("data-done");
+    }, 1400);
+  };
+
+  document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(b.dataset.copy ?? "");
+        flash(b, "Copied");
+      } catch {
+        /* clipboard blocked - leave the label alone */
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-src]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      try {
+        const svg = await (await fetch(b.dataset.src!)).text();
+        await navigator.clipboard.writeText(svg.trim());
+        flash(b, "Copied");
+      } catch {
+        /* offline or clipboard blocked */
+      }
+    });
+  });
+</script>
+
+<style>
+  .defs {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+  }
+
+  /* ── Cover ──────────────────────────────────────────────────────────── */
+  /* No bottom padding, exactly as the homepage does it: the canvas's bottom
+   * edge is where the rails begin, so their side lines touch the shader
+   * instead of starting half a rem below it. */
+  .frame {
+    padding: 1rem 1rem 0;
+  }
+
+  .canvas {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, rgb(0 0 0) 7%, var(--color-ink));
+    border-radius: var(--radius-canvas);
+    background: var(--color-canvas);
+    view-timeline-name: --hero-view;
+  }
+
+  .shader {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
+      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
+      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
+      radial-gradient(30% 40% at 68% 78%, rgb(240 154 63 / 0.25), transparent 70%),
+      var(--color-canvas);
+  }
+
+  .shader::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      75% 60% at 50% 38%,
+      rgb(20 19 17 / 0.5),
+      transparent 72%
+    );
+  }
+
+  .cover {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 1.25rem;
+    color: var(--color-canvas-text);
+    padding: clamp(4.5rem, 11vw, 8rem) clamp(1.25rem, 5vw, 4rem) clamp(3.5rem, 7vw, 5.5rem);
+    padding-top: calc(clamp(4.5rem, 11vw, 8rem) + 3rem);
+  }
+
+  /* Shared by every inline lockup below. No colour of its own: each context
+   * sets `color` and the artwork inherits it through currentColor. */
+  .lock {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .cover h1 {
+    margin: 0;
+  }
+
+  .lede {
+    margin: 0;
+    max-width: 34rem;
+    color: color-mix(in srgb, var(--color-canvas-text) 74%, transparent);
+    text-wrap: pretty;
+  }
+
+  .cta {
+    margin-top: 0.25rem;
+  }
+
+  .meta {
+    margin: 0;
+    font-size: 0.75rem;
+    color: color-mix(in srgb, var(--color-canvas-text) 52%, transparent);
+  }
+
+  /* ── Rails ──────────────────────────────────────────────────────────── */
+  /* 70.5rem, the same measure the homepage rails use, so /brand lines up with
+   * every other page rather than running its own narrower column. */
+  .rails {
+    max-width: 70.5rem;
+    margin-inline: auto;
+    border-inline: 1px solid var(--color-line);
+  }
+
+  /* The closing rule, full-bleed like the homepage's: it spans the viewport
+   * while every section above stays on the 70.5rem measure. */
+  .outro {
+    border-top: 1px solid var(--color-line);
+  }
+
+  @media (max-width: 48rem) {
+    .rails {
+      border-inline: 0;
+    }
+  }
+
+  .block {
+    padding: clamp(2.75rem, 4.5vw, 4rem) clamp(1.25rem, 4vw, 3rem);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .rails .block:last-child {
+    border-bottom: 0;
+  }
+
+  .sec-title {
+    font-family: var(--font-display);
+    font-size: 0.9375rem;
+    font-weight: 550;
+    color: var(--color-faint);
+    margin: 0 0 1.25rem;
+  }
+
+  .say {
+    margin: 0 0 1.5rem;
+    font-size: 1.125rem;
+    max-width: 46ch;
+    text-wrap: pretty;
+  }
+
+  .note {
+    margin: 1rem 0 0;
+    color: var(--color-muted);
+    font-size: 0.9375rem;
+    max-width: 62ch;
+    text-wrap: pretty;
+  }
+
+  .cap {
+    margin: 0.85rem 0 0;
+    color: var(--color-muted);
+    font-size: 0.875rem;
+    max-width: 62ch;
+  }
+
+  .sub {
+    margin: 2rem 0 0.5rem;
+    font-size: 1.0625rem;
+    font-weight: 550;
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+  }
+
+  /* ── Naming ─────────────────────────────────────────────────────────── */
+  .names {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .names li {
+    position: relative;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-btn);
+    padding: 0.45rem 0.8rem;
+    font-size: 0.9375rem;
+    overflow: hidden;
+  }
+
+  .names .ok {
+    border-color: color-mix(in srgb, var(--color-paper) 22%, transparent);
+    font-weight: 550;
+  }
+
+  .names .no span {
+    color: var(--color-faint);
+  }
+
+  /* The strike is the one red mark on the page: it means rejected, nothing
+   * else on this page is allowed to use it. */
+  .names .no::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      to bottom right,
+      transparent calc(50% - 0.5px),
+      var(--color-signal) calc(50% - 0.5px),
+      var(--color-signal) calc(50% + 0.5px),
+      transparent calc(50% + 0.5px)
+    );
+    opacity: 0.7;
+  }
+
+  /* ── Marks ──────────────────────────────────────────────────────────── */
+  .marks-rule {
+    margin: -0.75rem 0 1.75rem;
+    color: var(--color-muted);
+    font-size: 0.9375rem;
+    max-width: 58ch;
+    text-wrap: pretty;
+  }
+
+  .tier {
+    margin-bottom: 2.5rem;
+  }
+
+  .tier:last-of-type {
+    margin-bottom: 0;
+  }
+
+  .tier-h h3 {
+    margin: 0;
+    font-size: 1.0625rem;
+    font-weight: 550;
+  }
+
+  .tier-h p {
+    margin: 0.2rem 0 0.85rem;
+    color: var(--color-muted);
+    font-size: 0.9375rem;
+    max-width: 56ch;
+  }
+
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-panel);
+    /* Required, not cosmetic: without it the dark cell's background paints
+       square into the rounded corner. */
+    overflow: hidden;
+  }
+
+  .cell {
+    display: grid;
+    place-items: center;
+    padding: clamp(1.5rem, 4vw, 2.5rem);
+    min-height: 7.5rem;
+  }
+
+  .cell + .cell {
+    border-left: 1px solid var(--color-line);
+  }
+
+  .light {
+    background: var(--color-ink-raised);
+    color: var(--color-paper);
+  }
+
+  .dark {
+    background: var(--color-canvas);
+    color: var(--color-canvas-text);
+  }
+
+  .art {
+    display: block;
+    height: auto;
+    width: 100%;
+  }
+
+  .art-lockup {
+    max-width: 13rem;
+  }
+
+  /* Narrower than the horizontal lockup: the stacked build is 1.63:1 tall, so
+   * matching the lockup's width would make it tower over every other cell. */
+  .art-stacked {
+    max-width: 7rem;
+  }
+
+  .art-mark,
+  .art-icon {
+    max-width: 3.25rem;
+  }
+
+  .acts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.1rem;
+    margin-top: 0.7rem;
+    font-size: 0.875rem;
+  }
+
+  .acts a,
+  .copy {
+    color: var(--color-signal);
+    text-decoration: none;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  /* Every link that hands over a file carries the same glyph, so "this
+   * downloads something" is readable before the label is. */
+  .acts a,
+  .mani a,
+  .copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .acts a svg,
+  .mani a svg,
+  .copy svg {
+    flex: none;
+  }
+
+  .acts a:hover,
+  .copy:hover {
+    color: var(--color-signal-deep);
+    text-decoration: underline;
+  }
+
+  .copy[data-done] {
+    color: var(--color-muted);
+    text-decoration: none;
+  }
+
+  /* ── Misuse ─────────────────────────────────────────────────────────── */
+  /* Fixed 4-up, not auto-fit: there are exactly eight of these and auto-fit
+   * resolved to five columns at desktop width, leaving two dead cells showing
+   * the grid's own background. Eight divides cleanly by 4 and by 2. */
+  .bad {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--color-line);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-panel);
+    overflow: hidden;
+  }
+
+  @media (max-width: 48rem) {
+    .bad {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  .b {
+    margin: 0;
+    background: var(--color-ink-raised);
+    padding: 1.1rem 0.9rem 0.75rem;
+  }
+
+  .b-art {
+    height: 3.25rem;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+
+  .b-art .lock {
+    width: 6.5rem;
+    color: var(--color-paper);
+  }
+
+  .b figcaption {
+    margin-top: 0.65rem;
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+    text-align: center;
+  }
+
+  .b-squash .lock {
+    transform: scaleX(0.55);
+  }
+
+  .b-recolour .lock {
+    color: var(--color-signal);
+  }
+
+  .b-rotate .lock {
+    transform: rotate(-9deg);
+  }
+
+  .b-effect .lock {
+    filter: drop-shadow(0 3px 3px rgb(0 0 0 / 0.45));
+  }
+
+  .b-crowd {
+    position: relative;
+  }
+
+  .b-crowd .b-art::after {
+    content: "";
+    position: absolute;
+    inset: 0.55rem 0.3rem;
+    border: 1px solid var(--color-paper);
+    opacity: 0.5;
+  }
+
+  .b-retype .b-art::before {
+    content: "clawbits";
+    font-size: 1.35rem;
+    letter-spacing: -0.02em;
+  }
+
+  .b-retype .lock {
+    display: none;
+  }
+
+  .b-respace .lock {
+    transform: scaleX(1.35);
+  }
+
+  .b-busy .b-art {
+    background:
+      repeating-linear-gradient(45deg, #8f5bd6 0 6px, transparent 6px 12px),
+      linear-gradient(120deg, #e8425c, #4a8fe0);
+  }
+
+  /* ── The big one ────────────────────────────────────────────────────── */
+  /* ── Colour ─────────────────────────────────────────────────────────── */
+  /* The swatch IS the colour: a large field with its label underneath, rather
+   * than a 2rem chip fighting three lines of text inside a bordered cell. That
+   * earlier version had three problems at once - the pale values (#f2efe8,
+   * #f8f7f2, #f7f5f1) were nearly invisible at chip size, the role text wrapped
+   * to different line counts so no two rows were the same height, and a
+   * partly-filled last row left dead cells. Gaps instead of shared borders
+   * fixes the last one; aspect-ratio fixes the second; size fixes the first. */
+  .cgroup + .cgroup {
+    margin-top: 2.25rem;
+  }
+
+  .cg-n {
+    margin: 0 0 0.75rem;
+    font-size: 0.9375rem;
+    font-weight: 550;
+  }
+
+  .cg-note {
+    margin: 0.85rem 0 0;
+    font-size: 0.875rem;
+    color: var(--color-muted);
+    max-width: 58ch;
+    text-wrap: pretty;
+  }
+
+  .sw {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+    gap: 0.9rem 0.75rem;
+  }
+
+  .s {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    background: none;
+    border: 0;
+    padding: 0;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .chip {
+    position: relative;
+    display: block;
+    width: 100%;
+    aspect-ratio: 8 / 5;
+    border-radius: var(--radius-btn);
+    /* An inset hairline rather than a border, so the pale swatches still read
+     * as an object on the warm ground without shifting their own colour. */
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.14);
+  }
+
+  .s:hover .chip {
+    box-shadow:
+      inset 0 0 0 1px rgb(0 0 0 / 0.14),
+      0 0 0 3px var(--color-ink-raised),
+      0 0 0 4px var(--color-line);
+  }
+
+  /* Copy feedback for the swatches.
+   *
+   * This used to run through the shared flash(), which does
+   * `label.textContent = "Copied"` on the button when it finds no .lbl - and a
+   * swatch has none. That wiped the chip and both labels out of the DOM, then
+   * restored them as one flat string, so a single click permanently destroyed
+   * the swatch. The state now lives entirely in an attribute and is drawn by
+   * this overlay: nothing in the button is ever rewritten. */
+  .s[data-done] .chip::after {
+    content: "Copied";
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--color-canvas) 84%, transparent);
+    color: var(--color-canvas-text);
+    font-size: 0.75rem;
+    font-weight: 550;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .s[data-done] .chip::after {
+      animation: chip-copied 140ms var(--ease-out-expo) both;
+    }
+  }
+
+  @keyframes chip-copied {
+    from {
+      opacity: 0;
+    }
+  }
+
+  .s-n {
+    font-size: 0.875rem;
+    font-weight: 550;
+    line-height: 1.2;
+  }
+
+  .s-h {
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+    line-height: 1.2;
+  }
+
+
+  .chip-f2efe8 { background: #f2efe8; }
+  .chip-f8f7f2 { background: #f8f7f2; }
+  .chip-0c0d0e { background: #0c0d0e; }
+  .chip-6f7176 { background: #6f7176; }
+  .chip-9d9fa5 { background: #9d9fa5; }
+  .chip-c0394f { background: #c0394f; }
+  .chip-a82840 { background: #a82840; }
+  .chip-141311 { background: #141311; }
+  .chip-f7f5f1 { background: #f7f5f1; }
+  .chip-e8425c { background: #e8425c; }
+  .chip-8f5bd6 { background: #8f5bd6; }
+  .chip-4a8fe0 { background: #4a8fe0; }
+  .chip-f09a3f { background: #f09a3f; }
+  .chip-b03927 { background: #b03927; }
+
+  /* ── Type ─────────────────────────────────────────────────────────────
+   * The specimen is sized to the copy beside it rather than to a fixed step:
+   * `align-items: stretch` makes the two columns share a height, and the
+   * specimen fills it with `height: 100%` + `align-content: center`. Its
+   * font-size then only has to be big enough not to be the constraint - the
+   * text column is what actually sets the row height. */
+  .type {
+    display: flex;
+    gap: 2rem;
+    align-items: stretch;
+  }
+
+  .type > div {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .spec-a {
+    margin: 0;
+    flex: none;
+    display: grid;
+    align-content: center;
+    height: 100%;
+    font-size: clamp(5.5rem, 15vw, 9.5rem);
+    line-height: 0.78;
+    font-weight: 400;
+    letter-spacing: -0.03em;
+  }
+
+  @media (max-width: 34rem) {
+    .type {
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+  }
+
+  /* ── Code ───────────────────────────────────────────────────────────── */
+  .code {
+    position: relative;
+    background: var(--color-ink-raised);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-panel);
+    overflow-x: auto;
+  }
+
+  .code pre {
+    margin: 0;
+    padding: 1rem 1.1rem;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+  }
+
+  .copy-code {
+    position: absolute;
+    top: 0.55rem;
+    right: 0.7rem;
+    font-size: 0.75rem;
+  }
+
+  /* ── Voice ──────────────────────────────────────────────────────────── */
+  .quote {
+    border: 1px solid var(--color-line);
+    padding: 1.4rem 1.5rem 1.1rem;
+  }
+
+  .quote:first-of-type {
+    border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  }
+
+  .quote:last-of-type {
+    border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  }
+
+  .quote + .quote {
+    border-top: 0;
+  }
+
+  .tag {
+    margin: 0;
+    font-size: clamp(1.35rem, 3.4vw, 1.9rem);
+    font-weight: 450;
+    line-height: 1.12;
+    letter-spacing: -0.01em;
+  }
+
+  .boiler {
+    margin: 0;
+    color: var(--color-muted);
+    max-width: 62ch;
+    text-wrap: pretty;
+  }
+
+  .quote .copy {
+    margin-top: 0.85rem;
+    font-size: 0.8125rem;
+  }
+
+  /* ── Files ──────────────────────────────────────────────────────────── */
+  .mani {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+  }
+
+  .mani td {
+    padding: 0.45rem 0;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .mani tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .mani a {
+    font-size: 0.8125rem;
+    color: var(--color-signal);
+    text-decoration: none;
+  }
+
+  .mani a:hover {
+    text-decoration: underline;
+  }
+
+  .mani .n {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.75rem;
+    color: var(--color-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cta-l {
+    margin-top: 1.5rem;
+  }
+
+  .say b,
+  .note b {
+    font-weight: 550;
+    color: var(--color-paper);
+  }
+</style>

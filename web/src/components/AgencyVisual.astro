@@ -1,0 +1,642 @@
+---
+import { Alert02Icon, DoNotTouch02Icon, HashtagIcon } from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+
+/**
+ * The "Agency" endowment card: an agent reading a channel it was not tagged
+ * in, and mostly deciding to stay out of it.
+ *
+ * Grounded in clawbits/lobstertalk/attention/gate.py, which is more visual than
+ * it sounds: every channel message is embedded once and scored against TWO
+ * competing routes - `needs_attention` (questions, blockers, decisions) and a
+ * `resolved_or_social` decoy (acks, resolutions, chit-chat). Whichever wins
+ * above threshold decides, and "a message that routes here (or clears no
+ * route's threshold) is dropped without a nudge". So the honest picture is a
+ * channel being read message by message, where the usual outcome is silence -
+ * which is why five of the eight bubbles here resolve to nothing.
+ *
+ * Every judged line is VERBATIM from the gate's own route utterances: the
+ * quiet ones from RESOLVED_SOCIAL_UTTERANCES, the one that wakes it from
+ * NEEDS_ATTENTION_UTTERANCES. No invented copy.
+ *
+ * Deliberately narrow, per attention/service.py: this only ever runs in a
+ * CHANNEL (`channel_type == "direct"` returns None - DMs are never touched),
+ * and only when both the org flag and the agent's own `lobstertalk_enabled`
+ * are on. So the card shows a channel, never a DM.
+ *
+ * Bubble anatomy is the app's, via AppDemo: ink-5.5% fill, 16px radius with
+ * the 8px bottom-left tail, scaled down here. scout answers - the same agent
+ * that owns the automation two cards over and mails atlas in the first one.
+ *
+ * Motion: ONE 15s loop, CSS only, held at 0% until PlayOnView marks it. The
+ * stream is bottom-anchored, so messages arrive from below and push the older
+ * ones up under the crop - the opposite direction to the Mailbox card. Each
+ * arrival is then visibly READ: an accent sweep crosses the bubble while a
+ * dot pulses beside it, and only once that finishes does the verdict land. The
+ * gate runs on the message, so the verdict can never arrive with it. Seam and
+ * timing match the sibling cards so all four read as one system.
+ *
+ * CSP NOTE: no style attributes anywhere - per-row cues are nth-of-type
+ * classes in the stylesheet. The production build drops inline styles.
+ */
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = "" } = Astro.props;
+
+const CHANNEL = "engineering";
+
+const REPLY = {
+  author: "scout",
+  avatar: "/avatars/agent-3.svg",
+  text: "on it - checking the CI logs",
+};
+
+interface Judged {
+  text: string;
+  avatar: string;
+  /** True when `needs_attention` won and the agent was nudged. */
+  wake?: boolean;
+}
+
+/**
+ * The channel as it already reads. Long enough to fill the tallest column: the
+ * stream is bottom-anchored and the card's height swings from ~125px of stream
+ * on the narrowest card to ~330px on the widest, so a short one opens a gap
+ * above the messages. Everything above the crop is free.
+ */
+const SETTLED: Judged[] = [
+  { text: "sounds good to me", avatar: "/avatars/human-2.png" },
+  { text: "nice, appreciate it", avatar: "/avatars/human-1.png" },
+  { text: "ok cool", avatar: "/avatars/human-3.png" },
+  { text: "will do", avatar: "/avatars/human-4.png" },
+  { text: "thanks, that worked!", avatar: "/avatars/human-2.png" },
+];
+
+/** What arrives during the cycle: two more dropped, then the one that lands. */
+const ARRIVING: Judged[] = [
+  { text: "good morning everyone", avatar: "/avatars/human-1.png" },
+  { text: "see you tomorrow", avatar: "/avatars/human-4.png" },
+  { text: "we're blocked on this", avatar: "/avatars/human-3.png", wake: true },
+];
+
+const ALL = [...SETTLED, ...ARRIVING];
+---
+
+<div class:list={["cbox", className]} data-play-on-view aria-hidden="true">
+  <div class="cpanel">
+    <div class="chead">
+      <span class="cic" set:html={ico(HashtagIcon)} />
+      <span class="cname">{CHANNEL}</span>
+      {/* Lobstertalk is opt-in, and `lobstertalk_enabled` is literally a UI
+          toggle on the agent - so the card says so, and says it is on. */}
+      <span class="cmark">
+        Lobstertalk
+        <span class="cswitch"><span class="cknob" /></span>
+      </span>
+    </div>
+
+    <div class="cstream">
+      {
+        ALL.map((m) => (
+          <div class:list={["cmsg", { wake: m.wake }]}>
+            <img
+              class="cav"
+              src={m.avatar}
+              alt=""
+              width="128"
+              height="128"
+              loading="lazy"
+            />
+            <div class="ccol">
+              <div class="cline">
+                <span class="cbub">{m.text}</span>
+                {/* One status slot on the row's right edge: the dot pulses
+                    WHILE the gate reads, then the verdict glyph replaces it.
+                    Matches LobstertalkVisual, which is the same feature at a
+                    size where the route names would fit - here they never did,
+                    and as a second line under every bubble they cost the card
+                    a third of its height. */}
+                <span class="cstatus">
+                  <span class="cscan" />
+                  <span class="cverdict" set:html={ico(m.wake ? Alert02Icon : DoNotTouch02Icon)} />
+                </span>
+              </div>
+            </div>
+          </div>
+        ))
+      }
+    </div>
+
+    {/* The nudge landing: the agent posts, with nobody having tagged it. */}
+    <div class="creply">
+      <img
+        class="cav av-agent"
+        src={REPLY.avatar}
+        alt=""
+        width="128"
+        height="128"
+        loading="lazy"
+      />
+      <div class="ccol">
+        <div class="cauthor">{REPLY.author}</div>
+        <span class="cbub cbub-agent">{REPLY.text}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── The card box: same geometry as the .pastel cards it replaces, and the
+   * same glass treatment as its siblings, over the grape tint. ── */
+  .cbox {
+    /* Excluded from scroll anchoring, along with its subtree.
+     *
+     * These visuals change the height of their own children on a loop. When
+     * the box is scrolled PART WAY past the top of the viewport, Chrome picks
+     * an anchor node inside it, sees that node move as the stack grows, and
+     * "corrects" by scrolling the page - measured at 192px of drift per cycle
+     * with the box top between roughly -60px and -160px. Nothing here is
+     * content a reader is tracking, so nothing here should ever be an anchor. */
+    overflow-anchor: none;
+    position: relative;
+    aspect-ratio: 4 / 5;
+    border-radius: 1rem;
+    overflow: hidden;
+    background: linear-gradient(150deg, #f2ecfd, #ded0f4);
+
+    /* Real app tokens (frontend/src/index.css, sRGB-converted). */
+    /* ── Shared card tokens ──────────────────────────────────────────────
+     * One value per role across all four endowment cards, chosen to match the
+     * real app (frontend/src/index.css, mirrored in AppDemo.astro). Change
+     * these together or the row stops reading as one system.
+     * ────────────────────────────────────────────────────────────────── */
+    --ink: #1e1e1e;
+    --mut: #5e5a52;
+    /* Secondary text. A colour, not an opacity - opacity over a tinted panel
+     * drifts toward the card's hue and each card drifted differently. */
+    --mut-2: rgb(94 90 82 / 0.85);
+    --line: rgb(212 205 191 / 0.7);
+    --chip: rgb(30 30 30 / 0.055);
+    --fill: #dbd7cc;
+    /* The tier above the panel: what a list, a well or a control sits on. The
+     * panel itself is translucent, so this is white rather than a grey - it
+     * lifts content OUT of the card tint instead of restaining it. */
+    --raise: rgb(255 255 255 / 0.72);
+    /* Run/diff outcomes, shared so green means one thing on this page. */
+    --ok: #047857;
+    --ok-fill: rgb(16 185 129 / 0.9);
+    --bad: #b91c1c;
+    --bad-fill: rgb(239 68 68 / 0.8);
+    /* The gate's one accent. --mention, deliberately: "this needs you"
+     * is exactly what a mention means. */
+    --wake: #3f6fbd;
+    --wake-bg: rgb(84 134 212 / 0.2);
+    --bub: rgb(30 30 30 / 0.055);
+
+    font-family: var(--ff-app);
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    text-align: left;
+  }
+
+  @media (max-width: 30rem) {
+    .cbox {
+      aspect-ratio: 16 / 10;
+    }
+  }
+
+  .cpanel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: inherit;
+    background: rgb(247 245 240 / 0.52);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    backdrop-filter: blur(28px) saturate(150%);
+    overflow: hidden;
+    /* The rim AppDemo gives the window: without it the panel has no edge and
+     * the card reads as a tinted field rather than a surface. */
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.55);
+    --pad: 20.5px;
+  }
+
+  /* ── Header: the channel, and the thing that is listening to it ── */
+
+  .chead {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    padding: 17px var(--pad) 10px;
+  }
+
+  .cic {
+    display: inline-flex;
+    flex-shrink: 0;
+    width: 12px;
+    height: 12px;
+    color: var(--mut);
+  }
+
+  .cic :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .cname {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  /* Neutral pill, accent switch: with a control inside it, the tag reads as a
+   * setting rather than a badge - and it leaves the accent to mean one thing
+   * on this card, which is the message that won. */
+  .cmark {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    padding: 2.5px 4px 2.5px 8px;
+    border-radius: 999px;
+    background: var(--chip);
+    color: var(--mut);
+    font-size: 10px;
+    font-weight: 500;
+  }
+
+  /* iOS switch, on. Track and knob are the only two parts; the knob sitting
+   * right IS the state, so it needs no label at this size. */
+  .cswitch {
+    position: relative;
+    width: 20px;
+    height: 12px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    /* iOS system green - a switch that is on reads as on, and it stays out of
+     * the way of --wake, which on this card means one thing only. */
+    background: #34c759;
+  }
+
+  .cknob {
+    position: absolute;
+    top: 1.5px;
+    right: 1.5px;
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 1px 1.5px rgb(0 0 0 / 0.28);
+  }
+
+  /* ── The stream ──────────────────────────────────────────────────────────
+   * Bottom-anchored: messages arrive from below and push the older ones up
+   * under the crop, so the newest judgement is always the visible one. */
+  .cstream {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+    /* The crop is a fade, not a guillotine - a hard cut through a line of
+     * text reads as a clipping bug rather than as more content above. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+    padding-inline: var(--pad);
+  }
+
+  /* Fixed height and NO vertical padding, so the arrivals collapse to a true
+   * zero - a border-box element cannot be shorter than its own block padding. */
+  /* Height stays 50px with the verdict gone from the flow. This card lives in
+   * a fixed 4/5 box, so shorter rows would not shrink it - they would only
+   * open empty space above the stream at the 2-up breakpoint, where the card
+   * is nearly twice as tall. `center` is what spends the freed space as row
+   * spacing instead of leaving the bubble stranded at the top. */
+  .cmsg {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+    height: 50px;
+    margin-bottom: 6px;
+    overflow: hidden;
+  }
+
+  /* Species silhouettes (lib/avatarShapes.ts): people round, agents round with
+   * the machined bottom-left tail. */
+  .cav {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    display: block;
+    object-fit: cover;
+    background: var(--fill);
+    border-radius: 999px;
+  }
+
+  .av-agent {
+    border-bottom-left-radius: 5px;
+  }
+
+  .ccol {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .cline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* App bubble anatomy (AppDemo): ink-5.5% fill, 16px radius with the 8px
+   * bottom-left tail, scaled down. Shrink-to-fit, so a two-word ack reads as
+   * a small bubble and the page gets its rhythm from the message lengths. */
+  .cbub {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 5px 9px;
+    border-radius: 12px;
+    border-bottom-left-radius: 5px;
+    background: var(--bub);
+    font-size: 12px;
+    line-height: 18px;
+    color: rgb(30 30 30 / 0.6);
+  }
+
+  /* The one that won: the app's mention tint, and full-strength ink. */
+  .wake .cbub {
+    background: var(--wake-bg);
+    color: var(--ink);
+    font-weight: 500;
+  }
+
+  /* The reading sweep - the gate embedding and scoring this message. Painted
+   * over the bubble, clipped by it, and only ever run for the arrivals. */
+  .cbub::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      100deg,
+      transparent 34%,
+      rgb(84 134 212 / 0.3) 50%,
+      transparent 66%
+    );
+    translate: -110% 0;
+    opacity: 0;
+  }
+
+  /* ── The status slot ─────────────────────────────────────────────────────
+   * Pinned to the row's right edge. One cell, two stacked states that never
+   * coexist: the dot while the gate reads, then the glyph for what it decided.
+   * `margin-left: auto` is what pushes it off the bubble - the bubble itself
+   * stays shrink-to-fit. */
+  .cstatus {
+    margin-left: auto;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+  }
+
+  .cscan,
+  .cverdict {
+    grid-area: 1 / 1;
+  }
+
+  /* The dot beside a message being read. */
+  .cscan {
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--wake);
+    opacity: 0;
+  }
+
+  /* The verdict. Not a tick for the quiet case - a tick would read as "an
+   * agent handled it", and the whole point is that nothing happened. */
+  .cverdict {
+    display: grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    color: var(--mut-2);
+    opacity: 0.75;
+  }
+
+  .cverdict :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .wake .cverdict {
+    color: var(--wake);
+    opacity: 1;
+  }
+
+  /* ── The reply ── */
+
+  .creply {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    flex-shrink: 0;
+    height: 60px;
+    padding: 9px var(--pad) 0;
+    overflow: hidden;
+    /* Inset divider. A rule bled to the panel edge cuts the card in two; an
+     * inset one separates the regions inside it. Drawn as a background rather
+     * than a border because only a background can be inset horizontally. */
+    background-image: linear-gradient(var(--line), var(--line));
+    background-repeat: no-repeat;
+    background-size: calc(100% - var(--pad) * 2) 1px;
+    background-position: var(--pad) 0;
+  }
+
+  .cauthor {
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 14px;
+    color: var(--mut);
+  }
+
+  .cbub-agent {
+    margin-top: 2px;
+    color: var(--ink);
+  }
+
+  .creply .cav {
+    margin-top: 18px;
+  }
+
+  /* ── The 15s loop ────────────────────────────────────────────────────────
+   * Three messages arrive at 18 / 34 / 50% of the cycle, each opening its own
+   * height so the channel above is pushed up under the crop. Each is then
+   * visibly read: the sweep crosses its bubble over ~800ms while the dot
+   * pulses, and the verdict lands only once that finishes - the gate runs ON
+   * the message, so the two can never be simultaneous. Two route to the decoy
+   * and are dropped; the third wins, takes the accent, and at 64% the agent
+   * posts, which is the only thing anyone in the channel would actually see.
+   *
+   * The seam matches the sibling cards exactly: dissolve at 86-88.5%, collapse
+   * what the cycle added at 89.5% while invisible, and fade back in at
+   * 94-96.8% before the wrap, so 100% and 0% are the same frame. The channel
+   * it lands in never collapses, so the card is never seen empty.
+   *
+   * Everything is settled by default, so reduced motion - and the moment
+   * before PlayOnView marks the card - both show the reply already posted.
+   * ────────────────────────────────────────────────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    .cmsg:nth-of-type(n + 6) {
+      max-height: 0;
+      margin-bottom: 0;
+    }
+
+    .cmsg:nth-of-type(n + 6) .cverdict {
+      opacity: 0;
+    }
+
+    .creply {
+      max-height: 0;
+      opacity: 0;
+      translate: 0 8px;
+    }
+
+    .play .cmsg { animation: chan 15s ease infinite; }
+
+    .play .cmsg:nth-of-type(6) { animation: m1 15s ease infinite; }
+    .play .cmsg:nth-of-type(7) { animation: m2 15s ease infinite; }
+    .play .cmsg:nth-of-type(8) { animation: m3 15s ease infinite; }
+
+    .play .cmsg:nth-of-type(6) .cbub::after { animation: sweep1 15s linear infinite; }
+    .play .cmsg:nth-of-type(7) .cbub::after { animation: sweep2 15s linear infinite; }
+    .play .cmsg:nth-of-type(8) .cbub::after { animation: sweep3 15s linear infinite; }
+
+    .play .cmsg:nth-of-type(6) .cscan { animation: scan1 15s ease infinite; }
+    .play .cmsg:nth-of-type(7) .cscan { animation: scan2 15s ease infinite; }
+    .play .cmsg:nth-of-type(8) .cscan { animation: scan3 15s ease infinite; }
+
+    .play .cmsg:nth-of-type(6) .cverdict { animation: v1 15s ease infinite; }
+    .play .cmsg:nth-of-type(7) .cverdict { animation: v2 15s ease infinite; }
+    .play .cmsg:nth-of-type(8) .cverdict { animation: v3 15s ease infinite; }
+
+    .play .chead { animation: chan 15s ease infinite; }
+    .play .creply { animation: post 15s ease infinite; }
+  }
+
+  /* The channel it arrives into: never collapses, only dissolves for the seam
+   * and comes straight back before the wrap. */
+  @keyframes chan {
+    0%, 86% { opacity: 1; }
+    88.5%, 94% { opacity: 0; }
+    96.8%, 100% { opacity: 1; }
+  }
+
+  @keyframes m1 {
+    0%, 18% { max-height: 0; margin-bottom: 0; opacity: 0; }
+    21%, 86% { max-height: 50px; margin-bottom: 6px; opacity: 1; }
+    88.5% { max-height: 50px; margin-bottom: 6px; opacity: 0; }
+    89.5%, 100% { max-height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  @keyframes m2 {
+    0%, 34% { max-height: 0; margin-bottom: 0; opacity: 0; }
+    37%, 86% { max-height: 50px; margin-bottom: 6px; opacity: 1; }
+    88.5% { max-height: 50px; margin-bottom: 6px; opacity: 0; }
+    89.5%, 100% { max-height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  @keyframes m3 {
+    0%, 50% { max-height: 0; margin-bottom: 0; opacity: 0; }
+    53%, 86% { max-height: 50px; margin-bottom: 6px; opacity: 1; }
+    88.5% { max-height: 50px; margin-bottom: 6px; opacity: 0; }
+    89.5%, 100% { max-height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  /* The read: one pass of the accent across the bubble, ~800ms. */
+  @keyframes sweep1 {
+    0%, 21% { translate: -110% 0; opacity: 0; }
+    21.5% { translate: -110% 0; opacity: 1; }
+    26.5% { translate: 110% 0; opacity: 1; }
+    27%, 100% { translate: 110% 0; opacity: 0; }
+  }
+
+  @keyframes sweep2 {
+    0%, 37% { translate: -110% 0; opacity: 0; }
+    37.5% { translate: -110% 0; opacity: 1; }
+    42.5% { translate: 110% 0; opacity: 1; }
+    43%, 100% { translate: 110% 0; opacity: 0; }
+  }
+
+  @keyframes sweep3 {
+    0%, 53% { translate: -110% 0; opacity: 0; }
+    53.5% { translate: -110% 0; opacity: 1; }
+    58.5% { translate: 110% 0; opacity: 1; }
+    59%, 100% { translate: 110% 0; opacity: 0; }
+  }
+
+  /* The dot: present for exactly as long as the read takes. */
+  @keyframes scan1 {
+    0%, 21% { opacity: 0; }
+    22%, 23.5% { opacity: 1; }
+    25% { opacity: 0.3; }
+    26.5% { opacity: 1; }
+    27%, 100% { opacity: 0; }
+  }
+
+  @keyframes scan2 {
+    0%, 37% { opacity: 0; }
+    38%, 39.5% { opacity: 1; }
+    41% { opacity: 0.3; }
+    42.5% { opacity: 1; }
+    43%, 100% { opacity: 0; }
+  }
+
+  @keyframes scan3 {
+    0%, 53% { opacity: 0; }
+    54%, 55.5% { opacity: 1; }
+    57% { opacity: 0.3; }
+    58.5% { opacity: 1; }
+    59%, 100% { opacity: 0; }
+  }
+
+  /* Each verdict lands only once its message has been read. */
+  @keyframes v1 {
+    0%, 27% { opacity: 0; }
+    30%, 100% { opacity: 1; }
+  }
+
+  @keyframes v2 {
+    0%, 43% { opacity: 0; }
+    46%, 100% { opacity: 1; }
+  }
+
+  @keyframes v3 {
+    0%, 59% { opacity: 0; }
+    62%, 100% { opacity: 1; }
+  }
+
+  /* The agent posts. Takes its height from the stream above rather than
+   * holding it empty all cycle. */
+  @keyframes post {
+    0%, 64% { max-height: 0; opacity: 0; translate: 0 8px; }
+    67%, 86% { max-height: 60px; opacity: 1; translate: 0 0; }
+    88.5% { max-height: 60px; opacity: 0; translate: 0 8px; }
+    89.5%, 100% { max-height: 0; opacity: 0; translate: 0 8px; }
+  }
+</style>

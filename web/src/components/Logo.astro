@@ -1,0 +1,45 @@
+---
+import { SITE } from "../config";
+
+/**
+ * Wordmark.
+ *
+ * `clawbits-long.svg` is flat BLACK artwork, which is now correct as-is on
+ * the light page. Dark contexts flip it to white by setting `--logo-invert: 1`
+ * on any ancestor - the nav animates that flip as it leaves the shader canvas.
+ *
+ * SIZING IS THE CONSUMER'S JOB, from its stylesheet (e.g. Nav's
+ * `.home :global(img) { height: ... }`). No height prop: it used to be an
+ * inline style attribute, and the production CSP (style-src with hashes, no
+ * 'unsafe-inline') silently drops those - the mark rendered at its intrinsic
+ * 4082px and swallowed half the hero. The width/height ATTRIBUTES below are
+ * fine (they are markup, not style) and preserve the aspect ratio.
+ *
+ * ASSET GAP, still open: the candy-textured colour logo exists only as raster
+ * baked into the OG PNG. Until a colour SVG exists the wordmark stays
+ * monochrome and the shader carries the chroma.
+ */
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = "" } = Astro.props;
+---
+
+<img
+  src="/brand/clawbits-long.svg"
+  alt={SITE.name}
+  width="4082"
+  height="672"
+  class:list={["logo", className]}
+/>
+
+<style>
+  .logo {
+    height: 1.125rem;
+    width: auto;
+    display: block;
+    filter: invert(var(--logo-invert, 0));
+  }
+</style>

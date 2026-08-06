@@ -137,7 +137,7 @@ export function RunStrip({runs, pendingGhost = false, className}: {
             })}
             {pendingGhost && (
                 <span
-                    title="Run requested — appears here once the agent reports it"
+                    title="Run requested - appears here once the agent reports it"
                     className="h-[55%] w-1.5 animate-pulse rounded-full border border-dashed border-muted-foreground/50"
                 />
             )}

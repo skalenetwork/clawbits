@@ -135,7 +135,7 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
       "A short personal brief on the topics you care about, ready when you wake up.",
     defaultName: "Morning briefing",
     prompt:
-      "Put together my morning briefing on: [your topics — e.g. AI agents, your industry, your team's stack]. Research what actually changed since yesterday and post 3-5 items that matter, one line each, with links. No filler — if a slot would be padding, drop it. If nothing genuinely new happened, say so in one line.",
+      "Put together my morning briefing on: [your topics - e.g. AI agents, your industry, your team's stack]. Research what actually changed since yesterday and post 3-5 items that matter, one line each, with links. No filler - if a slot would be padding, drop it. If nothing genuinely new happened, say so in one line.",
     defaultSchedule: { kind: "cron", expr: "0 8 * * *" },
     icon: Sun03Icon,
     accent: "blue",
@@ -147,7 +147,7 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
       "Quietly watches something you care about and only speaks when there's news.",
     defaultName: "Topic watch",
     prompt:
-      "Check for developments on: [what to watch — a product's releases, a competitor, a price, a niche]. Only consider things published in the last 6 hours. If something noteworthy happened, post a 2-3 line heads-up with a link. Otherwise post nothing at all — silence is the correct output.",
+      "Check for developments on: [what to watch - a product's releases, a competitor, a price, a niche]. Only consider things published in the last 6 hours. If something noteworthy happened, post a 2-3 line heads-up with a link. Otherwise post nothing at all - silence is the correct output.",
     defaultSchedule: { kind: "every", everyMs: 6 * HOUR_MS },
     icon: BinocularsIcon,
     accent: "teal",
@@ -158,7 +158,7 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
     description: "A five-minute lesson and a short quiz on something you want to master.",
     defaultName: "Daily learning drill",
     prompt:
-      "Teach me [what you're learning — a language, a framework, music theory] in one five-minute lesson. Pick one specific concept, explain it with a concrete example, then quiz me with 3 short questions and wait for my answers. Vary the concepts day to day and lean into fundamentals I likely get wrong.",
+      "Teach me [what you're learning - a language, a framework, music theory] in one five-minute lesson. Pick one specific concept, explain it with a concrete example, then quiz me with 3 short questions and wait for my answers. Vary the concepts day to day and lean into fundamentals I likely get wrong.",
     defaultSchedule: { kind: "cron", expr: "0 19 * * *" },
     icon: MortarboardIcon,
     accent: "violet",
@@ -180,7 +180,7 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
     description: "An end-of-week sweep for loose ends before they follow you home.",
     defaultName: "Friday wrap-up",
     prompt:
-      "It's Friday afternoon. Post my end-of-week sweep: ask me (1) what shipped this week, (2) what's still open and who's waiting on it, (3) what I'm deliberately NOT doing until Monday. Keep it to three crisp questions — the point is a five-minute ritual, not homework.",
+      "It's Friday afternoon. Post my end-of-week sweep: ask me (1) what shipped this week, (2) what's still open and who's waiting on it, (3) what I'm deliberately NOT doing until Monday. Keep it to three crisp questions - the point is a five-minute ritual, not homework.",
     defaultSchedule: { kind: "cron", expr: "0 16 * * 5" },
     icon: CheckmarkCircle02Icon,
     accent: "violet",
@@ -199,10 +199,10 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
   {
     id: "evening-journal",
     label: "Evening journal",
-    description: "Three reflective questions each night — a journal that asks first.",
+    description: "Three reflective questions each night - a journal that asks first.",
     defaultName: "Evening journal",
     prompt:
-      "It's the end of my day. Ask me exactly three short reflective questions: one about what went well, one about what was hard, one that's unexpected and makes me think. Vary them every night. Just the questions — no preamble.",
+      "It's the end of my day. Ask me exactly three short reflective questions: one about what went well, one about what was hard, one that's unexpected and makes me think. Vary them every night. Just the questions - no preamble.",
     defaultSchedule: { kind: "cron", expr: "0 21 * * *" },
     icon: Moon02Icon,
     accent: "violet",

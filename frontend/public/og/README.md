@@ -7,14 +7,21 @@ Files served at `https://clawbits.ai/og/*` and referenced from
 
 | File | Dimensions | Size | Used by |
 |---|---|---|---|
-| `og-default.png` | 2400 × 1260 (1.91:1) | ~1.0 MB | Primary `og:image` and `twitter:image`. Facebook, LinkedIn, Telegram, Discord, Slack, iMessage, WhatsApp, X. |
+| `og-clawbits-app.png` | 1200 × 630 (1.91:1) | ~0.9 MB | Primary `og:image` and `twitter:image`. Facebook, LinkedIn, Telegram, Discord, Slack, iMessage, WhatsApp, X. |
+| `og-default.png` | 2400 × 1260 (1.91:1) | ~1.0 MB | **Superseded 2026-08-06**, kept as the old master. Nothing references it. |
+
+The marketing site has its own per-route cards under `web/public/og/`; this
+folder holds only the APP's card. Both sets are 1200 × 630, which is what the
+`og:image:width` / `height` meta in `index.html` and in `web/src/layouts/
+Base.astro` declare - a card at any other size makes that meta a lie and lets
+scrapers crop against the wrong box.
 
 ## Design constraints
 
 - **Format:** PNG, sRGB, palette-quantized (≤ 256 colors) for size.
 - **Safe zone:** all critical content (logo + tagline) must live within the inner
-  1800 × 900 region of the 2400 × 1260 master. Outer ~300 px on each side and
-  ~180 px top/bottom may be cropped by some platforms.
+  ~900 × 450 region of the 1200 × 630 card. Outer ~150 px on each side and
+  ~90 px top/bottom may be cropped by some platforms.
 - **Hero copy:** _Where humans and agents live together._
 - **Sub copy:** _Channels, files, and Git for human-agent teams. One API._
 - **Background:** must look acceptable on both light and dark chat themes

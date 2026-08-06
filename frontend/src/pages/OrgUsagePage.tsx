@@ -725,7 +725,7 @@ export default function OrgUsagePage() {
                             <EmptyState
                                 icon={UsageIcon}
                                 title="No usage reported yet"
-                                description="Each agent's plugin reports its own token usage automatically once it's online — numbers land here within a minute of the first model call."
+                                description="Each agent's plugin reports its own token usage automatically once it's online - numbers land here within a minute of the first model call."
                             />
                         </div>
                     ) : (
@@ -753,7 +753,7 @@ export default function OrgUsagePage() {
 
                             <div className="grid items-start gap-4 lg:grid-cols-5">
                                 {/* Agents table: one distribution strip, then quiet
-                                    labeled columns — name | trend | calls | cost |
+                                    labeled columns - name | trend | calls | cost |
                                     share | tokens. */}
                                 {isOwner && (
                                     <section
@@ -865,7 +865,7 @@ export default function OrgUsagePage() {
                     <p className="usage-section flex items-start gap-1.5 text-xs text-muted-foreground/80" style={{animationDelay: "240ms"}}>
                         <Icon icon={Info} className="mt-0.5 size-3.5 shrink-0"/>
                         <span>
-                            Self-reported by each agent&apos;s plugin — informational only, never used for
+                            Self-reported by each agent&apos;s plugin - informational only, never used for
                             billing. Turns that deliver no reply may not be counted yet
                             {data.role === "member" ? "; per-agent detail is visible to org owners" : ""}.
                         </span>

@@ -1,0 +1,1225 @@
+---
+import Base from "../layouts/Base.astro";
+import Button from "../components/Button.astro";
+import Eyebrow from "../components/Eyebrow.astro";
+import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
+import AppDemo from "../components/AppDemo.astro";
+import ReefVisual from "../components/ReefVisual.astro";
+import IntroChat from "../components/IntroChat.astro";
+import AgencyVisual from "../components/AgencyVisual.astro";
+import AutomationVisual from "../components/AutomationVisual.astro";
+import GitVisual from "../components/GitVisual.astro";
+import InterAgentVisual from "../components/InterAgentVisual.astro";
+import LobstertalkVisual from "../components/LobstertalkVisual.astro";
+import MailboxVisual from "../components/MailboxVisual.astro";
+import PlayOnView from "../components/PlayOnView.astro";
+import { APP_URL, LINKS } from "../config";
+import { PLATFORM_ICONS } from "../lib/platform-icons";
+import {
+  CLIENTS,
+  COMPAT,
+  ENDOWMENTS,
+  FINAL_CTA,
+  HERO,
+  INTER_AGENT,
+  INTRO,
+  LOBSTERTALK,
+  REEF,
+  THESIS,
+} from "../content/home";
+
+/**
+ * Homepage structure (owner direction 2026-08-04): a rounded shader canvas
+ * with the nav, hero and cropped app window; then one railed column of
+ * hairline-divided blocks; then a second, calmer canvas as the final CTA.
+ * The layout metrics are measured values, not round numbers - check the plan
+ * in the session notes before "rounding them off".
+ *
+ * All copy comes from src/content/home.ts so that llms.txt and llms-full.txt
+ * render the same words. Do not inline new prose here.
+ */
+
+// The lede's lead/rest split for the intro's bold-lead typography. Derived,
+// not re-typed, so the string cannot drift from home.ts.
+const [ledeLead, ledeRest] = HERO.lede.split(" - ");
+
+// Presentation-only lookups for the copy blocks (assets, links, glyphs stay
+// out of home.ts - machines don't need them).
+const AGENT_MARKS: Record<string, string> = {
+  OpenClaw: "openclaw.png",
+  Hermes: "hermes.svg",
+  IronClaw: "ironclaw.webp",
+};
+
+/** Each runtime's own home. */
+const AGENT_LINKS: Record<string, string> = {
+  OpenClaw: "https://openclaw.ai/",
+  Hermes: "https://hermes-agent.nousresearch.com/",
+  IronClaw: "https://www.ironclaw.com/",
+};
+
+const PLATFORM_LINKS: Record<string, string> = {
+  Web: APP_URL,
+  macOS: LINKS.download,
+  Linux: LINKS.download,
+};
+
+/** Which inlined brand mark a platform card shows; Web draws its own globe. */
+const PLATFORM_GLYPHS: Record<string, keyof typeof PLATFORM_ICONS | undefined> = {
+  macOS: "apple",
+  iOS: "apple",
+  Linux: "linux",
+  Android: "android",
+};
+
+/**
+ * The real visual for each endowment, positionally matched to
+ * ENDOWMENTS.items. A null keeps the honest wireframe card until that one is
+ * built - do not reorder the copy without reordering this.
+ */
+const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVisual];
+---
+
+<Base nav="overlay">
+  {/* ── 1 · Hero canvas ──────────────────────────────────────────────── */}
+  <div class="frame">
+    <section class="canvas">
+      <div class="shader" aria-hidden="true">
+        <ShaderBackdrop client:only="react" />
+      </div>
+
+      <div class="hero-head">
+        <a class="badge" href={LINKS.lobstertalk}>
+          {HERO.badge}<span class="chev" aria-hidden="true">›</span>
+        </a>
+
+        <h1 class="display display-hero">
+          {HERO.lines.map((line) => <span class="line">{line}</span>)}
+        </h1>
+
+        <div class="hero-cta">
+          <Button href={LINKS.signup} variant="inverse">Get Started</Button>
+        </div>
+      </div>
+
+      <div class="stage">
+        {/* Agent icon stack: peeks from behind the window's top-right
+            corner (painted before AppDemo, so the window overlaps it).
+            One link - hover lifts the icons and shows the tooltip, click
+            goes to the app: "connect in 2 minutes" is a thing you do there,
+            not a section to read. */}
+        <a
+          class="agent-stack"
+          href={LINKS.signup}
+          aria-label="Connect OpenClaw, IronClaw or Hermes in 2 minutes"
+        >
+          {/* The name segment morphs per hovered icon: each name sits in a
+              0fr grid track that opens to 1fr, so the pill's width animates
+              smoothly between agents. */}
+          <span class="stack-tip" aria-hidden="true">
+            <span>Connect&nbsp;</span>
+            <span class="tt-name tt-iron"><i>IronClaw</i></span>
+            <span class="tt-name tt-open"><i>OpenClaw</i></span>
+            <span class="tt-name tt-herm"><i>Hermes</i></span>
+            <span>&nbsp;in 2 minutes</span>
+          </span>
+          <img class="sicon s-iron" src="/brand/ironclaw-ios.png" alt="" width="256" height="256" loading="lazy" />
+          <img class="sicon s-open" src="/brand/openclaw-ios.png" alt="" width="256" height="256" loading="lazy" />
+          <img class="sicon s-herm" src="/brand/hermes-ios.png" alt="" width="256" height="256" loading="lazy" />
+        </a>
+        <AppDemo />
+      </div>
+    </section>
+  </div>
+
+  <div class="rails">
+    {/* ── 2 · Intro ──────────────────────────────────────────────────── */}
+    <section class="block">
+      <div class="intro-grid">
+        <IntroChat class="intro-visual" />
+        <div class="intro-copy">
+          <div class="eyerow"><Eyebrow>{INTRO.eyebrow}</Eyebrow></div>
+          <p><b>{THESIS.lead}</b> {THESIS.turn}</p>
+          <p><b>{ledeLead}</b> - {ledeRest}</p>
+        </div>
+      </div>
+    </section>
+
+    {/* ── 3 · What each agent gets ───────────────────────────────────── */}
+    <section class="block center">
+      <div class="eyerow"><Eyebrow>{ENDOWMENTS.label}</Eyebrow></div>
+      <h2 class="display display-xl">{ENDOWMENTS.heading}</h2>
+      <ul class="cards">
+        {
+          ENDOWMENTS.items.map((item, i) => {
+            const Visual = ENDOWMENT_VISUALS[i];
+            return (
+              <li>
+                {Visual ? (
+                  <Visual />
+                ) : (
+                  <div class:list={["pastel", `p${i}`]} aria-hidden="true">
+                    <div class="mini">
+                      <span class="mini-bar" />
+                      <span class="mini-bar" />
+                      <span class="mini-bar" />
+                    </div>
+                  </div>
+                )}
+                <p class="cap"><b>{item.title}</b> {item.body}</p>
+              </li>
+            );
+          })
+        }
+      </ul>
+    </section>
+
+    {/* ── 4 · Compatibility: supported agent runtimes ────────────────── */}
+    <section class="block center" id="compatibility">
+      <div class="eyerow"><Eyebrow>{COMPAT.label}</Eyebrow></div>
+      <h2 class="display display-xl">{COMPAT.heading}</h2>
+      <p class="sub-lg centered">{COMPAT.body}</p>
+      <ul class="agents">
+        {
+          COMPAT.agents.map((a) => (
+            <li>
+              <a
+                class="agent-link"
+                href={AGENT_LINKS[a.name]}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <div class:list={["agent-tile", `ag-${a.name.toLowerCase()}`]} aria-hidden="true">
+                  <img
+                    src={`/brand/agents/${AGENT_MARKS[a.name]}`}
+                    alt=""
+                    width="160"
+                    height="160"
+                    class="agent-mark"
+                  />
+                </div>
+                <h3 class="agent-name">{a.name}</h3>
+                <p class="agent-desc">{a.body}</p>
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+
+    {/* ── 5 · Lobstertalk ────────────────────────────────────────────── */}
+    <section class="block" id="lobstertalk">
+      <div class="split">
+        <div>
+          <div class="eyerow"><Eyebrow>{LOBSTERTALK.label}</Eyebrow></div>
+          <h3 class="display display-md">{LOBSTERTALK.heading}</h3>
+          <p class="sub">{LOBSTERTALK.body}</p>
+          <p class="sub sub-note">{LOBSTERTALK.note}</p>
+        </div>
+        {/* A channel where agents visibly decide to answer (or stay quiet):
+            two escalations, the same three agents asked each time, a different
+            one standing up. See the component for what the code actually
+            does - the gate is agent-agnostic, so the fan-out is the point. */}
+        <LobstertalkVisual class="lt-visual" />
+      </div>
+    </section>
+
+    {/* ── 6 · Inter-agent mode ────────────────────────────────────────
+        Full block width, not a split: the visual is a horizontal rally and
+        needs the whole column. It also breaks a run of three splits. Placed
+        directly after Lobstertalk because it only makes sense once the reader
+        knows what the attention gate is - this is that gate pointed at
+        agent-authored posts. */}
+    <section class="block" id="inter-agent">
+      <div class="eyerow"><Eyebrow>{INTER_AGENT.label}</Eyebrow></div>
+      <h2 class="display display-xl">{INTER_AGENT.heading}</h2>
+      <p class="sub-lg">{INTER_AGENT.body}</p>
+      <p class="sub-lg sub-note">{INTER_AGENT.note}</p>
+      <InterAgentVisual class="ia-visual" />
+    </section>
+
+    {/* ── 8 · Reef ───────────────────────────────────────────────────── */}
+    <section class="block">
+      <div class="reef-grid">
+        <div>
+          <div class="eyerow"><Eyebrow>{REEF.label}</Eyebrow></div>
+          <h3 class="display display-md">{REEF.heading}</h3>
+          <p class="sub">{REEF.body}</p>
+          <p class="sub sub-note">{REEF.note}</p>
+          <p class="more-row">
+            <a class="more" href={LINKS.reef} target="_blank" rel="noopener noreferrer">
+              Learn more
+            </a>
+          </p>
+        </div>
+        <ReefVisual />
+      </div>
+    </section>
+
+    {/* ── 9 · Clients ────────────────────────────────────────────────── */}
+    <section class="block center">
+      <div class="eyerow"><Eyebrow>{CLIENTS.label}</Eyebrow></div>
+      <h2 class="display display-xl">{CLIENTS.heading}</h2>
+      <p class="sub-lg centered">{CLIENTS.body}</p>
+      <ul class="pcards">
+        {
+          CLIENTS.platforms.map((p) => {
+            const soon = "soon" in p && p.soon;
+            const glyph = PLATFORM_GLYPHS[p.name];
+            const icon = glyph ? PLATFORM_ICONS[glyph] : undefined;
+            const cls = ["pcard", `pf-${p.name.toLowerCase()}`, { soon }];
+            const inner = (
+              <>
+                {icon ? (
+                  <svg class="pf-icon" viewBox={icon.viewBox} fill="currentColor" aria-hidden="true">
+                    <path d={icon.d} />
+                  </svg>
+                ) : (
+                  <svg
+                    class="pf-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <ellipse cx="12" cy="12" rx="4" ry="9" />
+                    <path d="M4 8h16M4 16h16" />
+                  </svg>
+                )}
+                <span class="pf-name">{p.name}</span>
+                {soon && <span class="pf-soon">Soon</span>}
+              </>
+            );
+            return (
+              <li>
+                {soon ? (
+                  <div class:list={cls}>{inner}</div>
+                ) : (
+                  <a
+                    class:list={cls}
+                    href={PLATFORM_LINKS[p.name]}
+                    target={PLATFORM_LINKS[p.name].startsWith("http") ? "_blank" : undefined}
+                    rel={PLATFORM_LINKS[p.name].startsWith("http") ? "noopener noreferrer" : undefined}
+                  >
+                    {inner}
+                  </a>
+                )}
+              </li>
+            );
+          })
+        }
+      </ul>
+    </section>
+
+  </div>
+
+  {/* ── 10 · Final CTA canvas ────────────────────────────────────────
+      Outside the rails: the side hairlines end at the Clients block, and
+      the .outro's full-width top border is the line that closes them. */}
+  <div class="outro">
+    <section class="block cta-block">
+      <div class="cta-canvas">
+        <div class="shader" aria-hidden="true">
+          <ShaderBackdrop client:only="react" softness={0.7} intensity={0.32} noise={0.12} speed={0.55} />
+        </div>
+        <div class="cta-inner">
+          <h2 class="display display-xl">{FINAL_CTA.heading}</h2>
+          <div class="cta-btn">
+            <Button href={LINKS.signup} variant="inverse">Get Started</Button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  {/* Starts every looping card visual (IntroChat, the endowment cards) when
+      it scrolls into view. Mounted once for the whole page. */}
+  <PlayOnView />
+</Base>
+
+<style>
+  /* ── Hero canvas ──────────────────────────────────────────────────────
+   * Inset 16px from every page edge, radius up to ~34px, shadow-xl, overflow
+   * hidden; the window's bottom ~130px are cropped by the edge. */
+  /* No bottom padding: the rails' vertical hairlines must start at the
+   * canvas's lower edge, not a frame-width later. */
+  .frame {
+    padding: 1rem 1rem 0;
+  }
+
+  .canvas {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    /* Visually identical to the rails hairlines. Those are 7%-alpha black
+     * OVER CREAM; painted over this dark canvas the same alpha vanishes, so
+     * the border uses the composited (opaque) result of line-over-ground. */
+    border: 1px solid color-mix(in srgb, rgb(0 0 0) 7%, var(--color-ink));
+    border-radius: clamp(0.75rem, 2.5vw, 2.125rem);
+    background: var(--color-canvas);
+    box-shadow:
+      0 20px 25px -5px rgb(0 0 0 / 0.1),
+      0 8px 10px -6px rgb(0 0 0 / 0.1);
+    /* Consumed by the fixed nav (via timeline-scope on body): it slides in
+     * exactly as this canvas finishes leaving the viewport. */
+    view-timeline-name: --hero-view;
+  }
+
+  /* Static candy-on-ink gradient: what you see before the island hydrates,
+   * without JS, or without WebGL. The shader canvas layers over it. */
+  .shader {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
+      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
+      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
+      radial-gradient(30% 40% at 68% 78%, rgb(240 154 63 / 0.25), transparent 70%),
+      var(--color-canvas);
+  }
+
+  /* Legibility scrim over the shader, under the text. A headline wants a calm
+   * sky behind it and the truchet worms are not calm, so the text zone gets a
+   * soft ink pool. Painted as ::after so it also covers the WebGL canvas. */
+  .shader::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      75% 60% at 50% 38%,
+      rgb(20 19 17 / 0.5),
+      transparent 72%
+    );
+  }
+
+  .hero-head {
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    color: var(--color-canvas-text);
+    /* Clears the 4rem fixed nav, then the 64px header padding. */
+    padding: clamp(7rem, 5vw + 5rem, 8.5rem) clamp(1.5rem, 5vw, 3rem) 0;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    height: 1.625rem;
+    padding-inline: 0.75rem;
+    border-radius: 999px;
+    margin-bottom: 1rem;
+    font-size: 0.75rem;
+    font-weight: 550;
+    letter-spacing: 0.01em;
+    text-decoration: none;
+    color: rgb(255 255 255 / 0.92);
+    /* Borderless (owner call) - the fill alone carries the pill. */
+    background: rgb(255 255 255 / 0.16);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+  }
+
+  .badge:hover {
+    background: rgb(255 255 255 / 0.24);
+  }
+
+  .badge .chev {
+    line-height: 1;
+    translate: 0 -0.05em;
+  }
+
+  .hero-head h1 {
+    margin: 0 0 2rem;
+    color: #fff;
+  }
+
+  .hero-head .line {
+    display: block;
+  }
+
+  .hero-cta {
+    display: flex;
+    justify-content: center;
+  }
+
+  /* The "Download app" secondary link under both Get Started buttons was
+   * removed 2026-08-06 once Download joined the nav - along with the
+   * data-platform script that existed solely to pick its icon. /download now
+   * owns platform detection. */
+
+  /* Window sits 64px under the CTA; the negative bottom margin is what pushes
+   * its lower edge past the canvas boundary so overflow:hidden crops it
+   * (130 of 720px hidden at the reference width). */
+  .stage {
+    position: relative;
+    z-index: 1;
+    margin-top: clamp(2.75rem, 4.9vw, 4.0625rem);
+    margin-bottom: clamp(-8.5rem, -9.9vw, -3rem);
+  }
+
+  /* ── Agent icon stack, tucked behind the window's top-right corner.
+   * The window's right edge sits at calc(50% - min(45.3%, 35.25rem))
+   * from the stage edge (half of AppDemo's min(90.6%, 70.5rem) width),
+   * so the stack anchors relative to that corner. Icons carry their own
+   * squircle alpha - drop-shadow traces it. ── */
+  .agent-stack {
+    position: absolute;
+    top: -2.75rem;
+    right: calc(50% - min(45.3%, 35.25rem) + 3.5rem);
+    display: flex;
+    align-items: flex-start;
+  }
+
+  .sicon {
+    width: 3.4rem;
+    height: 3.4rem;
+    translate: 0 var(--dy);
+    rotate: var(--rot);
+    filter: drop-shadow(0 12px 26px rgb(0 0 0 / 0.45));
+    transition: translate 380ms var(--ease-out-expo);
+  }
+
+  /* Slightly different rotation + resting height per icon; DOM order
+   * stacks them left-to-back → right-to-front. */
+  .s-iron { --dy: 12px; --rot: -9deg; margin-right: -0.8rem; }
+  .s-open { --dy: 2px; --rot: 4deg; margin-right: -0.8rem; }
+  .s-herm { --dy: 8px; --rot: 10deg; }
+
+  /* Load-in: each icon rises from fully behind the window frame, one by
+   * one (no fade needed - the frame itself is the mask). `backwards`
+   * holds them hidden through their stagger delay. */
+  @media (prefers-reduced-motion: no-preference) {
+    .sicon {
+      animation: stack-rise 650ms var(--ease-out-expo) backwards;
+    }
+
+    .s-iron { animation-delay: 400ms; }
+    .s-open { animation-delay: 560ms; }
+    .s-herm { animation-delay: 720ms; }
+  }
+
+  @keyframes stack-rise {
+    from {
+      translate: 0 calc(var(--dy) + 52px);
+    }
+  }
+
+  /* Only the hovered icon rises. */
+  .sicon:hover {
+    translate: 0 calc(var(--dy) - 12px);
+  }
+
+  .agent-stack:focus-visible .sicon {
+    translate: 0 calc(var(--dy) - 12px);
+  }
+
+  .agent-stack:focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 4px;
+    border-radius: 1rem;
+  }
+
+  /* Cream pill above the stack; rises in with the icons. */
+  .stack-tip {
+    position: absolute;
+    bottom: calc(100% + 1.125rem);
+    left: 50%;
+    translate: -50% 4px;
+    display: inline-flex;
+    align-items: baseline;
+    padding: 0.375rem 0.75rem;
+    border-radius: 0.625rem;
+    background: var(--color-ink);
+    color: var(--color-paper);
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      opacity 200ms var(--ease-out-expo),
+      translate 200ms var(--ease-out-expo);
+  }
+
+  .agent-stack:hover .stack-tip,
+  .agent-stack:focus-visible .stack-tip {
+    opacity: 1;
+    translate: -50% 0;
+  }
+
+  /* Collapsible name segments: the hovered agent's name opens to its
+   * measured width, the others close to 0 - the pill resizes smoothly
+   * between labels. Widths are fixed per name (0fr→1fr grid tracks
+   * contribute nothing to an inline-flex pill's intrinsic width, so fr
+   * animation collapses here); Geist is self-hosted, so the metrics are
+   * deterministic. */
+  .tt-name {
+    display: inline-block;
+    width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    transition: width 320ms var(--ease-out-expo);
+  }
+
+  .tt-name > i {
+    font-style: normal;
+  }
+
+  .agent-stack:has(.s-iron:hover) .tt-iron { width: 50px; }
+  .agent-stack:has(.s-open:hover) .tt-open { width: 59px; }
+
+  .agent-stack:has(.s-herm:hover) .tt-herm,
+  /* Nothing specific hovered (focus, or the sliver between icons):
+     default to the front icon's name. */
+  .agent-stack:not(:has(.sicon:hover)) .tt-herm {
+    width: 44px;
+  }
+
+  /* No room for the stack once the window goes near-full-bleed. */
+  @media (max-width: 40rem) {
+    .agent-stack {
+      display: none;
+    }
+  }
+
+  /* The stack's anchor target: keep the heading clear of the fixed nav. */
+  #compatibility {
+    scroll-margin-top: 4.5rem;
+  }
+
+  @media (max-width: 40rem) {
+    /* Full-bleed on phones. The 1rem inset that frames the canvas as a card on
+     * desktop just wastes width here, and a floating rounded rectangle inside
+     * a 375px viewport reads as a component rather than as the top of the page.
+     * Corners stay rounded on the BOTTOM edge only - the top edge, the sides
+     * and their borders now coincide with the screen, and a radius on an edge
+     * that touches the viewport shows the page ground through the corner. */
+    .frame {
+      padding: 0;
+    }
+
+    .canvas {
+      border-top: 0;
+      border-inline: 0;
+      border-radius: 0 0 clamp(1rem, 5vw, 1.75rem) clamp(1rem, 5vw, 1.75rem);
+    }
+
+    .hero-head {
+      text-align: left;
+      /* Tighter than the old 2rem: buys the width that keeps the long first
+       * headline line unwrapped at the clamp floor. */
+      padding-inline: 1.5rem;
+    }
+
+    .hero-cta {
+      justify-content: flex-start;
+    }
+  }
+
+  /* ── Rails ────────────────────────────────────────────────────────────
+   * One ~1128px column with vertical hairlines running the whole page;
+   * blocks are divided by horizontal hairlines. No cards, no shadows. */
+  .rails {
+    max-width: 70.5rem;
+    margin-inline: auto;
+    border-inline: 1px solid var(--color-line);
+  }
+
+  @media (max-width: 48rem) {
+    .rails {
+      border-inline: 0;
+    }
+  }
+
+  .block {
+    padding: clamp(4.5rem, 8vw, 6.75rem) clamp(1.25rem, 4vw, 3rem);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  /* The rails close after the last railed block (Clients); the .outro's
+   * FULL-WIDTH top border is the single line that terminates them - so the
+   * last block draws none of its own. */
+  .rails .block:last-child {
+    border-bottom: 0;
+  }
+
+  .center {
+    text-align: center;
+  }
+
+  .eyerow {
+    margin-bottom: 1rem;
+  }
+
+  /* ── Shared text roles ── */
+
+  .sub {
+    margin: 1rem 0 0;
+    max-width: 36rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--color-muted);
+  }
+
+  .sub-lg {
+    margin: 1.25rem 0 0;
+    max-width: 40rem;
+    font-size: 1.0625rem;
+    line-height: 1.55;
+    color: var(--color-muted);
+  }
+
+  .sub-lg.centered {
+    margin-inline: auto;
+  }
+
+  /* The inter-agent rally, full block width. */
+  :global(.ia-visual) {
+    margin-top: 3rem;
+  }
+
+  .more {
+    margin-inline-start: 0.375rem;
+    color: var(--color-signal);
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  /* Lucide chevron-right, masked so it takes the link's currentColor
+   * (data: URIs are covered by the CSP's img-src). */
+  .more::after {
+    content: "";
+    display: inline-block;
+    width: 1.05em;
+    height: 1.05em;
+    vertical-align: -0.24em;
+    margin-inline-start: 0.125em;
+    background-color: currentColor;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+
+  .more:hover {
+    color: var(--color-signal-deep);
+  }
+
+  /* Learn-more on its own line (Reef section). */
+  .more-row {
+    margin: 0.5rem 0 0;
+    font-size: 1rem;
+  }
+
+  .more-row .more {
+    margin-inline-start: 0;
+  }
+
+  /* ── 2 · Intro ── */
+
+  /* Visual card left, eyebrow + copy right. */
+  .intro-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+    gap: 2rem 4rem;
+    max-width: 53rem;
+    margin-inline: auto;
+    align-items: center;
+  }
+
+  .intro-copy p {
+    margin: 0;
+    font-size: clamp(1.125rem, 1.05rem + 0.25vw, 1.25rem);
+    line-height: 1.4;
+    color: var(--color-muted);
+    text-wrap: pretty;
+  }
+
+  .intro-copy p + p {
+    margin-top: 1.75rem;
+  }
+
+  .intro-copy b {
+    font-weight: 450;
+    color: var(--color-paper);
+  }
+
+  /* Thesis pair: ink lands on the "teammate" turn, the integration lead
+   * recedes - the reverse of the lede below it. */
+  .intro-copy p:first-of-type {
+    color: var(--color-paper);
+  }
+
+  .intro-copy p:first-of-type b {
+    color: var(--color-muted);
+  }
+
+  @media (max-width: 48rem) {
+    .intro-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    /* Copy leads on one column; the placeholder card follows it. */
+    .intro-grid :global(.intro-visual) {
+      order: 2;
+    }
+  }
+
+  /* ── 4 · Endowment cards ── */
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.5rem;
+    list-style: none;
+    margin: 3rem 0 0;
+    padding: 0;
+    text-align: left;
+  }
+
+  .pastel {
+    aspect-ratio: 4 / 5;
+    border-radius: 1rem;
+    display: grid;
+    place-items: center;
+  }
+
+  /* Candy tints, one per endowment: strawberry, blue, orange, grape. */
+  .p0 {
+    background: linear-gradient(150deg, #fdeaec, #f8ccd4);
+  }
+  .p1 {
+    background: linear-gradient(150deg, #e9f1fd, #cfe0f8);
+  }
+  .p2 {
+    background: linear-gradient(150deg, #fdf2e4, #f8dcba);
+  }
+  .p3 {
+    background: linear-gradient(150deg, #f2ecfd, #ded0f4);
+  }
+
+  /* Placeholder interior - a soft panel of wireframe bars, replaced by real
+   * product visuals in a later iteration. */
+  .mini {
+    width: 64%;
+    padding: 0.875rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    background: rgb(255 255 255 / 0.85);
+    border-radius: 0.75rem;
+    box-shadow: 0 4px 14px rgb(0 0 0 / 0.06);
+  }
+
+  /* Widths from the stylesheet, never style attributes - the production CSP
+   * drops inline styles (see AppWindow.astro's CSP note). */
+  .mini-bar {
+    display: block;
+    height: 0.4375rem;
+    border-radius: 999px;
+    background: rgb(12 13 14 / 0.09);
+  }
+
+  .mini-bar:nth-child(1) {
+    width: 72%;
+  }
+  .mini-bar:nth-child(2) {
+    width: 90%;
+  }
+  .mini-bar:nth-child(3) {
+    width: 55%;
+  }
+
+  .cap {
+    margin: 1rem 0 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--color-muted);
+  }
+
+  .cap b {
+    font-weight: 550;
+    color: var(--color-paper);
+  }
+
+  @media (max-width: 64rem) {
+    .cards {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 30rem) {
+    .cards {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .pastel {
+      aspect-ratio: 16 / 10;
+    }
+  }
+
+  /* ── 6 · Identity split ── */
+
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: clamp(2.5rem, 5vw, 4.5rem);
+    align-items: center;
+  }
+
+  @media (max-width: 62rem) {
+    .split {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2.5rem;
+    }
+  }
+
+  /* ── 8 · Reef ── */
+
+  .reef-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    gap: clamp(2.5rem, 5vw, 4rem);
+    align-items: center;
+  }
+
+  /* The optionality note - same size as the body, just a separate breath. */
+  .sub-note {
+    margin-top: 0.875rem;
+  }
+
+  @media (max-width: 48rem) {
+    .reef-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  /* ── 5 · Agent runtime cards ── */
+
+  .agents {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.5rem;
+    list-style: none;
+    margin: 3rem 0 0;
+    padding: 0;
+    text-align: left;
+  }
+
+  /* The whole card (tile + text) is the link, like the real runtimes' own
+   * grids: hand cursor, tile lifts on hover, presses in on click. */
+  .agent-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  /* Logo-only tile, tinted with each runtime's own colour from the fleet
+   * visual; name + description caption below, endowments-style. */
+  .agent-tile {
+    position: relative;
+    /* Marks run oversized and off the tile's edges - the crop is the point. */
+    overflow: hidden;
+    aspect-ratio: 16 / 10;
+    border-radius: 1rem;
+    display: grid;
+    place-items: center;
+    transition:
+      transform 180ms var(--ease-out-expo),
+      box-shadow 180ms var(--ease-out-expo);
+  }
+
+  /* Quiet interactivity: the mark's push-in carries the hover on its own, so
+   * the tile itself stays put; only the press moves it. */
+  .agent-link:active .agent-tile {
+    transform: translateY(0.5px) scale(0.985);
+  }
+
+  /* Each tile carries its owner-supplied pixel pattern, recoloured to a deep
+   * tone of the SAME card's family and stripped of its opaque background
+   * (see /brand/patterns/*). Layer order: pattern OVER gradient. */
+  .ag-openclaw {
+    background:
+      url("/brand/patterns/openclaw-grid.svg") 0 0 / 48px 48px repeat,
+      linear-gradient(150deg, #fdeaec, #f8ccd4);
+  }
+  .ag-hermes {
+    background:
+      url("/brand/patterns/hermes-grid.svg") 0 0 / 48px 48px repeat,
+      linear-gradient(150deg, #ecf2fd, #d0d0f4);
+  }
+  .ag-ironclaw {
+    background:
+      url("/brand/patterns/ironclaw-grid.svg") 0 0 / 48px 48px repeat,
+      linear-gradient(150deg, #e9f1fd, #cfe0f8);
+  }
+
+  .agent-mark {
+    width: 4.75rem;
+    height: 4.75rem;
+    object-fit: contain;
+    /* `scale`, not `transform`: the tile already animates transform on hover
+     * and the mark is its child, so a transform here would fight it. */
+    transition: scale 300ms var(--ease-out-expo);
+  }
+
+  /* A slight push-in on hover. The tile clips, so the mark grows into its own
+   * crop rather than escaping it. */
+  .agent-link:hover .agent-mark {
+    scale: 1.06;
+  }
+
+  /* Optical correction: the OpenClaw and IronClaw artwork carries more
+   * internal whitespace than the Hermes portrait, so they get a size bump
+   * to read as equals. */
+  /* Hermes keeps her horizontal static position - the tile is a centring grid,
+   * so with no left/right she stays centred and only drops out of the bottom. */
+  .ag-hermes .agent-mark {
+    position: absolute;
+    bottom: -3rem;
+    width: 14rem;
+    height: 15rem;
+  }
+
+  .ag-ironclaw .agent-mark {
+    position: absolute;
+    right: -3.5rem;
+    bottom: -3.5rem;
+    width: 25rem;
+    height: 25rem;
+  }
+
+  /* OpenClaw's lobster runs oversized out of the tile's lower-left corner and
+   * is clipped by it. Fixed rem, not a percentage: the tile is 16/10 at every
+   * breakpoint but its WIDTH triples between the 1-up and the 3-up, so a
+   * proportional size would swing the crop wildly. Re-check the 1-up if this
+   * grows much past 11rem. */
+  .ag-openclaw .agent-mark {
+    position: absolute;
+    left: -1.5rem;
+    bottom: -4rem;
+    width: 17rem;
+    height: 17rem;
+  }
+
+  .agent-name {
+    margin: 1rem 0 0;
+    font-size: 1.0625rem;
+    font-weight: 550;
+  }
+
+  .agent-desc {
+    margin: 0.375rem 0 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--color-muted);
+  }
+
+  /* Phones: one compact row of marks and names, nothing else.
+   *
+   * The desktop treatment is three 16:10 tiles each carrying a sentence of
+   * prose. Held at a third of a 375px screen that becomes three columns about
+   * 100px wide, so every description breaks into five or six ragged lines and
+   * the section reads as the busiest thing on the page - for what is really
+   * just a compatibility list. The names ARE the message here: the point is
+   * that these three runtimes work, not what each one is. The section's own
+   * lede already says that, and each name still links out to the project.
+   *
+   * Square tiles, not 16:10: at this size the wide crop left the marks
+   * floating in empty space. */
+  @media (max-width: 40rem) {
+    .agents {
+      /* Stated explicitly even though it matches the base rule: the tablet
+       * block further down also targets .agents, and being explicit here is
+       * what makes the intent survive a future reorder. */
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin-top: 2rem;
+      text-align: center;
+    }
+
+    .agent-tile {
+      aspect-ratio: 1;
+      max-width: 3.75rem;
+      margin-inline: auto;
+      border-radius: 0.75rem;
+    }
+
+    /* The per-agent rules place each mark absolutely at 14-25rem so it bleeds
+     * off the desktop tile - "the crop is the point". Against a 60px square
+     * that leaves a stray corner of a lobster claw and, for IronClaw, nothing
+     * but background. Undo the bleed here and simply centre the whole mark:
+     * at this size the logo has to be recognisable, not cropped. */
+    .agent-mark,
+    .ag-hermes .agent-mark,
+    .ag-ironclaw .agent-mark,
+    .ag-openclaw .agent-mark {
+      position: static;
+      inset: auto;
+      width: 2.25rem;
+      height: 2.25rem;
+    }
+
+    .agent-name {
+      margin-top: 0.5rem;
+      font-size: 0.8125rem;
+    }
+
+    .agent-desc {
+      display: none;
+    }
+  }
+
+  /* Tablets only. Below 40rem the compact single row above takes over, and
+   * this rule has to stop before it: it sits later in the file, so at phone
+   * widths it would otherwise win on source order and stack the three names
+   * vertically - which is exactly what the mobile treatment exists to avoid. */
+  @media (min-width: 40.0625rem) and (max-width: 48rem) {
+    .agents {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  /* ── 9 · Client platform cards ── */
+
+  .pcards {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1rem;
+    list-style: none;
+    margin: 3rem 0 0;
+    padding: 0;
+  }
+
+  /* Neutral tiles (owner call - the brand tints are gone): the raised
+   * surface with a hairline, monochrome marks. */
+  .pcard {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5625rem;
+    height: 7.5rem;
+    border-radius: 1rem;
+    text-decoration: none;
+    color: inherit;
+    background: var(--color-ink-raised);
+    border: 1px solid var(--color-line);
+    transition: transform 180ms var(--ease-out-expo);
+  }
+
+  /* Only real links invite the hand + a whisper of lift/press. */
+  a.pcard {
+    cursor: pointer;
+  }
+
+  a.pcard:hover {
+    transform: translateY(-1px);
+  }
+
+  a.pcard:active {
+    transform: translateY(0.5px) scale(0.99);
+  }
+
+  .pf-icon {
+    height: 1.5rem;
+    width: auto;
+    display: block;
+    color: var(--color-paper);
+  }
+
+  .pf-name {
+    font-size: 0.9375rem;
+    font-weight: 550;
+    line-height: 1;
+  }
+
+  /* Corner chip - absolutely positioned so every card's icon + name sit at
+   * identical coordinates, Soon or not. */
+  .pf-soon {
+    position: absolute;
+    top: 0.5625rem;
+    right: 0.5625rem;
+    font-size: 0.625rem;
+    font-weight: 550;
+    line-height: 1;
+    padding: 0.1875rem 0.4375rem;
+    border-radius: 999px;
+    color: var(--color-muted);
+    background: rgb(12 13 14 / 0.06);
+  }
+
+  /* Disabled reads disabled: flatter fill, faded contents - but the chip
+   * itself stays crisp. */
+  .pcard.soon {
+    background: rgb(12 13 14 / 0.03);
+    border-color: rgb(0 0 0 / 0.05);
+  }
+
+  .pcard.soon .pf-icon,
+  .pcard.soon .pf-name {
+    opacity: 0.4;
+  }
+
+  @media (max-width: 64rem) {
+    .pcards {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 34rem) {
+    .pcards {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  /* ── 10 · Final CTA canvas ── */
+
+  .outro {
+    border-top: 1px solid var(--color-line);
+  }
+
+  .outro .block {
+    max-width: 70.5rem;
+    margin-inline: auto;
+  }
+
+  /* Tighter than the standard block rhythm - the closer shouldn't float in
+   * as much air as a content section. */
+  .cta-block {
+    padding-block: clamp(3rem, 5vw, 4.5rem);
+    border-bottom: 0;
+  }
+
+  .cta-canvas {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border-radius: 1.375rem;
+    background: var(--color-canvas);
+    min-height: clamp(20rem, 35vw, 29.25rem);
+    display: grid;
+    place-items: center;
+    text-align: center;
+  }
+
+  .cta-inner {
+    position: relative;
+    z-index: 1;
+    padding: 3rem clamp(1.5rem, 5vw, 3rem);
+  }
+
+  .cta-inner h2 {
+    margin: 0 0 2rem;
+    color: #fff;
+  }
+
+  .cta-btn {
+    display: flex;
+    justify-content: center;
+  }
+</style>

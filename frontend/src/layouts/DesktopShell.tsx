@@ -102,6 +102,12 @@ export function DesktopShell() {
       className="bg-background"
     >
       <SidebarShortcutBinding />
+      {/* Skip link - first focusable thing in the tree, so one Tab from a fresh
+          page load jumps past the rail and the contextual sidebar straight to
+          the content. Hidden off-screen until focused (see .skip-link). */}
+      <a href="#main-content" className="skip-link">
+        Skip to content
+      </a>
       <AppRail activeSection={section} />
 
       {/* Content region — the p-2-style inset around the card. ``pt`` clears
@@ -117,7 +123,7 @@ export function DesktopShell() {
               <ContextualSidebar section={section} />
               {/* Sidebar footer: the minimized Add-Agent chip + the desktop
                                 auto-update banner, floating OVER the list's
-                                bottom edge — their frosted backgrounds blur
+                                bottom edge - their frosted backgrounds blur
                                 whatever scrolls beneath. pointer-events-none
                                 here (restored per card) so the gap between
                                 them never blocks a row behind it. */}
@@ -129,7 +135,7 @@ export function DesktopShell() {
           )}
 
           {/* Footer fallback for when the sidebar pane is hidden (collapsed
-                        via ⌘B or a sidebar-less section) — the minimized-wizard
+                        via ⌘B or a sidebar-less section) - the minimized-wizard
                         chip and update banner float bottom-left over the content
                         so both stay actionable. Rendered only when the in-sidebar
                         footer above is not, so each mounts once. The wizard chip
@@ -170,7 +176,9 @@ export function DesktopShell() {
               </div>
               <div className="flex min-h-0 flex-1">
                 <main
-                  className={`min-w-0 flex-1 overflow-y-auto ${isChannelRoute || isInboxRoute ? "" : "gutter-stable-both"}`}
+                  id="main-content"
+                  tabIndex={-1}
+                  className={`min-w-0 flex-1 overflow-y-auto outline-none ${isChannelRoute || isInboxRoute ? "" : "gutter-stable-both"}`}
                 >
                   {isChannelRoute ? (
                     <div className="flex h-full w-full flex-col">

@@ -4,6 +4,27 @@ Each prod release gets one markdown file here, shown to users in a "What's new"
 modal on their next visit after the release ships. See
 `src/components/ReleaseNotesDialog.tsx` + `src/hooks/useReleaseNotes.ts`.
 
+## These files feed TWO sites
+
+This folder is the single source of truth for both:
+
+1. the in-app **"What's new"** modal, and
+2. the public changelog at **clawbits.ai/changelog**, which the marketing site
+   reads straight out of this folder — see `web/src/content.config.ts`.
+
+Nothing is copied and nothing is synced. Write the note once, both surfaces
+update. Two consequences worth knowing before you edit anything here:
+
+- **Two different markdown renderers.** The app uses react-markdown; the site
+  uses Astro's Rust processor. Bullet lists, bold, and headings render the same
+  in both — anything fancier (tables, embedded images, footnotes, raw HTML)
+  needs checking on both before it ships.
+- **The frontmatter is validated on the website's build.** `date` and `title`
+  are both required there. Omitting one fails `bun run build` in `web/`, which
+  is deliberate: the app would silently render a headless entry instead.
+
+Files not named like a version (this README, drafts) are ignored by both.
+
 ## Adding a release
 
 Create one file per release named **after the version**, matching the prod
