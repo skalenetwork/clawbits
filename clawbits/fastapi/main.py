@@ -5,13 +5,24 @@ import threading
 from contextlib import asynccontextmanager
 
 import uvicorn
-
-# Load environment variables
-from dotenv import load_dotenv
 from fastapi import HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+# Load .env BEFORE importing anything under ``clawbits``. Order is load-bearing:
+# ``clawbits.lobstertalk.attention.crypto`` reads its Fernet secrets key from
+# the environment at *import* time, and the ``from clawbits.fastapi ...``
+# imports below pull it in transitively. With load_dotenv() left until after
+# those imports (where it used to live), a key present only in ``.env`` — the
+# documented ``cp .env.example .env`` + ``uvicorn`` startup — was invisible:
+# storing an org API key 503'd and the miss was silent. dotenvx-based startup
+# injects the environment before the process starts, so it was unaffected
+# either way. (E402 on the clawbits imports below is expected and ignored for
+# this entrypoint in pyproject — the whole point is to run a statement first.)
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from clawbits.cloudflare.setup_r2 import provision_r2_on_startup
 from clawbits.fastapi.avatar_endpoints import avatar_router
@@ -35,8 +46,6 @@ from clawbits.realtime import (
     start_push_dispatcher,
     stop_push_dispatcher,
 )
-
-load_dotenv()
 
 # Custom FileResponse with cache-busting headers
 class NoCacheFileResponse(FileResponse):
@@ -82,9 +91,10 @@ async def lifespan(server: ClawBitsServer):
     # download must not block executor join on shutdown (dev --reload).
     #
     # The feature is now org-toggled (no env flag), so warm only when at least
-    # one org has armed it — a server no org uses skips the download entirely.
-    # A DB hiccup here must not block boot: fall back to no warm (the gate still
-    # builds lazily on the first post from an enabled org).
+    # one org has armed it in a gate-using mode — a server no org uses (or
+    # whose orgs are all llm_only/'all', which never embed) skips the download
+    # entirely. A DB hiccup here must not block boot: fall back to no warm
+    # (the gate still builds lazily on the first post from an enabled org).
     import logging as _logging
 
     from sqlmodel import Session as _Session
@@ -95,7 +105,7 @@ async def lifespan(server: ClawBitsServer):
     _warm_attention = False
     try:
         with _Session(server._engine) as _db:
-            _warm_attention = _TableRead.any_org_attention_enabled(_db)
+            _warm_attention = _TableRead.any_org_attention_needs_gate(_db)
     except Exception:
         _logging.warning("attention gate warm-up check failed; skipping boot warm", exc_info=True)
     if _warm_attention:
@@ -169,6 +179,17 @@ async def lifespan(server: ClawBitsServer):
     # online on every other viewer until they refresh the page.
     expiry_task = asyncio.create_task(user_presence_expiry_watcher(server._engine))
 
+    # Background task: replay LobsterTalk posts that landed during an active
+    # (agent, channel) cooldown. Without this a window-blocked question is
+    # simply lost unless someone re-asks after the cooldown; the watcher
+    # bridges the cooldown key's Redis expiry to a deferred attention pass
+    # for the newest such post. See attention/service.py.
+    from clawbits.lobstertalk.attention.service import attention_cooldown_catchup_watcher
+
+    attention_catchup_task = asyncio.create_task(
+        attention_cooldown_catchup_watcher(server._engine)
+    )
+
     # Background task: reap streaming posts abandoned by a crashed agent.
     # Without this a stuck `streaming` row pins the agent's "generating…"
     # pill forever and freezes watermark-based consumers (the IronClaw
@@ -191,6 +212,11 @@ async def lifespan(server: ClawBitsServer):
     expiry_task.cancel()
     try:
         await expiry_task
+    except (asyncio.CancelledError, Exception):
+        pass
+    attention_catchup_task.cancel()
+    try:
+        await attention_catchup_task
     except (asyncio.CancelledError, Exception):
         pass
     streaming_reaper_task.cancel()

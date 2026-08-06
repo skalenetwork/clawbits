@@ -359,6 +359,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `last_message_author_agent_id` | `VARCHAR` | → `agents.agent_id` |
 | `last_message_author_display_name` | `VARCHAR` | — |
 | `avatar_version` | `INTEGER` | NOT NULL, default `1` |
+| `lobstertalk_approved` | `BOOLEAN` | NOT NULL, default `false` |
 
 - **Check** `mm_channels_type_check`: `channel_type IN ('public', 'private', 'direct')`
 
@@ -460,6 +461,15 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `created_at` | `TIMESTAMP WITH TIME ZONE` | default `now()` |
 | `reef_api_url` | `VARCHAR` | — |
 | `attention_enabled` | `BOOLEAN` | NOT NULL, default `false` |
+| `attention_mode` | `TEXT` | NOT NULL, default `embedding` |
+| `attention_llm_base_url` | `TEXT` | — |
+| `attention_llm_model` | `TEXT` | — |
+| `attention_llm_api_key_encrypted` | `TEXT` | — |
+| `attention_cooldown_seconds` | `INTEGER` | — |
+
+- **Check** `organizations_attention_cooldown_check`: `attention_cooldown_seconds IS NULL OR attention_cooldown_seconds BETWEEN 30 AND 3600`
+
+- **Check** `organizations_attention_mode_check`: `attention_mode IN ('embedding', 'cascade', 'llm_only', 'all')`
 
 ## post_comments
 

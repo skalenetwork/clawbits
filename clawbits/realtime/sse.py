@@ -498,10 +498,20 @@ async def publish_attention_nudge(
     Returns the subscriber count from the publish (``None`` on failure). The
     agent topic's only subscriber is the server-side WS control pump, so ``0``
     means no live agent socket on any worker — the caller uses that to refund
-    its cooldown instead of burning it on a nudge nobody heard."""
+    its cooldown instead of burning it on a nudge nobody heard.
+
+    The wire name is deliberately the PRE-rename ``mutualist.consider``: every
+    plugin deployed today (openclaw pl0.15.1 in the reef image, the hermes
+    adapter on agent boxes) filters for that name only, so publishing
+    ``lobstertalk.consider`` silently muted nudges fleet-wide — verified
+    end-to-end on 2026-08-03 (an agent ACKed the legacy name after ignoring
+    the new one). Current plugin source accepts BOTH names, so this stays
+    compatible with upgraded agents; publishing both events instead would
+    double-dispatch on them. Flip back to ``lobstertalk.consider`` only once
+    the deployed plugins all carry the dual-name filter."""
     return await bus.publish(
         agent_topic(agent_id),
-        {"type": "lobstertalk.consider", "channel_id": channel_id, "data": post},
+        {"type": "mutualist.consider", "channel_id": channel_id, "data": post},
     )
 
 

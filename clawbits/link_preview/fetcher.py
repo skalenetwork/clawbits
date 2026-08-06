@@ -26,11 +26,11 @@ the *real* host, not the one the user typed). On any failure it raises
 """
 from __future__ import annotations
 
-import ipaddress
-import socket
 from dataclasses import dataclass
 
 import httpx
+
+from clawbits.ssrf import UnsafeHostError, check_host_is_public, dialed_host
 
 # Tuned for "fast enough that a chat message paints, large enough to
 # capture realistic OG-bearing pages":
@@ -69,29 +69,14 @@ def _validate_url(url: str) -> str:
 
 def _check_not_private(host: str) -> None:
     """SSRF guard: refuse to fetch URLs whose host resolves to a private,
-    loopback, or link-local address. Resolves the name and checks every
-    returned address; rejects if *any* of them are private (matches the
-    most conservative interpretation a defender would want).
+    loopback, or link-local address. The rule itself lives in
+    :mod:`clawbits.ssrf` so the LobsterTalk LLM endpoint enforces the same
+    one; this only maps its errors onto the fetcher's ``FetchError``.
     """
     try:
-        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise FetchError(f"DNS lookup failed: {exc}") from exc
-    addrs = {info[4][0] for info in infos}
-    for addr in addrs:
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
-            raise FetchError(f"refusing to fetch private address: {addr}")
+        check_host_is_public(host)
+    except UnsafeHostError as exc:
+        raise FetchError(str(exc)) from exc
 
 
 async def fetch_html(url: str) -> FetchResult:
@@ -122,7 +107,10 @@ async def fetch_html(url: str) -> FetchResult:
     ) as client:
         for _hop in range(MAX_REDIRECTS + 1):
             parsed = httpx.URL(current)
-            _check_not_private(parsed.host)
+            # ``dialed_host``, not ``parsed.host`` — see its docstring: for an
+            # internationalised name the two differ, and checking the one we
+            # don't dial vets the wrong host.
+            _check_not_private(dialed_host(parsed))
             try:
                 async with client.stream("GET", current) as resp:
                     if resp.is_redirect:

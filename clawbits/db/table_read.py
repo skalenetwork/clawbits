@@ -1137,13 +1137,36 @@ class TableRead:
         return bool(row.attention_enabled) if row else False
 
     @staticmethod
-    def any_org_attention_enabled(session: Session) -> bool:
-        """True if at least one org has the LobsterTalk gate armed. Used at boot to
-        decide whether to warm the (67MB) encoder — a server no org uses skips the
-        download entirely."""
+    def any_org_attention_needs_gate(session: Session) -> bool:
+        """True if at least one org has the LobsterTalk gate armed in a mode that
+        uses the embedding encoder. Used at boot to decide whether to warm the
+        (67MB) encoder — a server whose orgs are all off, llm_only, or 'all'
+        (neither ever embeds) skips the download entirely."""
         return session.exec(
-            select(Organization.org_id).where(Organization.attention_enabled.is_(True)).limit(1)
+            select(Organization.org_id)
+            .where(Organization.attention_enabled.is_(True))
+            .where(Organization.attention_mode.notin_(("llm_only", "all")))
+            .limit(1)
         ).first() is not None
+
+    @staticmethod
+    def get_org_lobstertalk_config(session: Session, org_id: str) -> dict | None:
+        """The org's full LobsterTalk attention config —
+        ``{enabled, mode, base_url, model, api_key_encrypted}`` — or ``None``
+        for an unknown org (caller decides 404). ``api_key_encrypted`` is the
+        stored Fernet token, never plaintext; callers that need the key decrypt
+        it via :mod:`clawbits.lobstertalk.attention.crypto`."""
+        row = session.get(Organization, org_id)
+        if row is None:
+            return None
+        return {
+            "enabled": bool(row.attention_enabled),
+            "mode": row.attention_mode or "embedding",
+            "base_url": row.attention_llm_base_url,
+            "model": row.attention_llm_model,
+            "api_key_encrypted": row.attention_llm_api_key_encrypted,
+            "cooldown_seconds": row.attention_cooldown_seconds,
+        }
 
     @staticmethod
     def get_organization_by_workos_id(
@@ -2592,6 +2615,11 @@ class TableRead:
             d = TableRead._channel_to_dict(c, session)
             d["member_count"] = int(member_count or 0)
             d["last_message_at"] = _iso(last_message_at)
+            # Allowlist state for the Settings → LobsterTalk approval UI.
+            # Set here, not in _channel_to_dict — the flag is org governance,
+            # scoped to this owner-only listing rather than every channel
+            # payload. Always false on private rows (the PUT refuses them).
+            d["lobstertalk_approved"] = bool(c.lobstertalk_approved)
             # Redact private channels the viewer isn't in: hide identity
             # (name, display name, avatar) AND content (preview + author).
             # Only non-identifying metadata stays - member count,

@@ -39,6 +39,7 @@ import SettingsPrivacyPage from "./pages/SettingsPrivacyPage";
 import SettingsNotificationsPage from "./pages/SettingsNotificationsPage";
 import SettingsAgentsPage from "./pages/SettingsAgentsPage";
 import SettingsChannelsPage from "./pages/SettingsChannelsPage";
+import SettingsLobstertalkPage from "./pages/SettingsLobstertalkPage";
 import SettingsReefPage from "./pages/SettingsReefPage";
 import AutomationsPage from "./pages/AutomationsPage";
 import AutomationDetailPage from "./pages/AutomationDetailPage";
@@ -120,6 +121,7 @@ function AppShell() {
           <Route path="/settings/members" element={<OrgMembersPage />} />
           <Route path="/settings/usage" element={<OrgUsagePage />} />
           <Route path="/settings/channels" element={<SettingsChannelsPage />} />
+          <Route path="/settings/lobstertalk" element={<SettingsLobstertalkPage />} />
           <Route path="/settings/reef" element={<SettingsReefPage />} />
           {/* NOT dead: agent_signup.py mints this exact path into every
               approval_url. Remove only after the backend mints /agents

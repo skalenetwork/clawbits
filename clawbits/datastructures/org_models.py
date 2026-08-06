@@ -1,7 +1,8 @@
 """Organization data models (GitHub-style orgs)."""
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from clawbits.datastructures.avatar_models import AvatarRef
 
@@ -55,6 +56,115 @@ class SetOrgAttentionRequest(BaseModel):
 class OrgAttentionResponse(BaseModel):
     """The org's current LobsterTalk attention opt-in state."""
     enabled: bool = False
+
+
+class SetOrgLobstertalkRequest(BaseModel):
+    """Owner-set LobsterTalk attention config: the org toggle, the decision
+    mode, and (for the LLM modes) the OpenAI-compatible LLM endpoint. The API
+    key is write-only — omit it to keep the stored key, or send
+    ``clear_api_key`` to drop it."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    enabled: bool = Field(description="Whether the LobsterTalk attention gate is armed for this org")
+    mode: Literal["embedding", "cascade", "llm_only", "all"] = Field(
+        default="embedding",
+        description=(
+            "'embedding' = gate verdict alone; 'cascade' = gate pass confirmed by an "
+            "LLM triage call; 'llm_only' = no gate, every post goes to the LLM triage "
+            "(fails closed when the endpoint is unusable); 'all' = no triage at all — "
+            "every post is delivered and the agent itself decides whether to reply"
+        ),
+    )
+    base_url: str | None = Field(
+        default=None, max_length=2048,
+        description="OpenAI-compatible API base URL (e.g. https://api.openai.com/v1)",
+    )
+    model: str | None = Field(
+        default=None, max_length=256,
+        description="Chat model name at that endpoint",
+    )
+    api_key: str | None = Field(
+        default=None, min_length=1, max_length=4096,
+        description="API key for the endpoint (stored encrypted); omit to keep the current key",
+    )
+    clear_api_key: bool = Field(default=False, description="Drop the stored API key")
+    cooldown_seconds: int | None = Field(
+        default=None, ge=30, le=3600,
+        description=(
+            "Per-(agent, channel) nudge cooldown override in seconds; null "
+            "inherits the server default. Bounded 30..3600 — the floor is what "
+            "keeps a busy channel from becoming a turn-per-message firehose "
+            "(and, in the LLM modes, a call-per-message bill); huge values "
+            "effectively mute the feature."
+        ),
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def _normalize_base_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().rstrip("/")
+        if not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("base_url must start with http:// or https://")
+        # An OpenAI-compatible base URL is scheme://host[:port]/path and nothing
+        # more. Userinfo, a query string and a fragment are each a place a secret
+        # can ride along — and this value is handed back to *every* org member on
+        # GET and written to the server log on a triage failure. Reject them here
+        # rather than store, echo and log them. (The SDK builds request URLs by
+        # appending to the base and drops a base-URL query anyway, so this
+        # forbids nothing that would otherwise have worked.)
+        parts = urlsplit(v)
+        if parts.username or parts.password or "@" in parts.netloc:
+            raise ValueError("base_url must not contain credentials (user:pass@…)")
+        if parts.query:
+            raise ValueError("base_url must not contain a query string")
+        if parts.fragment:
+            raise ValueError("base_url must not contain a fragment")
+        return v
+
+    @model_validator(mode="after")
+    def _check_cross_field(self) -> SetOrgLobstertalkRequest:
+        if self.mode in ("cascade", "llm_only") and not (self.base_url and self.model):
+            raise ValueError(f"{self.mode} mode requires base_url and model")
+        if self.api_key is not None and self.clear_api_key:
+            raise ValueError("api_key and clear_api_key are mutually exclusive")
+        return self
+
+
+class OrgLobstertalkResponse(BaseModel):
+    """The org's LobsterTalk attention config. The stored API key is never
+    returned — ``api_key_set`` only reports whether one exists."""
+    enabled: bool = False
+    mode: Literal["embedding", "cascade", "llm_only", "all"] = "embedding"
+    base_url: str | None = None
+    model: str | None = None
+    api_key_set: bool = False
+    # The org's cooldown override (null = inheriting) plus the server default
+    # it would inherit — so the UI can label the empty field truthfully
+    # instead of guessing what "default" means on this deployment.
+    cooldown_seconds: int | None = None
+    default_cooldown_seconds: int = 300
+
+
+class OrgLobstertalkHealthResponse(BaseModel):
+    """Result of one live probe call against the org's stored LobsterTalk LLM
+    endpoint. ``detail`` is operator-facing text naming the failing stage (or
+    confirming success); it never contains the stored key."""
+    ok: bool
+    detail: str = ""
+    latency_ms: int = 0
+
+
+class SetOrgLobstertalkChannelRequest(BaseModel):
+    """Owner write to the per-channel LobsterTalk allowlist (closed by
+    default): whether the attention pass may operate in one public channel."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    approved: bool = Field(description="Whether LobsterTalk may operate in this channel")
+
+
+class OrgLobstertalkChannelResponse(BaseModel):
+    channel_id: str
+    lobstertalk_approved: bool
 
 
 class OrgResponse(BaseModel):
