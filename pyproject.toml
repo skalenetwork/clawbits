@@ -9,7 +9,7 @@ dependencies = [
     "eth-account>=0.13,<0.14",
     "eth-typing>=4.4,<5",
     "eth-utils>=4.1,<5",
-    "fastapi>=0.136",
+    "fastapi>=0.141.1",
     # Capped: clawbits/ssrf.py's pinning transport rides two contracts httpx
     # does not consider public API — that a subclass may rewrite request.url in
     # handle_async_request, and that the httpcore-level ``sni_hostname``
@@ -22,7 +22,7 @@ dependencies = [
     # endpoint. Base, not the `router` extra: llm_only runs the triage without
     # the embedding gate, so it must work on a clean install with no extra —
     # the SDK is small and pure-python. (The heavy ML deps stay in `router`.)
-    "openai>=2",
+    "openai>=2.52.1",
     "psycopg[binary]>=3.2",
     "Pillow>=11",
     "pydantic>=2.13",
@@ -30,7 +30,7 @@ dependencies = [
     "python-dotenv>=1.2",
     "python-multipart>=0.0.20",
     "pywebpush>=2.0",
-    "redis>=5.2",
+    "redis>=8.1.0",
     "sqlmodel>=0.0.22",
     "uvicorn[standard]>=0.44",
     "websockets>=13",  # reef surface proxy (reef/api/proxy.py)
@@ -41,7 +41,7 @@ dependencies = [
 dev = [
     "pre-commit>=4.6.0",
     "pytest>=9",
-    "ruff>=0.15",
+    "ruff>=0.16.1",
 ]
 
 [project.optional-dependencies]
