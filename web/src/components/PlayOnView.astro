@@ -1,0 +1,35 @@
+---
+/**
+ * Starts the looping card visuals where they are actually seen.
+ *
+ * Every animated visual on this page (IntroChat, MailboxVisual, and the
+ * endowment cards still to come) runs one long CSS loop. Left to autoplay they
+ * would be mid-cycle - often mid-fade - by the time anyone scrolls to them, so
+ * each marks itself `data-play-on-view` and stays in its 0% state until this
+ * observer adds `play`.
+ *
+ * Renders nothing. Mount it ONCE per page that has such a visual; the observer
+ * picks up every marked element. Processed (not is:inline) so the production
+ * CSP hashes it - a raw inline block ships unhashed and is silently blocked.
+ */
+---
+
+<script>
+  const boxes = document.querySelectorAll("[data-play-on-view]");
+  if (boxes.length) {
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("play");
+            io.unobserve(entry.target);
+          }
+        }
+      },
+      // Enough of the card on screen that the opening beats are not spent
+      // above the fold. Cards are 300-440px tall, so this is ~110-155px in.
+      { threshold: 0.35 },
+    );
+    for (const box of boxes) io.observe(box);
+  }
+</script>

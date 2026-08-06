@@ -1,0 +1,20 @@
+---
+/**
+ * One numbered section of a legal page.
+ *
+ * Takes the whole section descriptor rather than a loose id/title pair so the
+ * index and the body are driven by the SAME object. Duplicating the strings in
+ * two places is how a table of contents silently stops matching its document.
+ */
+
+interface Props {
+  section: { id: string; title: string };
+}
+
+const { section } = Astro.props;
+---
+
+<section id={section.id}>
+  <h2>{section.title}</h2>
+  <slot />
+</section>

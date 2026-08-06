@@ -160,7 +160,7 @@ export function OptionsStep({
                     >
                         <p className="text-[13px] leading-relaxed text-muted-foreground">
                             After launch, sign in with your ChatGPT account in the
-                            agent's terminal — one command, then approve in your browser.
+                            agent's terminal - one command, then approve in your browser.
                             Your plan powers the agent, and your login never leaves it.
                         </p>
                     </Section>
@@ -200,7 +200,7 @@ export function OptionsStep({
                             <Icon icon={Key} className="size-3 shrink-0"/>
                             {configured
                                 ? "Leave blank to use this Reef's key. Goes to your Reef, never to Clawbits."
-                                : "Session-only: goes straight to your Reef — never to Clawbits."}
+                                : "Session-only: goes straight to your Reef - never to Clawbits."}
                         </p>
                     </Section>
                 )}
@@ -262,7 +262,7 @@ export function OptionsStep({
                                         <option value="__custom">Something else (type it)…</option>
                                     </select>
                                     <p className="px-1 text-xs text-muted-foreground">
-                                        Live from the server — pulled models only.
+                                        Live from the server - pulled models only.
                                     </p>
                                 </>
                             ) : (
@@ -272,12 +272,12 @@ export function OptionsStep({
                                         type="text"
                                         value={state.model}
                                         onChange={onModel}
-                                        placeholder="Model (required) — e.g. llama3.2"
+                                        placeholder="Model (required) - e.g. llama3.2"
                                         disabled={pending}
                                     />
                                     {ollamaProbe.error ? (
                                         <p className="px-1 text-xs text-muted-foreground">
-                                            Couldn't list the server's models — type the tag to pull.
+                                            Couldn't list the server's models - type the tag to pull.
                                         </p>
                                     ) : listed.length > 0 ? (
                                         <button
@@ -373,7 +373,7 @@ export function OptionsStep({
             {nothingToConfigure && (
                 <div className="flex flex-col items-center gap-2 rounded-2xl border border-border/50 bg-foreground/[0.02] px-4 py-8 text-center">
                     <Icon icon={SkipGlyph} className="size-7 text-muted-foreground"/>
-                    <p className="text-sm text-muted-foreground">Nothing extra to configure — you're set.</p>
+                    <p className="text-sm text-muted-foreground">Nothing extra to configure - you're set.</p>
                 </div>
             )}
 

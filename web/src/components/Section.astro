@@ -1,0 +1,87 @@
+---
+/**
+ * The one layout primitive.
+ *
+ * Every block on the site is a <Section>. Sections are separated by vertical
+ * rhythm and a hairline rule - never by cards, borders, or shadows. If a block
+ * needs a card to feel separated, the block is doing too much.
+ *
+ * GOTCHA, verified in the browser: a scoped <style> in a PAGE cannot style this
+ * component's root element. Astro gives each component its own scope id, and
+ * `<Section class="hero">` leaves the <section> carrying Section's id, not the
+ * page's - so a page rule like `.hero { padding-block: ... }` compiles to a
+ * selector that can never match and fails SILENTLY.
+ *
+ * So: spacing variants are props (below), and anything else a page wants to
+ * push down should be a Tailwind utility on `class` (utilities are global, so
+ * they cross the boundary fine). Do not reach for :global().
+ */
+
+interface Props {
+  /** Mono eyebrow label above the content. Omit for hero/CTA blocks. */
+  label?: string;
+  /** Draw the hairline rule at the top edge. Off for the first section. */
+  divider?: boolean;
+  /**
+   * Vertical rhythm.
+   * - `default` - the standard section cadence
+   * - `hero`    - less at the top than the bottom, so the headline sits
+   *               optically centred under the 4.5rem nav rather than low
+   * - `none`    - caller owns its own spacing
+   */
+  pad?: "default" | "hero" | "none";
+  class?: string;
+  id?: string;
+}
+
+const {
+  label,
+  divider = true,
+  pad = "default",
+  class: className = "",
+  id,
+} = Astro.props;
+---
+
+<section class:list={["section", `pad-${pad}`, className]} id={id}>
+  {divider && <div class="rule" aria-hidden="true"></div>}
+  <div class="container">
+    {label && <p class="eyebrow mb-6">{label}</p>}
+    <slot />
+  </div>
+</section>
+
+<style>
+  .section {
+    position: relative;
+  }
+
+  .pad-default {
+    padding-block: var(--spacing-section);
+  }
+
+  .pad-hero {
+    padding-block: clamp(5rem, 14vh, 9rem) clamp(6rem, 14vw, 11rem);
+  }
+
+  .pad-none {
+    padding-block: 0;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 75rem; /* 1200px */
+    margin-inline: auto;
+    /* Wide gutters are load-bearing for the minimalism - do not shrink these
+     * to fit more content. Reduce the content instead. */
+    padding-inline: clamp(1.5rem, 6vw, 5rem);
+  }
+
+  .rule {
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    height: 1px;
+    background: var(--color-line);
+  }
+</style>

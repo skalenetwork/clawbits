@@ -1,0 +1,266 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Clawbits marketing - design tokens
+ *
+ * Art direction v2 (owner, 2026-08-04): an editorial layout on a light page -
+ * near-black text, hairline rails, generous spacing, one accent. The only dark
+ * surfaces are the two rounded "canvases"
+ * (hero + final CTA), which hold the GrainGradient shader in the candy
+ * palette - that shader is the page's one big chroma moment, the way the
+ * candy logo is on the OG card.
+ *
+ * NAMING NOTE, read before "fixing" it: the token names predate the light
+ * flip and are kept because Legal.astro / Docs.astro / RowMock / CodeBlock
+ * consume them by ROLE, which is unchanged:
+ *   --color-ink        the page ground        (now white)
+ *   --color-ink-raised a raised surface       (now light grey)
+ *   --color-paper      primary text on ground (now near-black)
+ * Renaming them means touching every consumer for zero visual change.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  /* The app's own light ground (frontend --background, owner-specified hex).
+   * Raised surfaces sit LIGHTER than the ground, exactly like the app's
+   * --card tier ("smaller real cards sit a tier higher (lighter)"). */
+  --color-ink: #f2efe8;
+  --color-ink-raised: #f8f7f2; /* cards, code blocks, toc, ghost buttons */
+  --color-paper: #0c0d0e; /* text black: lab(2.9) */
+  --color-muted: #6f7176; /* secondary text, ~lab(48.5) */
+  --color-faint: #9d9fa5; /* captions, footer headers */
+  --color-line: rgb(0 0 0 / 0.07); /* hairline rules and rails */
+
+  /* ONE accent, the warm red pulled from the claw. It carries every accent
+   * role on the page - eyebrow links, "Learn more", focus rings.
+   *
+   * These were #d13a54 / #ac2c43, and the old comment claimed the accent held
+   * 4.5:1 "on white". That was true only against literal #ffffff, which this
+   * site never uses as a text ground: on our actual paper --color-ink #f2efe8
+   * it measured 4.11:1, and 4.41:1 on --color-ink-raised. Both are WCAG AA
+   * failures for text, and the eyebrow - the single highest-volume use of the
+   * accent on the site - is text. #c0394f is the same red, half a step darker
+   * and slightly calmer: 4.64:1 on paper, 4.97:1 on raised.
+   *
+   * Kept in lockstep with the app's --signal (frontend/src/index.css), which
+   * carries the same values and the same doctrine. If you change one, change
+   * both, or the marketing site and the product paint different reds. */
+  --color-signal: #c0394f;
+  --color-signal-deep: #a82840; /* hover state; 6.01:1 on paper */
+
+  /* The accent ON the dark canvases. #c0394f is only 3.48:1 against
+   * --color-canvas - fine for a 2px focus outline (non-text wants 3:1) but a
+   * failure for the accent text and pills that also live up there. These are
+   * the app's dark-theme signal values, and .canvas / .cta-canvas below swap
+   * --color-signal to them for their whole subtree, so no consumer needs to
+   * know which ground it is sitting on. */
+  --color-signal-canvas: #df5b6b; /* 5.17:1 on --color-canvas */
+  --color-signal-canvas-deep: #f2808a; /* 7.28:1 */
+
+  /* The dark canvas surfaces (hero, final CTA, dark visual panels). Warm
+   * black, same hue family as the OG card, used as the shader's colorBack. */
+  --color-canvas: #141311;
+  --color-canvas-text: #f7f5f1;
+
+  /* One face, many weights - Geist variable. --font-display and --font-body
+   * both resolve to it; the split names survive because docs/legal reference
+   * them. The scale depends on variable in-between weights (450/550). */
+  --font-display: var(--ff-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--ff-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--ff-mono), ui-monospace, monospace;
+  /* The app's serif - only the hero demo's Home greeting uses it. */
+  --font-serif: var(--ff-serif), ui-serif, Georgia, serif;
+
+  /* Motion. Slow, no bounce - unchanged from v1. */
+  --ease-out-expo: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ── Corner radius ────────────────────────────────────────────────────────
+   * Four roles, and they were four de-facto conventions before they were
+   * tokens: counting every border-radius in the site's own chrome (excluding
+   * the app mockups, which deliberately mirror the app's radii rather than
+   * ours) gives 44 uses of 999px, 13 of 1rem, 5 of the canvas clamp, and the
+   * button value below. Everything else is a one-off.
+   *
+   * These are named at the values already in use, so adding them changed
+   * nothing visually. Existing literals were left alone on purpose - a sweep
+   * across ~70 declarations is its own change, not a side effect of naming
+   * them. New work should reach for the token. */
+
+  /* Fully round. Badges, chips, the nav pill, the scrollbar thumb. */
+  --radius-pill: 999px;
+  /* Panels and cards - anything holding content rather than being a control. */
+  --radius-panel: 1rem;
+  /* Buttons and controls. Copied from the app (frontend Button uses
+   * rounded-lg = --radius = 0.625rem). Not a pill - the owner rejected
+   * fully-rounded buttons. */
+  --radius-btn: 0.625rem;
+  /* The big dark canvases. Scales with the viewport because the surface does:
+   * at 375px a 2rem corner eats the content, at 1440px a 0.75rem corner reads
+   * as square. */
+  --radius-canvas: clamp(0.75rem, 2.5vw, 2.125rem);
+}
+
+/* ── Base ───────────────────────────────────────────────────────────────── */
+
+:root {
+  color-scheme: light;
+}
+
+/* Hoists the hero canvas's view timeline (declared in index.astro) up to
+ * where the fixed nav - a sibling subtree - can consume it. Inert on pages
+ * without the canvas. */
+body {
+  timeline-scope: --hero-view;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  background-color: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-body);
+  /* Base: 16/24. */
+  font-size: 1rem;
+  line-height: 1.5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────────
+ * Slim floating pill, no track, no buttons - applies to the page and to
+ * every inner scroller (docs sidebar, code overflow). The transparent
+ * border + padding-box clip is what insets the thumb into a 4px pill while
+ * keeping a 10px hit target. */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  background-color: rgb(12 13 14 / 0.2);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(12 13 14 / 0.35);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* Firefox has no ::-webkit-scrollbar; give it the thin native bar in the
+ * same colors. Kept out of WebKit/Chromium: setting scrollbar-color there
+ * would DISABLE the fully-custom pseudo styling above. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(12 13 14 / 0.25) transparent;
+  }
+}
+
+/* ── Dark canvases ──────────────────────────────────────────────────────────
+ * The hero, the final CTA, the 404 panel, the download and changelog heroes.
+ * Swapping --color-signal for the whole subtree means every accent consumer
+ * inside a canvas - focus outlines, the 404 dot, any accent text or pill -
+ * gets the legible-on-ink value without a single per-site edit. Custom
+ * properties inherit, so this is the whole mechanism. */
+.canvas,
+.cta-canvas {
+  --color-signal: var(--color-signal-canvas);
+  --color-signal-deep: var(--color-signal-canvas-deep);
+}
+
+::selection {
+  background: var(--color-signal);
+  color: #fff;
+}
+
+/* Selection inside a canvas resolves --color-signal to the lighter red above,
+ * and white on that is only 3.59:1 - so the glyph flips to ink, exactly as the
+ * app's --signal-foreground inverts per theme. 5.17:1. */
+.canvas ::selection,
+.cta-canvas ::selection {
+  background: var(--color-signal);
+  color: var(--color-canvas);
+}
+
+/* Visible, branded focus - never remove it. */
+:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* ── Type scale ─────────────────────────────────────────────────────────────
+ * Sized at a 1333px reference width and clamped down to ~34px (hero) at 375px.
+ * Letter-spacing is normal everywhere except the hero, which tracks -0.01em. */
+
+.display {
+  font-family: var(--font-display);
+  text-wrap: balance;
+}
+
+/* h1: 48/52, weight 400. The floor is sized so the longest hero line
+ * ("Agents don't plug in here.", 26 chars) holds as ONE line on a 375px
+ * viewport with the hero's mobile padding - re-derive it if the headline
+ * changes. */
+.display-hero {
+  font-size: clamp(1.5rem, 0.88rem + 2.65vw, 3rem);
+  font-weight: 400;
+  line-height: 1.084;
+  letter-spacing: -0.01em;
+}
+
+/* Major section h2: 44/48, weight 450. */
+.display-xl {
+  font-size: clamp(1.75rem, 1.39rem + 1.55vw, 2.75rem);
+  font-weight: 450;
+  line-height: 1.1;
+}
+
+/* Legacy size used by the legal pages' h1. */
+.display-lg {
+  font-size: clamp(1.75rem, 1.47rem + 1.2vw, 2.25rem);
+  font-weight: 450;
+  line-height: 1.15;
+}
+
+/* Feature h3: 30/40, weight 500. The tall line-height is deliberate, not an
+ * accident - these headings often run two lines and breathe. */
+.display-md {
+  font-size: clamp(1.5rem, 1.34rem + 0.66vw, 1.875rem);
+  font-weight: 500;
+  line-height: 1.334;
+}
+
+/* Body copy never runs wider than this, regardless of container. */
+.prose-measure {
+  max-width: 62ch;
+  text-wrap: pretty;
+}
+
+/* Quiet label above a heading (legal pages). The homepage uses the accent
+ * eyebrow-link component instead. */
+.eyebrow {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-faint);
+}

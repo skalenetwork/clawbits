@@ -1,0 +1,695 @@
+---
+import { Mail01Icon } from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+
+/**
+ * The "Mailbox" endowment card: an agent's inbox with mail landing in it.
+ *
+ * Fills the card instead of floating a stub in it: the inbox IS the card, full
+ * bleed, on a translucent blurred surface so the candy tint reads through it
+ * and the list runs off the bottom edge - a real column that continues below
+ * the crop, same device as the hero window.
+ *
+ * Anatomy is transcribed from the real inbox, not eyeballed - see
+ * frontend/src/components/agent/inbox/InboxRow.tsx (28px sender avatar, unread
+ * dot in --mention, name 600-when-unread over a subject line, tabular relative
+ * time) and InboxList.tsx (the All/Unread segmented control with counts, the
+ * sticky day bucket). Tokens and avatar species shapes are AppDemo's, from
+ * frontend/src/index.css and lib/avatarShapes.ts. Re-audit before adjusting
+ * any number here by eye.
+ *
+ * The cast is AppDemo's, deliberately: the same people appear in the hero
+ * window two blocks up, so the page reads as one product rather than two sets
+ * of stock names. Publications are lettermark tiles in the app's own sender
+ * accents - drop an `avatar` on those entries to swap in real marks.
+ *
+ * Motion: ONE 15s loop, CSS only, held at 0% until PlayOnView marks it. The
+ * five older rows cascade in downward (a list settling), then four arrive one
+ * at a time from above - each opens its own height, so everything below is
+ * pushed down and the oldest leave under the crop. Enter matches the app's own
+ * `fade-in slide-in-from-top-1`. Both counts roll as mail lands. Reduced
+ * motion gets the finished inbox, static.
+ *
+ * CSP NOTE: no style attributes anywhere - per-row cues are nth-of-type
+ * classes in the stylesheet. The production build drops inline styles.
+ */
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = "" } = Astro.props;
+
+/** The mailbox this card belongs to. Grounded in the spec: agent addresses are
+ * `{agent_id}@clawbits.ai` on the deployment's domain (AGENT_EMAIL_API.md). */
+const ADDRESS = "atlas@clawbits.ai";
+
+interface Mail {
+  name: string;
+  subject: string;
+  time: string;
+  /** Drives the avatar silhouette, exactly as the app's species shapes do. */
+  kind: "human" | "agent" | "mark";
+  /** Portrait for people and agents; absent for lettermark tiles. */
+  avatar?: string;
+  /** Tile tint class for `kind: "mark"` - the app's soft sender accents. */
+  accent?: "amber" | "teal" | "violet";
+  /** Landed during the loop: carries the unread dot and the heavier name. */
+  fresh?: boolean;
+}
+
+/**
+ * Newest first, like the real list. The first four arrive during the loop (in
+ * reverse, so the newest lands last); the rest are the inbox they land into.
+ */
+const MAIL: Mail[] = [
+  {
+    name: "Mara Ellison",
+    subject: "Can you pull yesterday's deploy log?",
+    time: "2m",
+    kind: "human",
+    avatar: "/avatars/human-1.png",
+    fresh: true,
+  },
+  {
+    name: "Compute Weekly",
+    subject: "Issue 212: the small-model turn",
+    time: "9m",
+    kind: "mark",
+    accent: "amber",
+    fresh: true,
+  },
+  {
+    name: "scout",
+    subject: "Flaky test fix merged, CI is green",
+    time: "24m",
+    kind: "agent",
+    avatar: "/avatars/agent-3.svg",
+    fresh: true,
+  },
+  {
+    name: "Priya Raman",
+    subject: "Re: Q3 numbers, one correction",
+    time: "41m",
+    kind: "human",
+    avatar: "/avatars/human-3.png",
+  },
+  {
+    name: "The Standup",
+    subject: "Your Tuesday digest",
+    time: "2h",
+    kind: "mark",
+    accent: "teal",
+  },
+  {
+    name: "Josh Neumann",
+    subject: "Invoice 0142 approved",
+    time: "3h",
+    kind: "human",
+    avatar: "/avatars/human-2.png",
+  },
+  {
+    name: "Ledger Digest",
+    subject: "Weekly close, 4 items to review",
+    time: "5h",
+    kind: "mark",
+    accent: "violet",
+  },
+  {
+    name: "quill",
+    subject: "Speech notes pushed to the repo",
+    time: "6h",
+    kind: "agent",
+    avatar: "/avatars/agent-4.svg",
+  },
+  {
+    name: "Sasha Ferrand",
+    subject: "Thanks for the notes",
+    time: "9h",
+    kind: "human",
+    avatar: "/avatars/human-4.png",
+  },
+];
+
+/** Both tab counts roll through five states as the four messages land. The
+ * mailbox total is deliberately large: the list is a slice of it, not all
+ * of it. */
+const ALL_COUNTS = ["215", "216", "217", "218"];
+const UNREAD_COUNTS = ["0", "1", "2", "3"];
+
+/** Sender initials, same rule as the inbox's `initials()`. */
+const initials = (name: string) => {
+  const parts = name.trim().split(/\s+/);
+  const first = parts[0] ?? "?";
+  return parts.length > 1 ? `${first[0] ?? ""}${parts[parts.length - 1]?.[0] ?? ""}` : first[0] ?? "?";
+};
+---
+
+<div class:list={["mbox", className]} data-play-on-view aria-hidden="true">
+  <div class="mpanel">
+    {/* The identity beat: this agent's own address, on its own mailbox. */}
+    <div class="mhead">
+      <span class="mic" set:html={ico(Mail01Icon)} />
+      <span class="maddr">{ADDRESS}</span>
+    </div>
+
+    {/* The All / Unread segmented control. Each count is a stack of states
+        in one fixed-width box; the loop cross-fades between them, so the
+        digits roll without the pill resizing. */}
+    <div class="mtabs">
+      <span class="mtab on">
+        All
+        <span class="mn w3">
+          {ALL_COUNTS.map((n, i) => <i class:list={["d", `s${i}`]}>{n}</i>)}
+        </span>
+      </span>
+      <span class="mtab">
+        Unread
+        <span class="mn w1">
+          {UNREAD_COUNTS.map((n, i) => <i class:list={["d", `s${i}`]}>{n}</i>)}
+        </span>
+      </span>
+    </div>
+
+    <div class="mday">Today</div>
+
+    <ul class="mlist">
+      {
+        MAIL.map((m) => (
+          <li class:list={["mrow", { fresh: m.fresh }]}>
+            {m.avatar ? (
+              <img
+                class:list={["mav", m.kind === "agent" ? "av-a" : "av-h"]}
+                src={m.avatar}
+                alt=""
+                width="128"
+                height="128"
+                loading="lazy"
+              />
+            ) : (
+              <span class:list={["mav", "av-m", `ac-${m.accent}`]}>{initials(m.name)}</span>
+            )}
+            <div class="mbody">
+              <div class="mline">
+                {m.fresh && <span class="mdot" />}
+                <span class="mname">{m.name}</span>
+                <span class="mtime">{m.time}</span>
+              </div>
+              <div class="msub">{m.subject}</div>
+            </div>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</div>
+
+<style>
+  /* ── The card box: identical geometry to the .pastel cards it replaces
+   * (index.astro), so the four-up grid stays even. ── */
+  .mbox {
+    /* Excluded from scroll anchoring, along with its subtree.
+     *
+     * These visuals change the height of their own children on a loop. When
+     * the box is scrolled PART WAY past the top of the viewport, Chrome picks
+     * an anchor node inside it, sees that node move as the stack grows, and
+     * "corrects" by scrolling the page - measured at 192px of drift per cycle
+     * with the box top between roughly -60px and -160px. Nothing here is
+     * content a reader is tracking, so nothing here should ever be an anchor. */
+    overflow-anchor: none;
+    position: relative;
+    aspect-ratio: 4 / 5;
+    border-radius: 1rem;
+    overflow: hidden;
+    background: linear-gradient(150deg, #fdeaec, #f8ccd4);
+
+    /* Real app tokens (frontend/src/index.css, sRGB-converted) - same set
+     * AppDemo carries. */
+    /* ── Shared card tokens ──────────────────────────────────────────────
+     * One value per role across all four endowment cards, chosen to match the
+     * real app (frontend/src/index.css, mirrored in AppDemo.astro). Change
+     * these together or the row stops reading as one system.
+     * ────────────────────────────────────────────────────────────────── */
+    --ink: #1e1e1e;
+    --mut: #5e5a52;
+    /* Secondary text. A colour, not an opacity - opacity over a tinted panel
+     * drifts toward the card's hue and each card drifted differently. */
+    --mut-2: rgb(94 90 82 / 0.85);
+    --line: rgb(212 205 191 / 0.7);
+    --chip: rgb(30 30 30 / 0.055);
+    --fill: #dbd7cc;
+    /* The tier above the panel: what a list, a well or a control sits on. The
+     * panel itself is translucent, so this is white rather than a grey - it
+     * lifts content OUT of the card tint instead of restaining it. */
+    --raise: rgb(255 255 255 / 0.72);
+    /* Run/diff outcomes, shared so green means one thing on this page. */
+    --ok: #047857;
+    --ok-fill: rgb(16 185 129 / 0.9);
+    --bad: #b91c1c;
+    --bad-fill: rgb(239 68 68 / 0.8);
+    /* The app's unread dot. */
+    --mention: #2f6bf6;
+
+    font-family: var(--ff-app);
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    text-align: left;
+  }
+
+  /* The .pastel cards go landscape on the narrowest column; match, or the
+   * grid gets a stray portrait tile. */
+  @media (max-width: 30rem) {
+    .mbox {
+      aspect-ratio: 16 / 10;
+    }
+  }
+
+  /* Full bleed - no frame. The surface is translucent glass over the candy
+   * tint, the same treatment AppDemo gives the desktop window (--bg at 0.72
+   * with a blur behind it), so the card still reads as a member of the pastel
+   * row rather than a white panel sitting in one. Kept as its own layer above
+   * .mbox rather than folded into it: backdrop-filter samples what is painted
+   * BEHIND the element, and .mbox's gradient is its own background, so moving
+   * this up a level would blur the page instead of the tint. */
+  .mpanel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: inherit;
+    /* The one inset knob. Every child derives from it, so the envelope, the
+     * day label and every row avatar keep a single left edge no matter what
+     * this is set to. Fixed px rather than a percentage: the whole card is a
+     * real UI at a real scale, and a proportional inset would make the chrome
+     * grow with the column. */
+    --pad: 20.5px;
+    /* 0.52, not AppDemo's 0.72: the window there sits over a dark shader and
+     * only needs to not be opaque, whereas this card has to hold its place in
+     * a row of saturated pastels - above ~0.6 the tint washes out and the
+     * card reads white next to its three siblings. Measured at 0.52: muted
+     * text 5.5:1 on the tinted surface, ink 13.5:1. */
+    background: rgb(247 245 240 / 0.52);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    backdrop-filter: blur(28px) saturate(150%);
+    overflow: hidden;
+    /* The rim AppDemo gives the window: without it the panel has no edge and
+     * the card reads as a tinted field rather than a surface. */
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.55);
+  }
+
+  /* ── Header ── */
+
+  .mhead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    padding: 17px var(--pad) 10.5px;
+  }
+
+  .mic {
+    display: inline-flex;
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    color: var(--mut);
+  }
+
+  .mic :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .maddr {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  /* ── Filter tabs ── */
+
+  .mtabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2.5px;
+    flex-shrink: 0;
+    /* The track is a control, not a text column: it sits 4.5px proud of the
+     * copy's edge so its own 2.5px inner padding lands the labels on it. */
+    margin: 0 calc(var(--pad) - 4.5px) 10.5px;
+    padding: 2.5px;
+    border-radius: 9px;
+    background: var(--chip);
+  }
+
+  .mtab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4.5px;
+    height: 22px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--mut);
+  }
+
+  /* The active pill. Translucent rather than the app's opaque #f8f7f1: a
+   * solid chip on a glass surface reads as a sticker. */
+  .mtab.on {
+    background: var(--raise);
+    color: var(--ink);
+    box-shadow: 0 1px 2.5px rgb(0 0 0 / 0.06);
+  }
+
+  /* Fixed-width count box: every state stacks in the same cell, so a roll
+   * never nudges the label. */
+  .mn {
+    position: relative;
+    display: inline-block;
+    height: 12.5px;
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
+    line-height: 12.5px;
+  }
+
+  .w1 {
+    width: 1ch;
+  }
+
+  .w3 {
+    width: 3ch;
+  }
+
+  .d {
+    position: absolute;
+    inset: 0;
+    font-style: normal;
+    opacity: 0;
+  }
+
+  /* Static baseline (no motion, or before the loop starts): the settled
+   * inbox, all four having arrived. */
+  .s3 {
+    opacity: 1;
+  }
+
+  .mday {
+    /* Inset divider. A rule bled to the panel edge cuts the card in two; an
+     * inset one separates the regions inside it. Drawn as a background rather
+     * than a border because only a background can be inset horizontally. */
+    background-image: linear-gradient(var(--line), var(--line));
+    background-repeat: no-repeat;
+    background-size: calc(100% - var(--pad) * 2) 1px;
+    background-position: var(--pad) 0;
+    flex-shrink: 0;
+    padding: 10px var(--pad) 5px;
+    font-size: 11px;
+    color: var(--mut);
+  }
+
+  /* ── The list ── */
+
+  .mlist {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    /* The crop is a fade, not a guillotine. */
+    -webkit-mask-image: linear-gradient(to top, transparent 0, #000 16px);
+    mask-image: linear-gradient(to top, transparent 0, #000 16px);
+    margin: 0;
+    /* Rows carry 9px of their own, so the list gives back the rest - the
+     * difference is the bleed a row highlight would need. */
+    padding: 0 calc(var(--pad) - 9px);
+    list-style: none;
+  }
+
+  /* Fixed height, so the open/closed keyframes are exact rather than
+   * approximate: a 37px body (15 + 2 + 15) centred in 44.
+   *
+   * NO vertical padding, deliberately: a border-box element cannot be shorter
+   * than its own block padding, so `max-height: 0` would leave every collapsed
+   * row 14px tall and the closed rows would hold open a gap. The 7px is bought
+   * with the height instead. */
+  .mrow {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 54px;
+    margin-bottom: 1px;
+    padding-inline: 9px;
+    border-radius: 11.5px;
+    overflow: hidden;
+  }
+
+  /* Species silhouettes (lib/avatarShapes.ts): people round, agents round
+   * with the machined bottom-left tail, brand tiles square. */
+  .mav {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    display: block;
+    object-fit: cover;
+    background: var(--fill);
+  }
+
+  .av-h {
+    border-radius: 18.5px;
+  }
+
+  .av-a {
+    border-radius: 18.5px;
+    border-bottom-left-radius: 7px;
+  }
+
+  .av-m {
+    display: grid;
+    place-items: center;
+    border-radius: 7px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  /* Soft sender accents, the register the inbox uses for monograms. */
+  .ac-amber {
+    background:
+      linear-gradient(rgb(245 158 11 / 0.18), rgb(245 158 11 / 0.18)),
+      var(--raise);
+    color: #92400e;
+  }
+
+  .ac-teal {
+    background:
+      linear-gradient(rgb(20 184 166 / 0.18), rgb(20 184 166 / 0.18)),
+      var(--raise);
+    color: #115e59;
+  }
+
+  .ac-violet {
+    background:
+      linear-gradient(rgb(139 92 246 / 0.18), rgb(139 92 246 / 0.18)),
+      var(--raise);
+    color: #5b21b6;
+  }
+
+  .mbody {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .mline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 18px;
+  }
+
+  .mdot {
+    width: 6px;
+    height: 6px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--mention);
+  }
+
+  .mname {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--mut);
+  }
+
+  /* Unread rows carry the weight shift, same as the app. */
+  .fresh .mname {
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .mtime {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--mut);
+    opacity: 0.8;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .msub {
+    margin-top: 2.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--mut);
+  }
+
+  .fresh .msub {
+    font-weight: 500;
+    color: rgb(30 30 30 / 0.9);
+  }
+
+  /* ── The 15s loop ────────────────────────────────────────────────────────
+   * The card opens on a settled inbox and mail starts landing in it: the four
+   * arrivals come in from ABOVE at 15 / 29 / 43 / 57% of the cycle (2.1s
+   * apart, enough to read the one that just came in), each opening its own
+   * height so the whole list below is pushed down and the oldest rows leave
+   * under the crop. 57 -> 86% holds the full inbox.
+   *
+   * The seam is a 0.8s crossfade, not a rebuild. Everything dissolves at
+   * 86-88.5%; the four arrivals collapse at 89.5% while they are invisible,
+   * which is the only moment the list jumps; the five it landed into fade
+   * straight back in, staggered, at 94-99.6% - BEFORE the wrap, so 100% and 0%
+   * are the same frame and the loop has no discontinuity. Those five never
+   * collapse, so the inbox is never seen empty for more than the dissolve.
+   *
+   * Written out per row rather than staggered with negative delays: a delay
+   * shifts a row's exit as well as its cue, which would tear the seam apart.
+   *
+   * Rows are open by default, so reduced motion - and the moment before
+   * PlayOnView marks the card - both show the settled inbox.
+   * ────────────────────────────────────────────────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    .mrow {
+      max-height: 0;
+      margin-bottom: 0;
+      opacity: 0;
+      translate: 0 -7px;
+    }
+
+    .s3 {
+      opacity: 0;
+    }
+
+    .s0 {
+      opacity: 1;
+    }
+
+    .play .mrow:nth-of-type(1) { animation: r2 15s ease infinite; }
+    .play .mrow:nth-of-type(2) { animation: r3 15s ease infinite; }
+    .play .mrow:nth-of-type(3) { animation: r4 15s ease infinite; }
+    .play .mrow:nth-of-type(4) { animation: r5 15s ease infinite; }
+    .play .mrow:nth-of-type(5) { animation: r5 15s ease infinite; }
+    .play .mrow:nth-of-type(6) { animation: r6 15s ease infinite; }
+    .play .mrow:nth-of-type(7) { animation: r7 15s ease infinite; }
+    .play .mrow:nth-of-type(8) { animation: r8 15s ease infinite; }
+    .play .mrow:nth-of-type(9) { animation: r9 15s ease infinite; }
+
+    .play .s0 { animation: c0 15s ease infinite; }
+    .play .s1 { animation: c1 15s ease infinite; }
+    .play .s2 { animation: c2 15s ease infinite; }
+    .play .s3 { animation: c4 15s ease infinite; }
+  }
+
+  /* Arrivals, newest last. The open is the app's own fade-in +
+   * slide-in-from-top, at its ~375ms duration; the collapse at 89.5% happens
+   * with the row already invisible. */
+
+  @keyframes r2 {
+    0%, 43% { max-height: 0; margin-bottom: 0; opacity: 0; translate: 0 -7px; }
+    45.5%, 86% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+    88.5% { max-height: 54px; margin-bottom: 1px; opacity: 0; translate: 0 0; }
+    89.5%, 100% { max-height: 0; margin-bottom: 0; opacity: 0; translate: 0 -7px; }
+  }
+
+  @keyframes r3 {
+    0%, 29% { max-height: 0; margin-bottom: 0; opacity: 0; translate: 0 -7px; }
+    31.5%, 86% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+    88.5% { max-height: 54px; margin-bottom: 1px; opacity: 0; translate: 0 0; }
+    89.5%, 100% { max-height: 0; margin-bottom: 0; opacity: 0; translate: 0 -7px; }
+  }
+
+  @keyframes r4 {
+    0%, 15% { max-height: 0; margin-bottom: 0; opacity: 0; translate: 0 -7px; }
+    17.5%, 86% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+    88.5% { max-height: 54px; margin-bottom: 1px; opacity: 0; translate: 0 0; }
+    89.5%, 100% { max-height: 0; margin-bottom: 0; opacity: 0; translate: 0 -7px; }
+  }
+
+  /* The inbox they land into. Height never changes - these only dissolve for
+   * the seam and fade back in staggered, so the list is whole again before
+   * the cycle wraps. */
+  @keyframes r5 {
+    0%, 86% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+    88.5%, 94% { max-height: 54px; margin-bottom: 1px; opacity: 0; translate: 0 -7px; }
+    96.8%, 100% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+  }
+
+  @keyframes r6 {
+    0%, 86% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+    88.5%, 94.7% { max-height: 54px; margin-bottom: 1px; opacity: 0; translate: 0 -7px; }
+    97.5%, 100% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+  }
+
+  @keyframes r7 {
+    0%, 86% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+    88.5%, 95.4% { max-height: 54px; margin-bottom: 1px; opacity: 0; translate: 0 -7px; }
+    98.2%, 100% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+  }
+
+  @keyframes r8 {
+    0%, 86% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+    88.5%, 96.1% { max-height: 54px; margin-bottom: 1px; opacity: 0; translate: 0 -7px; }
+    98.9%, 100% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+  }
+
+  @keyframes r9 {
+    0%, 86% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+    88.5%, 96.8% { max-height: 54px; margin-bottom: 1px; opacity: 0; translate: 0 -7px; }
+    99.6%, 100% { max-height: 54px; margin-bottom: 1px; opacity: 1; translate: 0 0; }
+  }
+
+  /* Count states: each rolls up out of the box as the next takes its place,
+   * one per arrival. c0 is also what the cycle resets to, so it rolls back in
+   * under the list's dissolve. */
+  @keyframes c0 {
+    0%, 15% { opacity: 1; translate: 0 0; }
+    16.5%, 88% { opacity: 0; translate: 0 -4.5px; }
+    90%, 100% { opacity: 1; translate: 0 0; }
+  }
+
+  @keyframes c1 {
+    0%, 15% { opacity: 0; translate: 0 4.5px; }
+    16.5%, 29% { opacity: 1; translate: 0 0; }
+    30.5%, 100% { opacity: 0; translate: 0 -4.5px; }
+  }
+
+  @keyframes c2 {
+    0%, 29% { opacity: 0; translate: 0 4.5px; }
+    30.5%, 43% { opacity: 1; translate: 0 0; }
+    44.5%, 100% { opacity: 0; translate: 0 -4.5px; }
+  }
+
+
+  @keyframes c4 {
+    0%, 57% { opacity: 0; translate: 0 4.5px; }
+    58.5%, 88% { opacity: 1; translate: 0 0; }
+    90%, 100% { opacity: 0; translate: 0 -4.5px; }
+  }
+</style>

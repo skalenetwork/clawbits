@@ -182,10 +182,10 @@ function tokenizeMentions(text: string, mentions: MessageMentions): ReactNode[] 
     let title: string | undefined;
     if (isPrimaryAgent) {
       className = resolvedClass;
-      title = `@${token} — this channel's agent`;
+      title = `@${token} - this channel's agent`;
     } else if (isAgent) {
       className = resolvedClass;
-      title = `@${token} — agent`;
+      title = `@${token} - agent`;
     } else if (isHuman) {
       className = resolvedClass;
       title = `@${token}`;

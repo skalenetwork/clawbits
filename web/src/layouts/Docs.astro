@@ -1,0 +1,401 @@
+---
+import Base from "./Base.astro";
+import { DOC_GROUPS, type DocEntry } from "../docs-allowlist";
+import { LINKS } from "../config";
+
+/**
+ * Frame for a protocol doc.
+ *
+ * NOT Starlight, which the plan originally specified. Starlight brings its own
+ * layout, type scale and colour system, so using it here means fighting its
+ * theme on every surface to arrive back at the design that already exists in
+ * global.css - and its search ships client JavaScript, which would end this
+ * site's 0 KB JS property for a 17-page reference. A sidebar, a prose column
+ * and a table of contents is the whole feature set, and it is ~200 lines
+ * reusing the styles the legal pages already needed.
+ *
+ * The trade is real: no built-in search. /docs is small enough to navigate by
+ * sidebar today, and llms.txt is the retrieval path that actually matters for
+ * this site.
+ */
+
+interface Props {
+  entry: DocEntry;
+  headings: { depth: number; slug: string; text: string }[];
+}
+
+const { entry, headings } = Astro.props;
+
+const canonical = new URL(`/docs/${entry.slug}`, Astro.site).href;
+
+// TechArticle, per plan §7. This is the highest-leverage structured data on
+// the site: an assistant citing Clawbits cites a doc page, not landing copy.
+const schema = [
+  {
+    "@type": "TechArticle",
+    "@id": canonical,
+    headline: entry.title,
+    description: entry.summary,
+    url: canonical,
+    isPartOf: { "@id": `${Astro.site}#website` },
+    about: { "@id": `${Astro.site}#software` },
+    publisher: { "@id": `${Astro.site}#organization` },
+    inLanguage: "en",
+  },
+];
+
+// Only h2s. The specs nest to h4 in places and a four-level tree in a 14rem
+// column reads as a wall rather than an index.
+const toc = headings.filter((h) => h.depth === 2);
+---
+
+{/* Every spec shares the one docs card - there is no per-page art. */}
+<Base
+  title={entry.title}
+  description={entry.summary}
+  ogImage="/og/og-clawbits-docs.png"
+  schema={schema}
+>
+  <div class="shell">
+    <nav class="side" aria-label="Documentation">
+      {
+        DOC_GROUPS.map((group) => (
+          <div class="group">
+            <p class="group-label">{group.label}</p>
+            <ul>
+              {group.entries.map((d) => (
+                <li>
+                  <a
+                    href={`/docs/${d.slug}`}
+                    aria-current={d.slug === entry.slug ? "page" : undefined}
+                  >
+                    {d.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+      <div class="group">
+        <p class="group-label">Reference</p>
+        <ul>
+          <li><a href={LINKS.github}>Source on GitHub</a></li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="main">
+      {/* The summary sits above the document, before any prose. Chunk-level
+          retrieval means a page's opening is doing most of the work. */}
+      <p class="summary">{entry.summary}</p>
+
+      <article class="prose">
+        <slot />
+      </article>
+
+      <footer class="page-foot">
+        <a href={`/docs/${entry.slug}.md`}>View this page as Markdown</a>
+      </footer>
+    </div>
+
+    {
+      toc.length > 1 && (
+        <nav class="toc" aria-label="On this page">
+          <p class="group-label">On this page</p>
+          <ul>
+            {toc.map((h) => (
+              <li>
+                <a href={`#${h.slug}`}>{h.text}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )
+    }
+  </div>
+</Base>
+
+<style>
+  .shell {
+    display: grid;
+    grid-template-columns: 14rem minmax(0, 1fr) 13rem;
+    gap: clamp(2rem, 4vw, 3.5rem);
+    width: 100%;
+    max-width: 84rem;
+    margin-inline: auto;
+    padding-inline: clamp(1.5rem, 4vw, 3rem);
+    padding-block: 3.5rem 5rem;
+    align-items: start;
+  }
+
+  .side,
+  .toc {
+    position: sticky;
+    /* Clears the 4.5rem nav. */
+    top: 6rem;
+    max-height: calc(100vh - 8rem);
+    overflow-y: auto;
+  }
+
+  .group + .group {
+    margin-top: 2rem;
+  }
+
+  .group-label {
+    margin: 0 0 0.75rem;
+    font-family: var(--font-display);
+    font-size: 0.875rem;
+    color: var(--color-faint);
+  }
+
+  .side ul,
+  .toc ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .side a,
+  .toc a {
+    display: block;
+    font-size: 0.875rem;
+    line-height: 1.45;
+    color: var(--color-muted);
+    text-decoration: none;
+    transition: color 160ms var(--ease-out-expo);
+  }
+
+  .side a:hover,
+  .toc a:hover {
+    color: var(--color-paper);
+  }
+
+  .side a[aria-current="page"] {
+    color: var(--color-paper);
+    font-weight: 500;
+  }
+
+  .summary {
+    margin: 0 0 2.5rem;
+    padding-bottom: 2rem;
+    border-bottom: 1px solid var(--color-line);
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    color: var(--color-muted);
+  }
+
+  .page-foot {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--color-line);
+    font-size: 0.8125rem;
+  }
+
+  .page-foot a {
+    color: var(--color-faint);
+    text-decoration: none;
+  }
+
+  .page-foot a:hover {
+    color: var(--color-paper);
+  }
+
+  @media (max-width: 68rem) {
+    .shell {
+      grid-template-columns: 13rem minmax(0, 1fr);
+    }
+
+    .toc {
+      display: none;
+    }
+  }
+
+  @media (max-width: 52rem) {
+    .shell {
+      grid-template-columns: minmax(0, 1fr);
+      padding-block: 2.5rem 4rem;
+    }
+
+    .side {
+      position: static;
+      max-height: none;
+      padding-bottom: 2rem;
+      border-bottom: 1px solid var(--color-line);
+      margin-bottom: 2.5rem;
+    }
+
+    /* Sidebar becomes a wrapped inline index rather than a tall column. */
+    .side ul {
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.25rem;
+    }
+  }
+</style>
+
+<style is:global>
+  /* Doc body. Global for the same reason the legal prose is: the content
+   * arrives through a <slot> and carries the PAGE's scope id, not this
+   * layout's. Confined to .prose so it cannot leak. */
+  .shell .prose > :first-child {
+    margin-top: 0;
+  }
+
+  .shell .prose h1 {
+    font-family: var(--font-display);
+    font-size: clamp(2rem, 4vw, 2.75rem);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.05;
+    font-variation-settings: "opsz" 60, "SOFT" 20;
+    margin-bottom: 1.5rem;
+  }
+
+  .shell .prose h2 {
+    font-family: var(--font-display);
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.25;
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--color-line);
+    scroll-margin-top: 6rem;
+  }
+
+  .shell .prose h3 {
+    font-size: 1.0625rem;
+    font-weight: 600;
+    margin-top: 2rem;
+    margin-bottom: 0.75rem;
+    scroll-margin-top: 6rem;
+  }
+
+  .shell .prose h4 {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+    color: var(--color-muted);
+  }
+
+  .shell .prose p,
+  .shell .prose li {
+    font-size: 0.9375rem;
+    line-height: 1.7;
+    color: var(--color-muted);
+  }
+
+  .shell .prose p {
+    margin-block: 1rem;
+  }
+
+  .shell .prose ul,
+  .shell .prose ol {
+    margin-block: 1rem;
+    padding-inline-start: 1.25rem;
+  }
+
+  .shell .prose li {
+    margin-block: 0.375rem;
+  }
+
+  .shell .prose li::marker {
+    color: var(--color-faint);
+  }
+
+  .shell .prose strong {
+    color: var(--color-paper);
+    font-weight: 600;
+  }
+
+  .shell .prose a {
+    color: var(--color-paper);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-color: color-mix(in oklch, var(--color-paper) 35%, transparent);
+  }
+
+  .shell .prose a:hover {
+    text-decoration-color: var(--color-paper);
+  }
+
+  .shell .prose code {
+    font-family: var(--font-mono);
+    font-size: 0.8125em;
+    color: var(--color-paper);
+    background: color-mix(in oklch, var(--color-paper) 7%, transparent);
+    padding: 0.1em 0.35em;
+    border-radius: 0.25rem;
+  }
+
+  .shell .prose pre {
+    margin-block: 1.25rem;
+    padding: 1.125rem 1.25rem;
+    border: 1px solid var(--color-line);
+    border-radius: 0.75rem;
+    background: var(--color-ink-raised);
+    overflow-x: auto;
+    font-size: 0.8125rem;
+    line-height: 1.65;
+  }
+
+  .shell .prose pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  .shell .prose blockquote {
+    margin-block: 1.25rem;
+    padding-left: 1.125rem;
+    border-left: 2px solid var(--color-line);
+    color: var(--color-faint);
+  }
+
+  /* Endpoint tables are the densest thing in these specs; they must scroll
+   * inside themselves rather than widening the page. */
+  .shell .prose table {
+    display: block;
+    overflow-x: auto;
+    width: 100%;
+    border-collapse: collapse;
+    margin-block: 1.25rem;
+    font-size: 0.875rem;
+  }
+
+  .shell .prose th,
+  .shell .prose td {
+    text-align: start;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid var(--color-line);
+    vertical-align: top;
+  }
+
+  .shell .prose th {
+    color: var(--color-faint);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .shell .prose td {
+    color: var(--color-muted);
+  }
+
+  .shell .prose hr {
+    margin-block: 2.5rem;
+    border: 0;
+    border-top: 1px solid var(--color-line);
+  }
+
+  .shell .prose img {
+    max-width: 100%;
+    height: auto;
+  }
+</style>

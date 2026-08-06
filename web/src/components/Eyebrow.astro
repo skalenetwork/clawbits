@@ -1,0 +1,52 @@
+---
+/**
+ * Accent eyebrow above a section heading - a small link with a trailing
+ * chevron, in the clawbits signal red.
+ *
+ * With href it is a real link; without, the same mark as static text. The
+ * chevron only appears on links: it is an affordance, not a decoration.
+ */
+
+interface Props {
+  href?: string;
+  class?: string;
+}
+
+const { href, class: className = "" } = Astro.props;
+---
+
+{
+  href ? (
+    <a href={href} class:list={["eyelink", className]}>
+      <slot />
+      <span class="chev" aria-hidden="true">›</span>
+    </a>
+  ) : (
+    <span class:list={["eyelink", className]}>
+      <slot />
+    </span>
+  )
+}
+
+<style>
+  .eyelink {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.45;
+    color: var(--color-signal);
+    text-decoration: none;
+  }
+
+  a.eyelink:hover {
+    color: var(--color-signal-deep);
+  }
+
+  .chev {
+    font-size: 1em;
+    line-height: 1;
+    translate: 0 -0.03em;
+  }
+</style>

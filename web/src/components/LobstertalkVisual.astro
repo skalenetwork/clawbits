@@ -1,0 +1,959 @@
+---
+import { Alert02Icon, DoNotTouch02Icon } from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+
+/**
+ * The Lobstertalk section's visual: a channel being read message by message,
+ * where two different asks wake two different agents - and the agents, not the
+ * server, are what pick.
+ *
+ * The bigger sibling of AgencyVisual. That card answers "does an agent reply
+ * without being tagged?" in one beat; this one has the room for three, so it
+ * shows the whole mechanism: ordinary traffic scanned and dropped, an incident
+ * that escalates, and a question hours later that escalates to someone else.
+ *
+ * ── What the code actually does (clawbits/lobstertalk/attention/) ───────────
+ *
+ * gate.py embeds each new channel post once and scores it against TWO competing
+ * routes - `needs_attention` (questions, blockers, decisions) and a
+ * `resolved_or_social` decoy (acks, resolutions, chit-chat). Whichever wins
+ * above threshold decides; a message routing to the decoy is dropped without a
+ * nudge. That is why every message here carries a verdict, and why the card at
+ * rest is a wall of quiet ones - that is the honest ratio.
+ *
+ * THE PART THAT SHAPES THIS CARD: the gate is AGENT-AGNOSTIC (service.py,
+ * `consider_post` - "the attention route is agent-agnostic in v1"). It runs
+ * ONCE per post. On a pass, EVERY eligible agent in the channel gets the same
+ * `lobstertalk.consider` nudge, and the plugin dispatches it as a
+ * reply-only-if-useful turn. Clawbits does not route "prod is down" to a
+ * monitoring agent - it asks all of them, and the one that can actually help is
+ * the one that answers.
+ *
+ * So the nudge row is not decoration: showing the fan-out to three agents and
+ * two of them standing down IS the mechanism. A card that routed each message
+ * straight to the "right" agent would be selling a dispatcher we did not build.
+ *
+ * ── Why there is a time divider ─────────────────────────────────────────────
+ *
+ * Nudges are rate-limited per (agent, channel) by a Redis cooldown, 300s by
+ * default (`DEFAULT_COOLDOWN_SECONDS`). Two escalations a few seconds apart
+ * would be a lie: after the first, all three agents hold a cooldown and the
+ * second post would nudge nobody. The divider puts hours between the beats, so
+ * the card stays true and reads like a real channel while it is at it.
+ *
+ * ── Copy provenance ─────────────────────────────────────────────────────────
+ *
+ * Every quiet line is VERBATIM from `RESOLVED_SOCIAL_UTTERANCES`, so their
+ * verdicts are exact. The two escalating lines are the owner's, chosen to sit
+ * close to real `NEEDS_ATTENTION_UTTERANCES` anchors - "the prod is down!!!"
+ * against "production is broken and nobody can log in", and the notes ask
+ * against "does anyone know how to do this?" / "where is this configured?".
+ * They are illustrative rather than verified: confirming them means running the
+ * real gate (the `router` extra + a ~67MB FastEmbed model), which is not
+ * installed here. If either is ever measured to route to the decoy, swap the
+ * line - do not move the threshold.
+ *
+ * Agent replies are invented, and deliberately claim nothing the product does
+ * not do: pulse reports what it found, quill names a file. No deploys, no
+ * pushes (create_commit has no push - see the Git card's note in home.ts).
+ *
+ * ── Cast ────────────────────────────────────────────────────────────────────
+ *
+ * Shared with the rest of the page, so the same face means the same person
+ * everywhere: human-1 mara, human-2 josh, human-3 priya, human-4 sasha
+ * (MailboxVisual), agent-3 scout, agent-4 quill (MailboxVisual, GitVisual,
+ * IntroChat). pulse is new here - agent-2 - and is the only addition.
+ *
+ * ── Scale ───────────────────────────────────────────────────────────────────
+ *
+ * Bubble anatomy is the app's, at the app's OWN size rather than shrunk: 15/1.625
+ * bodies in 16px-radius bubbles with the 8px tail corner, 13/600 muted author
+ * names inside the bubble, 28px avatars. Same spec IntroChat renders, so the two
+ * chat visuals on this page are the same product at the same scale.
+ *
+ * That only holds if the card is roughly its reference width, so every length
+ * here is a multiple of `--u`, a container-query unit that is 1px at a ~513px
+ * card and clamps at both ends. The card therefore scales with ITSELF, not with
+ * the viewport - drop it in a wider or narrower column and the chat inside it
+ * stays proportionate instead of turning into either a toy or a poster.
+ *
+ * ── Motion ──────────────────────────────────────────────────────────────────
+ *
+ * ONE 22s loop, CSS only, held at 0% until PlayOnView marks the card. The
+ * stream is bottom-anchored, so arrivals push older rows up under the fade
+ * crop. Every arrival is visibly READ before it is judged - the bubble takes an
+ * accent ring while a sweep crosses it and a dot pulses beside it - and the
+ * verdict lands only once that finishes, because the gate runs ON the message
+ * and can never decide simultaneously with it.
+ *
+ * The card is FULL at rest (six already-judged messages), so the 0% frame, the
+ * pre-PlayOnView frame and the reduced-motion frame are all a working channel
+ * rather than an empty box waiting to fill.
+ *
+ * CSP NOTE: no style attributes anywhere - per-row cues are nth-child classes
+ * in the stylesheet. The production build drops inline styles.
+ */
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = "" } = Astro.props;
+
+const CHANNEL = { name: "general", avatar: "/avatars/channel-1.svg" };
+
+/** The channel's three LobsterTalk-enabled agents. Every escalation asks all
+ * of them; `picked` says which one found it had something to add. */
+const AGENTS = {
+  pulse: { name: "pulse", avatar: "/avatars/agent-2.svg" },
+  quill: { name: "quill", avatar: "/avatars/agent-4.svg" },
+  scout: { name: "scout", avatar: "/avatars/agent-3.svg" },
+} as const;
+
+/** Fan-out order, fixed - the roster is the same both times, which is the
+ * point: the same three are asked, and a different one answers. */
+const ROSTER = [AGENTS.pulse, AGENTS.quill, AGENTS.scout];
+
+const PEOPLE = {
+  mara: { name: "mara", avatar: "/avatars/human-1.png" },
+  josh: { name: "josh", avatar: "/avatars/human-2.png" },
+  priya: { name: "priya", avatar: "/avatars/human-3.png" },
+  sasha: { name: "sasha", avatar: "/avatars/human-4.png" },
+} as const;
+
+type Row =
+  | { kind: "msg"; who: { name: string; avatar: string }; text: string; wake?: boolean }
+  | { kind: "nudge"; picked: string }
+  | { kind: "reply"; who: { name: string; avatar: string }; text: string }
+  | { kind: "divider"; label: string };
+
+/**
+ * The whole cycle, in DOM order - the keyframes address rows by nth-child, so
+ * this array IS the choreography. Reordering it reorders the animation.
+ *
+ * Rows 1-6 are the channel as it already reads: judged, dropped, forgotten.
+ * They never animate, and there are six because that is what it takes to fill
+ * the card - a bottom-anchored stream with three rows in it is mostly empty
+ * space, which is what the first draft of this card was.
+ */
+const ROWS: Row[] = [
+  { kind: "msg", who: PEOPLE.josh, text: "great work team" },
+  { kind: "msg", who: PEOPLE.sasha, text: "merged and closing this out" },
+  { kind: "msg", who: PEOPLE.mara, text: "sharing this article, worth a read" },
+  { kind: "msg", who: PEOPLE.priya, text: "+1" },
+  { kind: "msg", who: PEOPLE.josh, text: "FYI the meeting moved to Thursday" },
+  { kind: "msg", who: PEOPLE.sasha, text: "will do" },
+
+  // 7 · an arrival that is read and then dropped. The usual outcome.
+  { kind: "msg", who: PEOPLE.mara, text: "pushed the change, the pipeline is running now" },
+
+  // 8-10 · the incident.
+  { kind: "msg", who: PEOPLE.priya, text: "the prod is down!!!", wake: true },
+  { kind: "nudge", picked: "pulse" },
+  { kind: "reply", who: AGENTS.pulse, text: "error rate spiked at 14:02 - right after deploy #482" },
+
+  // 11 · hours pass, so the per-(agent, channel) cooldown has expired and the
+  // same roster can be nudged again.
+  { kind: "divider", label: "16:20" },
+
+  // 12-14 · a different kind of ask, and a different agent with something.
+  { kind: "msg", who: PEOPLE.mara, text: "anyone have notes from yesterday's client call?", wake: true },
+  { kind: "nudge", picked: "quill" },
+  { kind: "reply", who: AGENTS.quill, text: "notes/acme-call.md - pricing follow-up included" },
+];
+---
+
+<div class:list={["lbox", className]} data-play-on-view aria-hidden="true">
+  <div class="lpanel">
+    <div class="lhead">
+      <img class="lcav" src={CHANNEL.avatar} alt="" width="120" height="120" loading="lazy" />
+      <span class="lname">{CHANNEL.name}</span>
+      {/* LobsterTalk is opt-in per agent (`agents.lobstertalk_enabled` is a real
+          toggle on the Manage page), so the card says so, and says it is on. */}
+      <span class="lmark">
+        Lobstertalk
+        <span class="lswitch"><span class="lknob" /></span>
+      </span>
+    </div>
+
+    <div class="lstream">
+      {
+        ROWS.map((row) => {
+          if (row.kind === "divider") {
+            return (
+              <div class="lrow ldiv">
+                <span>{row.label}</span>
+              </div>
+            );
+          }
+
+          if (row.kind === "nudge") {
+            return (
+              <div class="lrow lnudge">
+                <span class="lspur" />
+                {/* No label. The row said "asked 3 agents", which the row was
+                    already showing - three avatars, two of which visibly stand
+                    down. The elbow says it is a consequence of the message
+                    above; the avatars say who was asked and who answered. */}
+                <span class="lroster">
+                  {ROSTER.map((a) => (
+                    <img
+                      class:list={["lrav", { picked: a.name === row.picked }]}
+                      src={a.avatar}
+                      alt=""
+                      width="128"
+                      height="128"
+                      loading="lazy"
+                    />
+                  ))}
+                </span>
+              </div>
+            );
+          }
+
+          const agent = row.kind === "reply";
+          return (
+            <div class:list={["lrow", agent ? "lreply" : "lmsg", { wake: !agent && row.wake }]}>
+              <img
+                class:list={["lav", { "av-agent": agent }]}
+                src={row.who.avatar}
+                alt=""
+                width="128"
+                height="128"
+                loading="lazy"
+              />
+              <div class="lcol">
+                <div class="lline">
+                  <div class="lbub">
+                    <b class="lauthor">{row.who.name}</b>
+                    <p>{row.text}</p>
+                  </div>
+                  {/* One status slot per message, pinned to the row's right
+                      edge. It holds the scan dot WHILE the gate is reading,
+                      then the verdict glyph - the two never coexist, so they
+                      share the cell instead of taking two. Agents are never
+                      judged (`consider_post` skips the posting agent), so a
+                      reply row has no slot at all. */}
+                  {!agent && (
+                    <span class="lstatus">
+                      <span class="lscan" />
+                      <span
+                        class="lverdict"
+                        set:html={ico(row.wake ? Alert02Icon : DoNotTouch02Icon)}
+                      />
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })
+      }
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── The card box ─────────────────────────────────────────────────────────
+   * 6:5. It was square while the verdict sat on its own line under each
+   * bubble, which cost every message row 23u; moving the verdict to a glyph at
+   * the row's right edge took a third off the row height, and the card lost
+   * the same again. The ratio is what still shows both beats at the end of the
+   * loop - trim further and "the prod is down!!!" falls under the crop while
+   * its answer is still on screen. */
+  .lbox {
+    /* Excluded from scroll anchoring, along with its subtree.
+     *
+     * These visuals change the height of their own children on a loop. When
+     * the box is scrolled PART WAY past the top of the viewport, Chrome picks
+     * an anchor node inside it, sees that node move as the stack grows, and
+     * "corrects" by scrolling the page. Nothing here is content a reader is
+     * tracking, so nothing here should ever be an anchor. */
+    overflow-anchor: none;
+    /* Makes `cqw` below resolve against THIS box. `inline-size` only - `size`
+     * containment would require a fixed height and kill the aspect-ratio. */
+    container-type: inline-size;
+    position: relative;
+    aspect-ratio: 6 / 5;
+    border-radius: 1rem;
+    overflow: hidden;
+    /* The grape tint AgencyVisual carries. These two cards are the same
+     * feature at two sizes, so they share a ground - a red card here read as a
+     * different subject. Keep them in step. */
+    background: linear-gradient(150deg, #f2ecfd, #ded0f4);
+
+    /* ── Shared card tokens ──────────────────────────────────────────────
+     * One value per role across every visual on this page, chosen to match the
+     * real app (frontend/src/index.css). Change these together or the row
+     * stops reading as one system. Kept identical to AgencyVisual: these two
+     * cards describe the same feature and must not drift apart.
+     * ────────────────────────────────────────────────────────────────── */
+    --ink: #1e1e1e;
+    --mut: #5e5a52;
+    /* Secondary text. A colour, not an opacity - opacity over a tinted panel
+     * drifts toward the card's hue. */
+    --mut-2: rgb(94 90 82 / 0.85);
+    --chip: rgb(30 30 30 / 0.055);
+    --fill: #dbd7cc;
+    --bub: rgb(30 30 30 / 0.055);
+    /* The gate's one accent. --mention, deliberately: "this needs you" is
+     * exactly what a mention means. */
+    --wake: #3f6fbd;
+    --wake-bg: rgb(84 134 212 / 0.2);
+
+    /* ── The scale unit ───────────────────────────────────────────────────
+     * 1u == 1px at the card's reference width (~513px, the homepage split's
+     * wider column). Every length below is a multiple of it, so the chat
+     * scales with the CARD rather than with the viewport. The clamp stops a
+     * wide single-column layout from blowing the type up, and a phone from
+     * shrinking it below legible - at the floor the body still sets ~11.7px.
+     * ─────────────────────────────────────────────────────────────────── */
+    --u: clamp(0.78px, 0.195cqw, 1.15px);
+
+    /* Row geometry, derived from that unit and declared once - the keyframes
+     * reopen these exact heights, so a row that changes size changes here. */
+    /* Both are now one bubble tall: the verdict is a glyph on the row's right
+     * edge rather than a chip on a second line, so a judged message is exactly
+     * as tall as an unjudged one. */
+    --h-msg: calc(58 * var(--u));
+    --h-reply: var(--h-msg);
+    --h-nudge: calc(24 * var(--u));
+    --h-div: calc(22 * var(--u));
+    --gap: calc(10 * var(--u));
+
+    font-family: var(--ff-app);
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    text-align: left;
+  }
+
+  .lpanel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: inherit;
+    background: rgb(247 245 240 / 0.52);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    backdrop-filter: blur(28px) saturate(150%);
+    overflow: hidden;
+    /* The rim AppDemo gives the window: without it the panel has no edge and
+     * the card reads as a tinted field rather than a surface. */
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.55);
+    --pad: calc(22 * var(--u));
+  }
+
+  /* ── Header: the channel, and the thing that is listening to it ── */
+
+  .lhead {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--u));
+    flex-shrink: 0;
+    padding: calc(18 * var(--u)) var(--pad) calc(12 * var(--u));
+  }
+
+  /* The channel's own avatar, as the app's header shows it. */
+  .lcav {
+    width: calc(24 * var(--u));
+    height: calc(24 * var(--u));
+    flex-shrink: 0;
+    display: block;
+    object-fit: cover;
+    border-radius: calc(8 * var(--u));
+  }
+
+  .lname {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(15 * var(--u));
+    font-weight: 600;
+  }
+
+  /* Neutral pill, accent switch: with a control inside it the tag reads as a
+   * setting rather than a badge, and it leaves the accent to mean one thing on
+   * this card - the message that won. */
+  .lmark {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--u));
+    flex-shrink: 0;
+    padding: calc(4 * var(--u)) calc(6 * var(--u)) calc(4 * var(--u)) calc(12 * var(--u));
+    border-radius: 999px;
+    background: var(--chip);
+    color: var(--mut);
+    font-size: calc(12.5 * var(--u));
+    font-weight: 500;
+  }
+
+  /* iOS switch, on. Track and knob are the only two parts; the knob sitting
+   * right IS the state, so it needs no label at this size. */
+  .lswitch {
+    position: relative;
+    width: calc(27 * var(--u));
+    height: calc(16 * var(--u));
+    flex-shrink: 0;
+    border-radius: 999px;
+    /* iOS system green - a switch that is on reads as on, and it stays out of
+     * the way of --wake, which on this card means one thing only. */
+    background: #34c759;
+  }
+
+  .lknob {
+    position: absolute;
+    top: calc(2 * var(--u));
+    right: calc(2 * var(--u));
+    width: calc(12 * var(--u));
+    height: calc(12 * var(--u));
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 1px 1.5px rgb(0 0 0 / 0.28);
+  }
+
+  /* ── The stream ──────────────────────────────────────────────────────────
+   * Bottom-anchored: arrivals push older rows up under the crop, so the newest
+   * judgement is always the visible one. */
+  .lstream {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+    /* The crop is a fade, not a guillotine - a hard cut through a line of text
+     * reads as a clipping bug rather than as more content above. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 calc(26 * var(--u)));
+    mask-image: linear-gradient(to bottom, transparent 0, #000 calc(26 * var(--u)));
+    padding-inline: var(--pad);
+  }
+
+  /* Fixed height and NO vertical padding, so arrivals collapse to a true zero
+   * - a border-box element cannot be shorter than its own block padding. */
+  .lrow {
+    display: flex;
+    flex-shrink: 0;
+    overflow: hidden;
+    margin-bottom: var(--gap);
+  }
+
+  .lmsg,
+  .lreply {
+    align-items: flex-end;
+    gap: calc(8 * var(--u));
+  }
+
+  .lmsg {
+    height: var(--h-msg);
+  }
+
+  .lreply {
+    height: var(--h-reply);
+  }
+
+  /* Species silhouettes (lib/avatarShapes.ts): people round, agents round with
+   * the machined bottom-left tail. */
+  .lav {
+    width: calc(28 * var(--u));
+    height: calc(28 * var(--u));
+    flex-shrink: 0;
+    display: block;
+    object-fit: cover;
+    background: var(--fill);
+    border-radius: 999px;
+  }
+
+  .av-agent {
+    border-bottom-left-radius: calc(6 * var(--u));
+  }
+
+  .lcol {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .lline {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--u));
+  }
+
+  /* ── App-exact bubble anatomy (MessageRow.tsx via the hero audit, same spec
+   * IntroChat renders): 15/1.625 body in a 16px-radius bubble with the 8px
+   * tail corner, ink-5.5% fill, 13/600 muted author name inside it. Shrink-to-
+   * fit, so a "+1" reads as a small bubble and the stream gets its rhythm from
+   * the message lengths. ── */
+  .lbub {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    padding: calc(8 * var(--u)) calc(12 * var(--u));
+    border-radius: calc(16 * var(--u));
+    border-bottom-left-radius: calc(8 * var(--u));
+    background: var(--bub);
+    /* The read-ring's resting state. INSET, deliberately: the row is exactly
+     * one bubble tall and clips (it has to - `overflow: hidden` is what lets
+     * it collapse to zero height for the arrival animation), so an outer ring
+     * loses its top and bottom edges to that clip. Drawn inside the bubble it
+     * traces the same rounded rect and cannot be cut. */
+    box-shadow: inset 0 0 0 0 rgb(63 111 189 / 0);
+  }
+
+  .lauthor {
+    margin-bottom: calc(2 * var(--u));
+    font-size: calc(13 * var(--u));
+    font-weight: 600;
+    line-height: calc(16 * var(--u));
+    color: var(--mut);
+  }
+
+  .lbub p {
+    margin: 0;
+    /* One line per message, ellipsised: fixed row heights are what let the
+     * choreography below reopen an exact height, and a channel truncating a
+     * long line is native behaviour rather than a compromise. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(15 * var(--u));
+    line-height: calc(24 * var(--u));
+    color: rgb(30 30 30 / 0.72);
+  }
+
+  /* The one that won: the app's mention tint, and full-strength ink. */
+  .wake .lbub {
+    background: var(--wake-bg);
+  }
+
+  .wake .lbub p {
+    color: var(--ink);
+    font-weight: 500;
+  }
+
+  /* The reading sweep - the gate embedding and scoring this message. Painted
+   * over the bubble and clipped by it; only ever run for the arrivals. */
+  .lbub::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      100deg,
+      transparent 30%,
+      rgb(84 134 212 / 0.34) 50%,
+      transparent 70%
+    );
+    translate: -110% 0;
+    opacity: 0;
+  }
+
+  /* ── The status slot ─────────────────────────────────────────────────────
+   * Pinned to the row's right edge, away from the message. One cell holding
+   * two stacked states: the dot that pulses while the gate reads, then the
+   * glyph carrying what it decided. `margin-left: auto` is what pushes it off
+   * the bubble - the bubble itself stays shrink-to-fit. */
+  .lstatus {
+    margin-left: auto;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: calc(20 * var(--u));
+    height: calc(20 * var(--u));
+  }
+
+  .lscan,
+  .lverdict {
+    grid-area: 1 / 1;
+  }
+
+  /* The dot: this message is under the gate right now. */
+  .lscan {
+    width: calc(7 * var(--u));
+    height: calc(7 * var(--u));
+    border-radius: 999px;
+    background: var(--wake);
+    opacity: 0;
+  }
+
+  /* The verdict, as a glyph rather than the gate's route name. The words
+   * ("resolved / social", "needs attention") were a second line under every
+   * bubble and made the card a third taller for a label that repeats nine
+   * times; AgencyVisual still spells them out, which is the right division of
+   * labour - that card names the mechanism, this one runs it. */
+  .lverdict {
+    display: grid;
+    place-items: center;
+    width: calc(18 * var(--u));
+    height: calc(18 * var(--u));
+    /* Nothing to do: the gate looked and moved on. Deliberately not a tick -
+     * a tick would read as "an agent handled it", and nothing happened here. */
+    color: var(--mut-2);
+    opacity: 0.75;
+  }
+
+  .lverdict :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* The one that won. */
+  .wake .lverdict {
+    color: var(--wake);
+    opacity: 1;
+  }
+
+  /* ── The fan-out row ─────────────────────────────────────────────────────
+   * Every escalation asks EVERY eligible agent in the channel. Two of the
+   * three then find they have nothing to add and stand down - which is the
+   * decision the section is about, so it is shown rather than implied. */
+
+  .lnudge {
+    align-items: center;
+    gap: calc(8 * var(--u));
+    height: var(--h-nudge);
+    /* Indents to the bubble column, so the row reads as a consequence of the
+     * message above rather than as a message of its own. */
+    padding-inline-start: calc(36 * var(--u));
+  }
+
+  /* The elbow joining this row to the message that caused it. */
+  .lspur {
+    width: calc(11 * var(--u));
+    height: calc(11 * var(--u));
+    flex-shrink: 0;
+    margin-top: calc(-8 * var(--u));
+    border-left: calc(1.5 * var(--u)) solid var(--wake);
+    border-bottom: calc(1.5 * var(--u)) solid var(--wake);
+    border-bottom-left-radius: calc(5 * var(--u));
+    opacity: 0.55;
+  }
+
+  .lroster {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--u));
+  }
+
+  /* Agents, so the machined corner - same silhouette rule as the stream. */
+  .lrav {
+    width: calc(20 * var(--u));
+    height: calc(20 * var(--u));
+    display: block;
+    object-fit: cover;
+    background: var(--fill);
+    border-radius: 999px;
+    border-bottom-left-radius: calc(5 * var(--u));
+    /* Settled state: everyone has decided, and only the picked one is lit. The
+     * animation below starts them all at full and dims the rest. */
+    opacity: 0.28;
+  }
+
+  .lrav.picked {
+    opacity: 1;
+    box-shadow: 0 0 0 calc(2 * var(--u)) var(--wake);
+  }
+
+  /* ── The reply ── */
+
+  .lreply .lauthor {
+    color: var(--mut);
+  }
+
+  .lreply .lbub p {
+    color: var(--ink);
+  }
+
+  /* No sweep on an agent's own post: the gate reads what people write, and
+   * `consider_post` skips the posting agent outright. */
+  .lreply .lbub::after {
+    display: none;
+  }
+
+  /* ── The time divider ────────────────────────────────────────────────────
+   * Hours between the two beats, because the per-(agent, channel) nudge
+   * cooldown is 300s - two escalations moments apart would nudge nobody the
+   * second time. */
+
+  .ldiv {
+    align-items: center;
+    justify-content: center;
+    height: var(--h-div);
+  }
+
+  .ldiv span {
+    padding: 0 calc(10 * var(--u));
+    border-radius: 999px;
+    background: var(--chip);
+    color: var(--mut-2);
+    font-size: calc(11 * var(--u));
+    line-height: calc(20 * var(--u));
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── The 22s loop ────────────────────────────────────────────────────────
+   * Two beats in one channel. Each arrival opens its own height, so the stream
+   * above is pushed up under the crop; each is then visibly READ (the bubble
+   * takes an accent ring while the sweep crosses it, ~1.2s) and only then
+   * judged - the gate runs ON the message, so the two can never be
+   * simultaneous.
+   *
+   * Cues: 2% a quiet arrival, dropped by 13%. 18% the incident, escalated at
+   * 29%, fanned out at 32%, pulse standing up at 37% and posting at 41%. 49%
+   * the time divider. 53% the second ask, escalated at 64%, fanned out at 67%,
+   * quill standing up at 72% and posting at 76%.
+   *
+   * Then the payoff gets REAL time: 79-91% is 2.6s of the finished channel
+   * sitting still, which the first cut of this timeline did not have (the
+   * reply landed at 81% and dissolved at 88% - 1.7s, read as a glitch).
+   *
+   * The seam is a cut, not a fade-to-black: only the eight rows the cycle
+   * added dissolve (91-92.5%), collapse while invisible (93%), and the card is
+   * back in its resting state - six judged messages, header, tint - from 95.5%
+   * to 100%, which is the same frame as 0%. The first cut faded the whole card
+   * including the settled rows and the header, which is what "everything
+   * disappears" was.
+   *
+   * Everything is settled by default, so reduced motion - and the moment
+   * before PlayOnView marks the card - both show the finished channel.
+   * ────────────────────────────────────────────────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    /* Rows 7-14 are the cycle's; they start closed. */
+    .lrow:nth-child(n + 7) {
+      height: 0;
+      margin-bottom: 0;
+    }
+
+    .lrow:nth-child(n + 7) .lverdict {
+      opacity: 0;
+    }
+
+    .play .lrow:nth-child(7) { animation: lt-r7 22s ease infinite; }
+    .play .lrow:nth-child(8) { animation: lt-r8 22s ease infinite; }
+    .play .lrow:nth-child(9) { animation: lt-r9 22s ease infinite; }
+    .play .lrow:nth-child(10) { animation: lt-r10 22s ease infinite; }
+    .play .lrow:nth-child(11) { animation: lt-r11 22s ease infinite; }
+    .play .lrow:nth-child(12) { animation: lt-r12 22s ease infinite; }
+    .play .lrow:nth-child(13) { animation: lt-r13 22s ease infinite; }
+    .play .lrow:nth-child(14) { animation: lt-r14 22s ease infinite; }
+
+    /* The read: ring on the bubble, sweep across it, dot beside it - then the
+     * verdict, only once all three have finished. */
+    .play .lrow:nth-child(7) .lbub { animation: lt-ring-a 22s ease infinite; }
+    .play .lrow:nth-child(8) .lbub { animation: lt-ring-b 22s ease infinite; }
+    .play .lrow:nth-child(12) .lbub { animation: lt-ring-c 22s ease infinite; }
+
+    .play .lrow:nth-child(7) .lbub::after { animation: lt-sweep-a 22s linear infinite; }
+    .play .lrow:nth-child(8) .lbub::after { animation: lt-sweep-b 22s linear infinite; }
+    .play .lrow:nth-child(12) .lbub::after { animation: lt-sweep-c 22s linear infinite; }
+
+    .play .lrow:nth-child(7) .lscan { animation: lt-scan-a 22s ease infinite; }
+    .play .lrow:nth-child(8) .lscan { animation: lt-scan-b 22s ease infinite; }
+    .play .lrow:nth-child(12) .lscan { animation: lt-scan-c 22s ease infinite; }
+
+    .play .lrow:nth-child(7) .lverdict { animation: lt-verdict-a 22s ease infinite; }
+    .play .lrow:nth-child(8) .lverdict { animation: lt-verdict-b 22s ease infinite; }
+    .play .lrow:nth-child(12) .lverdict { animation: lt-verdict-c 22s ease infinite; }
+
+    /* The two that stand down: lit while their turn runs, dimmed once decided. */
+    .play .lrow:nth-child(9) .lrav:not(.picked) { animation: lt-stand-down-b 22s ease infinite; }
+    .play .lrow:nth-child(13) .lrav:not(.picked) { animation: lt-stand-down-c 22s ease infinite; }
+
+    .play .lrow:nth-child(9) .lrav.picked { animation: lt-picked-b 22s ease infinite; }
+    .play .lrow:nth-child(13) .lrav.picked { animation: lt-picked-c 22s ease infinite; }
+  }
+
+  /* 7 · the quiet arrival */
+  @keyframes lt-r7 {
+    0%, 2% { height: 0; margin-bottom: 0; opacity: 0; }
+    5%, 91% { height: var(--h-msg); margin-bottom: var(--gap); opacity: 1; }
+    92.5% { height: var(--h-msg); margin-bottom: var(--gap); opacity: 0; }
+    93%, 100% { height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  /* 8 · the incident */
+  @keyframes lt-r8 {
+    0%, 18% { height: 0; margin-bottom: 0; opacity: 0; }
+    21%, 91% { height: var(--h-msg); margin-bottom: var(--gap); opacity: 1; }
+    92.5% { height: var(--h-msg); margin-bottom: var(--gap); opacity: 0; }
+    93%, 100% { height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  /* 9 · the fan-out, which can only follow the verdict at 29% */
+  @keyframes lt-r9 {
+    0%, 32% { height: 0; margin-bottom: 0; opacity: 0; }
+    34%, 91% { height: var(--h-nudge); margin-bottom: var(--gap); opacity: 1; }
+    92.5% { height: var(--h-nudge); margin-bottom: var(--gap); opacity: 0; }
+    93%, 100% { height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  /* 10 · pulse posts */
+  @keyframes lt-r10 {
+    0%, 41% { height: 0; margin-bottom: 0; opacity: 0; translate: 0 calc(8 * var(--u)); }
+    44%, 91% { height: var(--h-reply); margin-bottom: var(--gap); opacity: 1; translate: 0 0; }
+    92.5% { height: var(--h-reply); margin-bottom: var(--gap); opacity: 0; }
+    93%, 100% { height: 0; margin-bottom: 0; opacity: 0; translate: 0 calc(8 * var(--u)); }
+  }
+
+  /* 11 · hours pass */
+  @keyframes lt-r11 {
+    0%, 49% { height: 0; margin-bottom: 0; opacity: 0; }
+    51%, 91% { height: var(--h-div); margin-bottom: var(--gap); opacity: 1; }
+    92.5% { height: var(--h-div); margin-bottom: var(--gap); opacity: 0; }
+    93%, 100% { height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  /* 12 · the second ask */
+  @keyframes lt-r12 {
+    0%, 53% { height: 0; margin-bottom: 0; opacity: 0; }
+    56%, 91% { height: var(--h-msg); margin-bottom: var(--gap); opacity: 1; }
+    92.5% { height: var(--h-msg); margin-bottom: var(--gap); opacity: 0; }
+    93%, 100% { height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  /* 13 · the same roster, asked again */
+  @keyframes lt-r13 {
+    0%, 67% { height: 0; margin-bottom: 0; opacity: 0; }
+    69%, 91% { height: var(--h-nudge); margin-bottom: var(--gap); opacity: 1; }
+    92.5% { height: var(--h-nudge); margin-bottom: var(--gap); opacity: 0; }
+    93%, 100% { height: 0; margin-bottom: 0; opacity: 0; }
+  }
+
+  /* 14 · quill posts */
+  @keyframes lt-r14 {
+    0%, 76% { height: 0; margin-bottom: 0; opacity: 0; translate: 0 calc(8 * var(--u)); }
+    79%, 91% { height: var(--h-reply); margin-bottom: var(--gap); opacity: 1; translate: 0 0; }
+    92.5% { height: var(--h-reply); margin-bottom: var(--gap); opacity: 0; }
+    93%, 100% { height: 0; margin-bottom: 0; opacity: 0; translate: 0 calc(8 * var(--u)); }
+  }
+
+  /* The ring: the bubble is under the gate right now. Held for the whole read
+   * so the sweep has something to travel inside. */
+  @keyframes lt-ring-a {
+    0%, 5.5% { box-shadow: inset 0 0 0 0 rgb(63 111 189 / 0); }
+    7%, 12% { box-shadow: inset 0 0 0 calc(1.5 * var(--u)) rgb(63 111 189 / 0.55); }
+    13.5%, 100% { box-shadow: inset 0 0 0 0 rgb(63 111 189 / 0); }
+  }
+
+  @keyframes lt-ring-b {
+    0%, 21.5% { box-shadow: inset 0 0 0 0 rgb(63 111 189 / 0); }
+    23%, 28% { box-shadow: inset 0 0 0 calc(1.5 * var(--u)) rgb(63 111 189 / 0.55); }
+    29.5%, 100% { box-shadow: inset 0 0 0 0 rgb(63 111 189 / 0); }
+  }
+
+  @keyframes lt-ring-c {
+    0%, 56.5% { box-shadow: inset 0 0 0 0 rgb(63 111 189 / 0); }
+    58%, 63% { box-shadow: inset 0 0 0 calc(1.5 * var(--u)) rgb(63 111 189 / 0.55); }
+    64.5%, 100% { box-shadow: inset 0 0 0 0 rgb(63 111 189 / 0); }
+  }
+
+  /* The sweep: one pass of the accent across the bubble, ~1.2s. */
+  @keyframes lt-sweep-a {
+    0%, 6.5% { translate: -110% 0; opacity: 0; }
+    7% { translate: -110% 0; opacity: 1; }
+    12.5% { translate: 110% 0; opacity: 1; }
+    13%, 100% { translate: 110% 0; opacity: 0; }
+  }
+
+  @keyframes lt-sweep-b {
+    0%, 22.5% { translate: -110% 0; opacity: 0; }
+    23% { translate: -110% 0; opacity: 1; }
+    28.5% { translate: 110% 0; opacity: 1; }
+    29%, 100% { translate: 110% 0; opacity: 0; }
+  }
+
+  @keyframes lt-sweep-c {
+    0%, 57.5% { translate: -110% 0; opacity: 0; }
+    58% { translate: -110% 0; opacity: 1; }
+    63.5% { translate: 110% 0; opacity: 1; }
+    64%, 100% { translate: 110% 0; opacity: 0; }
+  }
+
+  /* The dot: present for exactly as long as the read takes. */
+  @keyframes lt-scan-a {
+    0%, 6.5% { opacity: 0; }
+    7.5%, 9% { opacity: 1; }
+    10.5% { opacity: 0.25; }
+    12% { opacity: 1; }
+    13%, 100% { opacity: 0; }
+  }
+
+  @keyframes lt-scan-b {
+    0%, 22.5% { opacity: 0; }
+    23.5%, 25% { opacity: 1; }
+    26.5% { opacity: 0.25; }
+    28% { opacity: 1; }
+    29%, 100% { opacity: 0; }
+  }
+
+  @keyframes lt-scan-c {
+    0%, 57.5% { opacity: 0; }
+    58.5%, 60% { opacity: 1; }
+    61.5% { opacity: 0.25; }
+    63% { opacity: 1; }
+    64%, 100% { opacity: 0; }
+  }
+
+  /* Each verdict lands only once its message has been read. */
+  @keyframes lt-verdict-a {
+    0%, 13% { opacity: 0; }
+    15%, 100% { opacity: 1; }
+  }
+
+  @keyframes lt-verdict-b {
+    0%, 29% { opacity: 0; }
+    31%, 100% { opacity: 1; }
+  }
+
+  @keyframes lt-verdict-c {
+    0%, 64% { opacity: 0; }
+    66%, 100% { opacity: 1; }
+  }
+
+  /* The two with nothing to add: lit while the turn is running, dimmed once
+   * they have decided. */
+  @keyframes lt-stand-down-b {
+    0%, 34% { opacity: 0.9; }
+    38%, 100% { opacity: 0.28; }
+  }
+
+  @keyframes lt-stand-down-c {
+    0%, 69% { opacity: 0.9; }
+    73%, 100% { opacity: 0.28; }
+  }
+
+  /* The one that found something: the ring arrives with its DECISION, not with
+   * the nudge - every agent got the same nudge. */
+  @keyframes lt-picked-b {
+    0%, 34% { opacity: 0.9; box-shadow: 0 0 0 calc(2 * var(--u)) rgb(63 111 189 / 0); }
+    38%, 100% { opacity: 1; box-shadow: 0 0 0 calc(2 * var(--u)) rgb(63 111 189 / 1); }
+  }
+
+  @keyframes lt-picked-c {
+    0%, 69% { opacity: 0.9; box-shadow: 0 0 0 calc(2 * var(--u)) rgb(63 111 189 / 0); }
+    73%, 100% { opacity: 1; box-shadow: 0 0 0 calc(2 * var(--u)) rgb(63 111 189 / 1); }
+  }
+
+  /* ── Narrow ──────────────────────────────────────────────────────────────
+   * Single-column: the card goes full width, so it does not need to stay
+   * square to fit the sequence - the stream is bottom-anchored and simply
+   * shows fewer rows. `--u` clamps on its own, so nothing here rescales type. */
+  @media (max-width: 62rem) {
+    .lbox {
+      aspect-ratio: 16 / 9;
+    }
+  }
+
+  @media (max-width: 30rem) {
+    .lbox {
+      aspect-ratio: 1 / 1;
+    }
+
+    .lpanel {
+      --pad: calc(16 * var(--u));
+    }
+  }
+</style>

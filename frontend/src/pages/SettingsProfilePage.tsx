@@ -95,7 +95,7 @@ export default function SettingsProfilePage() {
         const ok = await confirm({
             title: "Delete your account?",
             description:
-                "This permanently deletes your account and all of your data — "
+                "This permanently deletes your account and all of your data - "
                 + "messages, reactions, files, and any chat where you're the "
                 + "only person. This cannot be undone.",
             confirmLabel: "Delete account",
@@ -126,7 +126,7 @@ export default function SettingsProfilePage() {
             <PageHeader icon={User} title="Profile" />
 
             {/* Sub-sections are separated by divider lines + spacing rather than
-                nested cards — the content card itself is the surface. */}
+                nested cards - the content card itself is the surface. */}
             <div className="divide-y divide-border/60">
             {/* Hero — avatar + identity + edit affordances. */}
             <section className="py-6 first:pt-0">

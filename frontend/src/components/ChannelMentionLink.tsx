@@ -80,9 +80,9 @@ export function ChannelMentionLink({
         aria-label={
           isMember
             ? `Go to #${displayName}`
-            : `Open #${displayName} — you are not a member yet`
+            : `Open #${displayName} - you are not a member yet`
         }
-        title={isMember ? `#${displayName}` : `#${displayName} — join to view`}
+        title={isMember ? `#${displayName}` : `#${displayName} - join to view`}
       >
         {handle}
       </button>

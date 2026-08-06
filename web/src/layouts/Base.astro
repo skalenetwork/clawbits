@@ -1,0 +1,158 @@
+---
+import { Font } from "astro:assets";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+import { LINKS, SITE } from "../config";
+import "../styles/global.css";
+
+interface Props {
+  title?: string;
+  description?: string;
+  /**
+   * Path to the OG image, relative to the site root.
+   *
+   * The art is hand-made per route and lives in public/og/. Every card is
+   * 1200x630 - if you add one at a different size, the og:image:width/height
+   * below stop being true and some scrapers will crop against the wrong box.
+   */
+  ogImage?: string;
+  /** Omit from search + AI crawlers. For thin or duplicate routes only. */
+  noindex?: boolean;
+  /** Extra JSON-LD nodes appended to the site @graph, e.g. a WebPage. */
+  schema?: Record<string, unknown>[];
+  /**
+   * Nav treatment. The homepage passes "overlay" so the fixed nav starts
+   * transparent over the hero shader canvas; every other page keeps the
+   * sticky solid bar.
+   */
+  nav?: "overlay" | "solid";
+}
+
+const {
+  title,
+  description = SITE.description,
+  ogImage = "/og/og-clawbits.png",
+  noindex = false,
+  schema = [],
+  nav = "solid",
+} = Astro.props;
+
+// The homepage owns the bare brand title; every other route is suffixed.
+const pageTitle = title ? `${title} | ${SITE.name}` : `${SITE.name} | Where humans and agents live together`;
+
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const ogImageUrl = new URL(ogImage, Astro.site).href;
+
+// Organization + WebSite + SoftwareApplication is the spine every page needs;
+// routes append their own node via the `schema` prop.
+//
+// Deliberately NO WebSite/SearchAction: the marketing site has no search, and
+// declaring a SearchAction that resolves to nothing is a lie told to a crawler
+// in a machine-readable format. Phase 4/5 add TechArticle and BlogPosting.
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${Astro.site}#organization`,
+      name: SITE.org,
+      url: Astro.site?.href,
+      sameAs: [LINKS.github, LINKS.x],
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${Astro.site}#website`,
+      url: Astro.site?.href,
+      name: SITE.name,
+      description: SITE.description,
+      publisher: { "@id": `${Astro.site}#organization` },
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": `${Astro.site}#software`,
+      name: SITE.name,
+      description: SITE.description,
+      applicationCategory: "BusinessApplication",
+      operatingSystem: "Web, macOS, Linux",
+      url: Astro.site?.href,
+      codeRepository: LINKS.github,
+      license: "https://opensource.org/licenses/MIT",
+      author: { "@id": `${Astro.site}#organization` },
+    },
+    ...schema,
+  ],
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    {noindex && <meta name="robots" content="noindex, nofollow" />}
+
+    <link rel="icon" type="image/png" href="/brand/favicon.png" />
+    <link rel="apple-touch-icon" href="/brand/apple-touch-icon-180.png" />
+    <meta name="theme-color" content="#ffffff" />
+
+    {/* Self-hosted, preloaded, with generated fallback metrics so the hero
+        does not shift when the face lands. Geist carries the site; Inter is
+        the product's UI face inside the hero demo window (preloaded - the
+        window is the hero visual); Fraunces exists solely for the demo's
+        Home greeting. */}
+    <Font cssVariable="--ff-sans" preload />
+    <Font cssVariable="--ff-app" preload />
+    <Font cssVariable="--ff-mono" />
+    <Font cssVariable="--ff-serif" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={SITE.name} />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={pageTitle} />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageUrl} />
+    <meta name="twitter:site" content="@clawbitsai" />
+
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} is:inline />
+  </head>
+
+  <body>
+    <a href="#main" class="skip">Skip to content</a>
+    <Nav variant={nav} />
+    <main id="main">
+      <slot />
+    </main>
+    <Footer />
+  </body>
+</html>
+
+<style>
+  .skip {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 200;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    padding: 0.75rem 1.25rem;
+    border-radius: 0 0 0.5rem 0;
+    font-size: 0.875rem;
+  }
+
+  .skip:focus {
+    left: 0;
+  }
+</style>

@@ -125,7 +125,7 @@ export function HatchingCard({
 
         {/* Big, calm "Hatching…" arc wrapping the egg (where the agent's name
             lands after the flip). The real, changing status lives in the wizard
-            button — this stays a constant, shimmering label. */}
+            button - this stays a constant, shimmering label. */}
         <text className="animate-pulse" fontSize={32} fontWeight={700} letterSpacing={0.5} fill={theme.ink} opacity={0.9}>
           <textPath href={`#${labelArcId}`} startOffset="50%" textAnchor="middle">
             {label}

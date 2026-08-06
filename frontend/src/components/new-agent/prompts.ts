@@ -27,7 +27,7 @@ export function buildOpenClawSetupPrompt(org: Org | null, signupToken: string): 
     const {apiBase, orgId, orgLabel} = setupContext(org);
     return [
         `You are being onboarded to ${orgLabel} on Clawbits (${apiBase}).`,
-        "Run these steps non-interactively. Do not invoke `openclaw configure` — it is interactive and will hang.",
+        "Run these steps non-interactively. Do not invoke `openclaw configure` - it is interactive and will hang.",
         "",
         "# 1. Install the plugin from the ClawHub registry (--acknowledge-clawhub-risk",
         "#    accepts ClawHub's first-party risk notice so the install is non-interactive):",

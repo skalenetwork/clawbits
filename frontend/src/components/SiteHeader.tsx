@@ -28,9 +28,15 @@ export function SiteHeader() {
           >
             Sign up
           </Link>
+          {/* The one control in the app that wears --signal as a fill. This pill
+              is the seam between the marketing site and the product - a visitor
+              sees it inches from the landing's own chrome - and no destructive
+              action exists anywhere on these public routes, so the accent cannot
+              be misread as an error here. Everywhere else the fence holds: see
+              the note beside --signal in index.css. */}
           <Link
             to="/login"
-            className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 sm:px-5"
+            className="rounded-lg bg-signal px-4 py-1.5 text-sm font-medium text-signal-foreground transition-colors hover:bg-signal-deep sm:px-5"
           >
             Login
           </Link>

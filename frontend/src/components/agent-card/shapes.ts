@@ -111,7 +111,7 @@ function scallopPath(w: number, h: number, bump: number): string {
  * outer extent is exactly w×h.
  */
 function stampPath(w: number, h: number, notch: number): string {
-  const c = notch * 0.85; // outer corner radius — a touch smaller than a notch
+  const c = notch * 0.85; // outer corner radius - a touch smaller than a notch
   const L = c;
   const T = c;
   const R = w - c;

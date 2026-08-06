@@ -221,7 +221,7 @@ export function RailChats() {
             <div className="my-1 h-px w-7 shrink-0 bg-sidebar-border"/>
             {/* Scroll region: a long list scrolls internally instead of pushing
                 the bottom-pinned Appearance/Settings cluster off-screen. Stays
-                w-full so the corner badges aren't clipped; scrollbar hidden — an
+                w-full so the corner badges aren't clipped; scrollbar hidden - an
                 8px bar would crowd the rail's buttons. */}
             <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {pinned.map((channel, j) => renderButton(channel, pinnedHintId(j)))}

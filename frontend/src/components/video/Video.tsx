@@ -88,7 +88,7 @@ export function Video({ src, poster, autoPlay, className, recoverSrc }: VideoPro
     if (!v || !autoPlay) return;
     void v.play().catch(() => {
       v.muted = true;
-      void v.play().catch(() => {/* still blocked — user can press play */});
+      void v.play().catch(() => {/* still blocked - user can press play */});
     });
   }, [currentSrc, autoPlay]);
 

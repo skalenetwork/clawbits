@@ -1,0 +1,36 @@
+---
+import { getCollection, render } from "astro:content";
+import Docs from "../../layouts/Docs.astro";
+import { DOCS } from "../../docs-allowlist";
+
+/**
+ * One page per allowlisted spec.
+ *
+ * Paths come from the allowlist, and each is matched to its loaded entry by
+ * file path. A spec in the allowlist that the loader did not pick up is a
+ * build error rather than a missing page - a docs site that silently drops a
+ * page it claims to publish is worse than one that fails to build.
+ */
+export async function getStaticPaths() {
+  const loaded = await getCollection("docs");
+
+  return DOCS.map((entry) => {
+    // The loader's generateId pins the entry id to this same slug.
+    const doc = loaded.find((d) => d.id === entry.slug);
+    if (!doc) {
+      throw new Error(
+        `docs allowlist names ${entry.file}, but the content loader did not find it. ` +
+          `Check the path in src/docs-allowlist.ts.`,
+      );
+    }
+    return { params: { slug: entry.slug }, props: { entry, doc } };
+  });
+}
+
+const { entry, doc } = Astro.props;
+const { Content, headings } = await render(doc);
+---
+
+<Docs entry={entry} headings={headings}>
+  <Content />
+</Docs>

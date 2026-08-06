@@ -1,0 +1,561 @@
+---
+/**
+ * The Reef section's visual: the admin dashboard's agent grid, miniaturized.
+ *
+ * Modeled on the REAL operator UI (reef/admin-ui AgentGrid + StatusBadge +
+ * AgentAvatar): avatar tile + sandbox id + agent type, a lifecycle badge and
+ * a "cpu · mem · uptime" metrics line; states and colours are SandboxState's
+ * (Running green, Creating amber + pulsing dot, Stopped muted). Avatars are
+ * the real agent-type marks from reef/admin-ui/src/assets, downscaled into
+ * /brand/agents/*.
+ *
+ * OVERSIZED (owner sketch): the dashboard is bigger than its panel and
+ * anchored so only the top-left corner shows.
+ *
+ * ALIVE, still zero-JS. "Random" is choreography: every visible card's
+ * cpu/mem line crossfades between two nearby readings on its own clock
+ * (different durations, negative delays - the fleet never blinks in
+ * unison), and three lifecycle events interleave on 10/14/16s clocks:
+ *   - atlas-2 re-provisions: Creating -> Running   (10s)
+ *   - hermes-2 gets created from nothing and later retires (14s)
+ *   - atlas is stopped, then comes back            (16s)
+ * Every animated element of one card shares its card's exact
+ * duration + negative delay, or the states tear.
+ *
+ * Geist only - no mono (owner call). No style attributes (production CSP
+ * drops them - see AppWindow.astro). prefers-reduced-motion freezes the
+ * scene into a static all-running fleet. aria-hidden: decorative.
+ */
+
+interface Vm {
+  name: string;
+  type: "OpenClaw" | "Hermes" | "IronClaw";
+  icon: string;
+  /** Two nearby readings the metrics line drifts between. */
+  m1: string;
+  m2: string;
+  /** Lifecycle choreography, one per visible column-row. */
+  action?: "spawn" | "create" | "stop";
+}
+
+/* Row-major into a 3-column grid whose THIRD column is cropped away by the
+ * oversize composition - so the visible mix (columns 1-2) must carry all
+ * three agent types itself: OpenClaw x2, IronClaw x2, Hermes x2. */
+const FLEET: Vm[] = [
+  { name: "atlas-2", type: "OpenClaw", icon: "openclaw.png", m1: "1.8% · 312 MB · 4m", m2: "2.3% · 316 MB · 4m", action: "spawn" },
+  { name: "scout", type: "IronClaw", icon: "ironclaw.webp", m1: "1.2% · 296 MB · 18h", m2: "1.6% · 301 MB · 18h" },
+  { name: "hermes", type: "Hermes", icon: "hermes.svg", m1: "0.4% · 512 MB · 6d 11h", m2: "0.9% · 518 MB · 6d 11h" },
+  { name: "atlas", type: "OpenClaw", icon: "openclaw.png", m1: "5.8% · 1.2 GB · 2d 20h", m2: "4.9% · 1.2 GB · 2d 20h", action: "stop" },
+  { name: "quill", type: "Hermes", icon: "hermes.svg", m1: "0.2% · 128 MB · 9d 3h", m2: "0.5% · 133 MB · 9d 3h" },
+  { name: "clerk", type: "OpenClaw", icon: "openclaw.png", m1: "0.9% · 224 MB · 5d 7h", m2: "1.4% · 229 MB · 5d 7h" },
+  { name: "forge", type: "IronClaw", icon: "ironclaw.webp", m1: "3.4% · 768 MB · 41m", m2: "2.8% · 754 MB · 42m" },
+  { name: "hermes-2", type: "Hermes", icon: "hermes.svg", m1: "1.2% · 268 MB · 34s", m2: "1.2% · 268 MB · 34s", action: "create" },
+  { name: "sentry", type: "IronClaw", icon: "ironclaw.webp", m1: "0.3% · 96 MB · 22d", m2: "0.6% · 99 MB · 22d" },
+];
+---
+
+<div class="panel" aria-hidden="true">
+  <div class="fleet">
+    <header class="head">
+      <img src="/brand/reef-icon.png" alt="" width="180" height="180" class="mark" />
+      <span class="title">Reef</span>
+      <span class="meta">9 agents</span>
+    </header>
+
+    <div class="grid">
+      {
+        FLEET.map((vm) => (
+          <article class:list={["card", vm.type.toLowerCase(), vm.action && `act-${vm.action}`]}>
+            <div class="id-row">
+              <span class="ava">
+                <img src={`/brand/agents/${vm.icon}`} alt="" width="24" height="24" />
+              </span>
+              <span class="names">
+                <b class="name">{vm.name}</b>
+                <span class="atype">{vm.type}</span>
+              </span>
+            </div>
+
+            <div class="stat-row">
+              {vm.action ? (
+                <>
+                  <span class="badges">
+                    <span class:list={["badge", vm.action === "stop" ? "stopped" : "creating"]}>
+                      <i />
+                      {vm.action === "stop" ? "Stopped" : "Creating"}
+                    </span>
+                    <span class="badge run">
+                      <i />Running
+                    </span>
+                  </span>
+                  <span class="mstack">
+                    <span class="metrics dash">—</span>
+                    <span class="metrics live">{vm.m1}</span>
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span class="badge run">
+                    <i />Running
+                  </span>
+                  <span class="mstack">
+                    <span class="metrics a">{vm.m1}</span>
+                    <span class="metrics b">{vm.m2}</span>
+                  </span>
+                </>
+              )}
+            </div>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</div>
+
+<style>
+  .panel {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    max-height: 26rem;
+    border-radius: 1.25rem;
+    background: linear-gradient(150deg, #fdeaec, #f8ccd4);
+    overflow: hidden;
+  }
+
+  /* Bigger than its box: negative right/bottom insets guarantee the bleed,
+   * so only the top-left corner is ever inside the panel. */
+  .fleet {
+    position: absolute;
+    inset: 12% -16% -14% 10%;
+    padding: 1rem;
+    border-radius: 1rem;
+    background: rgb(255 255 255 / 0.82);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.85),
+      0 14px 30px rgb(214 58 84 / 0.18);
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid rgb(12 13 14 / 0.07);
+  }
+
+  .mark {
+    width: 1.125rem;
+    height: 1.125rem;
+  }
+
+  .title {
+    font-size: 0.8125rem;
+    font-weight: 550;
+  }
+
+  .meta {
+    margin-inline-start: auto;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--color-faint);
+  }
+
+  .grid {
+    margin-top: 0.75rem;
+    display: grid;
+    grid-template-columns: repeat(3, 14.5rem);
+    gap: 0.75rem;
+    align-content: start;
+  }
+
+  /* Cards read as clickable, like the real AgentGrid: hand cursor, lift on
+   * hover, a slight press-in on click. */
+  .card {
+    background: #fff;
+    border: 1px solid rgb(12 13 14 / 0.06);
+    border-radius: 0.75rem;
+    padding: 0.625rem 0.75rem;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.04);
+    cursor: pointer;
+    transition:
+      transform 180ms var(--ease-out-expo),
+      box-shadow 180ms var(--ease-out-expo);
+  }
+
+  .card:hover {
+    transform: translateY(-1.5px);
+  }
+
+  .card:active {
+    transform: translateY(0.5px) scale(0.985);
+  }
+
+  .id-row {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+  }
+
+  /* Type-tinted tile, real mark inside - mirrors AgentAvatar. */
+  .ava {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.5rem;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+  }
+
+  .ava img {
+    width: 1.375rem;
+    height: 1.375rem;
+    object-fit: contain;
+  }
+
+  .openclaw .ava {
+    background: rgb(232 66 92 / 0.1);
+  }
+  .hermes .ava {
+    background: rgb(143 91 214 / 0.1);
+  }
+  .ironclaw .ava {
+    background: rgb(74 143 224 / 0.1);
+  }
+
+  .names {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .name {
+    font-size: 0.8125rem;
+    font-weight: 550;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .atype {
+    font-size: 0.6875rem;
+    color: var(--color-muted);
+    margin-top: 1px;
+  }
+
+  .stat-row {
+    margin-top: 0.625rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1;
+    padding: 0.25rem 0.5rem;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .badge i {
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 999px;
+  }
+
+  .badge.run {
+    color: #1a7f37;
+    background: rgb(40 200 64 / 0.15);
+  }
+
+  .badge.run i {
+    background: #28c840;
+  }
+
+  .badge.creating {
+    color: #9a6700;
+    background: rgb(254 188 46 / 0.22);
+  }
+
+  .badge.creating i {
+    background: #febc2e;
+  }
+
+  /* Real StatusBadge "stopped": muted, not alarming. */
+  .badge.stopped {
+    color: var(--color-muted);
+    background: rgb(12 13 14 / 0.07);
+  }
+
+  .badge.stopped i {
+    background: rgb(12 13 14 / 0.35);
+  }
+
+  .metrics {
+    font-size: 0.6875rem;
+    color: var(--color-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .badges,
+  .mstack {
+    display: grid;
+  }
+
+  .badges > .badge {
+    grid-area: 1 / 1;
+    justify-self: start;
+  }
+
+  .mstack > .metrics {
+    grid-area: 1 / 1;
+    justify-self: end;
+  }
+
+  /* ── Choreography ─────────────────────────────────────────────────────
+   * Static cards drift between two readings; the three action cards run
+   * their lifecycle on desynced clocks (negative delays = start mid-cycle,
+   * so nothing snaps at page load). */
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* Metric drift - per-card duration/phase so it reads as noise. */
+    .metrics.a {
+      animation: m-a 9s linear infinite;
+    }
+    .metrics.b {
+      animation: m-b 9s linear infinite;
+    }
+    .card:nth-child(2) .metrics.a,
+    .card:nth-child(2) .metrics.b {
+      animation-duration: 9s;
+      animation-delay: -2s;
+    }
+    .card:nth-child(3) .metrics.a,
+    .card:nth-child(3) .metrics.b {
+      animation-duration: 11s;
+      animation-delay: -5s;
+    }
+    .card:nth-child(5) .metrics.a,
+    .card:nth-child(5) .metrics.b {
+      animation-duration: 8s;
+      animation-delay: -1s;
+    }
+    .card:nth-child(6) .metrics.a,
+    .card:nth-child(6) .metrics.b {
+      animation-duration: 12s;
+      animation-delay: -7s;
+    }
+    .card:nth-child(7) .metrics.a,
+    .card:nth-child(7) .metrics.b {
+      animation-duration: 10s;
+      animation-delay: -4s;
+    }
+    .card:nth-child(9) .metrics.a,
+    .card:nth-child(9) .metrics.b {
+      animation-duration: 13s;
+      animation-delay: -6s;
+    }
+
+    /* atlas-2: re-provision. Creating -> Running, 10s. */
+    .act-spawn {
+      animation: boot-in 10s ease-out infinite;
+    }
+    .act-spawn .badge.creating,
+    .act-spawn .metrics.dash {
+      animation: on-then-off 10s linear infinite;
+    }
+    .act-spawn .badge.run,
+    .act-spawn .metrics.live {
+      animation: off-then-on 10s linear infinite;
+    }
+
+    /* hermes-2: created from nothing, runs, retires. 14s, own phase. */
+    .act-create {
+      animation: card-cycle 14s ease-in-out infinite;
+      animation-delay: -6s;
+    }
+    .act-create .badge.creating,
+    .act-create .metrics.dash {
+      animation: create-early 14s linear infinite;
+      animation-delay: -6s;
+    }
+    .act-create .badge.run,
+    .act-create .metrics.live {
+      animation: create-late 14s linear infinite;
+      animation-delay: -6s;
+    }
+
+    /* atlas: stopped, then brought back. 16s, own phase. */
+    .act-stop .badge.run,
+    .act-stop .metrics.live {
+      animation: on-then-off-then-on 16s linear infinite;
+      animation-delay: -11s;
+    }
+    .act-stop .badge.stopped,
+    .act-stop .metrics.dash {
+      animation: off-then-on-then-off 16s linear infinite;
+      animation-delay: -11s;
+    }
+
+    .badge.creating i {
+      animation: dot-pulse 1.4s ease-in-out infinite;
+    }
+  }
+
+  /* Without the loops: a static all-running fleet with first readings. */
+  @media (prefers-reduced-motion: reduce) {
+    .badge.creating,
+    .badge.stopped,
+    .metrics.dash,
+    .metrics.b {
+      display: none;
+    }
+  }
+
+  @keyframes m-a {
+    0%,
+    42% {
+      opacity: 1;
+    }
+    50%,
+    92% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes m-b {
+    0%,
+    42% {
+      opacity: 0;
+    }
+    50%,
+    92% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes boot-in {
+    0%,
+    2% {
+      opacity: 0.45;
+      transform: translateY(4px);
+    }
+    8%,
+    100% {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes on-then-off {
+    0%,
+    34% {
+      opacity: 1;
+    }
+    40%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes off-then-on {
+    0%,
+    34% {
+      opacity: 0;
+    }
+    40%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  /* The whole hermes-2 card: absent, boots in, lives, retires. */
+  @keyframes card-cycle {
+    0%,
+    8% {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    14%,
+    88% {
+      opacity: 1;
+      transform: none;
+    }
+    95%,
+    100% {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+
+  @keyframes create-early {
+    0%,
+    38% {
+      opacity: 1;
+    }
+    44%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes create-late {
+    0%,
+    38% {
+      opacity: 0;
+    }
+    44%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes on-then-off-then-on {
+    0%,
+    38% {
+      opacity: 1;
+    }
+    44%,
+    84% {
+      opacity: 0;
+    }
+    90%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes off-then-on-then-off {
+    0%,
+    38% {
+      opacity: 0;
+    }
+    44%,
+    84% {
+      opacity: 1;
+    }
+    90%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes dot-pulse {
+    50% {
+      opacity: 0.45;
+    }
+  }
+</style>

@@ -231,7 +231,7 @@ export function BehaviorSection({
                   }
                 />
                 <TooltipContent>
-                  Semantic attention gate — scores messages for relevance
+                  Semantic attention gate - scores messages for relevance
                 </TooltipContent>
               </Tooltip>
             }

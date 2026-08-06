@@ -156,7 +156,7 @@ export function LaunchStep({
         <div className="flex flex-col items-center gap-4">
             {/* The hero: one big, centered card, pulled up into its own top
                 headroom. It hatches (status curved ON the card), then flips into
-                the real agent card — which carries the identity (name, handle,
+                the real agent card - which carries the identity (name, handle,
                 joined, presence, Reef sticker) the moment the agent joins. */}
             <div ref={cardRef} className="-mt-5 w-full max-w-[360px]">
                 <CardFlip
@@ -185,11 +185,11 @@ export function LaunchStep({
             </div>
 
             {/* A failed reef create takes over with Retry / Back; otherwise the
-                primary action lives here — always shown, big and full-width so
+                primary action lives here - always shown, big and full-width so
                 it's the obvious next step. Same button throughout: a disabled
                 "waiting" state until the agent is online, then the live "Say Hi".
                 For ChatGPT-subscription agents, icon-only shortcuts to re-copy the
-                access code + connect command sit BESIDE the CTA (no extra height —
+                access code + connect command sit BESIDE the CTA (no extra height -
                 the guided connect itself is a separate screen before this one). */}
             {createError !== null ? (
                 <div className="flex w-full max-w-[360px] animate-in flex-col gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-3.5 fade-in duration-300">
@@ -228,7 +228,7 @@ export function LaunchStep({
             )}
 
             {/* Access code (all reef agents) + Terminal command (ChatGPT-plan
-                agents) — ghost buttons BELOW the CTA, sharing the row 50/50, or
+                agents) - ghost buttons BELOW the CTA, sharing the row 50/50, or
                 the access-code one full-width when it's alone. Whole-button click
                 copies; the copy glyph sits at the right end. */}
             {mode === "reef" && password !== null && createError === null && (

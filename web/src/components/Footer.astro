@@ -1,0 +1,235 @@
+---
+import { Github01Icon, NewTwitterEllipseIcon } from "@hugeicons/core-free-icons";
+import HugeIcon from "./HugeIcon.astro";
+import { APP_URL, LINKS, SITE, isExternal } from "../config";
+
+/** The social row: glyph plus its name, so the mark is never the only cue. */
+const socials = [
+  { href: LINKS.x, label: "X", title: "Clawbits on X", icon: NewTwitterEllipseIcon },
+  { href: LINKS.github, label: "GitHub", title: "Clawbits on GitHub", icon: Github01Icon },
+];
+
+const year = new Date().getFullYear();
+
+const columns = [
+  {
+    title: "Product",
+    links: [
+      { href: LINKS.signup, label: "Get Started" },
+      { href: APP_URL, label: "Open app" },
+      { href: LINKS.download, label: "Download" },
+      { href: LINKS.changelog, label: "Changelog" },
+    ],
+  },
+  {
+    title: "Developers",
+    links: [
+      { href: LINKS.docs, label: "Protocol docs" },
+      { href: LINKS.github, label: "GitHub" },
+    ],
+  },
+  {
+    title: "Company",
+    links: [
+      { href: LINKS.blog, label: "Blog" },
+      { href: LINKS.brand, label: "Brand" },
+      { href: LINKS.support, label: "Support" },
+    ],
+  },
+  {
+    title: "Legal",
+    links: [
+      { href: LINKS.privacy, label: "Privacy" },
+      { href: LINKS.terms, label: "Terms" },
+    ],
+  },
+];
+---
+
+<footer class="footer">
+  <div class="container">
+    <div class="grid">
+      {
+        columns.map((col) => (
+          <nav class="col" aria-label={col.title}>
+            <h2>{col.title}</h2>
+            <ul>
+              {col.links.map((link) => (
+                <li>
+                  <a
+                    href={link.href}
+                    target={isExternal(link.href) ? "_blank" : undefined}
+                    rel={isExternal(link.href) ? "noopener noreferrer" : undefined}
+                  >
+                    {link.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        ))
+      }
+    </div>
+
+    <div class="base">
+      <p>&copy; {year} {SITE.org}</p>
+      <div class="soc">
+        {
+          socials.map((s) => (
+            <a href={s.href} target="_blank" rel="noopener noreferrer" title={s.title}>
+              <HugeIcon icon={s.icon} size={16} />
+              {s.label}
+            </a>
+          ))
+        }
+      </div>
+    </div>
+  </div>
+
+  {/* The sign-off: the wordmark at exactly the footer's content width,
+      ghosted, fading out and cropped at the page's bottom edge. */}
+  <div class="mark" aria-hidden="true">
+    <div class="container">
+      <img src="/brand/clawbits-long.svg" alt="" width="4082" height="672" class="mark-img" />
+    </div>
+  </div>
+</footer>
+
+<style>
+  /* No bottom padding and overflow hidden: the giant wordmark below is
+   * deliberately cut by the page's bottom edge. */
+  .footer {
+    padding-block: 3rem 0;
+    overflow: hidden;
+  }
+
+  /* Aligned to the rails column above it, not to the old 75rem shell. */
+  .container {
+    width: 100%;
+    max-width: 70.5rem;
+    margin-inline: auto;
+    padding-inline: clamp(1.25rem, 4vw, 3rem);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2.5rem 2rem;
+  }
+
+  .col h2 {
+    font-size: 0.875rem;
+    font-weight: 400;
+    color: var(--color-faint);
+    margin: 0 0 1rem;
+  }
+
+  .col ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .col a {
+    color: var(--color-paper);
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition: color 160ms var(--ease-out-expo);
+  }
+
+  .col a:hover {
+    color: var(--color-muted);
+  }
+
+  .base {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 2.25rem;
+    color: var(--color-faint);
+    font-size: 0.8125rem;
+  }
+
+  .base p {
+    margin: 0;
+  }
+
+  .soc {
+    display: flex;
+    gap: 1.25rem;
+  }
+
+  .soc a {
+    display: inline-flex;
+    align-items: center;
+    /* Half the row gap, so glyph and word bind to each other rather than
+     * reading as four evenly spaced items. */
+    gap: 0.4375rem;
+    color: var(--color-faint);
+    text-decoration: none;
+    transition: color 150ms ease;
+  }
+
+  .soc a:hover {
+    color: var(--color-paper);
+  }
+
+  /* The glyphs are drawn on a 24 grid with generous internal padding, so at a
+   * matched pixel size they read smaller than the text beside them. Nudged up
+   * and off the baseline to sit optically centred on the word. */
+  .soc svg {
+    flex: none;
+    translate: 0 -0.5px;
+  }
+
+  .mark {
+    margin-top: 3.5rem;
+    line-height: 0;
+  }
+
+  /* On a phone the container gutter costs the wordmark a fifth of its width,
+   * and at 8% opacity the result reads as a small indented image rather than
+   * as the page's closing watermark. Cancel the gutter so it spans the screen -
+   * it is decoration (aria-hidden), so it owes nothing to the text grid the
+   * columns above align to. */
+  @media (max-width: 40rem) {
+    .mark .container {
+      padding-inline: 0;
+    }
+  }
+
+  .mark-img {
+    display: block;
+    /* 100% of the shared .container = the exact width the link columns and
+     * the © row live in. */
+    width: 100%;
+    height: auto;
+    /* Ghosted: black artwork at low alpha reads as a soft gray watermark on
+     * the cream ground. The negative bottom margin is the crop; the mask
+     * melts the letterforms into the page edge.
+     *
+     * The crop is a PERCENTAGE, not the old fixed -2.75rem. Percentage margins
+     * resolve against the containing block's width, and this image's height is
+     * a fixed ratio of that same width - so one value crops the same fraction
+     * of the letterforms at every size. The fixed value was tuned against the
+     * ~186px-tall desktop mark; on a phone the mark is only ~62px tall, so
+     * 44px of crop swallowed it and left a row of disconnected fragments.
+     * -4.25% reproduces the desktop crop to within a pixel. */
+    opacity: 0.08;
+    margin-bottom: -4.25%;
+    -webkit-mask-image: linear-gradient(to bottom, #000 45%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 45%, transparent 100%);
+  }
+
+  @media (max-width: 40rem) {
+    .grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+</style>

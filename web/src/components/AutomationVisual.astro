@@ -1,0 +1,699 @@
+---
+import {
+  ActivityIcon,
+  CheckmarkCircle02Icon,
+  Clock05Icon,
+  RepeatIcon,
+} from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+
+/**
+ * The "Automations" endowment card: a schedule firing on its own, and being
+ * honest about it while it does.
+ *
+ * Transcribed from the real screens, not invented - see
+ * frontend/src/components/automations/AutomationCard.tsx (accent icon well with
+ * the owner's face badged on its corner, name, cadence line under a repeat
+ * glyph, footer of status chip + "ran 8h ago") and RunHistory.tsx (the strip of
+ * thin bars scaled by duration, then the run list). Accents are the product's
+ * own three (ACCENT_BG: blue / violet / teal); this one is blue, like the
+ * `tech brief` in the reference shot.
+ *
+ * The loop is built on the two places that UI refuses to lie, because they are
+ * also the most interesting thing it does:
+ *
+ *   - RunStrip's `pendingGhost` - a dashed, pulsing slot held open while a
+ *     requested run has not landed yet, "so the animation encodes the async
+ *     contract instead of faking a result".
+ *   - StatusChip under a `labelOverride` - the tone stays emerald and only the
+ *     glyph pulses, because "success is never painted before the agent's ack".
+ *
+ * So: the automation fires itself, holds an honest empty slot open while the
+ * agent works, and only then resolves into a real run. Clawbits never connects
+ * to the gateway (clawbits_server.py: the agent's own outbound calls are the
+ * only automations traffic), which is what the card is really about.
+ *
+ * The owner is scout, the same agent that mails atlas in the Mailbox card.
+ *
+ * Motion: ONE 15s loop, CSS only, held at 0% until PlayOnView marks it. Seam
+ * and timing match MailboxVisual and GitVisual so the three read as one system.
+ *
+ * CSP NOTE: no style attributes anywhere - bar heights are nth-child rules in
+ * the stylesheet. The production build drops inline styles.
+ */
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = "" } = Astro.props;
+
+const AUTOMATION = {
+  name: "tech brief",
+  cadence: "At 09:00 AM",
+  owner: "scout",
+  avatar: "/avatars/agent-3.svg",
+};
+
+/**
+ * Recent runs, oldest first, as the strip draws them: each value is the bar's
+ * height as a fraction of the tallest run. `fail` is drawn full height so a
+ * crash stands out by shape and not by colour alone - RunStrip does the same.
+ */
+const BARS: { h: number; fail?: boolean; warn?: boolean }[] = [
+  { h: 0.42 }, { h: 0.55 }, { h: 0.38 }, { h: 0.66 }, { h: 0.46 },
+  { h: 1, warn: true }, { h: 0.5 }, { h: 0.7 }, { h: 0.44 },
+  { h: 1, fail: true }, { h: 0.58 }, { h: 0.78 }, { h: 0.48 }, { h: 0.6 },
+];
+
+/** The run the card watches land, and the ones it lands on top of. */
+const NEW_RUN = { when: "just now", dur: "1m 51s" };
+
+/**
+ * Long enough to fill the tallest column: the list is the card's flexible
+ * region and the card's height swings from ~90px of list on the narrowest
+ * card to ~270px on the widest, so a short list opens a hole at tablet width.
+ * Everything past the crop is free.
+ */
+const RUNS = [
+  { when: "8h ago", dur: "1m 56s" },
+  { when: "1d ago", dur: "1m 52s" },
+  { when: "2d ago", dur: "1m 41s" },
+  { when: "3d ago", dur: "1m 47s" },
+  { when: "4d ago", dur: "2m 4s" },
+  { when: "5d ago", dur: "2m 54s" },
+  { when: "6d ago", dur: "2m 22s" },
+  { when: "on Jul 29", dur: "2m 2s" },
+  { when: "on Jul 28", dur: "1m 44s" },
+  { when: "on Jul 27", dur: "2m 11s" },
+];
+---
+
+<div class:list={["abox", className]} data-play-on-view aria-hidden="true">
+  <div class="apanel">
+    {/* The automation as an object: accent well, owner badged on its corner. */}
+    <div class="ahead">
+      <span class="awell">
+        <span class="aic ai-lg" set:html={ico(Clock05Icon)} />
+        <img
+          class="aowner"
+          src={AUTOMATION.avatar}
+          alt=""
+          width="128"
+          height="128"
+          loading="lazy"
+        />
+      </span>
+      <div class="ameta">
+        <div class="aname">{AUTOMATION.name}</div>
+        <div class="acad">
+          <span class="aic ai-xs" set:html={ico(RepeatIcon)} />
+          {AUTOMATION.cadence}
+        </div>
+      </div>
+    </div>
+
+    {/* Honest state left, last run right. The chip keeps its emerald tone
+        while a run is requested - only the glyph pulses. */}
+    <div class="astate">
+      <span class="achip">
+        <span class="aic ai-sm achip-ic" set:html={ico(CheckmarkCircle02Icon)} />
+        <span class="alabel">
+          <i class="al al-active">Active</i>
+          <i class="al al-req">Run requested…</i>
+        </span>
+      </span>
+      <span class="aran">
+        <i class="ar ar-old">ran 8h ago</i>
+        <i class="ar ar-new">ran just now</i>
+      </span>
+    </div>
+
+    <div class="aruns">
+      <div class="arunhead">
+        <span class="aic ai-xs" set:html={ico(ActivityIcon)} />
+        Runs
+      </div>
+
+      {/* The strip. The last slot is the pending ghost: a dashed outline held
+          open while the run is in flight, which then becomes the run itself. */}
+      <div class="astrip">
+        <span class="asbars">
+          {BARS.map((b) => <span class:list={["asbar", { fail: b.fail, warn: b.warn }, `h${Math.round(b.h * 100)}`]} />)}
+        </span>
+        <span class="asghost"></span>
+      </div>
+
+      <ul class="alist">
+        <li class="arow arow-new">
+          <span class="adot"></span>
+          <span class="awhen">ran {NEW_RUN.when}</span>
+          <span class="adur">{NEW_RUN.dur}</span>
+        </li>
+        {
+          RUNS.map((r) => (
+            <li class="arow">
+              <span class="adot" />
+              <span class="awhen">ran {r.when}</span>
+              <span class="adur">{r.dur}</span>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── The card box: same geometry as the .pastel cards it replaces, and the
+   * same glass treatment as the other two, over the amber tint. ── */
+  .abox {
+    /* Excluded from scroll anchoring, along with its subtree.
+     *
+     * These visuals change the height of their own children on a loop. When
+     * the box is scrolled PART WAY past the top of the viewport, Chrome picks
+     * an anchor node inside it, sees that node move as the stack grows, and
+     * "corrects" by scrolling the page - measured at 192px of drift per cycle
+     * with the box top between roughly -60px and -160px. Nothing here is
+     * content a reader is tracking, so nothing here should ever be an anchor. */
+    overflow-anchor: none;
+    position: relative;
+    aspect-ratio: 4 / 5;
+    border-radius: 1rem;
+    overflow: hidden;
+    background: linear-gradient(150deg, #fdf2e4, #f8dcba);
+
+    /* Real app tokens (frontend/src/index.css, sRGB-converted). */
+    /* ── Shared card tokens ──────────────────────────────────────────────
+     * One value per role across all four endowment cards, chosen to match the
+     * real app (frontend/src/index.css, mirrored in AppDemo.astro). Change
+     * these together or the row stops reading as one system.
+     * ────────────────────────────────────────────────────────────────── */
+    --ink: #1e1e1e;
+    --mut: #5e5a52;
+    /* Secondary text. A colour, not an opacity - opacity over a tinted panel
+     * drifts toward the card's hue and each card drifted differently. */
+    --mut-2: rgb(94 90 82 / 0.85);
+    --line: rgb(212 205 191 / 0.7);
+    --chip: rgb(30 30 30 / 0.055);
+    --fill: #dbd7cc;
+    /* The tier above the panel: what a list, a well or a control sits on. The
+     * panel itself is translucent, so this is white rather than a grey - it
+     * lifts content OUT of the card tint instead of restaining it. */
+    --raise: rgb(255 255 255 / 0.72);
+    /* Run/diff outcomes, shared so green means one thing on this page. */
+    --ok: #047857;
+    --ok-fill: rgb(16 185 129 / 0.9);
+    --bad: #b91c1c;
+    --bad-fill: var(--bad-fill);
+    /* One of the product's three automation accents (ACCENT_BG.blue =
+     * bg-blue-500 in lib/automations.ts). */
+    --accent: #3b82f6;
+    --chip-bg: rgb(16 185 129 / 0.15);
+
+    font-family: var(--ff-app);
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    text-align: left;
+  }
+
+  @media (max-width: 30rem) {
+    .abox {
+      aspect-ratio: 16 / 10;
+    }
+  }
+
+  .apanel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: inherit;
+    background: rgb(247 245 240 / 0.52);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    backdrop-filter: blur(28px) saturate(150%);
+    overflow: hidden;
+    /* The rim AppDemo gives the window: without it the panel has no edge and
+     * the card reads as a tinted field rather than a surface. */
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.55);
+    --pad: 20.5px;
+  }
+
+  .aic {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .aic :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .ai-lg { width: 20.5px; height: 20.5px; }
+  .ai-sm { width: 12.5px; height: 12.5px; }
+  .ai-xs { width: 11.5px; height: 11.5px; }
+
+  /* ── The automation ── */
+
+  .ahead {
+    display: flex;
+    align-items: center;
+    gap: 11.5px;
+    flex-shrink: 0;
+    padding: 16px var(--pad) 0;
+  }
+
+  /* Accent well, owner badged on the corner as a cut-out. */
+  .awell {
+    position: relative;
+    width: 41.5px;
+    height: 41.5px;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    border-radius: 11.5px;
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .aowner {
+    position: absolute;
+    right: -3.5px;
+    bottom: -3.5px;
+    width: 17px;
+    height: 17px;
+    display: block;
+    object-fit: cover;
+    background: var(--fill);
+    border-radius: 999px;
+    box-shadow: 0 0 0 2.5px #f4f1ea;
+  }
+
+  .ameta {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .aname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .acad {
+    display: flex;
+    align-items: center;
+    gap: 4.5px;
+    margin-top: 1px;
+    font-size: 12px;
+    color: var(--mut);
+  }
+
+  .acad .aic {
+    opacity: 0.7;
+  }
+
+  /* ── Status row ── */
+
+  .astate {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 9px;
+    flex-shrink: 0;
+    padding: 11.5px var(--pad) 14px;
+  }
+
+  .achip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4.5px;
+    padding: 2.5px 8px;
+    border-radius: 999px;
+    background: var(--chip-bg);
+    color: var(--chip-fg);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  /* The chip's two labels sit SIDE BY SIDE, each collapsing to zero width when
+   * it is not the current one, so the pill is only ever as wide as the words
+   * in it - "Active" in a box cut for "Run requested…" reads as a bug. They
+   * swap by animating those widths against each other, which morphs the pill
+   * instead of resizing it in one jump.
+   *
+   * The widths are measured, not guessed (32.25px and 84.84px at 11.5px/500,
+   * -0.025em, plus a pixel of slack). Geist is self-hosted, so the metrics are
+   * deterministic - the same trick the hero's agent-stack tooltip uses. Re-
+   * measure if the type scale or the strings change. */
+  .alabel {
+    display: inline-flex;
+    line-height: 16px;
+  }
+
+  .al {
+    display: inline-block;
+    overflow: hidden;
+    white-space: nowrap;
+    font-style: normal;
+  }
+
+  .al-active {
+    width: 34px;
+  }
+
+  .al-req {
+    width: 0;
+    opacity: 0;
+  }
+
+  /* The "ran …" pair has no box of its own, so it can keep stacking in one
+   * grid cell - right-aligned, a fixed width is invisible there. */
+  .aran {
+    display: grid;
+    flex-shrink: 0;
+    justify-items: end;
+    line-height: 16px;
+    font-size: 12px;
+    color: rgb(94 90 82 / 0.8);
+  }
+
+  .ar {
+    grid-area: 1 / 1;
+    font-style: normal;
+    white-space: nowrap;
+  }
+
+  /* Settled state: the run has landed, so the card reads "ran just now". */
+  .ar-old {
+    opacity: 0;
+  }
+
+  /* ── Runs ── */
+
+  .aruns {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    /* Inset divider. A rule bled to the panel edge cuts the card in two; an
+     * inset one separates the regions inside it. Drawn as a background rather
+     * than a border because only a background can be inset horizontally. */
+    background-image: linear-gradient(var(--line), var(--line));
+    background-repeat: no-repeat;
+    background-size: calc(100% - var(--pad) * 2) 1px;
+    background-position: var(--pad) 0;
+    padding-top: 11.5px;
+  }
+
+  .arunhead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    padding-inline: var(--pad);
+    font-size: 12px;
+    color: var(--mut);
+  }
+
+  /* The strip: one thin bar per run, oldest to newest, height by duration. */
+  .astrip {
+    display: flex;
+    align-items: flex-end;
+    gap: 3.5px;
+    flex-shrink: 0;
+    height: 34.5px;
+    margin: 9px 0 11.5px;
+    padding-inline: var(--pad);
+  }
+
+  /* Shrink-to-fit, left-aligned: the strip is as long as there are runs and
+   * leaves the rest of the row empty, exactly as the real one does. */
+  .asbars {
+    display: flex;
+    align-items: flex-end;
+    gap: 3.5px;
+    flex: 0 1 auto;
+    min-width: 0;
+    height: 100%;
+  }
+
+  /* Fixed 7px bars (the app's w-1.5), allowed to shrink rather than widen -
+   * letting them flex would make them fat blobs on the tablet column. */
+  .asbar {
+    width: 7px;
+    flex-shrink: 1;
+    min-width: 2.5px;
+    border-radius: 999px;
+    background: var(--ok-fill);
+  }
+
+  /* A crash is drawn full height so it reads by shape, not colour alone. */
+  .asbar.fail {
+    background: var(--bad-fill);
+  }
+
+  /* Amber marks "attention, but not a crash" - a declined or undelivered run,
+   * which RunHistory.tsx keeps distinct from a red hard failure. */
+  .asbar.warn {
+    background: rgb(245 158 11 / 0.8);
+  }
+
+  .h38 { height: 38%; }
+  .h40 { height: 40%; }
+  .h41 { height: 41%; }
+  .h42 { height: 42%; }
+  .h43 { height: 43%; }
+  .h44 { height: 44%; }
+  .h45 { height: 45%; }
+  .h46 { height: 46%; }
+  .h48 { height: 48%; }
+  .h50 { height: 50%; }
+  .h52 { height: 52%; }
+  .h55 { height: 55%; }
+  .h57 { height: 57%; }
+  .h58 { height: 58%; }
+  .h60 { height: 60%; }
+  .h62 { height: 62%; }
+  .h66 { height: 66%; }
+  .h70 { height: 70%; }
+  .h78 { height: 78%; }
+  .h100 { height: 100%; }
+
+  /* The pending slot, and then the run itself: ONE element, because that is
+   * what it is - the ghost is the run before the agent has reported it. */
+  .asghost {
+    width: 7px;
+    flex-shrink: 0;
+    height: 62%;
+    border-radius: 999px;
+    background: var(--ok-fill);
+    border: 0 dashed rgb(94 90 82 / 0.5);
+  }
+
+  .alist {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    /* The crop is a fade, not a guillotine. */
+    -webkit-mask-image: linear-gradient(to top, transparent 0, #000 16px);
+    mask-image: linear-gradient(to top, transparent 0, #000 16px);
+    margin: 0;
+    padding: 0 calc(var(--pad) - 7px);
+    list-style: none;
+  }
+
+  /* No vertical padding: the new row has to collapse to a true zero. */
+  .arow {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 32px;
+    padding-inline: 7px;
+    border-radius: 9px;
+    overflow: hidden;
+  }
+
+  .arow-new {
+    background: rgb(16 185 129 / 0.09);
+  }
+
+  .arow-new .adot {
+    box-shadow: 0 0 0 3px rgb(16 185 129 / 0.18);
+  }
+
+  .adot {
+    width: 7px;
+    height: 7px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--ok);
+  }
+
+  .awhen {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+
+  .adur {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--mut);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── The 15s loop ────────────────────────────────────────────────────────
+   * The strip wipes in left to right at 2-16% (a chart drawing itself, one
+   * animation rather than twenty-two staggered ones), the run list settles at
+   * 18-26%, and then the card's real beat: at 36% the schedule fires - the
+   * chip takes the "Run requested…" label with its glyph pulsing, and the last
+   * slot of the strip opens as a dashed ghost. At 52% the agent reports, and
+   * that same element becomes the run: border to fill, height to its duration.
+   * The chip returns to Active, "ran 8h ago" becomes "ran just now", and the
+   * run opens at the top of the list. 56 -> 86% holds.
+   *
+   * The seam matches the sibling cards exactly: dissolve at 86-88.5%, collapse
+   * what the cycle added at 89.5% while invisible, and fade back in at
+   * 94-96.8% before the wrap, so 100% and 0% are the same frame.
+   *
+   * Everything is settled by default, so reduced motion - and the moment
+   * before PlayOnView marks the card - both show the run already landed.
+   * ────────────────────────────────────────────────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    .asbars {
+      clip-path: inset(0 100% 0 0);
+    }
+
+    .arow-new {
+      max-height: 0;
+    }
+
+    .asghost {
+      height: 0;
+      opacity: 0;
+    }
+
+    /* The loop starts BEFORE the run lands, so the pair flips: the card opens
+     * on "ran 8h ago" and earns "just now" during the cycle. (No positioning
+     * here - both labels share one grid cell, and moving them out of flow
+     * would drop them onto .apanel, which is the only positioned ancestor.) */
+    .ar-old {
+      opacity: 1;
+    }
+
+    .ar-new {
+      opacity: 0;
+    }
+
+    .play .asbars { animation: wipe 15s ease infinite; }
+    .play .asghost { animation: ghost 15s ease infinite; }
+    .play .arow:not(.arow-new) { animation: chrome 15s ease infinite; }
+    .play .arow-new { animation: landrow 15s ease infinite; }
+    .play .al-active { animation: labout 15s ease infinite; }
+    .play .al-req { animation: labin 15s ease infinite; }
+    .play .achip-ic { animation: chippulse 15s ease infinite; }
+    .play .ar-old { animation: metaout 15s ease infinite; }
+    .play .ar-new { animation: metain 15s ease infinite; }
+    .play .arunhead,
+    .play .ahead,
+    .play .achip,
+    .play .aran { animation: chrome 15s ease infinite; }
+  }
+
+  /* The strip draws itself, then dissolves for the seam and comes straight
+   * back before the wrap. */
+  @keyframes wipe {
+    0%, 2% { clip-path: inset(0 100% 0 0); opacity: 1; }
+    16%, 86% { clip-path: inset(0 0 0 0); opacity: 1; }
+    88.5%, 94% { clip-path: inset(0 0 0 0); opacity: 0; }
+    96.8%, 100% { clip-path: inset(0 100% 0 0); opacity: 1; }
+  }
+
+  /* The honest pending slot: held open dashed and empty while the run is in
+   * flight, then filled once the agent reports it. */
+  @keyframes ghost {
+    0%, 36% { height: 0; opacity: 0; border-width: 1px; background: transparent; }
+    /* Dashed, empty and pulsing while the run is in flight - RunStrip marks
+     * the same slot `animate-pulse` for the same reason. */
+    39% { height: 55%; opacity: 1; border-width: 1px; background: transparent; }
+    43% { height: 55%; opacity: 0.45; border-width: 1px; background: transparent; }
+    47% { height: 55%; opacity: 1; border-width: 1px; background: transparent; }
+    50% { height: 55%; opacity: 0.5; border-width: 1px; background: transparent; }
+    /* Reported: the slot becomes the run. A landed run does not pulse. */
+    52%, 86% { height: 62%; opacity: 1; border-width: 0; background: var(--ok-fill); }
+    88.5%, 94% { height: 62%; opacity: 0; border-width: 0; background: var(--ok-fill); }
+    96.8%, 100% { height: 0; opacity: 0; border-width: 1px; background: transparent; }
+  }
+
+  /* The run that lands during the cycle, pushing the list down. */
+  @keyframes landrow {
+    0%, 52% { max-height: 0; opacity: 0; }
+    56%, 86% { max-height: 32px; opacity: 1; }
+    88.5% { max-height: 32px; opacity: 0; }
+    89.5%, 100% { max-height: 0; opacity: 0; }
+  }
+
+  /* The chrome never collapses - it only dissolves for the seam. */
+  @keyframes chrome {
+    0%, 86% { opacity: 1; }
+    88.5%, 94% { opacity: 0; }
+    96.8%, 100% { opacity: 1; }
+  }
+
+  /* Each pair shares one grid cell, so the two labels are SEQUENCED rather
+   * than crossfaded - overlapping them at partial opacity reads as garbled
+   * text, not as a transition. One is fully out before the other starts.
+   *
+   * "Active" yields to "Run requested…" only for the length of the request;
+   * "ran 8h ago" yields to "ran just now" for good, and only resets at the
+   * seam, because by then the run has actually landed. */
+  /* The two widths animate against each other over the SAME window, so their
+   * sum - the pill - grows monotonically from one label's width to the other's
+   * instead of collapsing to the icon and springing back out. The opacities
+   * are sequenced inside that window so the words never overlap. */
+  @keyframes labout {
+    0%, 35% { width: 34px; opacity: 1; }
+    37% { opacity: 0; }
+    39%, 50% { width: 0; opacity: 0; }
+    52% { opacity: 0; }
+    54%, 86% { width: 34px; opacity: 1; }
+    88.5%, 94% { width: 34px; opacity: 0; }
+    96.8%, 100% { width: 34px; opacity: 1; }
+  }
+
+  @keyframes labin {
+    0%, 35% { width: 0; opacity: 0; }
+    37% { opacity: 0; }
+    39%, 50% { width: 86px; opacity: 1; }
+    52% { opacity: 0; }
+    54%, 100% { width: 0; opacity: 0; }
+  }
+
+  @keyframes metaout {
+    0%, 49% { opacity: 1; translate: 0 0; }
+    51%, 94% { opacity: 0; translate: 0 -3.5px; }
+    96.8%, 100% { opacity: 1; translate: 0 0; }
+  }
+
+  @keyframes metain {
+    0%, 51% { opacity: 0; translate: 0 3.5px; }
+    53%, 86% { opacity: 1; translate: 0 0; }
+    88.5%, 100% { opacity: 0; translate: 0 3.5px; }
+  }
+
+  /* Pending is the animation - the glyph pulses, the tone never changes. */
+  @keyframes chippulse {
+    0%, 36% { opacity: 1; }
+    40% { opacity: 0.4; }
+    44% { opacity: 1; }
+    48% { opacity: 0.4; }
+    52%, 100% { opacity: 1; }
+  }
+</style>

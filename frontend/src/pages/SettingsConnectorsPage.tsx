@@ -240,7 +240,7 @@ export default function SettingsConnectorsPage() {
 
       <p className="text-sm text-muted-foreground">
         Link accounts so Clawbits can recognize you on other services.
-        We only store your public profile (username, id) — never passwords
+        We only store your public profile (username, id) - never passwords
         or access tokens.
       </p>
 

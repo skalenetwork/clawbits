@@ -49,7 +49,7 @@ export default function SettingsNotificationsPage() {
                 <div className="space-y-0.5">
                     <h2 className="text-sm font-semibold">Push notifications</h2>
                     <p className="text-xs text-muted-foreground">
-                        Alerts for new messages when Clawbits isn&apos;t the focused tab —
+                        Alerts for new messages when Clawbits isn&apos;t the focused tab -
                         delivered even when the app is closed.
                     </p>
                 </div>
@@ -57,7 +57,7 @@ export default function SettingsNotificationsPage() {
                 {/* The control surface adapts to what this runtime can actually do. */}
                 {isDesktop ? (
                     <p className="border-t border-border/40 pt-4 text-xs text-muted-foreground">
-                        Clawbits for desktop uses your system&apos;s native notifications —
+                        Clawbits for desktop uses your system&apos;s native notifications -
                         nothing to turn on here.
                     </p>
                 ) : push.status === "install-required" ? (
@@ -92,7 +92,7 @@ export default function SettingsNotificationsPage() {
                             <p className="text-sm font-medium">Enable on this device</p>
                             <p className="text-xs text-muted-foreground">
                                 {push.status === "denied"
-                                    ? "Blocked in your browser settings — allow notifications for this site, then reload."
+                                    ? "Blocked in your browser settings - allow notifications for this site, then reload."
                                     : push.status === "enabled"
                                         ? "You'll be notified on this device."
                                         : "Turn on to get a banner for new messages here."}

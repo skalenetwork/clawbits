@@ -1,0 +1,160 @@
+name: Web
+
+# Marketing site (web/) -> Cloudflare Workers static assets.
+#
+#   main  -> clawbits-web-staging    -> https://preview.freeclaws.ai
+#   prod  -> clawbits-web            -> https://preview.clawbits.ai
+#
+# `prod` advances by manual merge from `main`, matching how the app ships.
+# Neither target is the apex: the apex cutover is Phase 6 of
+# docs/protocol/LANDING_SITE_PLAN.md and is a deliberate, separate step. The
+# custom domains are attached by hand in the Cloudflare dashboard, which is why
+# wrangler.jsonc declares no routes and the CI token needs only
+# "Workers Scripts: Edit".
+#
+# Pull requests build and verify but never deploy.
+
+on:
+  push:
+    branches: [main, prod]
+    # The site does not build from web/ alone. /changelog reads
+    # frontend/src/release-notes (content.config.ts) and /docs reads docs/
+    # through the src/docs-allowlist.ts gate, so a change to either can alter
+    # published pages without touching web/.
+    #
+    # Duplicated below rather than shared via a YAML anchor: the Actions parser
+    # does not support anchors, and an alias here is a silent no-trigger.
+    paths:
+      - 'web/**'
+      - 'frontend/src/release-notes/**'
+      - 'docs/**'
+      - '.github/workflows/web.yaml'
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'frontend/src/release-notes/**'
+      - 'docs/**'
+      - '.github/workflows/web.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy per branch at a time - two overlapping `wrangler deploy` runs
+# against the same Worker race on which upload wins. PR builds are safe to
+# cancel; a deploy in flight is not.
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build & deploy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          # Full checkout, NOT sparse: the build reads ../frontend and ../docs
+          # (see the paths filter above).
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        # Unlike frontend/, this does not use `bun --bun`. Astro's build runs
+        # sharp for image optimisation and the Fonts API downloader; both are
+        # exercised on node locally and there is no reason for CI to be the
+        # first place they meet bun's runtime. package.json engines requires
+        # >=22.12, so the runner's default node is not assumed either.
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            web/node_modules
+          key: ${{ runner.os }}-bun-web-${{ hashFiles('web/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-web-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Resolve deploy target
+        id: target
+        # `prod` is the only production branch; everything else (main, PRs,
+        # manual dispatch from a topic branch) builds as staging. Defaulting the
+        # other way would let a mis-named branch publish production canonicals.
+        #
+        # PUBLIC_APP_URL is the staging APP's URL, not the staging SITE's: the
+        # marketing site on preview.freeclaws.ai must link to the freeclaws
+        # deployment of the app. It is the apex today and becomes
+        # app.freeclaws.ai at the Phase 6 cutover - flip this line then.
+        run: |
+          if [ "${{ github.ref_name }}" = "prod" ]; then
+            {
+              echo "env=production"
+              echo "site=https://preview.clawbits.ai"
+              echo "app=https://app.clawbits.ai"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "env=staging"
+              echo "site=https://preview.freeclaws.ai"
+              echo "app=https://freeclaws.ai"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        env:
+          # Canonical URLs, the sitemap, absolute OG image URLs and the
+          # Sitemap: line in robots.txt are all built from this. Unset, it
+          # defaults to the production apex (astro.config.mjs) and staging
+          # would advertise itself as clawbits.ai.
+          SITE_URL: ${{ steps.target.outputs.site }}
+          PUBLIC_APP_URL: ${{ steps.target.outputs.app }}
+        run: bun run build
+
+      - name: Verify
+        # astro check + legal parity + internal links. Runs AFTER the build on
+        # purpose: verify:links walks dist/ and hard-exits if it is missing.
+        run: bun run verify
+
+      - name: Assert preview build is not indexable
+        # The one mistake in this pipeline that costs money to undo. Both
+        # targets are preview hosts, so robots.txt must refuse every crawler
+        # (src/pages/robots.txt.ts keys off SITE_URL's hostname). Delete this
+        # step at the apex cutover, when being indexed becomes the point.
+        run: |
+          if ! grep -qx 'Disallow: /' dist/robots.txt; then
+            echo "::error::robots.txt would allow indexing of ${{ steps.target.outputs.site }}"
+            cat dist/robots.txt
+            exit 1
+          fi
+
+      - name: Deploy to Cloudflare Workers
+        if: github.event_name != 'pull_request'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # bunx resolves the wrangler pinned in web/package.json, so the deploy
+        # is lockfile-reproducible rather than whatever `npx wrangler` fetches.
+        # --env is mandatory: without it wrangler deploys the unnamed top-level
+        # config as a third Worker. See wrangler.jsonc.
+        run: bunx wrangler deploy --env ${{ steps.target.outputs.env }}
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "Deployed \`${{ steps.target.outputs.env }}\` -> ${{ steps.target.outputs.site }}" >> "$GITHUB_STEP_SUMMARY"

@@ -51,7 +51,7 @@ export function DeployStep({
                             "Spun up and managed for you"
                         ) : (
                             <span>
-                                No Reef —{" "}
+                                No Reef -{" "}
                                 <Link
                                     to="/settings/reef"
                                     onClick={onClose}
@@ -83,11 +83,11 @@ export function DeployStep({
                                 </p>
                             ) : tokenRejected ? (
                                 <p className="px-1 text-[13px] font-medium text-destructive">
-                                    Reef rejected this token — check it and try again.
+                                    Reef rejected this token - check it and try again.
                                 </p>
                             ) : reefUnreachable ? (
                                 <p className="px-1 text-[13px] font-medium text-destructive">
-                                    Can't reach your Reef — is its tunnel up?
+                                    Can't reach your Reef - is its tunnel up?
                                 </p>
                             ) : (
                                 <p className="px-1 text-[13px] text-muted-foreground">

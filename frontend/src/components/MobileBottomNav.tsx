@@ -83,7 +83,7 @@ export function MobileBottomNav() {
         })}
 
         {/* Search is an action (opens the command palette overlay), not a
-            route — same look as a tab, but never the active one. */}
+            route - same look as a tab, but never the active one. */}
         <button
           type="button"
           onClick={() => {

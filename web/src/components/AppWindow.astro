@@ -1,0 +1,322 @@
+---
+/**
+ * The hero product frame: a macOS-style window over the shader (1166x720 at
+ * the reference width, translucent white, inset highlight ring + hairline
+ * outer ring + layered shadows, bottom edge cropped by the hero canvas).
+ *
+ * DELIBERATE SKELETON. The owner's brief: "simple macos-style window shape,
+ * details later" - the interior is layout only (sidebar, header, feed,
+ * composer) drawn as neutral bars, so the real interactive demo can land here
+ * without renegotiating the frame around it. Do not add copy or fake content
+ * to this component; that is the next iteration's job.
+ *
+ * CSP NOTE: every bar is sized from the stylesheet (nth-child), never from a
+ * style attribute. The production build ships `style-src` hashes with no
+ * 'unsafe-inline', so inline style attributes are silently dropped - this
+ * bit once, as a full-width soup of bars that only appeared in the built
+ * site.
+ *
+ * aria-hidden: decorative. The hero states the claim; this illustrates it.
+ */
+---
+
+<div class="window" aria-hidden="true">
+  <aside class="side">
+    <div class="lights">
+      <span class="l r"></span><span class="l y"></span><span class="l g"></span>
+    </div>
+
+    <div class="ws">
+      <span class="ws-mark"></span>
+      <span class="bar ws-bar"></span>
+    </div>
+
+    <div class="rows">
+      {
+        Array.from({ length: 6 }).map(() => (
+          <div class="row">
+            <span class="glyph" />
+            <span class="bar" />
+          </div>
+        ))
+      }
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <span class="bar top-bar"></span>
+      <span class="search"></span>
+    </header>
+
+    <div class="feed">
+      {
+        Array.from({ length: 3 }).map(() => (
+          <div class="msg">
+            <span class="ava" />
+            <div class="msg-body">
+              <span class="bar name" />
+              <span class="bar text" />
+              <span class="bar text" />
+            </div>
+          </div>
+        ))
+      }
+    </div>
+
+    <footer class="composer">
+      <span class="bar comp-bar"></span>
+    </footer>
+  </div>
+</div>
+
+<style>
+  .window {
+    /* Capped at the rails width (70.5rem) so the window's edges line up with
+     * the content column's hairlines below the canvas. */
+    width: min(96%, 70.5rem);
+    aspect-ratio: 1166 / 720;
+    margin-inline: auto;
+    display: flex;
+    overflow: hidden;
+    border-radius: clamp(0.75rem, 1.7vw, 1.375rem);
+    /* Frosted over the shader - the full stack: translucent white fill, 1px
+     * white inset highlight, 0.5px dark outer hairline, then the two tailwind
+     * shadow-xl layers. */
+    background: rgb(255 255 255 / 0.78);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+    backdrop-filter: blur(24px) saturate(140%);
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.8),
+      0 0 0 0.5px rgb(12 13 14 / 0.2),
+      0 20px 25px -5px rgb(0 0 0 / 0.1),
+      0 8px 10px -6px rgb(0 0 0 / 0.1);
+  }
+
+  /* Every interior mark is one neutral ink at low alpha - a wireframe, not a
+   * mock of real content. */
+  .bar {
+    display: block;
+    height: 0.5rem;
+    border-radius: 999px;
+    background: rgb(12 13 14 / 0.1);
+  }
+
+  /* ── Sidebar ── */
+
+  .side {
+    flex: 0 0 24%;
+    max-width: 15rem;
+    padding: 1.125rem 1rem;
+    border-right: 1px solid rgb(12 13 14 / 0.07);
+    background: rgb(255 255 255 / 0.45);
+  }
+
+  .lights {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .l {
+    width: 0.75rem;
+    height: 0.75rem;
+    border-radius: 999px;
+  }
+
+  .r {
+    background: #ff5f57;
+  }
+  .y {
+    background: #febc2e;
+  }
+  .g {
+    background: #28c840;
+  }
+
+  .ws {
+    display: flex;
+    align-items: center;
+    gap: 0.5625rem;
+    margin-top: 1.625rem;
+  }
+
+  .ws-mark {
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 0.4375rem;
+    background: rgb(12 13 14 / 0.14);
+  }
+
+  .ws-bar {
+    width: 5.5rem;
+  }
+
+  .rows {
+    margin-top: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.0625rem;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 0.5625rem;
+  }
+
+  .glyph {
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 0.3125rem;
+    background: rgb(12 13 14 / 0.08);
+    flex-shrink: 0;
+  }
+
+  /* Varied channel-name widths - stylesheet-driven, see the CSP note. */
+  .row:nth-child(1) .bar {
+    width: 5.5rem;
+  }
+  .row:nth-child(2) .bar {
+    width: 4rem;
+  }
+  .row:nth-child(3) .bar {
+    width: 4.75rem;
+  }
+  .row:nth-child(4) .bar {
+    width: 3.5rem;
+  }
+  .row:nth-child(5) .bar {
+    width: 4.375rem;
+  }
+  .row:nth-child(6) .bar {
+    width: 3rem;
+  }
+
+  /* ── Main pane ── */
+
+  .main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.0625rem 1.375rem;
+    border-bottom: 1px solid rgb(12 13 14 / 0.07);
+  }
+
+  .top-bar {
+    width: 6rem;
+  }
+
+  .search {
+    width: clamp(6rem, 30%, 15rem);
+    height: 1.5rem;
+    border-radius: 999px;
+    background: rgb(12 13 14 / 0.06);
+  }
+
+  .feed {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 1.625rem;
+    padding: 1.625rem 1.375rem;
+  }
+
+  .msg {
+    display: flex;
+    gap: 0.75rem;
+  }
+
+  .ava {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 999px;
+    background: rgb(12 13 14 / 0.12);
+    flex-shrink: 0;
+  }
+
+  .msg-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5625rem;
+    padding-top: 0.1875rem;
+  }
+
+  .bar.name {
+    height: 0.4375rem;
+    background: rgb(12 13 14 / 0.16);
+  }
+
+  .bar.text {
+    max-width: 26rem;
+    background: rgb(12 13 14 / 0.08);
+  }
+
+  /* Message shapes: name width, then one or two text lines. The .msg-body's
+   * children are name (1), text (2), text (3). */
+  .msg:nth-child(1) .name {
+    width: 4.5rem;
+  }
+  .msg:nth-child(1) .text:nth-child(2) {
+    width: 82%;
+  }
+  .msg:nth-child(1) .text:nth-child(3) {
+    width: 64%;
+  }
+
+  .msg:nth-child(2) .name {
+    width: 3.5rem;
+  }
+  .msg:nth-child(2) .text:nth-child(2) {
+    width: 92%;
+  }
+  .msg:nth-child(2) .text:nth-child(3) {
+    width: 40%;
+  }
+
+  .msg:nth-child(3) .name {
+    width: 4rem;
+  }
+  .msg:nth-child(3) .text:nth-child(2) {
+    width: 76%;
+  }
+  .msg:nth-child(3) .text:nth-child(3) {
+    display: none;
+  }
+
+  .composer {
+    margin: 0 1.375rem 1.25rem;
+    padding: 0 1rem;
+    display: flex;
+    align-items: center;
+    height: 2.5rem;
+    border: 1px solid rgb(12 13 14 / 0.1);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.6);
+  }
+
+  .comp-bar {
+    width: 7rem;
+    background: rgb(12 13 14 / 0.07);
+  }
+
+  @media (max-width: 40rem) {
+    .window {
+      width: 94%;
+    }
+
+    .side {
+      display: none;
+    }
+  }
+</style>

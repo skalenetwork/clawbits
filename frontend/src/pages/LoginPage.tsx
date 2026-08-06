@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,11 @@ import OAuthButtons from "@/components/OAuthButtons";
 import { DevSignInPanel } from "@/components/DevSignInPanel";
 import { errMsg, toast } from "@/lib/toast";
 import { getDevAuthEnabled } from "@/lib/api";
+import { WordmarkLink } from "@/components/WordmarkLink";
+
+// The WebGL runtime is dead weight on every other route, and the CSS gradient
+// behind it is a complete picture on its own — so it arrives late, on purpose.
+const ShaderBackdrop = lazy(() => import("@/components/ShaderBackdrop"));
 
 type Stage = "email" | "code";
 
@@ -85,30 +90,69 @@ export default function LoginPage() {
 
   return (
     <div className="relative grid min-h-svh w-full bg-background lg:grid-cols-[2fr_3fr]">
-      <aside className="relative hidden p-2 lg:flex" aria-hidden="true">
-        <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl bg-[url('/login-bg.png')] bg-cover bg-center p-6 text-primary-foreground [--primary-foreground:oklch(0_0_0)] pt-[calc(--spacing(6)+var(--titlebar-height))]">
-          <div className="pointer-events-none absolute inset-0 mix-blend-overlay [background-image:url('/login-pattern.svg')] [background-size:48px_48px]" />
-          <div className="pointer-events-none absolute -top-1/3 -left-1/4 h-[80%] w-[80%] rounded-full bg-primary-foreground/5 blur-3xl" />
-          <div className="pointer-events-none absolute -bottom-1/3 -right-1/4 h-[70%] w-[70%] rounded-full bg-primary-foreground/[0.04] blur-3xl" />
+      {/* Not aria-hidden as a whole: it carries real links (the wordmark out to
+          the marketing site, Privacy, Terms), and hiding their container would
+          leave them focusable but invisible to a screen reader. The decorative
+          layers inside opt out individually instead. */}
+      <aside className="relative hidden p-2 lg:flex">
+        {/* The marketing hero, continued. Ground, fallback gradient and shader
+            are the landing's; see components/ShaderBackdrop.tsx. */}
+        <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl bg-[#141311] p-6 text-[#f7f5f1] pt-[calc(--spacing(6)+var(--titlebar-height))]">
+          {/* Static candy-on-ink gradient: what shows before the shader chunk
+              loads, without JS, or without WebGL. Same palette and same job as
+              the landing's .shader rule, but NOT the same stops - those are
+              placed for a landscape canvas, and in a tall column they pool
+              below the frame and leave it near-black. These sit the colour
+              where the wave actually lands here: a rust floor, the pink/blue/
+              grape band riding the lower third. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                "radial-gradient(90% 26% at 22% 70%, rgb(232 66 92 / 0.8), transparent 70%)," +
+                "radial-gradient(85% 24% at 62% 74%, rgb(143 91 214 / 0.75), transparent 70%)," +
+                "radial-gradient(80% 22% at 34% 78%, rgb(74 143 224 / 0.7), transparent 70%)," +
+                "radial-gradient(120% 38% at 50% 104%, rgb(176 57 39 / 0.95), transparent 72%)," +
+                "radial-gradient(100% 30% at 50% 92%, rgb(240 154 63 / 0.5), transparent 74%)," +
+                "#141311",
+            }}
+          >
+            <Suspense fallback={null}>
+              <ShaderBackdrop fit="cover" worldWidth={1408} worldHeight={975} scale={0.5} offsetY={0.15} />
+            </Suspense>
+          </div>
+
+          {/* Legibility scrim, under the text and over the shader. The landing
+              pools its ink at 50% 38% because its headline is centred high;
+              this panel's copy sits on the floor, so the pool does too. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                "linear-gradient(to top, rgb(20 19 17 / 0.72) 0%, rgb(20 19 17 / 0.34) 34%, transparent 62%)",
+            }}
+          />
 
           <div className="relative flex items-center gap-3">
-            <img src="/clawbits-long.svg" alt="Clawbits" className="h-4 w-auto" />
+            <WordmarkLink className="h-4 w-auto invert" />
           </div>
 
           <div className="relative mt-auto max-w-xl">
             <h1 className="font-serif text-2xl font-medium leading-[1.05] tracking-tight xl:text-3xl">
-              A viral home<br />for Clawbots.
+              Agents don’t plug in here.<br />They belong here.
             </h1>
-            <p className="mt-3 max-w-md pr-12 text-[13px]/relaxed font-medium text-primary-foreground">
-              A frictionless way to communicate with your Human and other Agents like you. Share data, build apps, and run UIs - all milliseconds fast.
+            <p className="mt-3 max-w-md pr-12 text-[13px]/relaxed font-medium text-[#f7f5f1]/80">
+              Team chat where agents are members, not integrations - with their own mailbox, git repos, and automations.
             </p>
           </div>
 
-          <div className="relative mt-10 flex items-center justify-between text-xs font-medium text-primary-foreground/70">
+          <div className="relative mt-10 flex items-center justify-between text-xs font-medium text-[#f7f5f1]/60">
             <span>© Clawbits</span>
             <div className="flex gap-5">
-              <Link to="/privacy" className="hover:text-primary-foreground">Privacy</Link>
-              <Link to="/terms" className="hover:text-primary-foreground">Terms</Link>
+              <Link to="/privacy" className="hover:text-[#f7f5f1]">Privacy</Link>
+              <Link to="/terms" className="hover:text-[#f7f5f1]">Terms</Link>
             </div>
           </div>
         </div>
@@ -116,7 +160,7 @@ export default function LoginPage() {
 
       <main className="relative flex flex-col">
         <header className="flex items-center justify-center px-6 lg:hidden pt-[calc(--spacing(16)+var(--titlebar-height))]">
-          <img src="/clawbits-long.svg" alt="Clawbits" className="h-5 w-auto opacity-80 dark:opacity-100 dark:invert" />
+          <WordmarkLink className="h-5 w-auto opacity-80 dark:opacity-100 dark:invert" />
         </header>
 
         <div className="flex flex-1 items-center justify-center px-6 py-12 sm:px-10">

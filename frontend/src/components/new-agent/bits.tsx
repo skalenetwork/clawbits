@@ -235,7 +235,7 @@ export function AccessPasswordScreen({
             {/* The one-time secret, in its own block below the image. ONE fixed-
                 height box holds both states (min-h sized to fit the password on
                 one or two lines), so the placeholder and the final password are
-                exactly the same size — the card never jumps when it lands. */}
+                exactly the same size - the card never jumps when it lands. */}
             <div className="flex min-h-[68px] w-full items-center justify-center rounded-2xl border border-border/70 bg-foreground/[0.03] px-6 text-center">
                 {password ? (
                     <code className="break-all font-mono text-xl font-semibold tracking-wide select-all">

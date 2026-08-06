@@ -200,7 +200,7 @@ const TYPE_LOGO: Record<string, { src: string; alt: string; tint?: string }> = {
 // overlay (which starts at −TOP_PAD). Placed clear of the centered JOINED medal
 // and the curved name below. The plugin version now rides the foot rail instead.
 const SPEC_TOP_PCT = ((82 + TOP_PAD) / VBH) * 100; // the type-logo row
-const TYPE_LEFT_PCT = (90 / W) * 100; // type logo — centered here (inset off the edge)
+const TYPE_LEFT_PCT = (90 / W) * 100; // type logo - centered here (inset off the edge)
 
 export type CardSize = "sm" | "md" | "lg";
 const SIZE_MAXW: Record<CardSize, string> = {
@@ -288,7 +288,7 @@ export function AgentCollectibleCard({
         icon: <ReefCoralGlyph color={theme.accent} className={ICON_CLS} />,
         text: "Reef", textColor: theme.accent,
         onClick: interactive ? onReefClick : undefined,
-        title: interactive ? "Runs on Reef — open Reef settings" : undefined,
+        title: interactive ? "Runs on Reef - open Reef settings" : undefined,
       });
     // Plugin version — a frosted rail chip next to Reef (full variant only, so
     // the smaller "grid" card doesn't carry it). Informational, so no onClick.
@@ -305,7 +305,7 @@ export function AgentCollectibleCard({
         icon: <Icon icon={Mail01Icon} className="size-full" />,
         text: emailDisplay, textColor: theme.accent,
         onClick: interactive ? () => { copyToClipboard(email, "Email"); } : undefined,
-        title: interactive ? `${email} — click to copy` : undefined,
+        title: interactive ? `${email} - click to copy` : undefined,
       });
   }
   const descSticker = stickers.find((s) => s.multiline);
@@ -322,7 +322,7 @@ export function AgentCollectibleCard({
           className="agentcard-shadow font-rounded block w-full select-none"
           style={glowStyle}
           role="img"
-          aria-label={`${name} — agent card`}
+          aria-label={`${name} - agent card`}
         >
           <defs>
             <linearGradient id={gradId} x1={grad.x1} y1={grad.y1} x2={grad.x2} y2={grad.y2}>
