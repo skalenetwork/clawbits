@@ -1,7 +1,7 @@
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import {fireEvent, render, screen, waitFor} from "@testing-library/react";
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
-import type {OrgLobstertalkSettings, SetOrgLobstertalkBody} from "@/lib/api";
+import type {MmAdminChannel, OrgLobstertalkSettings, SetOrgLobstertalkBody} from "@/lib/api";
 
 // Mutable so a test can simulate the user switching orgs mid-save (the page
 // re-renders with a new activeOrgId while a mutation is still in flight).
@@ -17,12 +17,18 @@ vi.mock("@/hooks/useActiveOrg", () => ({
 const getOrgLobstertalk = vi.fn();
 const setOrgLobstertalk = vi.fn();
 const checkOrgLobstertalkEndpoint = vi.fn();
+const listAllOrgChannels = vi.fn();
+const setOrgLobstertalkChannel = vi.fn();
 vi.mock("@/lib/api", () => ({
     getOrgLobstertalk: (orgId: string) => getOrgLobstertalk(orgId) as Promise<OrgLobstertalkSettings>,
     setOrgLobstertalk: (orgId: string, body: SetOrgLobstertalkBody) =>
         setOrgLobstertalk(orgId, body) as Promise<OrgLobstertalkSettings>,
     checkOrgLobstertalkEndpoint: (orgId: string) =>
         checkOrgLobstertalkEndpoint(orgId) as Promise<unknown>,
+    listAllOrgChannels: (orgId: string) =>
+        listAllOrgChannels(orgId) as Promise<{channels: MmAdminChannel[]; total: number}>,
+    setOrgLobstertalkChannel: (orgId: string, channelId: string, approved: boolean) =>
+        setOrgLobstertalkChannel(orgId, channelId, approved) as Promise<unknown>,
 }));
 
 const toastSuccess = vi.fn();
@@ -53,6 +59,22 @@ function settings(
     };
 }
 
+/** A row as the admin channels list returns it — unapproved public by
+ *  default, the post-migration state of every channel. */
+function adminChannel(
+    over: Partial<MmAdminChannel> & {channel_id: string; name: string},
+): MmAdminChannel {
+    return {
+        org_id: "org-1",
+        display_name: null,
+        channel_type: "public",
+        created_at: "2026-08-01T00:00:00Z",
+        member_count: 1,
+        lobstertalk_approved: false,
+        ...over,
+    };
+}
+
 async function renderPage(enabled: boolean, mode?: OrgLobstertalkSettings["mode"]) {
     getOrgLobstertalk.mockResolvedValue(settings(enabled, mode));
     // Retries would stall the test on an unexpected rejection.
@@ -77,6 +99,9 @@ describe("SettingsLobstertalkPage", () => {
         checkOrgLobstertalkEndpoint.mockResolvedValue(
             {ok: true, detail: "gpt-4o-mini answered correctly", latency_ms: 812},
         );
+        listAllOrgChannels.mockReset();
+        listAllOrgChannels.mockResolvedValue({channels: [], total: 0});
+        setOrgLobstertalkChannel.mockReset();
     });
 
     it("shows the triage mode picker when attention is enabled", async () => {
@@ -238,6 +263,64 @@ describe("SettingsLobstertalkPage", () => {
             expect(screen.getByRole("status")).toHaveTextContent("Endpoint check failed");
         });
         expect(screen.getByRole("status")).toHaveTextContent("Error code: 401 - invalid_api_key");
+    });
+
+    it("lists public channels with approval toggles and hides private ones", async () => {
+        listAllOrgChannels.mockResolvedValue({
+            channels: [
+                adminChannel({channel_id: "ch-1", name: "general", lobstertalk_approved: true}),
+                adminChannel({channel_id: "ch-2", name: "random"}),
+                adminChannel({channel_id: "ch-3", name: "secret", channel_type: "private"}),
+            ],
+            total: 3,
+        });
+        await renderPage(true);
+        expect(
+            await screen.findByRole("switch", {name: "LobsterTalk in general", checked: true}),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("switch", {name: "LobsterTalk in random", checked: false}),
+        ).toBeInTheDocument();
+        // Private channels can never be approved (the server 422s), so the
+        // section doesn't even offer them.
+        expect(screen.queryByText("secret")).not.toBeInTheDocument();
+    });
+
+    it("toggling a channel calls the approval API and refetches the list", async () => {
+        listAllOrgChannels.mockResolvedValue({
+            channels: [adminChannel({channel_id: "ch-1", name: "general"})],
+            total: 1,
+        });
+        setOrgLobstertalkChannel.mockResolvedValue({channel_id: "ch-1", lobstertalk_approved: true});
+        await renderPage(true);
+        fireEvent.click(await screen.findByRole("switch", {name: "LobsterTalk in general"}));
+        await waitFor(() => {
+            expect(setOrgLobstertalkChannel).toHaveBeenCalledWith("org-1", "ch-1", true);
+        });
+        // The admin list is the source of truth for the toggles — success
+        // invalidates it rather than patching the cache.
+        await waitFor(() => {
+            expect(listAllOrgChannels).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    it("shows an empty state when the org has only private channels", async () => {
+        listAllOrgChannels.mockResolvedValue({
+            channels: [adminChannel({channel_id: "ch-1", name: "secret", channel_type: "private"})],
+            total: 1,
+        });
+        await renderPage(true);
+        expect(await screen.findByText("No public channels")).toBeInTheDocument();
+    });
+
+    it("keeps the channels section visible with a hint when LobsterTalk is off", async () => {
+        // Approvals are configuration an owner can stage before flipping the
+        // feature on — hiding the section would force enable-first-pick-later.
+        await renderPage(false);
+        expect(
+            await screen.findByRole("heading", {name: "Approved channels"}),
+        ).toBeInTheDocument();
+        expect(screen.getByText(/take effect when you turn it on/)).toBeInTheDocument();
     });
 
     it("probes the org that was saved, not one switched to mid-save", async () => {

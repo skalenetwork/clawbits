@@ -2615,6 +2615,11 @@ class TableRead:
             d = TableRead._channel_to_dict(c, session)
             d["member_count"] = int(member_count or 0)
             d["last_message_at"] = _iso(last_message_at)
+            # Allowlist state for the Settings → LobsterTalk approval UI.
+            # Set here, not in _channel_to_dict — the flag is org governance,
+            # scoped to this owner-only listing rather than every channel
+            # payload. Always false on private rows (the PUT refuses them).
+            d["lobstertalk_approved"] = bool(c.lobstertalk_approved)
             # Redact private channels the viewer isn't in: hide identity
             # (name, display name, avatar) AND content (preview + author).
             # Only non-identifying metadata stays - member count,

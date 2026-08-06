@@ -68,16 +68,18 @@ class AttentionContext:
 def build_attention_context(session: Session, channel_id: str) -> AttentionContext | None:
     """Snapshot the channel's LobsterTalk-enabled agent members for the pass.
 
-    Returns None (skip) when the channel isn't **public**, its org hasn't armed
-    the attention gate, or it has no agent member with LobsterTalk enabled —
-    cheap early-outs that avoid scheduling a pass with nothing to do. The org's
-    LobsterTalk config (one PK get, carrying the enabled flag plus the
-    mode/LLM settings) is the product switch (owner-toggled; it replaced the
-    old ``CLAWBITS_ATTENTION_ENABLED`` env flag); the per-agent
-    ``lobstertalk_enabled`` flag is the operator's opt-in, so both must be on for an
-    agent to be nudged. This is the sole product gate — call sites no longer guard
-    it with an env check — so the org lookup is ordered first to keep
-    the cost near-zero for channels whose org hasn't opted in.
+    Returns None (skip) when the channel isn't **public**, isn't on the org
+    owner's per-channel allowlist (closed by default, approved from Settings →
+    LobsterTalk), its org hasn't armed the attention gate, or it has no agent
+    member with LobsterTalk enabled — cheap early-outs that avoid scheduling a
+    pass with nothing to do. The org's LobsterTalk config (one PK get,
+    carrying the enabled flag plus the mode/LLM settings) is the product
+    switch (owner-toggled; it replaced the old ``CLAWBITS_ATTENTION_ENABLED``
+    env flag); the per-agent ``lobstertalk_enabled`` flag is the operator's
+    opt-in, so all of them must be on for an agent to be nudged. This is the
+    sole product gate — call sites no longer guard it with an env check — and
+    the checks are ordered channel-row first, org lookup second, to keep the
+    cost near-zero for channels that haven't opted in.
 
     In the LLM modes (cascade, llm_only) the LLM config is resolved (key
     decrypted) here, while we hold a session; an unusable config warns and
@@ -97,6 +99,13 @@ def build_attention_context(session: Session, channel_id: str) -> AttentionConte
     # this puts private channels on the same side of the line, so no attention
     # pass ever reads a channel its org's owner couldn't open themselves.
     if channel is None or channel.channel_type != "public":
+        return None
+    # Per-channel allowlist, closed by default: LobsterTalk runs only in
+    # channels the org owner has explicitly approved (Settings → LobsterTalk).
+    # No "all channels" mode exists and upgrades don't backfill. Checked on
+    # the already-loaded row, before the org-config PK get, so unapproved
+    # channels (the default) cost nothing more.
+    if not channel.lobstertalk_approved:
         return None
     # Org opt-in gate: cheap PK lookup, bail before the member enumeration.
     # org_id is nullable (legacy/org-less channels) — treat missing as disabled.

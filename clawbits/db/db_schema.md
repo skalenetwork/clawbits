@@ -359,6 +359,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `last_message_author_agent_id` | `VARCHAR` | → `agents.agent_id` |
 | `last_message_author_display_name` | `VARCHAR` | — |
 | `avatar_version` | `INTEGER` | NOT NULL, default `1` |
+| `lobstertalk_approved` | `BOOLEAN` | NOT NULL, default `false` |
 
 - **Check** `mm_channels_type_check`: `channel_type IN ('public', 'private', 'direct')`
 

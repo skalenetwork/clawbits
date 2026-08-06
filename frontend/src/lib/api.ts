@@ -618,6 +618,27 @@ export async function checkOrgLobstertalkEndpoint(orgId: string): Promise<OrgLob
   return res.json() as Promise<OrgLobstertalkHealth>;
 }
 
+/** Approve/revoke one public channel on the org's LobsterTalk allowlist
+ *  (closed by default). Owner-only on the server; 422 for non-public. */
+export async function setOrgLobstertalkChannel(
+  orgId: string,
+  channelId: string,
+  approved: boolean,
+): Promise<{ channel_id: string; lobstertalk_approved: boolean }> {
+  if (!orgId) throw new Error("orgId is required");
+  const res = await fetch(
+    `/api/human/orgs/${encodeURIComponent(orgId)}/lobstertalk/channels/${encodeURIComponent(channelId)}`,
+    {
+      credentials: "include",
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved }),
+    },
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<{ channel_id: string; lobstertalk_approved: boolean }>;
+}
+
 export type AgentSignupStatus = "pending_approval" | "approved" | "rejected";
 
 export interface AgentSignupSession {
@@ -1303,6 +1324,9 @@ export interface MmAdminChannel {
   last_message_text?: string | null;
   member_count: number;
   avatar?: AvatarRef | null;
+  /** Per-channel LobsterTalk allowlist state (closed by default). Only ever
+   *  true for public channels; drives the Settings → LobsterTalk toggles. */
+  lobstertalk_approved: boolean;
 }
 
 export async function listAllOrgChannels(

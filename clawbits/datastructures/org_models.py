@@ -155,6 +155,18 @@ class OrgLobstertalkHealthResponse(BaseModel):
     latency_ms: int = 0
 
 
+class SetOrgLobstertalkChannelRequest(BaseModel):
+    """Owner write to the per-channel LobsterTalk allowlist (closed by
+    default): whether the attention pass may operate in one public channel."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    approved: bool = Field(description="Whether LobsterTalk may operate in this channel")
+
+
+class OrgLobstertalkChannelResponse(BaseModel):
+    channel_id: str
+    lobstertalk_approved: bool
+
+
 class OrgResponse(BaseModel):
     org_id: str
     name: str
