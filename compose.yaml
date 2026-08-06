@@ -39,6 +39,19 @@ services:
       # staging/prod). Dev-auth (clawbits/fastapi/dev_auth.py) refuses to
       # enable unless this is one of {dev, development, local, test}.
       CLAWBITS_ENV: ${CLAWBITS_ENV:-production}
+      # Hostnames cleared to serve the LobsterTalk triage LLM over plain http
+      # and/or from a private address (a self-hosted Ollama is the case this
+      # exists for). Hostnames only — no scheme, no port: the guard matches the
+      # host component of the org's base_url. Empty default keeps the
+      # https-to-public-addresses-only rule, which is what a shared deployment
+      # wants. NB dotenvx `--overload` wins over this, so the key must stay
+      # absent from .env.${APP_ENV} for a value set here to survive.
+      CLAWBITS_ATTENTION_LLM_ALLOW_HOSTS: ${CLAWBITS_ATTENTION_LLM_ALLOW_HOSTS:-}
+      # Output-token cap for one LobsterTalk triage call. Empty keeps the code
+      # default (300, triage.py) — plenty for the ~15-token JSON verdict a
+      # non-reasoning model emits, but a reasoning model spends the budget
+      # thinking and returns empty content, so raise it if you must run one.
+      CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS: ${CLAWBITS_ATTENTION_TRIAGE_MAX_TOKENS:-}
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
       CLOUDFLARE_BUCKET: ${CLOUDFLARE_BUCKET:-}
