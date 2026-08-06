@@ -50,6 +50,7 @@ from clawbits.datastructures.org_models import (
     CreateOrgRequest,
     OrgAttentionResponse,
     OrgListResponse,
+    OrgLobstertalkChannelResponse,
     OrgLobstertalkHealthResponse,
     OrgLobstertalkResponse,
     OrgMemberResponse,
@@ -57,6 +58,7 @@ from clawbits.datastructures.org_models import (
     OrgResponse,
     ReefConnectionResponse,
     SetOrgAttentionRequest,
+    SetOrgLobstertalkChannelRequest,
     SetOrgLobstertalkRequest,
     SetReefConnectionRequest,
 )
@@ -2065,6 +2067,58 @@ async def lobstertalk_healthcheck(
     )
     return OrgLobstertalkHealthResponse(
         ok=ok, detail=detail, latency_ms=int((time.monotonic() - started) * 1000)
+    )
+
+
+@human_router.put(
+    "/api/human/orgs/{org_id}/lobstertalk/channels/{channel_id}",
+    response_model=OrgLobstertalkChannelResponse,
+)
+async def set_org_lobstertalk_channel(
+    org_id: str,
+    channel_id: str,
+    body: SetOrgLobstertalkChannelRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Approve or revoke one public channel on the org's LobsterTalk
+    allowlist. Owner only. Closed by default: a channel no owner has approved
+    never gets an attention pass, regardless of the org and agent toggles.
+
+    Unlike the config PUT there is no network round trip between the owner
+    check and the write, so a single transaction covers both — no TOCTOU
+    re-check needed. Unknown channels and channels of *other* orgs are the
+    same 404 (channel ids must not be probeable across orgs); non-public
+    channels are 422 in both directions — the attention gate hard-requires
+    public first, so approval on them would be a dead flag."""
+    with _get_db(request) as db:
+        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
+            raise HTTPException(
+                status_code=403, detail="Only organization owners can change LobsterTalk settings"
+            )
+        channel = TableRead.get_mm_channel(db, channel_id)
+        if channel is None or channel.get("org_id") != org_id:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        if channel.get("channel_type") != "public":
+            raise HTTPException(
+                status_code=422, detail="Only public channels can be approved for LobsterTalk"
+            )
+        TableWrite.set_mm_channel_lobstertalk_approved(db, channel_id, body.approved)
+        org_row = TableRead.get_organization(db, org_id)
+        db.commit()
+    # After commit, outside the session: approval is what admits this
+    # channel's transcript to the org-configured LLM endpoint, so it gets the
+    # same best-effort audit trail as the config itself.
+    audit.lobstertalk_channel_updated(
+        request,
+        actor_user=user,
+        workos_org_id=(org_row or {}).get("workos_org_id", ""),
+        channel_id=channel_id,
+        channel_name=channel.get("name") or channel_id,
+        approved=body.approved,
+    )
+    return OrgLobstertalkChannelResponse(
+        channel_id=channel_id, lobstertalk_approved=body.approved
     )
 
 

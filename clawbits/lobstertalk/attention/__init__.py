@@ -21,11 +21,13 @@ because a call was already paid for, a cascade nudge that doesn't land keeps
 its cooldown instead of refunding it. See the README for the full mode
 description, the endpoint rules, and the spend bound.
 
-Opt-in and off by default, behind three gates: the server must have the
+Opt-in and off by default, behind four gates: the server must have the
 ``router`` extra installed (:func:`clawbits.lobstertalk.attention.gate.get_gate` returns
 None otherwise), the message's org must have armed
 ``Organization.attention_enabled`` (the owner toggle that replaced the old
-``CLAWBITS_ATTENTION_ENABLED`` env flag), and only agents whose operator has
+``CLAWBITS_ATTENTION_ENABLED`` env flag), the channel must be on the owner's
+per-channel allowlist (``MmChannel.lobstertalk_approved`` — closed by default,
+approved from Settings → LobsterTalk), and only agents whose operator has
 flipped ``lobstertalk_enabled`` (the Manage-page toggle) are ever considered.
 """
 

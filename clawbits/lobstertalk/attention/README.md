@@ -4,9 +4,12 @@ Decides, at post-creation time, whether a channel message warrants an agent's
 input — a cheap embedding classifier that runs **inside** the clawbits server:
 no sidecar process, no per-agent model server.
 
-Scope: **public channels only**, in every mode. Private channels and DMs never
-enter the pass — see [Public channels only](#public-channels-only) for why that
-is an access-control boundary rather than a setting.
+Scope: **owner-approved public channels only**, in every mode. Private channels
+and DMs never enter the pass — see
+[Public channels only](#public-channels-only) for why that is an access-control
+boundary rather than a setting — and public is necessary but not sufficient:
+each channel must also be on the org owner's per-channel allowlist (closed by
+default; see [Enabling](#enabling)).
 
 ## How it works
 
@@ -221,7 +224,10 @@ Two consequences worth stating plainly:
 What still applies to the endpoint itself: only an org owner can set it, every
 write emits an `organization.lobstertalk_updated` audit event (actor, mode,
 redacted endpoint, whether the key changed), and the URL must be https to a
-public address (see above).
+public address (see above). Channel approvals get the same treatment: each
+allowlist change emits `organization.lobstertalk_channel_updated` (actor,
+channel, approved or revoked), since approving a channel is what admits its
+transcript to that endpoint.
 
 ### The API key at rest
 
@@ -240,7 +246,7 @@ for a key nobody can read back. Key-less endpoints (Ollama) are unaffected.
 
 ## Enabling
 
-Off by default, behind three gates — all must be on for an agent to be nudged:
+Off by default, behind four gates — all must be on for an agent to be nudged:
 
 - **Server capability:** the `router` extra must be installed
   (`uv sync --extra router`). Without it `get_gate()` returns `None` and the gate
@@ -250,6 +256,12 @@ Off by default, behind three gates — all must be on for an agent to be nudged:
   **Settings → LobsterTalk** (or `PUT /api/human/orgs/{org_id}/lobstertalk`).
   This is the product switch — it replaced the old `CLAWBITS_ATTENTION_ENABLED`
   env flag, so no dotenv edit / ops involvement is needed to turn the feature on.
+- **Per-channel allowlist:** the owner approves each public channel from
+  **Settings → LobsterTalk** (`mm_channels.lobstertalk_approved`, or
+  `PUT /api/human/orgs/{org_id}/lobstertalk/channels/{channel_id}`). Strictly
+  closed by default: there is no all-channels mode, upgrades don't backfill —
+  so the feature stays paused everywhere until channels are approved — and
+  deleting and recreating a channel resets its approval.
 - **Per-agent:** the operator's **LobsterTalk** toggle (`agents.lobstertalk_enabled`,
   set from the Manage page).
 

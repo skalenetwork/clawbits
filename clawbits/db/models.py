@@ -528,6 +528,18 @@ class MmChannel(SQLModel, table=True):
         default=1,
         sa_column=SAColumn(Integer, nullable=False, server_default="1"),
     )
+    # Per-channel LobsterTalk allowlist — strictly closed by default. The
+    # attention pass (clawbits/lobstertalk/attention) runs only in public
+    # channels the org owner has approved from Settings → LobsterTalk; there
+    # is no "all channels" mode, and upgrades don't backfill (deleting and
+    # recreating a channel resets it). Only meaningful for
+    # channel_type='public' — the gate requires public first, and the
+    # approval endpoint refuses the rest — so it stays false on
+    # private/direct rows.
+    lobstertalk_approved: bool = Field(
+        default=False,
+        sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
+    )
 
 
 class MmChannelMember(SQLModel, table=True):
