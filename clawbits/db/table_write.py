@@ -1935,26 +1935,41 @@ class TableWrite:
     ) -> int:
         """Upsert reported run-log entries, de-duped on
         ``(automation_id, gateway_run_id)``. Runs for an automation that does
-        not belong to ``agent_id`` are ignored. Returns the number upserted."""
+        not belong to ``agent_id`` are ignored. Returns the number upserted.
+
+        Managed jobs report the real ``automation_id`` back to Clawbits, but
+        mirrored external jobs only have a stable gateway job id. The plugin may
+        therefore send a synthetic ``automation_id`` for an external job and the
+        real ``gateway_job_id`` beside it; when the direct id lookup misses, fall
+        back to resolving the owner row by ``(agent_id, gateway_job_id)``.
+        """
         runs = (runs or [])[:max_runs]
         count = 0
         for item in runs:
             automation_id = item.get("automation_id")
-            if not automation_id:
-                continue
-            owner = session.get(Automation, automation_id)
+            owner = session.get(Automation, automation_id) if automation_id else None
+            if owner is None or owner.agent_id != agent_id:
+                gateway_job_id = item.get("gateway_job_id")
+                if not isinstance(gateway_job_id, str) or not gateway_job_id:
+                    continue
+                owner = session.exec(
+                    select(Automation)
+                    .where(Automation.agent_id == agent_id)
+                    .where(Automation.gateway_job_id == gateway_job_id)
+                ).first()
             if owner is None or owner.agent_id != agent_id:
                 continue
+            resolved_automation_id = owner.automation_id
             run_id = item.get("gateway_run_id")
             existing = None
             if run_id:
                 existing = session.exec(
                     select(AutomationRun)
-                    .where(AutomationRun.automation_id == automation_id)
+                    .where(AutomationRun.automation_id == resolved_automation_id)
                     .where(AutomationRun.gateway_run_id == run_id)
                 ).first()
             target = existing or AutomationRun(
-                automation_id=automation_id,
+                automation_id=resolved_automation_id,
                 agent_id=agent_id,
                 gateway_run_id=run_id,
             )
