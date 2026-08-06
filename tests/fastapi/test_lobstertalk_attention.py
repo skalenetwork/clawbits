@@ -963,6 +963,19 @@ def _make_channel(test_client, agent, name, channel_type="public"):
     return r.json()["channel_id"]
 
 
+def _approve_channel(test_client, channel_id):
+    """Owner allowlist approval, written directly: the API path has its own
+    tests (test_org_lobstertalk_channels); here it's arming, like the
+    org/agent flags."""
+    from sqlmodel import Session as _Session
+
+    from clawbits.db.models import MmChannel
+
+    with _Session(test_client.app._engine) as db:
+        db.get(MmChannel, channel_id).lobstertalk_approved = True
+        db.commit()
+
+
 def _agent_with_channel(test_client):
     from tests.fastapi.conftest import _create_agent
 
@@ -1146,7 +1159,15 @@ class _FakeSession:
 
 
 def _channel(**over):
-    base = dict(channel_type="public", org_id="o1", display_name=None, name="general")
+    # Approved by default here: these tests target the *other* gates; the
+    # per-channel allowlist gate has its own tests below.
+    base = dict(
+        channel_type="public",
+        org_id="o1",
+        display_name=None,
+        name="general",
+        lobstertalk_approved=True,
+    )
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -1214,6 +1235,19 @@ def test_build_context_none_when_org_not_enabled(monkeypatch):
         raise AssertionError("member enumeration should not run when the org is disabled")
 
     monkeypatch.setattr(svc.TableRead, "get_mm_channel_members", _boom)
+    assert svc.build_attention_context(_FakeSession(channel, {}), "c1") is None
+
+
+def test_build_context_none_when_channel_not_approved(monkeypatch):
+    """The per-channel allowlist is closed by default: an unapproved channel →
+    None, before the org config is even fetched (stubbed to blow up if
+    reached) — the check rides the already-loaded channel row."""
+    channel = _channel(lobstertalk_approved=False)
+
+    def _boom(session, org_id):
+        raise AssertionError("org config lookup should not run for an unapproved channel")
+
+    monkeypatch.setattr(svc.TableRead, "get_org_lobstertalk_config", _boom)
     assert svc.build_attention_context(_FakeSession(channel, {}), "c1") is None
 
 
@@ -1518,7 +1552,7 @@ def test_build_context_excludes_private_channels_end_to_end(test_client):
     predicate can't silently re-admit private channels."""
     from sqlmodel import Session as _Session
 
-    from clawbits.db.models import Agent, Organization
+    from clawbits.db.models import Agent, MmChannel, Organization
     from tests.fastapi.conftest import _create_agent
 
     agent = _create_agent(test_client)
@@ -1531,6 +1565,11 @@ def test_build_context_excludes_private_channels_end_to_end(test_client):
         row.lobstertalk_enabled = True          # operator opt-in
         org = db.get(Organization, row.org_id)
         org.attention_enabled = True            # org opt-in
+        # Allowlist both — the private one deliberately so (unreachable via
+        # the API, which refuses non-public): it proves channel *type*, not a
+        # missing approval, is what excludes it below.
+        db.get(MmChannel, public_id).lobstertalk_approved = True
+        db.get(MmChannel, private_id).lobstertalk_approved = True
         db.add(row)
         db.add(org)
         db.commit()
@@ -1540,3 +1579,36 @@ def test_build_context_excludes_private_channels_end_to_end(test_client):
             "control failed: the public channel should produce a context"
         )
         assert svc.build_attention_context(db, private_id) is None
+
+
+def test_build_context_requires_channel_approval_end_to_end(test_client):
+    """Closed-by-default over real rows: same org, same agent, same arming —
+    two public channels differing only in ``lobstertalk_approved``. The
+    approved one is the control proving the arming; the untouched one pins
+    that a fresh channel (the post-migration state of every channel) gets no
+    attention pass."""
+    from sqlmodel import Session as _Session
+
+    from clawbits.db.models import Agent, Organization
+    from tests.fastapi.conftest import _create_agent
+
+    agent = _create_agent(test_client)
+    approved_id = _make_channel(test_client, agent, "lt-allow-approved", "public")
+    unapproved_id = _make_channel(test_client, agent, "lt-allow-default", "public")
+
+    engine = test_client.app._engine
+    with _Session(engine) as db:
+        row = db.get(Agent, agent["agent_id"])
+        row.lobstertalk_enabled = True          # operator opt-in
+        org = db.get(Organization, row.org_id)
+        org.attention_enabled = True            # org opt-in
+        db.add(row)
+        db.add(org)
+        db.commit()
+    _approve_channel(test_client, approved_id)
+
+    with _Session(engine) as db:
+        assert svc.build_attention_context(db, approved_id) is not None, (
+            "control failed: the approved channel should produce a context"
+        )
+        assert svc.build_attention_context(db, unapproved_id) is None

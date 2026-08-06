@@ -1496,6 +1496,20 @@ class TableWrite:
         return True
 
     @staticmethod
+    def set_mm_channel_lobstertalk_approved(
+        session: Session, channel_id: str, approved: bool
+    ) -> bool:
+        """Flip one channel's LobsterTalk allowlist entry. Org/type policy is
+        the endpoint's job; this just writes the flag. Returns ``False`` if
+        the channel doesn't exist (caller decides 404)."""
+        row = session.get(MmChannel, channel_id)
+        if row is None:
+            return False
+        row.lobstertalk_approved = bool(approved)
+        session.flush()
+        return True
+
+    @staticmethod
     def create_personal_org(
         session: Session,
         human_id: int,

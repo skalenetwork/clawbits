@@ -2,6 +2,7 @@ import {useState} from "react";
 import {useMutation, useQuery, useQueryClient, type UseMutationResult} from "@tanstack/react-query";
 import {Icon} from "@/components/Icon";
 import {
+    HashtagIcon as Hash,
     LockIcon as Lock,
     Megaphone01Icon as Megaphone,
 } from "@hugeicons/core-free-icons";
@@ -15,11 +16,14 @@ import {useActiveOrg} from "@/hooks/useActiveOrg";
 import {
     checkOrgLobstertalkEndpoint,
     getOrgLobstertalk,
+    listAllOrgChannels,
     setOrgLobstertalk,
+    setOrgLobstertalkChannel,
     type OrgLobstertalkHealth,
     type OrgLobstertalkSettings,
     type SetOrgLobstertalkBody,
 } from "@/lib/api";
+import {formatChannelTitle} from "@/lib/formatting";
 import {queryKeys} from "@/lib/queryKeys";
 import {errMsg, toast} from "@/lib/toast";
 import {cn} from "@/lib/utils";
@@ -165,8 +169,9 @@ export default function SettingsLobstertalkPage() {
                                 <p className="mt-0.5 text-xs text-muted-foreground">
                                     Let agents chime into messages they weren't tagged in when a triage
                                     step flags one they can help with. Applies to{" "}
-                                    <strong>public channels only</strong> — private channels and DMs are
-                                    never read. Each agent's operator still opts in per agent.
+                                    <strong>approved public channels only</strong> — pick them below;
+                                    private channels and DMs are never read. Each agent's operator
+                                    still opts in per agent.
                                 </p>
                             </div>
                         </div>
@@ -177,6 +182,10 @@ export default function SettingsLobstertalkPage() {
                             aria-label="LobsterTalk attention for this organization"
                         />
                     </div>
+
+                    {/* The allowlist comes right after the master toggle — the
+                        "where" gets decided before the "how" (triage mode). */}
+                    <ChannelsSection orgId={activeOrgId} enabled={settings.enabled}/>
 
                     {/* Config stays editable even while LobsterTalk is off. A
                         stored endpoint that has since become unreachable or
@@ -574,5 +583,106 @@ function TriageSection({
                 </section>
             )}
         </>
+    );
+}
+
+
+/** Per-channel allowlist — the "where" of LobsterTalk. Strictly closed by
+ *  default: only channels approved here ever get an attention pass, and new
+ *  channels start unapproved. Only public channels are eligible (the server
+ *  refuses the rest), so the list filters to them. Rendered even while the
+ *  master toggle is off — approvals are configuration an owner can stage
+ *  before flipping the feature on. Orgs can have a lot of channels, so this
+ *  is a dense checkbox checklist capped in height (scrolls past ~10 rows)
+ *  rather than a stack of switch cards. */
+function ChannelsSection({orgId, enabled}: {orgId: string; enabled: boolean}) {
+    const queryClient = useQueryClient();
+    const channelsQuery = useQuery({
+        queryKey: queryKeys.orgChannels(orgId),
+        queryFn: () => listAllOrgChannels(orgId),
+    });
+    // Org and channel bound in the variables (not read when the mutation
+    // settles) for the same reason as the save mutation above: switching orgs
+    // mid-flight must not invalidate the wrong cache. The admin channels list
+    // is the source of truth for the toggles (SettingsChannelsPage shares its
+    // cache), so refetch rather than patch it.
+    const approveMutation = useMutation({
+        mutationFn: ({orgId, channelId, approved}: {orgId: string; channelId: string; approved: boolean}) =>
+            setOrgLobstertalkChannel(orgId, channelId, approved),
+        onSuccess: (_data, {orgId}) => {
+            void queryClient.invalidateQueries({queryKey: queryKeys.orgChannels(orgId)});
+        },
+        onError: (err: unknown) => {
+            toast.error(err instanceof Error ? err.message : "Failed to update channel approval");
+        },
+    });
+    const publicChannels = (channelsQuery.data?.channels ?? []).filter(
+        (c) => c.channel_type === "public",
+    );
+    const approvedCount = publicChannels.filter((c) => c.lobstertalk_approved).length;
+    return (
+        <section className="space-y-4 rounded-xl border border-border/50 bg-card p-5">
+            <div className="space-y-0.5">
+                <h2 className="text-sm font-semibold">Approved channels</h2>
+                <p className="text-xs text-muted-foreground">
+                    LobsterTalk only operates in channels approved here — new and
+                    existing channels start unapproved. Only public channels are
+                    eligible.
+                    {!enabled &&
+                        " LobsterTalk is off; approvals are kept and take effect when you turn it on."}
+                </p>
+            </div>
+            {channelsQuery.isLoading && (
+                <p className="text-sm text-muted-foreground">Loading…</p>
+            )}
+            {channelsQuery.isError && (
+                <p className="text-sm text-destructive">
+                    {channelsQuery.error instanceof Error
+                        ? channelsQuery.error.message
+                        : "Failed to load channels"}
+                </p>
+            )}
+            {channelsQuery.data && publicChannels.length === 0 && (
+                <EmptyState
+                    icon={Hash}
+                    title="No public channels"
+                    description="Public channels in this organization will appear here for approval."
+                />
+            )}
+            {publicChannels.length > 0 && (
+                <>
+                    <p className="text-xs text-muted-foreground">
+                        {approvedCount} of {publicChannels.length} approved
+                    </p>
+                    <ul className="max-h-72 space-y-px overflow-y-auto pr-1">
+                        {publicChannels.map((channel) => {
+                            const label = formatChannelTitle(channel.display_name ?? channel.name);
+                            return (
+                                <li key={channel.channel_id}>
+                                    <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/40">
+                                        <input
+                                            type="checkbox"
+                                            className="size-4 shrink-0 cursor-pointer accent-primary"
+                                            checked={channel.lobstertalk_approved}
+                                            disabled={approveMutation.isPending}
+                                            onChange={(e) => {
+                                                approveMutation.mutate({
+                                                    orgId,
+                                                    channelId: channel.channel_id,
+                                                    approved: e.target.checked,
+                                                });
+                                            }}
+                                            aria-label={`LobsterTalk in ${label}`}
+                                        />
+                                        <Icon icon={Hash} className="size-3.5 shrink-0 text-muted-foreground"/>
+                                        <span className="truncate text-sm">{label}</span>
+                                    </label>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                </>
+            )}
+        </section>
     );
 }

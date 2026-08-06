@@ -34,6 +34,7 @@ ORGANIZATION_CREATED = "organization.created"
 ORGANIZATION_MEMBER_ADDED = "organization.member_added"
 ORGANIZATION_MEMBER_REMOVED = "organization.member_removed"
 ORGANIZATION_LOBSTERTALK_UPDATED = "organization.lobstertalk_updated"
+ORGANIZATION_LOBSTERTALK_CHANNEL_UPDATED = "organization.lobstertalk_channel_updated"
 
 AGENT_CREATED = "agent.created"
 AGENT_DELETED = "agent.deleted"
@@ -166,6 +167,29 @@ def lobstertalk_config_updated(
             "api_key_changed": "true" if api_key_changed else "false",
             "cooldown_seconds": "" if cooldown_seconds is None else str(cooldown_seconds),
         },
+    )
+
+
+def lobstertalk_channel_updated(
+    request: Request,
+    *,
+    actor_user: dict,
+    workos_org_id: str,
+    channel_id: str,
+    channel_name: str,
+    approved: bool,
+) -> None:
+    """One channel was added to / removed from the org's LobsterTalk
+    allowlist. Approval is what admits that channel's transcript to the
+    org-configured LLM endpoint (cascade/llm_only), so it gets the same audit
+    treatment as the config itself."""
+    _emit(
+        request,
+        action=ORGANIZATION_LOBSTERTALK_CHANNEL_UPDATED,
+        organization_id=workos_org_id,
+        actor=_user_actor(actor_user),
+        target=AuditLogEventTarget(id=channel_id, name=channel_name, type="mm_channel"),
+        metadata={"approved": "true" if approved else "false"},
     )
 
 

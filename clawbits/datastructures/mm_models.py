@@ -1005,6 +1005,10 @@ class MmAdminChannelResponse(BaseModel):
     last_message_text: str | None = None
     member_count: int = 0
     avatar: AvatarRef | None = None
+    # Per-channel LobsterTalk allowlist state (closed by default) — drives the
+    # approval toggles on Settings → LobsterTalk. Only ever true for public
+    # channels; the approval endpoint refuses the rest.
+    lobstertalk_approved: bool = False
 
 
 class MmAdminChannelListResponse(BaseModel):
