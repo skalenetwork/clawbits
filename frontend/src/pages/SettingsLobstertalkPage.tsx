@@ -183,6 +183,10 @@ export default function SettingsLobstertalkPage() {
                         />
                     </div>
 
+                    {/* The allowlist comes right after the master toggle — the
+                        "where" gets decided before the "how" (triage mode). */}
+                    <ChannelsSection orgId={activeOrgId} enabled={settings.enabled}/>
+
                     {/* Config stays editable even while LobsterTalk is off. A
                         stored endpoint that has since become unreachable or
                         private — or that an operator dropped from the allow-list
@@ -212,7 +216,6 @@ export default function SettingsLobstertalkPage() {
                         pending={saveMutation.isPending}
                         onSave={(body) => { saveMutation.mutate({orgId: activeOrgId, body}); }}
                     />
-                    <ChannelsSection orgId={activeOrgId} enabled={settings.enabled}/>
                 </>
             )}
         </div>
@@ -589,7 +592,9 @@ function TriageSection({
  *  channels start unapproved. Only public channels are eligible (the server
  *  refuses the rest), so the list filters to them. Rendered even while the
  *  master toggle is off — approvals are configuration an owner can stage
- *  before flipping the feature on. */
+ *  before flipping the feature on. Orgs can have a lot of channels, so this
+ *  is a dense checkbox checklist capped in height (scrolls past ~10 rows)
+ *  rather than a stack of switch cards. */
 function ChannelsSection({orgId, enabled}: {orgId: string; enabled: boolean}) {
     const queryClient = useQueryClient();
     const channelsQuery = useQuery({
@@ -614,6 +619,7 @@ function ChannelsSection({orgId, enabled}: {orgId: string; enabled: boolean}) {
     const publicChannels = (channelsQuery.data?.channels ?? []).filter(
         (c) => c.channel_type === "public",
     );
+    const approvedCount = publicChannels.filter((c) => c.lobstertalk_approved).length;
     return (
         <section className="space-y-4 rounded-xl border border-border/50 bg-card p-5">
             <div className="space-y-0.5">
@@ -644,34 +650,38 @@ function ChannelsSection({orgId, enabled}: {orgId: string; enabled: boolean}) {
                 />
             )}
             {publicChannels.length > 0 && (
-                <ul className="space-y-0.5">
-                    {publicChannels.map((channel) => {
-                        const label = formatChannelTitle(channel.display_name ?? channel.name);
-                        return (
-                            <li
-                                key={channel.channel_id}
-                                className="flex items-center justify-between gap-4 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/40"
-                            >
-                                <div className="flex min-w-0 items-center gap-2">
-                                    <Icon icon={Hash} className="size-3.5 shrink-0 text-muted-foreground"/>
-                                    <p className="truncate text-sm">{label}</p>
-                                </div>
-                                <Switch
-                                    checked={channel.lobstertalk_approved}
-                                    disabled={approveMutation.isPending}
-                                    onCheckedChange={(next) => {
-                                        approveMutation.mutate({
-                                            orgId,
-                                            channelId: channel.channel_id,
-                                            approved: next,
-                                        });
-                                    }}
-                                    aria-label={`LobsterTalk in ${label}`}
-                                />
-                            </li>
-                        );
-                    })}
-                </ul>
+                <>
+                    <p className="text-xs text-muted-foreground">
+                        {approvedCount} of {publicChannels.length} approved
+                    </p>
+                    <ul className="max-h-72 space-y-px overflow-y-auto pr-1">
+                        {publicChannels.map((channel) => {
+                            const label = formatChannelTitle(channel.display_name ?? channel.name);
+                            return (
+                                <li key={channel.channel_id}>
+                                    <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/40">
+                                        <input
+                                            type="checkbox"
+                                            className="size-4 shrink-0 cursor-pointer accent-primary"
+                                            checked={channel.lobstertalk_approved}
+                                            disabled={approveMutation.isPending}
+                                            onChange={(e) => {
+                                                approveMutation.mutate({
+                                                    orgId,
+                                                    channelId: channel.channel_id,
+                                                    approved: e.target.checked,
+                                                });
+                                            }}
+                                            aria-label={`LobsterTalk in ${label}`}
+                                        />
+                                        <Icon icon={Hash} className="size-3.5 shrink-0 text-muted-foreground"/>
+                                        <span className="truncate text-sm">{label}</span>
+                                    </label>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                </>
             )}
         </section>
     );

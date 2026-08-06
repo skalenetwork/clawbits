@@ -265,7 +265,7 @@ describe("SettingsLobstertalkPage", () => {
         expect(screen.getByRole("status")).toHaveTextContent("Error code: 401 - invalid_api_key");
     });
 
-    it("lists public channels with approval toggles and hides private ones", async () => {
+    it("lists public channels as checkboxes and hides private ones", async () => {
         listAllOrgChannels.mockResolvedValue({
             channels: [
                 adminChannel({channel_id: "ch-1", name: "general", lobstertalk_approved: true}),
@@ -276,11 +276,12 @@ describe("SettingsLobstertalkPage", () => {
         });
         await renderPage(true);
         expect(
-            await screen.findByRole("switch", {name: "LobsterTalk in general", checked: true}),
+            await screen.findByRole("checkbox", {name: "LobsterTalk in general", checked: true}),
         ).toBeInTheDocument();
         expect(
-            screen.getByRole("switch", {name: "LobsterTalk in random", checked: false}),
+            screen.getByRole("checkbox", {name: "LobsterTalk in random", checked: false}),
         ).toBeInTheDocument();
+        expect(screen.getByText("1 of 2 approved")).toBeInTheDocument();
         // Private channels can never be approved (the server 422s), so the
         // section doesn't even offer them.
         expect(screen.queryByText("secret")).not.toBeInTheDocument();
@@ -293,7 +294,7 @@ describe("SettingsLobstertalkPage", () => {
         });
         setOrgLobstertalkChannel.mockResolvedValue({channel_id: "ch-1", lobstertalk_approved: true});
         await renderPage(true);
-        fireEvent.click(await screen.findByRole("switch", {name: "LobsterTalk in general"}));
+        fireEvent.click(await screen.findByRole("checkbox", {name: "LobsterTalk in general"}));
         await waitFor(() => {
             expect(setOrgLobstertalkChannel).toHaveBeenCalledWith("org-1", "ch-1", true);
         });
@@ -302,6 +303,16 @@ describe("SettingsLobstertalkPage", () => {
         await waitFor(() => {
             expect(listAllOrgChannels).toHaveBeenCalledTimes(2);
         });
+    });
+
+    it("renders the channels panel before the triage mode picker", async () => {
+        // The "where" (allowlist) is decided before the "how" (triage mode).
+        await renderPage(true);
+        const channels = screen.getByRole("heading", {name: "Approved channels"});
+        const triage = screen.getByRole("heading", {name: "Triage mode"});
+        expect(
+            channels.compareDocumentPosition(triage) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
     });
 
     it("shows an empty state when the org has only private channels", async () => {
