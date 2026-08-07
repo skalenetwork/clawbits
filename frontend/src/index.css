@@ -525,11 +525,17 @@ html[data-tauri-platform="linux"] body {
   }
 
   /* Skip link - the app had none on any route. Visually hidden until focused,
-   * then pinned to the top-left above all app chrome (the rail sits at z-40).
-   * Clears the Tauri title bar so it never lands under the traffic lights. */
+   * then pinned to the top-left above all app chrome (the rail sits at z-40),
+   * below the Tauri title bar so it never lands under the traffic lights.
+   *
+   * The resting `top` is 0 and the title-bar clearance is applied by the
+   * *focused* transform, NOT by `top`. Doing it the other way round (top =
+   * titlebar-height + gap, hidden via translateY(-100% - gap)) only clears the
+   * viewport while --titlebar-height is 0px: on the desktop app it is 38px, so
+   * the pill came to rest 30px on-screen and sat over the traffic lights. */
   .skip-link {
     position: fixed;
-    top: calc(var(--titlebar-height) + 0.5rem);
+    top: 0;
     left: 0.5rem;
     z-index: 60;
     padding: 0.5rem 0.875rem;
@@ -539,11 +545,11 @@ html[data-tauri-platform="linux"] body {
     box-shadow: var(--shadow-lg);
     font-size: 0.875rem;
     font-weight: 500;
-    transform: translateY(calc(-100% - 1rem));
+    transform: translateY(-100%);
     transition: transform 150ms ease;
   }
   .skip-link:focus-visible {
-    transform: translateY(0);
+    transform: translateY(calc(var(--titlebar-height) + 0.5rem));
   }
 
   /* Remove the legacy 300ms tap delay + double-tap zoom on controls while

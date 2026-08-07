@@ -283,6 +283,23 @@ const jsonLd = {
         // first value, so the strip above the hero stays the page ground. Every
         // callback re-measures instead, and a zero-height rect (layout not
         // ready) says nothing at all rather than guessing wrong.
+        //
+        // A CLASSIC SCROLLBAR MUST NOT GET THE DARK CANVAS.
+        //
+        // [data-hero-top] paints body, and body's background is the document
+        // canvas (html has none), so it reaches the scrollbar gutter as well -
+        // a strip main's own ground cannot cover, because main stops at
+        // clientWidth. With overlay scrollbars there is no gutter and nothing
+        // shows; with a classic one (macOS "Show scroll bars: Always", Windows,
+        // Safari's translucent track) the dark canvas reads as a black column
+        // down the right edge for exactly as long as the hero holds the top.
+        //
+        // Phrased as "is there a gutter", not "is this iOS": the attribute
+        // exists only for iOS Safari's chrome band, and iOS is always overlay,
+        // so a measurement that comes back 0 - or NaN, on an engine that
+        // surprises us - keeps the iOS behaviour rather than dropping it.
+        const gutter = () => window.innerWidth - document.documentElement.clientWidth;
+
         const sync = () => {
           const rect = anchor.getBoundingClientRect();
           if (rect.height === 0) return;
@@ -291,7 +308,7 @@ const jsonLd = {
           // Drives the canvas background too - see the [data-hero-top] note in
           // global.css. An attribute rather than an inline style: the
           // production CSP has no 'unsafe-inline' in style-src.
-          document.documentElement.toggleAttribute("data-hero-top", holdsTop);
+          document.documentElement.toggleAttribute("data-hero-top", holdsTop && !(gutter() >= 1));
         };
 
         requestAnimationFrame(sync);

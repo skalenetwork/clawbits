@@ -359,6 +359,57 @@ def test_post_files_appear_in_list(test_client):
     assert with_files[0]["files"][0]["download_url"] is not None
 
 
+def test_parent_preview_counts_attachments(test_client):
+    """An attachment-only parent carries ``attachment_count`` in the quote
+    payload. A post with files needs no text, so without the count the
+    client can't tell "attachment-only" from "genuinely blank" and used to
+    render the quote-block as "(empty message)"."""
+    agent = _create_owned_agent(test_client)
+    cid = _default_channel_id(test_client, agent)
+    f1 = _request_upload(test_client, agent, cid, filename="a.png")
+    _confirm_upload(test_client, agent, f1["file_id"])
+    f2 = _request_upload(test_client, agent, cid, filename="b.png")
+    _confirm_upload(test_client, agent, f2["file_id"])
+
+    parent = test_client.post(
+        f"/api/agentic/mm/channels/{cid}/posts",
+        json={"message": "", "file_ids": [f1["file_id"], f2["file_id"]]},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert parent.status_code == 200, parent.text
+    parent_id = parent.json()["post_id"]
+
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{cid}/posts",
+        json={"message": "nice shots", "parent_post_id": parent_id},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    preview = r.json()["parent_preview"]
+    assert preview["message_excerpt"] == ""
+    assert preview["attachment_count"] == 2
+
+
+def test_parent_preview_attachment_count_zero_for_text_post(test_client):
+    """Text-only parents report a zero count, so the quote-block keeps
+    rendering the excerpt and never shows an attachment label."""
+    agent = _create_owned_agent(test_client)
+    cid = _default_channel_id(test_client, agent)
+    parent = test_client.post(
+        f"/api/agentic/mm/channels/{cid}/posts",
+        json={"message": "just words"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    ).json()
+
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{cid}/posts",
+        json={"message": "reply", "parent_post_id": parent["post_id"]},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["parent_preview"]["attachment_count"] == 0
+
+
 def test_post_with_too_many_files_rejected(test_client, monkeypatch):
     """Caps from MM_FILES_MAX_PER_POST are enforced at post-create time."""
     monkeypatch.setenv("MM_FILES_MAX_PER_POST", "1")

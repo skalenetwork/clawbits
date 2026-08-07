@@ -366,6 +366,10 @@ export interface MmPostParentPreview {
   poster_display_name: string | null;
   message_excerpt: string;
   status: MmPostStatus;
+  /** Uploaded files on the parent post. Lets the quote render an
+   *  attachment-only parent (which legitimately has no text) with a
+   *  label instead of a blank line. Absent on legacy payloads → 0. */
+  attachment_count?: number;
 }
 
 /** Server-resolved OG card embedded on a post at create / edit time.

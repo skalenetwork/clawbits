@@ -614,6 +614,85 @@ def test_human_delete_own_post_round_trip(test_client):
     assert all(p["post_id"] != post["post_id"] for p in listed["posts"])
 
 
+def test_human_delete_refreshes_channel_preview(test_client):
+    """Regression: deleting the newest post must rebuild the channel's
+    denormalised sidebar preview.
+
+    ``mm_channels.last_message_*`` is a snapshot written on publish, and the
+    channels-list endpoint serves it verbatim — so a delete that skipped the
+    recompute left the deleted message visible in the sidebar forever, even
+    across a full refetch. Deleting the last remaining post must clear the
+    preview outright."""
+    h1 = _register_human(test_client, "del-preview@test.com", display_name="Prue")
+    ch_id = _create_channel(test_client, h1["access_token"], "del-preview")["channel_id"]
+
+    def _preview() -> dict:
+        resp = test_client.get(
+            "/api/human/mm/channels", headers=_human_auth(h1["access_token"])
+        )
+        assert resp.status_code == 200, resp.text
+        return next(c for c in resp.json()["channels"] if c["channel_id"] == ch_id)
+
+    first = test_client.post(
+        f"/api/human/mm/channels/{ch_id}/posts",
+        json={"message": "the older one"},
+        headers=_human_auth(h1["access_token"]),
+    ).json()
+    second = test_client.post(
+        f"/api/human/mm/channels/{ch_id}/posts",
+        json={"message": "the newest one"},
+        headers=_human_auth(h1["access_token"]),
+    ).json()
+    assert _preview()["last_message_text"] == "the newest one"
+
+    r = test_client.delete(
+        f"/api/human/mm/posts/{second['post_id']}",
+        headers=_human_auth(h1["access_token"]),
+    )
+    assert r.status_code == 204, r.text
+
+    ch = _preview()
+    assert ch["last_message_text"] == "the older one"
+    assert ch["last_message_author_human_id"] == h1["user"]["id"]
+
+    # Deleting the last survivor empties the preview rather than stranding it.
+    r = test_client.delete(
+        f"/api/human/mm/posts/{first['post_id']}",
+        headers=_human_auth(h1["access_token"]),
+    )
+    assert r.status_code == 204, r.text
+
+    ch = _preview()
+    assert ch["last_message_text"] is None
+    assert ch["last_message_author_human_id"] is None
+    assert ch["last_message_author_display_name"] is None
+
+
+def test_human_edit_refreshes_channel_preview(test_client):
+    """Editing the newest post must rewrite the sidebar preview too —
+    same denormalised snapshot as the delete path above."""
+    h1 = _register_human(test_client, "edit-preview@test.com", display_name="Ed")
+    ch_id = _create_channel(test_client, h1["access_token"], "edit-preview")["channel_id"]
+    post = test_client.post(
+        f"/api/human/mm/channels/{ch_id}/posts",
+        json={"message": "typo verison"},
+        headers=_human_auth(h1["access_token"]),
+    ).json()
+
+    r = test_client.patch(
+        f"/api/human/mm/posts/{post['post_id']}",
+        json={"message": "typo version"},
+        headers=_human_auth(h1["access_token"]),
+    )
+    assert r.status_code == 200, r.text
+
+    resp = test_client.get(
+        "/api/human/mm/channels", headers=_human_auth(h1["access_token"])
+    ).json()
+    ch = next(c for c in resp["channels"] if c["channel_id"] == ch_id)
+    assert ch["last_message_text"] == "typo version"
+
+
 def test_human_delete_other_user_post_forbidden(test_client):
     """A non-author, non-creator member cannot delete someone else's post."""
     h1 = _register_human(test_client, "del-owner@test.com")

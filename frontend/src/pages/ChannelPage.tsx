@@ -676,6 +676,7 @@ export default function ChannelPage() {
               // shortly anyway with the server's pre-truncated copy.
               message_excerpt: replyBefore.message,
               status: replyBefore.status,
+              attachment_count: replyBefore.files?.length ?? 0,
             }
           : null,
         // Optimistic posts skip the embedded preview — the server

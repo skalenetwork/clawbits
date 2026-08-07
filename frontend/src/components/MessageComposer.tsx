@@ -40,6 +40,7 @@ import {
 import { extractClipboardFiles } from "@/lib/clipboardFiles";
 import { isDesktop } from "@/lib/desktop";
 import { isHereToken } from "@/lib/mentions";
+import { quotedBodyText } from "@/lib/messageHelpers";
 import { cn } from "@/lib/utils";
 import type { MmChannel, MmChannelMember, MmChannelPost } from "@/lib/api";
 import type { PendingAutoMention } from "@/lib/autoMention";
@@ -1325,7 +1326,11 @@ export function MessageComposer(props: MessageComposerProps) {
                 <span className="text-muted-foreground">Replying to </span>
                 <span className="font-medium text-foreground/90">{replyPosterName(replyingTo)}</span>
                 <span className="text-muted-foreground"> · </span>
-                <span className="text-muted-foreground">{(replyingTo.message || "").trim() || "(empty message)"}</span>
+                {/* Attachment-only parents have no text — label them from
+                    the file count instead of reading as blank. */}
+                <span className="text-muted-foreground">
+                  {quotedBodyText(replyingTo.message || "", replyingTo.files?.length ?? 0)}
+                </span>
               </span>
               <button
                 type="button"

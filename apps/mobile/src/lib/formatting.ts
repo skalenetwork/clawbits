@@ -1,5 +1,21 @@
 import { type HumanUser } from '@/lib/api';
 
+/** One-line stand-in for a message body that has no text. A post is
+ *  allowed to be attachment-only, so anywhere a body is quoted at
+ *  one-line size — the composer's reply banner, the quote above a
+ *  reply bubble — an empty body means "attachments", not "nothing".
+ *  Wording matches the channel-list previews. */
+export function attachmentOnlyLabel(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? 'Attachment' : `${count} attachments`;
+}
+
+/** Text to render for a quoted message body: its own text when it has
+ *  any, else an attachment label, else a last-resort placeholder. */
+export function quotedBodyText(text: string, attachmentCount: number): string {
+  return text.trim() || attachmentOnlyLabel(attachmentCount) || '(empty message)';
+}
+
 export function formatChannelTitle(value: string): string {
   return value
     .replace(/^agent-/u, '')

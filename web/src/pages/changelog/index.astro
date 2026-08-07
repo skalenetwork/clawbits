@@ -485,8 +485,12 @@ const schema = [
     border-top: 1px solid var(--color-line);
   }
 
+  /* 60rem, the rails' measure - not the homepage's 70.5rem. The closing line
+   * runs full-bleed, but the sentence under it belongs to this page's column,
+   * and at 70.5rem it started a full 5rem to the left of every release above
+   * it. */
   .tail-inner {
-    max-width: 70.5rem;
+    max-width: 60rem;
     margin-inline: auto;
     padding: clamp(2rem, 4vw, 3rem) clamp(1.25rem, 4vw, 3rem);
     font-size: 0.9375rem;
@@ -526,6 +530,43 @@ const schema = [
         rgb(20 19 17 / 0.5) 45%,
         rgb(20 19 17 / 0.34) 100%
       );
+    }
+  }
+
+  /* ── Phones: the head canvas goes full-bleed ──────────────────────────
+   * The homepage's hero treatment at the same 40rem breakpoint, for the same
+   * reason: below this width Nav.astro drops the overlay header's 1rem inset
+   * and aligns it to --hero-gutter, so a head that stays inside a framed card
+   * puts the wordmark and the headline on two different left edges. See
+   * download.astro for the long version - /download, /changelog and /brand
+   * all carry this block. */
+  @media (max-width: 40rem) {
+    .frame {
+      padding: 0;
+      /* Fills the rounded corners: canvas colour above, page ground below. */
+      background: linear-gradient(
+        to bottom,
+        var(--color-canvas) 2rem,
+        var(--color-ink) 2rem
+      );
+    }
+
+    .canvas {
+      border: 0;
+      border-radius: clamp(1rem, 5vw, 1.75rem);
+      box-shadow: none;
+    }
+
+    .head {
+      text-align: left;
+      padding-inline: var(--hero-gutter);
+      /* Full-bleed puts the overlay header at y=0 rather than 1rem down, so
+       * the 48rem block's 5rem left the badge sitting under the wordmark. */
+      padding-top: clamp(6.5rem, 20vw, 7.5rem);
+    }
+
+    .head .lede {
+      margin-inline: 0;
     }
   }
 

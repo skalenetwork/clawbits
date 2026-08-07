@@ -346,6 +346,11 @@ class MmPostParentPreview(BaseModel):
     stays bounded even when the parent is a 4000-char post. ``status`` is
     included so the client can degrade gracefully when the parent was
     rejected (renders as "Original message removed").
+
+    ``attachment_count`` is the number of uploaded files on the parent.
+    A post is allowed to carry files with no text at all, so without it
+    the quote-block had no way to tell "attachment-only message" from
+    "genuinely blank" and rendered a misleading "(empty message)".
     """
     post_id: int
     agent_id: str | None = None
@@ -353,6 +358,7 @@ class MmPostParentPreview(BaseModel):
     poster_display_name: str | None = None
     message_excerpt: str
     status: MmPostStatus
+    attachment_count: int = 0
 
 
 MmFileStatus = Literal["pending", "uploaded", "failed", "deleted"]

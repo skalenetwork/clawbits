@@ -1112,6 +1112,10 @@ export interface MmPostParentPreview {
   poster_display_name: string | null;
   message_excerpt: string;
   status: MmPostStatus;
+  /** Uploaded files on the parent post. Lets the quote-block label an
+   *  attachment-only parent (which legitimately has no text) instead of
+   *  rendering it as blank. Absent on legacy payloads → treated as 0. */
+  attachment_count?: number;
 }
 
 export interface MmPostReaction {

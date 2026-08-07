@@ -254,7 +254,7 @@ export function MessageComposer({
             <Text
               style={[styles.replyExcerpt, { color: theme.textSecondary }]}
               numberOfLines={1}>
-              {replyingTo.excerpt || 'Attachment'}
+              {replyingTo.excerpt}
             </Text>
           </View>
           <Pressable

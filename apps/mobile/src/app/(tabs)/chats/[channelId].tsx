@@ -65,6 +65,7 @@ import {
   type MmPost,
 } from '@/lib/api';
 import { buildChatRows, type ChatRow } from '@/lib/chat-grouping';
+import { quotedBodyText } from '@/lib/formatting';
 import { useAuth } from '@/providers/auth-provider';
 import { useRealtime } from '@/providers/realtime-provider';
 import { useTabBarVisibility } from '@/providers/tab-bar-visibility';
@@ -659,6 +660,7 @@ export default function ChannelScreen() {
             poster_display_name: replyParent.poster_display_name,
             message_excerpt: replyParent.message.slice(0, 140),
             status: replyParent.status,
+            attachment_count: replyParent.files?.length ?? 0,
           }
         : null,
       fileIds,
@@ -958,7 +960,9 @@ export default function ChannelScreen() {
               replyTo
                 ? {
                     authorName: replyTo.poster_display_name ?? 'Unknown',
-                    excerpt: replyTo.message,
+                    // Attachment-only parents carry no text — the banner
+                    // labels them from the file count instead of blank.
+                    excerpt: quotedBodyText(replyTo.message, replyTo.files?.length ?? 0),
                     onCancel: () => setReplyTo(null),
                   }
                 : undefined

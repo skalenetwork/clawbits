@@ -63,6 +63,24 @@ export function mentionLabel(member: MmChannelMember): string {
   );
 }
 
+/** One-line stand-in for a message body that has no text. A post is
+ *  allowed to be attachment-only (the composer enables Send as soon as
+ *  a file is ready), so anywhere a body is quoted at one-line size —
+ *  the reply strip in the composer, the quote-block above a reply — an
+ *  empty body means "attachments" far more often than it means
+ *  "nothing". Wording matches the channel-list previews.
+ *  Returns ``null`` when there is genuinely nothing to show. */
+export function attachmentOnlyLabel(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1 ? "Attachment" : `${String(count)} attachments`;
+}
+
+/** Text to render for a quoted message body: its own text when it has
+ *  any, else an attachment label, else a last-resort placeholder. */
+export function quotedBodyText(text: string, attachmentCount: number): string {
+  return text.trim() || attachmentOnlyLabel(attachmentCount) || "(empty message)";
+}
+
 /** Parse the in-progress ``@`` mention at the caret. Returns the
  *  selection range and the query string after the ``@``, or ``null``
  *  if the caret isn't currently sitting on a mention. */
