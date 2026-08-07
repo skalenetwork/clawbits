@@ -665,4 +665,58 @@ const schema = [
       --stack-gap: 0.75rem;
     }
   }
+
+  /* ── Phones: the head canvas goes full-bleed ──────────────────────────
+   *
+   * The homepage's hero does this at the same 40rem breakpoint, and the
+   * reason it has to be repeated here is Nav.astro: below 40rem the overlay
+   * header drops its own 1rem inset and sets its inner padding to
+   * --hero-gutter, i.e. it aligns to the VIEWPORT rather than to a framed
+   * canvas. A head that stays inset then leaves the wordmark half a rem
+   * from a rounded corner while the headline sits 3.5rem in - two different
+   * left edges in the same 375px band.
+   *
+   * So: the frame goes, the head joins the same gutter line, and the copy
+   * turns left-aligned to sit ON that line the way the homepage's does. See
+   * index.astro's matching block for the full argument; the notes here are
+   * only what differs. Same treatment on /changelog and /brand. */
+  @media (max-width: 40rem) {
+    .frame {
+      padding: 0;
+      /* What shows THROUGH the canvas's rounded corners: <main> declares the
+       * cream page ground, which would otherwise notch all four of them. The
+       * top pair continue the dark strip above the page, the bottom pair meet
+       * the rails below - a hard stop past the radius gives each its own. */
+      background: linear-gradient(
+        to bottom,
+        var(--color-canvas) 2rem,
+        var(--color-ink) 2rem
+      );
+    }
+
+    .canvas {
+      /* No border and no shadow once the sides coincide with the screen:
+       * a hairline on an edge that IS the viewport edge is just a line down
+       * the screen, and a drop shadow has nothing to cast onto. */
+      border: 0;
+      border-radius: clamp(1rem, 5vw, 1.75rem);
+      box-shadow: none;
+    }
+
+    .head {
+      text-align: left;
+      padding-inline: var(--hero-gutter);
+      /* More headroom than the 48rem block gives, because the nav moved. On a
+       * framed canvas the overlay header starts 1rem down and its own 4rem row
+       * ends well inside the head's padding; full-bleed it starts at y=0, so
+       * 5rem of padding left the headline 16px under the wordmark. This is the
+       * homepage hero's clearance, scaled to this page's shorter head. */
+      padding-top: clamp(6.5rem, 20vw, 7.5rem);
+    }
+
+    /* Centred margins are what held these away from the gutter line. */
+    .head .lede {
+      margin-inline: 0;
+    }
+  }
 </style>
