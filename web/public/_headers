@@ -1,0 +1,53 @@
+# Response headers for the Cloudflare assets Worker (wrangler.jsonc serves
+# ./dist directly). Copied verbatim from public/ by the Astro build.
+#
+# WHY THIS FILE EXISTS ALONGSIDE THE META CSP
+#
+# astro.config.mjs's `security.csp` emits a per-page <meta http-equiv> policy,
+# because Astro computes a hash for every inline script and style it generates
+# and only it knows them. That covers script-src and style-src correctly, but a
+# meta CSP has two holes this file closes:
+#
+#   1. `frame-ancestors` is IGNORED in a meta tag - it is header-only by spec.
+#      So the meta policy's clickjacking protection does nothing.
+#   2. Non-HTML responses carry no meta tag at all: /llms.txt, /llms-full.txt,
+#      /robots.txt, the sitemaps and every /docs/<slug>.md get no policy.
+#
+# The CSP below is DELIBERATELY minimal - one directive. Two policies on one
+# response are both enforced (the intersection applies), so anything added here
+# also constrains the pages Astro already hashed. Adding script-src here would
+# break every inline script on the site, since this file cannot know the
+# hashes. Keep it to directives that are page-independent and header-only.
+
+/*
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()
+
+# HSTS is scoped to the real hosts rather than /* so a *.workers.dev preview
+# cannot pin a subdomain of workers.dev in visitors' browsers. No `preload` and
+# no `includeSubDomains` until the apex cutover (LANDING_SITE_PLAN §8) has
+# settled - app.clawbits.ai has to be serving HTTPS first.
+https://clawbits.ai/*
+  Strict-Transport-Security: max-age=15552000
+
+https://freeclaws.ai/*
+  Strict-Transport-Security: max-age=15552000
+
+# The preview hosts serve the same content as the apex will. Left indexable,
+# they would compete with it - and the AI crawlers robots.txt invites in would
+# treat whichever they crawled first as canonical. robots.txt already refuses
+# any non-apex origin (src/pages/robots.txt.ts); this closes the other half,
+# because Disallow stops crawling but does NOT stop a linked-to URL being
+# indexed. Both hosts are public by owner decision, so noindex is the only
+# thing standing between a pre-launch preview and the search index.
+#
+# DELETE both blocks at the Phase 6 apex cutover, not before.
+https://preview.clawbits.ai/*
+  X-Robots-Tag: noindex, nofollow
+
+https://preview.freeclaws.ai/*
+  X-Robots-Tag: noindex, nofollow

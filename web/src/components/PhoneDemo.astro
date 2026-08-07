@@ -1,0 +1,1505 @@
+---
+import { CHATS, lastAuthor, type Chat, type Msg } from "../content/demo-chats";
+
+/**
+ * The mobile hero's product frame: the NATIVE iOS app (apps/mobile) in an
+ * iPhone 17 Pro, cropped by the hero canvas the way the desktop window is.
+ *
+ * ── Why this is not AppDemo shrunk ──────────────────────────────────────────
+ *
+ * The phone runs a different product surface, not a narrow version of the
+ * same one. Two scope tabs (DMs / Channels), not three. A native large title
+ * with a glass bar-button pill, not a floating header capsule. 58pt squircle
+ * avatars, not 44px species shapes. Channel rows carry a third line - the last
+ * sender - which DM rows do not. And the bottom bar is iOS 26's OWN tab bar
+ * (expo-router NativeTabs), so it is system chrome we are drawing, not app
+ * chrome, and the single strongest "this is a real device" signal on the card.
+ * It only shows on the list: the phone opens on a conversation, which is a
+ * pushed route, and the canvas crop is deep enough to take the bar with it.
+ *
+ * ── Every number below is transcribed ───────────────────────────────────────
+ *
+ * Audit 2026-08-07 against apps/mobile @ main:
+ *   palette   - constants/theme.ts LIGHT mode: text #1C1C1E, bg #FFFFFF,
+ *               element #F2F2F7, selected #E5E5EA, secondary #6B6B70,
+ *               input #F2F2F7/#D1D1D6, red #FF3B30. Owner call: light, even
+ *               though the app defaults to the system scheme - a near-black
+ *               screen disappears against the hero's dark shader, and the
+ *               desktop window next to it is bright glass.
+ *   list      - channel-list-pane.tsx: tabs capsule r999 min-h 44 pad 5 gap 5,
+ *               tab min-h 34 gap 6, symbol 17 semibold, label 13/600, selected
+ *               fill = text @ 9.4%; list pad-inline 20, pad-top 50; grouped
+ *               card on #F2F2F7 with 16pt corners on first + last only.
+ *   row       - channel-row.tsx: avatar 58 r15, gap 12, pad-block 10, title
+ *               15/600, sender 13/600 (channels only, in FULL-strength text),
+ *               preview 13/18 secondary (1 line with a sender, 2 without),
+ *               right column absolute right 0 / top 12 / width 60 gap 10,
+ *               time 12 tabular, badge r999 min-w 22 pad 7/2 text 12/700.
+ *               Divider is a hairline inset 70pt from the row's left edge.
+ *   header    - chat-header.tsx: avatar 46 circle pulled up 3, name pill r999
+ *               pad 14/5 with the name at 15/600 (-0.1) and an 8x12 chevron,
+ *               pill margin-top -6, whole column pulled up 4.
+ *   bubbles   - message-bubble.tsx: max-width 78%, radius 18 with a 5pt tail
+ *               on the last-in-streak corner (bottom-left incoming, bottom-
+ *               right outgoing), padded inner 14/8 gap 6, text 17/22 (-0.2),
+ *               sender 12/600, blue #0A84FF with white text, incoming #E9E9EB.
+ *               Channels give the last bubble of a streak a 28pt avatar in a
+ *               32pt left gutter; DMs skip the gutter entirely.
+ *   reactions - bubble-reactions.tsx: pill r999 pad 10/4 gap 5, emoji 15,
+ *               count 13/600.
+ *
+ * ── Scale ───────────────────────────────────────────────────────────────────
+ *
+ * The desktop demo is legible because it renders at ~1:1. A 402pt phone cannot
+ * on a 390px viewport, so `--pu` (one iOS point) lands near 0.75px and the
+ * phone runs BIG - most of the canvas width - rather than sitting small in a
+ * scene. Everything is a multiple of --pu; nothing is a viewport unit.
+ *
+ * index.astro owns the crop, and passes it down as --ph-crop so the message
+ * feed can hold the newest messages above the fold rather than losing them
+ * with the chin.
+ *
+ * CSP NOTE: no style attributes anywhere - the production build ships
+ * style-src hashes with no 'unsafe-inline', so they are silently dropped.
+ * All interactivity is radio groups + labels; there is no script.
+ *
+ * aria-hidden: decorative. The hero states the claim; this illustrates it.
+ */
+
+/** SF Symbol stand-ins. Hand-drawn on a 24 grid to read at 12-22pt - the free
+ *  icon sets do not carry Apple's glyphs and these are system chrome. */
+const SF: Record<string, string> = {
+  // person.2.fill
+  person2: `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="7.5" r="3.6"/><path d="M2.2 19.2c0-3.2 3-5.2 6.8-5.2s6.8 2 6.8 5.2c0 .9-.6 1.3-1.6 1.3H3.8c-1 0-1.6-.4-1.6-1.3Z"/><circle cx="17.4" cy="8.4" r="2.9" opacity=".92"/><path d="M17.4 13.2c3.1 0 5.1 1.7 5.1 4 0 .8-.5 1.1-1.3 1.1h-3.3c.2-.5.3-1 .3-1.6 0-1.4-.6-2.6-1.6-3.5h.8Z" opacity=".92"/></svg>`,
+  // number
+  hash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9.2 3.4 7 20.6M17 3.4l-2.2 17.2M3.6 8.6h17M2.9 15.4h17"/></svg>`,
+  // square.grid.2x2
+  grid: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3.2" y="3.2" width="7.4" height="7.4" rx="1.7"/><rect x="13.4" y="3.2" width="7.4" height="7.4" rx="1.7"/><rect x="3.2" y="13.4" width="7.4" height="7.4" rx="1.7"/><rect x="13.4" y="13.4" width="7.4" height="7.4" rx="1.7"/></svg>`,
+  plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 4.6v14.8M4.6 12h14.8"/></svg>`,
+  // circle.grid.2x2
+  homeGrid: `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="7.4" cy="7.4" r="3.6"/><circle cx="16.6" cy="7.4" r="3.6"/><circle cx="7.4" cy="16.6" r="3.6"/><circle cx="16.6" cy="16.6" r="3.6"/></svg>`,
+  // message.fill
+  message: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.9c5.4 0 9.6 3.6 9.6 8.2 0 4.6-4.2 8.2-9.6 8.2-1 0-2-.1-2.9-.4l-4.3 2.1c-.5.3-1.1-.2-.9-.8l1.1-3.3C2.9 15.4 2.4 13.4 2.4 11.1c0-4.6 4.2-8.2 9.6-8.2Z"/></svg>`,
+  search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><circle cx="10.6" cy="10.6" r="6.9"/><path d="m15.7 15.7 5 5"/></svg>`,
+  // gearshape.2 - one full gear plus the smaller companion
+  gears: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9.3" cy="9.3" r="2.7"/><path d="M9.3 2.2v1.9M9.3 14.5v1.9M2.2 9.3h1.9M14.5 9.3h1.9M4.3 4.3l1.4 1.4M12.9 12.9l1.4 1.4M14.3 4.3l-1.4 1.4M5.7 12.9l-1.4 1.4"/><circle cx="17" cy="17" r="1.9"/><path d="M17 12.9v1.3M17 19.8v1.3M12.9 17h1.3M19.8 17h1.3"/></svg>`,
+  chevronL: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4.5 7.5 12l7.5 7.5"/></svg>`,
+  chevronR: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 4.5 7.5 7.5L9 19.5"/></svg>`,
+  clip: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.1 12.3 19a4.7 4.7 0 1 1-6.6-6.6l7.7-7.9a3.1 3.1 0 0 1 4.4 4.4l-7.7 7.9a1.6 1.6 0 0 1-2.2-2.2l7.1-7.3"/></svg>`,
+  mic: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="8.8" y="2.4" width="6.4" height="11.4" rx="3.2"/><path d="M5.4 11.2a6.6 6.6 0 0 0 13.2 0M12 17.8v3.8"/></svg>`,
+  // The app's own composer robot (components/chat/robot-icon.tsx)
+  robot: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.4" y="7.4" width="17.2" height="12.4" rx="4"/><path d="M12 3.2v4.2M1.9 12.4v3.4M22.1 12.4v3.4"/><circle cx="8.7" cy="13.2" r="1.35" fill="currentColor" stroke="none"/><circle cx="15.3" cy="13.2" r="1.35" fill="currentColor" stroke="none"/></svg>`,
+  /* Status bar, iOS 27. Every glyph is a SOLID fill with fully rounded ends -
+   * the outlined battery shell and hairline wifi arcs of earlier releases are
+   * gone. Traced from the owner-supplied reference crop. */
+  cell: `<svg viewBox="0 0 17.2 12" fill="currentColor"><rect x="0" y="6.8" width="3.4" height="5.2" rx="1.7"/><rect x="4.6" y="4.6" width="3.4" height="7.4" rx="1.7"/><rect x="9.2" y="2.3" width="3.4" height="9.7" rx="1.7"/><rect x="13.8" y="0" width="3.4" height="12" rx="1.7"/></svg>`,
+  wifi: `<svg viewBox="0 0 17.4 12.6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M1.45 4.15a11.4 11.4 0 0 1 14.5 0M5.15 7.85a6 6 0 0 1 7.1 0"/><circle cx="8.7" cy="11" r="1.55" fill="currentColor" stroke="none"/></svg>`,
+  battery: `<svg viewBox="0 0 26.5 13" fill="currentColor"><rect x="0" y="0" width="23.6" height="13" rx="4.3"/><path d="M25 4.6c.9.5 1.5 1.2 1.5 1.9s-.6 1.4-1.5 1.9Z"/></svg>`,
+};
+
+/**
+ * The phone opens ON a conversation, not on the list (owner call 2026-08-07).
+ *
+ * #engineering, because it is the page's own argument happening in a channel:
+ * Josh asks "does barge-in work on the pi?" addressed to NOBODY, and hermes -
+ * not atlas, who was mid-thread - answers, because hermes is the agent that
+ * can. That is Lobstertalk's attention gate doing its job, and it is the same
+ * incident the inter-agent section further down describes. The list is one tap
+ * back, which is the right order: show the thing, then show where it lives.
+ */
+const OPENS_ON = "eng";
+
+const DMS = CHATS.filter((c) => c.species !== "channel");
+const CHANNELS = CHATS.filter((c) => c.species === "channel");
+
+/** Same-author run detection - the phone groups exactly as the desktop does
+ *  (name only on group start, avatar only on group end). */
+const sameAuthor = (a?: Msg, b?: Msg) =>
+  !!a && !!b && !!a.own === !!b.own && a.name === b.name;
+
+/** Unread total carried by the back button's badge on a pushed route: what is
+ *  still waiting in the OTHER conversations. */
+const totalUnread = CHATS.reduce((n, c) => n + (c.unread ?? 0), 0);
+
+/** The composer's resting placeholder, native-style ("Message", flat). */
+const PLACEHOLDER = "Message";
+
+/** Rows render the last message's author above the preview (channels only). */
+const rowPreview = (c: Chat) => c.preview;
+---
+
+<div class="phone" aria-hidden="true">
+  {/* ── State ── One radio group for the screen (the list, or one pushed
+      conversation), one for the list's scope tabs. Labels are the taps. */}
+  <input type="radio" name="ph-view" id="ph-list" class="pr" aria-label="Chats list" />
+  {CHATS.map((c) => (
+    <input
+      type="radio"
+      name="ph-view"
+      id={`ph-v-${c.id}`}
+      class="pr"
+      checked={c.id === OPENS_ON}
+      aria-label={`Open ${c.name}`}
+    />
+  ))}
+  <input type="radio" name="ph-tab" id="ph-dms" class="pr" checked aria-label="Direct messages" />
+  <input type="radio" name="ph-tab" id="ph-chs" class="pr" aria-label="Channels" />
+
+  {/* Cast behind the device rather than as a drop-shadow on the frame: the
+      frame's alpha has a hole in it (that is the point), and a drop-shadow
+      through a hole lands on the screen. This is the body's own silhouette,
+      measured from the artwork. */}
+  <div class="shadow"></div>
+
+  <div class="screen">
+    {/* ── iOS status bar. Drawn by the OS, not the app - but inside a device
+        frame its absence is the loudest thing on the card. ── */}
+    <div class="sbar">
+      <span class="stime">9:41</span>
+      <span class="sright">
+        <i class="sglyph scell" set:html={SF.cell} />
+        <i class="sglyph swifi" set:html={SF.wifi} />
+        <i class="sglyph sbatt" set:html={SF.battery} />
+      </span>
+    </div>
+
+    {/* ── 1 · The chats list ─────────────────────────────────────────── */}
+    <section class="listview">
+      <header class="lhead">
+        <span class="ltitle">Chats</span>
+        {/* headerRight: iOS 26 auto-glasses bar-button items, which is what
+            makes this read as one capsule holding two actions. */}
+        <span class="lpill glass">
+          <i class="pico" set:html={SF.grid} />
+          <i class="pico" set:html={SF.plus} />
+        </span>
+      </header>
+
+      <div class="tabsbar glass">
+        <label class="tb" for="ph-dms">
+          <i class="tbi" set:html={SF.person2} /><span>DMs</span>
+        </label>
+        <label class="tb" for="ph-chs">
+          <i class="tbi" set:html={SF.hash} /><span>Channels</span>
+        </label>
+      </div>
+
+      {/* Two pages, one per scope. The real pane swipes between them; here the
+          tabs switch which one is mounted. */}
+      {[
+        { key: "dms", rows: DMS },
+        { key: "chs", rows: CHANNELS },
+      ].map((page) => (
+        <div class:list={["lcard", `pg-${page.key}`]}>
+          {page.rows.map((c, i) => (
+            <label class="lrow" for={`ph-v-${c.id}`}>
+              <img class="lava" src={c.src} alt="" width="128" height="128" loading="lazy" />
+              <span class="lbody">
+                <span class="lname">{c.name}</span>
+                {lastAuthor(c) && <span class="lsender">{lastAuthor(c)}</span>}
+                <span class:list={["lprev", { one: !!lastAuthor(c) }]}>
+                  {c.clip && <i class="lclip" set:html={SF.clip} />}
+                  {rowPreview(c)}
+                </span>
+              </span>
+              <span class="lmeta">
+                <span class="ltime">{c.time}</span>
+                {c.unread && <i class="lbadge">{c.unread}</i>}
+              </span>
+              {i < page.rows.length - 1 && <i class="ldiv"></i>}
+            </label>
+          ))}
+        </div>
+      ))}
+    </section>
+
+    {/* ── 2 · One pushed conversation per chat ───────────────────────── */}
+    {CHATS.map((c) => {
+      const isChannel = c.species === "channel";
+      return (
+        <section class:list={["chatview", `cv-${c.id}`]}>
+          <div class="cfeed">
+            <div class="cstack">
+              {c.msgs.map((m, i) => {
+                const prev = c.msgs[i - 1];
+                const next = c.msgs[i + 1];
+                // A day divider breaks the run on both sides, exactly as the
+                // real grouping does.
+                const startsRun = !!m.day || !sameAuthor(prev, m);
+                const endsRun = !!next?.day || !sameAuthor(m, next);
+                return (
+                  <>
+                    {m.day && <div class="cday">{m.day}</div>}
+                    <div
+                      class:list={[
+                        "crow",
+                        m.own ? "own" : "in",
+                        { gut: isChannel && !m.own, tail: endsRun, tight: !startsRun },
+                      ]}
+                    >
+                      {isChannel && !m.own && endsRun && (
+                        m.ava ? (
+                          <img class="cgav" src={m.ava} alt="" width="112" height="112" loading="lazy" />
+                        ) : (
+                          <i class="cgav cgletter">{m.letter}</i>
+                        )
+                      )}
+                      <div class="cbub">
+                        {startsRun && !m.own && isChannel && m.name && (
+                          <span class="csender">{m.name}</span>
+                        )}
+                        {m.html && <div class="ctext" set:html={m.html} />}
+                        {m.img && (
+                          <img
+                            class="cimg"
+                            src={m.img.src}
+                            alt=""
+                            width={m.img.w}
+                            height={m.img.h}
+                            loading="lazy"
+                          />
+                        )}
+                        {m.file && (
+                          <span class="cfile">
+                            <i class="cfico" set:html={SF.clip} />
+                            <span class="cfbody">
+                              <b>{m.file.name}</b>
+                              <em>{m.file.meta}</em>
+                            </span>
+                          </span>
+                        )}
+                        {m.card && (
+                          <span class="ccard">
+                            <span class="ccard-top">
+                              <b>skalenetwork/clawbits</b>
+                              <em>
+                                Team chat where agents are members, not integrations - with
+                                their own mailbox, git repos, and automations.
+                              </em>
+                            </span>
+                            <span class="ccard-bar"></span>
+                            {/* The section under the bar. Not decoration: with
+                                the card nested and clipped, a language bar
+                                flush against a 16pt radius reads as severed.
+                                In the real preview it is a DIVIDER, which is
+                                what this restores. */}
+                            <span class="ccard-foot">
+                              <b>GitHub - skalenetwork/clawbits</b>
+                              <em>
+                                A frictionless way to communicate and collaborate with
+                                humans and agents.
+                              </em>
+                            </span>
+                          </span>
+                        )}
+                        {m.reactions && (
+                          <span class="creacts">
+                            {m.reactions.map((r) => (
+                              <span class:list={["creact", { mine: r.mine }]}>
+                                <i>{r.e}</i>{r.n}
+                              </span>
+                            ))}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* iOS 26's `scrollEdgeEffects: { top: 'soft' }`, which the Stack is
+              configured with - the content does not just slide under the bar,
+              it dissolves into it. Approximated as a fade to the page ground
+              rather than a progressive blur; on white the two are close, and a
+              real progressive blur costs a stack of backdrop-filter layers. */}
+          <div class="cveil"></div>
+          <div class="cveil cveil-b"></div>
+
+          {/* Floating nav bar: back on the left, the contact-card title column
+              centred. Content scrolls UNDER both. */}
+          <div class="chead">
+            <label class="cback glass" for="ph-list">
+              <i class="cbico" set:html={SF.chevronL} />
+              {totalUnread - (c.unread ?? 0) > 0 && (
+                <i class="cbbadge">{totalUnread - (c.unread ?? 0)}</i>
+              )}
+            </label>
+            <span class="ctitle">
+              <img class="ctav" src={c.src} alt="" width="128" height="128" loading="lazy" />
+              <span class="cnamepill glass">
+                <span class="cname">{c.name}</span>
+                <i class="cnchev" set:html={SF.chevronR} />
+              </span>
+            </span>
+          </div>
+
+          <div class="ccomposer">
+            <span class="cbtn glass" set:html={SF.plus} />
+            <span class="cbtn glass" set:html={SF.robot} />
+            <span class="cinput glass">
+              <span class="cph">{c.draft ?? PLACEHOLDER}</span>
+              <i class="cmic" set:html={SF.mic} />
+            </span>
+          </div>
+        </section>
+      );
+    })}
+
+    {/* ── 3 · iOS 26 tab bar. System chrome, hidden on pushed routes. ── */}
+    <nav class="tabbar glass">
+      <span class="tbtn"><i set:html={SF.homeGrid} /><b>Home</b></span>
+      <span class="tbtn on"><i set:html={SF.message} /><b>Chats</b></span>
+      <span class="tbtn"><i set:html={SF.search} /><b>Search</b></span>
+      <span class="tbtn"><i set:html={SF.gears} /><b>Settings</b></span>
+    </nav>
+  </div>
+
+  {/* The device artwork, painted OVER the screen. The PNG carries a
+      transparent aperture, so the bezel, the corners and the Dynamic Island
+      are the image's job, not CSS's. Until the asset lands this element draws
+      a placeholder bezel from the same aperture variables - see --ap-*. */}
+  <div class="frame"></div>
+</div>
+
+<style>
+  /* ── The device ───────────────────────────────────────────────────────────
+   * iPhone 17 Pro. The APERTURE numbers are not guesses - they are measured
+   * out of /iphone.png's alpha channel, which is a true cut-out:
+   *
+   *   image        450 x 920
+   *   body         x 8..441, y 7..912   (the side buttons reach x=5)
+   *   aperture     x 24..425, y 23..896  ->  402 x 874
+   *
+   * 402x874pt is the 17 Pro's screen exactly (2622x1206 at 3x), so the asset
+   * is a 1x render and every point below maps 1:1 onto an image pixel. If the
+   * frame is ever re-cut, re-measure rather than re-eyeball: these four
+   * percentages are the whole contract between the artwork and the UI.
+   *
+   * The Dynamic Island is part of the artwork (opaque at y 37..73), so nothing
+   * here draws it - the screen simply runs underneath. */
+  .phone {
+    --ap-top: 2.5%; /* 23/920 */
+    --ap-right: 5.3333%; /* 24/450 */
+    --ap-bottom: 2.5%;
+    --ap-left: 5.3333%;
+
+    position: relative;
+    width: 100%;
+    aspect-ratio: 450 / 920;
+    /* Makes cqw below resolve against THIS box. */
+    container-type: inline-size;
+
+    /* App light mode, verbatim from apps/mobile/src/constants/theme.ts. */
+    --ph-text: #1c1c1e;
+    --ph-bg: #ffffff;
+    --ph-elem: #f2f2f7;
+    --ph-sel: #e5e5ea;
+    --ph-sec: #6b6b70;
+    --ph-red: #ff3b30;
+    --ph-blue: #0a84ff;
+    --ph-in: #e9e9eb;
+
+    /* SF where it exists, the product's own UI face everywhere else - closer
+     * to SF than a stock Android or Windows system face would be. */
+    font-family: -apple-system, BlinkMacSystemFont, var(--ff-app), sans-serif;
+    color: var(--ph-text);
+    text-align: left;
+    /* These visuals resize their own children on a loop; nothing here is
+     * content a reader is tracking, so nothing here should anchor a scroll. */
+    overflow-anchor: none;
+  }
+
+  /* The radios are the state. Off-screen rather than display:none so the
+   * :checked selectors still resolve. */
+  .pr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+    margin: 0;
+  }
+
+  .screen {
+    position: absolute;
+    inset: var(--ap-top) var(--ap-right) var(--ap-bottom) var(--ap-left);
+    /* The 17 Pro's screen radius. Points, not a percentage: a percentage
+     * radius on a non-square box needs two axes and drifts as the aspect
+     * changes, and this box has a fixed point size. */
+    border-radius: calc(62 * var(--pu));
+    overflow: hidden;
+    background: var(--ph-bg);
+    isolation: isolate;
+  }
+
+  /* ONE iOS POINT, and the reason nothing in this file reads the viewport.
+   *
+   * Declared on .phone's CHILDREN, never on .phone itself. Two reasons, both
+   * load-bearing: a container unit queried from the container element is not
+   * reliably that element's own size, and a percentage inside a custom
+   * property is substituted TEXTUALLY - so a `--pu` built from `100%` would
+   * resolve against the parent font-size the moment it was used in
+   * `font-size`, which is most of this stylesheet. From a child, 1cqw is
+   * unambiguously 1% of .phone's width.
+   *
+   * The screen is 402pt across and spans 100% - 5.3333% - 5.3333% = 89.3333%
+   * of the frame, so 1pt = 0.893333/402 cqw. It inherits from .screen into
+   * every rule below. */
+  .screen,
+  .shadow,
+  .frame {
+    --pu: 0.222222cqw;
+  }
+
+  /* The body's silhouette: x 8..441 of 450, y 7..912 of 920 - pulled 3pt
+   * inside it on every edge, and rounder than it looks.
+   *
+   * The artwork's corner is a CONTINUOUS curve, not a circular arc: measured
+   * off the alpha channel it runs 68px along the top edge but 76px down the
+   * side. A CSS circular radius matching the smaller of those is squarer than
+   * the real corner at the diagonal, so the blurred silhouette escaped past
+   * the bezel and read as a grey rounded rectangle sitting behind the phone.
+   * 80pt plus the inset keeps it inside the body all the way round; a shadow
+   * only has to stay within the shape, not trace it. */
+  .shadow {
+    position: absolute;
+    inset: calc(0.761% + 3 * var(--pu)) calc(1.778% + 3 * var(--pu));
+    border-radius: calc(80 * var(--pu));
+    box-shadow:
+      0 calc(30 * var(--pu)) calc(60 * var(--pu)) rgb(0 0 0 / 0.45),
+      0 calc(6 * var(--pu)) calc(16 * var(--pu)) rgb(0 0 0 / 0.32);
+  }
+
+  /* The device artwork, painted over the screen through its own cut-out. */
+  .frame {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  /* The artwork is loaded ONLY where the phone is shown. A background-image
+   * declared inside an unmatched media query is never fetched, so a desktop
+   * visitor - who gets AppDemo's window instead - does not pay for it. An
+   * <img> in a display:none subtree would still be requested, which is why
+   * the frame is a background rather than an element. */
+  @media (max-width: 40rem) {
+    .frame {
+      background: url("/iphone.png") center / 100% 100% no-repeat;
+    }
+  }
+
+  /* ── Liquid Glass ─────────────────────────────────────────────────────────
+   *
+   * iOS 26/27's material is four things stacked, and only the first is a
+   * one-liner in CSS:
+   *
+   *   1. a blurred, saturated backdrop                       - backdrop-filter
+   *   2. a tint that reads as glass, not as a grey chip      - background
+   *   3. a specular rim, brightest where the light lands     - the ::after ring
+   *   4. REFRACTION: content near the edge displaced inward  - see below
+   *
+   * (4) is the one that makes Apple's version look wet, and it is the one the
+   * web cannot do here. The technique the articles describe - an SVG
+   * feDisplacementMap fed to `backdrop-filter: url(#…)` - is Chromium-only:
+   * Safari does not support SVG filters in backdrop-filter at all, and this
+   * demo renders on phones, which is overwhelmingly iOS Safari. It would be
+   * complexity spent on an effect our actual audience never sees, so the rim
+   * below fakes the edge lensing instead: a gradient ring, bright at the two
+   * corners the light would catch and nearly gone along the sides. That is
+   * what reads as a bevel picking up light.
+   *
+   * The tint is Apple's systemFill grey rather than a translucent white. Over
+   * the white feed a white tint renders as… white; the grey is what produces
+   * the light-grey pill the reference crop actually shows. */
+  .glass {
+    position: relative;
+    isolation: isolate;
+    background: rgb(120 120 128 / 0.08);
+    -webkit-backdrop-filter: blur(calc(13 * var(--pu))) saturate(190%) brightness(1.04);
+    backdrop-filter: blur(calc(13 * var(--pu))) saturate(190%) brightness(1.04);
+    box-shadow:
+      /* Lift off the surface behind it. */
+      0 calc(0.5 * var(--pu)) calc(1.5 * var(--pu)) rgb(0 0 0 / 0.05),
+      0 calc(5 * var(--pu)) calc(13 * var(--pu)) rgb(0 0 0 / 0.09),
+      /* An inner floor - without it the lower half reads as flat fill. */
+      inset 0 calc(-1 * var(--pu)) calc(2 * var(--pu)) rgb(0 0 0 / 0.045);
+  }
+
+  /* The rim. Drawn as a ring - a padding-box mask XORed against the border box
+   * leaves only the perimeter - so the gradient can vary AROUND the edge the
+   * way a real bevel's highlight does, which a plain inset box-shadow cannot.
+   * 150deg puts the two bright arcs at upper-left and lower-right. */
+  .glass::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    border-radius: inherit;
+    padding: calc(1 * var(--pu));
+    background: linear-gradient(
+      150deg,
+      rgb(255 255 255 / 1) 0%,
+      rgb(255 255 255 / 0.4) 26%,
+      rgb(255 255 255 / 0.1) 48%,
+      rgb(255 255 255 / 0.46) 70%,
+      rgb(255 255 255 / 0.96) 100%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  /* ── Status bar ── */
+
+  .sbar {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 4;
+    height: calc(62 * var(--pu));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: calc(14 * var(--pu)) calc(34 * var(--pu)) 0;
+    font-size: calc(16 * var(--pu));
+    font-weight: 600;
+    letter-spacing: calc(-0.2 * var(--pu));
+  }
+
+  .sright {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--pu));
+  }
+
+  .sglyph {
+    display: block;
+  }
+
+  .scell {
+    width: calc(17.5 * var(--pu));
+  }
+
+  .swifi {
+    width: calc(17.5 * var(--pu));
+  }
+
+  .sglyph :global(svg) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .sbatt {
+    width: calc(27 * var(--pu));
+  }
+
+  /* ── View switching ───────────────────────────────────────────────────────
+   * One rule per conversation. Verbose by necessity: an id-keyed :checked
+   * selector cannot be generated from the array, and the alternative (a script
+   * that toggles classes) would trade a static page for a hydrated one. */
+  .listview,
+  .chatview {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+  }
+
+  #ph-list:checked ~ .screen .listview,
+  #ph-v-mara:checked ~ .screen .cv-mara,
+  #ph-v-hermes:checked ~ .screen .cv-hermes,
+  #ph-v-lena:checked ~ .screen .cv-lena,
+  #ph-v-allhands:checked ~ .screen .cv-allhands,
+  #ph-v-scout:checked ~ .screen .cv-scout,
+  #ph-v-eng:checked ~ .screen .cv-eng,
+  #ph-v-clawbits:checked ~ .screen .cv-clawbits,
+  #ph-v-smartclaws:checked ~ .screen .cv-smartclaws,
+  #ph-v-pit:checked ~ .screen .cv-pit,
+  #ph-v-josh:checked ~ .screen .cv-josh,
+  #ph-v-quill:checked ~ .screen .cv-quill,
+  #ph-v-sasha:checked ~ .screen .cv-sasha {
+    display: flex;
+  }
+
+  /* ── 1 · Chats list ── */
+
+  .lhead {
+    position: absolute;
+    inset: calc(62 * var(--pu)) 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 calc(20 * var(--pu));
+    height: calc(52 * var(--pu));
+  }
+
+  /* The native large title, left-aligned (headerTitleAlign: 'left'). */
+  .ltitle {
+    font-size: calc(34 * var(--pu));
+    font-weight: 700;
+    letter-spacing: calc(-0.8 * var(--pu));
+  }
+
+  .lpill {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--pu));
+    padding: calc(7 * var(--pu)) calc(12 * var(--pu));
+    border-radius: 999px;
+  }
+
+  .pico {
+    display: block;
+    width: calc(20 * var(--pu));
+  }
+
+  .pico :global(svg),
+  .tbi :global(svg) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  /* Scope tabs. `top` is the app's own insets.top + 52. */
+  .tabsbar {
+    position: absolute;
+    inset: calc(122 * var(--pu)) calc(16 * var(--pu)) auto;
+    z-index: 3;
+    display: flex;
+    gap: calc(5 * var(--pu));
+    padding: calc(5 * var(--pu));
+    min-height: calc(44 * var(--pu));
+    border-radius: 999px;
+  }
+
+  .tb {
+    flex: 1;
+    min-height: calc(34 * var(--pu));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(6 * var(--pu));
+    border-radius: 999px;
+    font-size: calc(13 * var(--pu));
+    font-weight: 600;
+    color: var(--ph-sec);
+    cursor: pointer;
+  }
+
+  .tbi {
+    display: block;
+    width: calc(17 * var(--pu));
+  }
+
+  /* selectedTint = theme.text at 0x18 alpha. */
+  #ph-dms:checked ~ .screen label[for="ph-dms"],
+  #ph-chs:checked ~ .screen label[for="ph-chs"] {
+    background: rgb(28 28 30 / 0.094);
+    color: var(--ph-text);
+  }
+
+  /* NO grouped card. channel-list-pane.tsx renders the cells on
+   * `theme.backgroundElement` with 16pt corners on the first and last, but the
+   * shipping app does not - the rows sit straight on the page ground with only
+   * the inset hairlines between them (owner-verified against a light-mode
+   * build, 2026-08-07). Trust the build over the file.
+   *
+   * The 20pt inset stays: it is the FlatList's own contentContainer padding,
+   * which is what puts the avatars where they are. */
+  .lcard {
+    display: none;
+    flex-direction: column;
+    margin: calc(180 * var(--pu)) calc(20 * var(--pu)) 0;
+  }
+
+  #ph-dms:checked ~ .screen .pg-dms,
+  #ph-chs:checked ~ .screen .pg-chs {
+    display: flex;
+  }
+
+  /* No inline padding of its own now the card is gone: the cell's left edge IS
+   * the list's 20pt inset, which is what the 58pt avatar sits on and what the
+   * divider's own 70pt offset is measured from. */
+  .lrow {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: calc(12 * var(--pu));
+    padding-block: calc(10 * var(--pu));
+    cursor: pointer;
+  }
+
+  /* 58pt at radius 15 - the squircle the whole list is built on. */
+  .lava {
+    flex: none;
+    width: calc(58 * var(--pu));
+    height: calc(58 * var(--pu));
+    border-radius: calc(15 * var(--pu));
+    object-fit: cover;
+    background: var(--ph-sel);
+  }
+
+  .lbody {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: calc(2 * var(--pu));
+    /* Clears the absolutely-positioned meta column. */
+    padding-right: calc(72 * var(--pu));
+  }
+
+  .lname {
+    padding-top: calc(2 * var(--pu));
+    font-size: calc(15 * var(--pu));
+    font-weight: 600;
+  }
+
+  /* Channels only, and in FULL-strength text - it is a second title line, not
+   * part of the preview. */
+  .lsender {
+    font-size: calc(13 * var(--pu));
+    font-weight: 600;
+    line-height: calc(18 * var(--pu));
+  }
+
+  .lprev {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    font-size: calc(13 * var(--pu));
+    line-height: calc(18 * var(--pu));
+    color: var(--ph-sec);
+  }
+
+  /* One line once a sender line is above it. */
+  .lprev.one {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+
+  .lclip {
+    display: inline-block;
+    width: calc(12 * var(--pu));
+    vertical-align: calc(-1 * var(--pu));
+    margin-right: calc(4 * var(--pu));
+  }
+
+  .lclip :global(svg) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .lmeta {
+    position: absolute;
+    right: 0;
+    top: calc(12 * var(--pu));
+    width: calc(60 * var(--pu));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: calc(10 * var(--pu));
+  }
+
+  .ltime {
+    font-size: calc(12 * var(--pu));
+    font-variant-numeric: tabular-nums;
+    color: var(--ph-sec);
+  }
+
+  .lbadge {
+    min-width: calc(22 * var(--pu));
+    padding: calc(2 * var(--pu)) calc(7 * var(--pu));
+    border-radius: 999px;
+    background: var(--ph-red);
+    color: #fff;
+    font-size: calc(12 * var(--pu));
+    font-weight: 700;
+    font-style: normal;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
+  /* Hairline, inset 70pt from the row's own left edge. */
+  .ldiv {
+    position: absolute;
+    left: calc(70 * var(--pu));
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: var(--ph-sel);
+  }
+
+  /* ── 2 · Conversation ── */
+
+  .cfeed {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+    /* Clears the floating nav bar and the composer; the feed itself runs
+     * edge to edge underneath both.
+     *
+     * The bottom pad also carries the crop. The stack is bottom-anchored, so
+     * without this the newest messages - the ones the conversation is being
+     * shown FOR - sit in the band the canvas cuts away, and the phone reads as
+     * open on the oldest part of the thread. */
+    padding-top: calc(120 * var(--pu));
+    padding-inline: calc(12 * var(--pu));
+    /* Clear the composer, OR clear the crop plus a breath - whichever is
+     * further. Once the canvas cuts deeply enough to take the composer with
+     * it, clearing the composer stops meaning anything and the crop line is
+     * what the last message has to sit above.
+     *
+     * --ph-crop is set on .stage in index.astro and inherits down. It is read
+     * with a fallback rather than defaulted on .phone: a declaration here would
+     * shadow the inherited value, which is exactly the bug this replaced. */
+    padding-bottom: max(
+      calc(104 * var(--pu)),
+      calc((var(--ph-crop, 0) + 20) * var(--pu))
+    );
+  }
+
+  /* No gap: the spacing is per-row, because it is not uniform - see .crow. */
+  .cstack {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .cday {
+    align-self: center;
+    margin: calc(10 * var(--pu)) 0 calc(6 * var(--pu));
+    font-size: calc(12 * var(--pu));
+    font-weight: 500;
+    color: var(--ph-sec);
+  }
+
+  /* message-bubble.tsx: rowFirst marginTop 8, rowTight marginTop 2. A new
+   * speaker gets air; a run from the same one stays welded together, which is
+   * what makes a streak read as one utterance broken over several bubbles. A
+   * flat gap on the stack gave everything the tight value. */
+  /* The day dividers stay in the data - the desktop window shows the whole
+   * engineering thread and needs them - but the phone opens mid-thread on a
+   * cropped screen, where "Today" lands in the very first frame as a label
+   * dating a boundary the reader cannot see. Hidden for the opening
+   * conversation only; every other chat on the phone keeps its dividers. */
+  .cv-eng .cday {
+    display: none;
+  }
+
+  .crow {
+    display: flex;
+    align-items: flex-end;
+    gap: calc(4 * var(--pu));
+    margin-top: calc(8 * var(--pu));
+  }
+
+  .crow.tight {
+    margin-top: calc(2 * var(--pu));
+  }
+
+  .crow.own {
+    justify-content: flex-end;
+  }
+
+  /* Channel incoming rows reserve the avatar gutter whether or not this
+   * particular bubble ends the streak - otherwise the run steps sideways. */
+  .crow.gut {
+    padding-left: calc(32 * var(--pu));
+  }
+
+  .crow.gut:has(.cgav) {
+    padding-left: 0;
+  }
+
+  .cgav {
+    flex: none;
+    width: calc(28 * var(--pu));
+    height: calc(28 * var(--pu));
+    border-radius: 999px;
+    object-fit: cover;
+    background: rgb(0 0 0 / 0.13);
+  }
+
+  .cgletter {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: calc(13 * var(--pu));
+    font-weight: 600;
+    font-style: normal;
+    color: var(--ph-sec);
+  }
+
+  .cbub {
+    max-width: 78%;
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--pu));
+    padding: calc(8 * var(--pu)) calc(14 * var(--pu));
+    border-radius: calc(18 * var(--pu));
+    background: var(--ph-in);
+    overflow: hidden;
+  }
+
+  .crow.own .cbub {
+    background: var(--ph-blue);
+    color: #fff;
+  }
+
+  /* The 5pt tail corner, on the last bubble of a streak only. */
+  .crow.in.tail .cbub {
+    border-bottom-left-radius: calc(5 * var(--pu));
+  }
+
+  .crow.own.tail .cbub {
+    border-bottom-right-radius: calc(5 * var(--pu));
+  }
+
+  .csender {
+    font-size: calc(12 * var(--pu));
+    font-weight: 600;
+    margin-bottom: calc(-2 * var(--pu));
+    color: var(--ph-sec);
+  }
+
+  .ctext {
+    font-size: calc(17 * var(--pu));
+    line-height: calc(22 * var(--pu));
+    letter-spacing: calc(-0.2 * var(--pu));
+  }
+
+  .ctext :global(p) {
+    margin: 0;
+  }
+
+  .ctext :global(p + p) {
+    margin-top: calc(8 * var(--pu));
+  }
+
+  .ctext :global(.lnk) {
+    color: var(--ph-blue);
+  }
+
+  .crow.own .ctext :global(.lnk) {
+    color: #fff;
+    text-decoration: underline;
+  }
+
+  .ctext :global(.mention) {
+    font-weight: 600;
+    color: var(--ph-blue);
+  }
+
+  /* An image-only message IS the bubble: no padding, and the picture runs the
+   * bubble's full width so the bubble's own radius (tail corner included) is
+   * what rounds the photo. That is why the real bubble keeps `padding: 0` and
+   * hangs its padding on an inner column.
+   *
+   * `width: 100%` here means 100% of the ROW, which the bubble's existing
+   * max-width caps at 78% - the same ceiling every other bubble gets. Sizing
+   * the image to a fixed width instead left it floating in a bubble wider than
+   * itself, with a strip of bare fill down one side. */
+  .cbub:has(> .cimg) {
+    padding: 0;
+    width: 100%;
+  }
+
+  /* …which leaves the sender name, when there is one, with no padding of its
+   * own. The real bubble solves this by keeping `padding: 0` and hanging the
+   * padding on an inner column that the image grid sits outside of; one rule
+   * is cheaper than restructuring the markup for it. */
+  .cbub:has(> .cimg) .csender {
+    padding: calc(8 * var(--pu)) calc(14 * var(--pu)) 0;
+  }
+
+  .cimg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .cfile {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--pu));
+    padding: calc(6 * var(--pu)) 0;
+  }
+
+  .cfico {
+    flex: none;
+    width: calc(16 * var(--pu));
+    opacity: 0.7;
+  }
+
+  .cfico :global(svg),
+  .cbico :global(svg),
+  .cnchev :global(svg),
+  .cmic :global(svg),
+  .cbtn :global(svg),
+  .tbtn i :global(svg) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .cfbody {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .cfbody b {
+    font-size: calc(14 * var(--pu));
+    font-weight: 600;
+  }
+
+  .cfbody em {
+    font-size: calc(12 * var(--pu));
+    font-style: normal;
+    opacity: 0.7;
+  }
+
+  /* The link preview, hung under the text inside the bubble. */
+  /* A card NESTED in the bubble, not a full-bleed panel across it -
+   * link-preview-card.tsx: radius 16, marginTop 8, overflow hidden, inner
+   * padding 14/12. It keeps the bubble's own 14pt inset on both sides, and the
+   * clip is what rounds the language bar's ends with the card. */
+  .ccard {
+    display: block;
+    margin-top: calc(8 * var(--pu));
+    border-radius: calc(16 * var(--pu));
+    overflow: hidden;
+    background: #fff;
+    color: var(--ph-text);
+  }
+
+  .ccard-top {
+    display: block;
+    padding: calc(12 * var(--pu)) calc(14 * var(--pu));
+  }
+
+  .ccard-top b {
+    display: block;
+    font-size: calc(15 * var(--pu));
+    font-weight: 700;
+  }
+
+  .ccard-top em {
+    display: block;
+    margin-top: calc(3 * var(--pu));
+    font-size: calc(12 * var(--pu));
+    line-height: calc(16 * var(--pu));
+    font-style: normal;
+    color: var(--ph-sec);
+  }
+
+  /* GitHub's language bar. */
+  .ccard-bar {
+    display: block;
+    height: calc(5 * var(--pu));
+    background: linear-gradient(
+      to right,
+      #3178c6 0 56%,
+      #f1e05a 56% 78%,
+      #e34c26 78% 92%,
+      #89e051 92% 100%
+    );
+  }
+
+  .ccard-foot {
+    display: block;
+    padding: calc(10 * var(--pu)) calc(14 * var(--pu));
+    background: var(--ph-elem);
+  }
+
+  .ccard-foot b {
+    display: block;
+    font-size: calc(13 * var(--pu));
+    font-weight: 600;
+    line-height: calc(17 * var(--pu));
+  }
+
+  .ccard-foot em {
+    display: block;
+    margin-top: calc(2 * var(--pu));
+    font-size: calc(12 * var(--pu));
+    line-height: calc(16 * var(--pu));
+    font-style: normal;
+    color: var(--ph-sec);
+  }
+
+  .creacts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(5 * var(--pu));
+  }
+
+  .creact {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--pu));
+    padding: calc(4 * var(--pu)) calc(10 * var(--pu));
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.75);
+    font-size: calc(13 * var(--pu));
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--ph-text);
+  }
+
+  .creact i {
+    font-size: calc(15 * var(--pu));
+    font-style: normal;
+  }
+
+  .crow.in .creact {
+    background: rgb(255 255 255 / 0.9);
+  }
+
+  /* Soft scroll edges. Sit above the feed and below the floating chrome. */
+  .cveil {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 2;
+    height: calc(100 * var(--pu));
+    /* Opaque past the status bar, then a short fade that is done before the
+     * nav pill's lower edge. The pill carries its own glass, so the veil only
+     * has to clear the STATUS bar - running it the full depth of the nav put a
+     * band of white a third of the way down the screen. */
+    background: linear-gradient(
+      to bottom,
+      rgb(255 255 255 / 0.9) 44%,
+      rgb(255 255 255 / 0.7) 74%,
+      rgb(255 255 255 / 0) 100%
+    );
+    pointer-events: none;
+  }
+
+  .cveil-b {
+    inset: auto 0 0;
+    height: calc(118 * var(--pu));
+    background: linear-gradient(
+      to top,
+      var(--ph-bg) 44%,
+      rgb(255 255 255 / 0.8) 74%,
+      rgb(255 255 255 / 0) 100%
+    );
+  }
+
+  /* ── Conversation nav bar ── */
+
+  .chead {
+    position: absolute;
+    inset: calc(62 * var(--pu)) 0 auto;
+    z-index: 3;
+    display: flex;
+    align-items: flex-start;
+    padding: 0 calc(14 * var(--pu));
+    height: calc(58 * var(--pu));
+  }
+
+  .cback {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--pu));
+    padding: calc(9 * var(--pu)) calc(12 * var(--pu));
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .cbico {
+    display: block;
+    width: calc(18 * var(--pu));
+  }
+
+  .cbbadge {
+    min-width: calc(22 * var(--pu));
+    padding: calc(1 * var(--pu)) calc(7 * var(--pu));
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.9);
+    font-size: calc(12 * var(--pu));
+    font-weight: 600;
+    font-style: normal;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
+  /* The contact-card title column: avatar over a glass name pill. */
+  .ctitle {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    translate: -50% calc(-4 * var(--pu));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .ctav {
+    width: calc(46 * var(--pu));
+    height: calc(46 * var(--pu));
+    border-radius: 999px;
+    object-fit: cover;
+    translate: 0 calc(-3 * var(--pu));
+    z-index: 2;
+    background: var(--ph-sel);
+  }
+
+  .cnamepill {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--pu));
+    /* chat-header.tsx has -6; pulled tighter so the pill tucks under the
+     * avatar rather than sitting below it. */
+    margin-top: calc(-9 * var(--pu));
+    padding: calc(5 * var(--pu)) calc(14 * var(--pu));
+    border-radius: 999px;
+  }
+
+  .cname {
+    max-width: calc(200 * var(--pu));
+    font-size: calc(15 * var(--pu));
+    font-weight: 600;
+    letter-spacing: calc(-0.1 * var(--pu));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cnchev {
+    display: block;
+    width: calc(10 * var(--pu));
+    opacity: 0.55;
+  }
+
+  /* ── Composer ── */
+
+  .ccomposer {
+    position: absolute;
+    inset: auto 0 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--pu));
+    padding: calc(8 * var(--pu)) calc(12 * var(--pu)) calc(34 * var(--pu));
+  }
+
+  .cbtn {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(44 * var(--pu));
+    height: calc(44 * var(--pu));
+    padding: calc(11 * var(--pu));
+    border-radius: 999px;
+  }
+
+  .cinput {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--pu));
+    min-height: calc(44 * var(--pu));
+    padding: calc(5 * var(--pu)) calc(5 * var(--pu)) calc(5 * var(--pu)) calc(16 * var(--pu));
+    border-radius: calc(22 * var(--pu));
+  }
+
+  .cph {
+    flex: 1;
+    min-width: 0;
+    font-size: calc(17 * var(--pu));
+    line-height: calc(22 * var(--pu));
+    letter-spacing: calc(-0.2 * var(--pu));
+    color: var(--ph-sec);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* A typed draft is the user's own ink, not a placeholder. */
+  .cv-eng .cph,
+  .cv-quill .cph {
+    color: var(--ph-text);
+  }
+
+  .cmic {
+    flex: none;
+    width: calc(22 * var(--pu));
+    margin-right: calc(9 * var(--pu));
+    color: var(--ph-sec);
+  }
+
+  /* ── 3 · iOS 26 tab bar ── */
+
+  .tabbar {
+    position: absolute;
+    inset: auto calc(16 * var(--pu)) calc(26 * var(--pu));
+    z-index: 5;
+    display: none;
+    align-items: center;
+    padding: calc(6 * var(--pu));
+    border-radius: 999px;
+  }
+
+  #ph-list:checked ~ .screen .tabbar {
+    display: flex;
+  }
+
+  .tbtn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(3 * var(--pu));
+    padding: calc(6 * var(--pu)) 0;
+    border-radius: 999px;
+    color: var(--ph-sec);
+  }
+
+  .tbtn i {
+    display: block;
+    width: calc(22 * var(--pu));
+  }
+
+  .tbtn b {
+    font-size: calc(10 * var(--pu));
+    font-weight: 500;
+    letter-spacing: calc(-0.1 * var(--pu));
+  }
+
+  /* iOS 26 paints the selected tab as a filled capsule, tinted to the scheme -
+   * near-black on a dark UI, a light fill with dark contents on a light one.
+   * This demo is light mode, so it is the latter. */
+  .tbtn.on {
+    background: rgb(120 120 128 / 0.16);
+    color: var(--ph-text);
+  }
+
+  /* ── Scrolling, without ever taking the gesture ───────────────────────────
+   *
+   * The obvious way to make these views scroll is `overflow-y: auto`. Do not.
+   * On iOS Safari a nested scroller CLAIMS the whole touch gesture: when it
+   * reaches its end the page does not take over, it stops, and the reader has
+   * to lift and touch again to carry on down the page. There is no CSS fix -
+   * `overscroll-behavior` governs the opposite problem, stopping chaining
+   * rather than forcing it - and nothing hands a gesture back mid-flight. A
+   * demo that traps the reader on the way to the rest of the page is worse
+   * than one that never moves.
+   *
+   * So the page stays the only scroller and the feed is driven FROM it. Over
+   * the first 380px of the document the conversation runs from older messages
+   * down to the newest, exactly as if it were being scrolled; after that it is
+   * settled and stays settled. The gesture is never intercepted, so the page
+   * never stops - it just happens to be scrolling two things at once for a
+   * moment.
+   *
+   * A ROOT scroll timeline, not a view timeline on the phone: a view range
+   * resolves against the viewport's height, so the same `cover 30%` lands at a
+   * different page offset on every device, and the point where the feed
+   * settles is exactly the point the crop was tuned around. An absolute
+   * document offset puts that moment in the same place for everyone.
+   *
+   * Behind @supports because a browser without scroll-driven animations must
+   * get the resting layout, not an animation with no timeline to sit on. */
+  @supports (animation-timeline: scroll()) {
+    @media (prefers-reduced-motion: no-preference) {
+      /* LONGHANDS ONLY, and never the `animation` shorthand.
+       *
+       * `animation: linear both` has no name, so a minifier is free to fold it
+       * to `animation: none` - and because the shorthand also RESETS
+       * animation-timeline, Lightning CSS took the timeline declaration with
+       * it. Staging shipped `animation:none;animation-range:0 210px` and no
+       * timeline at all, which is why the feed sat at its resting position on
+       * the device while working perfectly in `astro dev` (which does not
+       * minify). Verify this rule against `bun run build` output, not dev.
+       *
+       * `animation-duration: auto` is also load-bearing: it is what maps an
+       * animation across a scroll range. The shorthand's omitted duration
+       * resolves to 0s in some engines, which finishes the animation instantly
+       * at the start of the range - the same wrong-looking result, arrived at
+       * a different way. */
+      .cstack,
+      .lcard {
+        animation-duration: auto;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-timeline: scroll(root block);
+        animation-range: 0px 210px;
+      }
+
+      .cstack {
+        animation-name: ph-feed;
+      }
+
+      .lcard {
+        animation-name: ph-list;
+      }
+    }
+  }
+
+  /* The opening frame, as a plain static value. Without this a browser that
+   * cannot run scroll-driven animations - or a build that loses the timeline,
+   * as staging did - falls back to translate 0, which is the END of the
+   * thread. Now the fallback is the composition we actually designed; it just
+   * does not move. */
+  .cstack {
+    translate: 0 calc(232 * var(--pu));
+  }
+
+  /* Bottom-anchored, so pushing the stack DOWN reveals earlier messages. */
+  @keyframes ph-feed {
+    from {
+      /* Opens on the TAIL of Priya's photo - a band of court under the nav
+       * bar, not the whole picture. Enough that the thread visibly has an
+       * attachment in it and that there is somewhere to scroll from; not so
+       * much that the hero's first frame is a photograph rather than a
+       * conversation.
+       *
+       * High enough, with the trimmed release note, that atlas's avatar lands
+       * inside the first frame: a streak's avatar hangs off the BOTTOM of its
+       * last bubble, so anything that lengthens that bubble pushes the one
+       * mark identifying the speaker below the fold.
+       *
+       * The two pull against each other: the court band and atlas's avatar sit
+       * about 58pt further apart than the opening frame is tall, so the sliver
+       * of photo is as thin as it is BECAUSE the avatar has to clear. Measured
+       * against a 812pt-tall viewport; a materially shorter phone loses the
+       * avatar again, and the honest fix for that would be a shorter bubble,
+       * not a deeper offset.
+       *
+       * ~175px of feed over the 210px range below, so the chat tracks the
+       * finger close to 1:1 - which is what makes it read as scrolling rather
+       * than as parallax. */
+      translate: 0 calc(232 * var(--pu));
+    }
+    to {
+      translate: 0 0;
+    }
+  }
+
+  /* The list is top-anchored, so it runs the other way: down the rows. */
+  @keyframes ph-list {
+    from {
+      translate: 0 0;
+    }
+    to {
+      translate: 0 calc(-110 * var(--pu));
+    }
+  }
+</style>

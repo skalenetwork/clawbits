@@ -143,7 +143,7 @@ export function AutomationCard({automation, agentName, agentAvatarUrl, now, acti
             </div>
 
             {/* Footer: honest state left; actions bottom-right, inline with the
-                chip — the "ran …" meta yields to them on hover (always on touch).
+                chip - the "ran …" meta yields to them on hover (always on touch).
                 The slot is h-8 so the swap never changes the card's height. */}
             <div className="mt-3 flex h-8 items-center justify-between gap-2">
                 <span className="flex min-w-0 items-center gap-1.5">
@@ -235,7 +235,7 @@ export function AttentionRow({automation, agent, now, scopeAgentId}: {
         state.key === "failed"
             ? state.detail ?? "The agent couldn't apply this automation."
             : state.drifted
-              ? "Changed outside Clawbits — the desired version re-applies on the next reconcile."
+              ? "Changed outside Clawbits - the desired version re-applies on the next reconcile."
               : state.detail ?? "Waiting for the agent.";
     // The shelf strips rows out of their agent group, so the group header's
     // offline note must travel with them.

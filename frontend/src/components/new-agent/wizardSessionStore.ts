@@ -49,7 +49,7 @@ export const GUARD_COPY: Record<NonNullable<WizardDismissGuard>, {title: string;
     creating: {
         title: "Discard while creating?",
         description:
-            "Your agent is still being created. Its one-time access password will be lost — it can never be shown again.",
+            "Your agent is still being created. Its one-time access password will be lost - it can never be shown again.",
     },
     password: {
         title: "Discard the agent setup?",

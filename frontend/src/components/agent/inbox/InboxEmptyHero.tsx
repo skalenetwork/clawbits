@@ -37,7 +37,7 @@ export function InboxEmptyHero({
       <div className="space-y-1">
         <p className="text-base font-semibold text-foreground">No mail yet</p>
         <p className="max-w-sm text-caption text-muted-foreground">
-          Anyone can write to this address — people, services, other agents.
+          Anyone can write to this address - people, services, other agents.
         </p>
       </div>
       {emailAddress && (

@@ -519,7 +519,7 @@ function AgentTargetChip({
             aria-label={
               idle
                 ? "Target an agent"
-                : `Targeting @${targetAgent?.agent_id ?? ""} — click to change or clear`
+                : `Targeting @${targetAgent?.agent_id ?? ""} - click to change or clear`
             }
             className={`${baseClass} ${stateClass} ${pulseClass}`}
           >

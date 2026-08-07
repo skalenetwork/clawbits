@@ -1,0 +1,17 @@
+# build output
+dist/
+.astro/
+
+# deps
+node_modules/
+
+# cloudflare / wrangler
+.wrangler/
+.dev.vars
+
+# fonts downloaded and cached by the Astro Fonts API
+.astro/fonts/
+
+# misc
+.DS_Store
+*.log

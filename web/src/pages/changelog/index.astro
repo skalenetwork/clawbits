@@ -1,0 +1,549 @@
+---
+import { getCollection, render } from "astro:content";
+import { Image } from "astro:assets";
+import Base from "../../layouts/Base.astro";
+import ShaderBackdrop from "../../components/ShaderBackdrop.tsx";
+import { LINKS, canonicalUrl } from "../../config";
+
+/**
+ * /changelog - the full release history.
+ *
+ * Content comes from the `changelog` collection, which reads the APP's release
+ * notes in place (see src/content.config.ts for why they live there and stay
+ * there). Every prod release already writes one of these files for the in-app
+ * "What's new" dialog, so this page stays current with no marketing work -
+ * which is the whole argument for it: a genuine freshness signal that costs
+ * nothing per release.
+ *
+ * Built from the site's OWN primitives rather than a bespoke layout: a shader
+ * canvas head (the homepage's, on the calmer CTA preset) over railed,
+ * hairline-divided blocks. An earlier pass invented a card-framed timeline with
+ * a border-left spine and node dots, which is exactly what Section.astro
+ * forbids - "separated by vertical rhythm and a hairline rule, never by cards,
+ * borders, or shadows". The rails ARE the timeline; a release does not need a
+ * drawn spine to read as one entry in a sequence.
+ *
+ * The same markdown renders in two places through two different pipelines -
+ * react-markdown in the app, Astro's Rust processor here. That is fine because
+ * the content stays inside their intersection (bullet lists, bold, the
+ * occasional heading). Anything fancier - a table, an embedded image, a
+ * footnote - has to be checked against BOTH renderers before it ships.
+ */
+
+/** Newest first. `id` is the bare version, e.g. "0.17.0" - the filename. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/**
+ * Hero images, bound to releases by FILENAME CONVENTION rather than by any
+ * reference in the markdown - `0.17.0.md` is illustrated by `0.17.0.webp`.
+ * That rule is the app's (src/lib/releaseNotes.ts) and is reproduced here
+ * because nothing in the note itself records it.
+ *
+ * Globbed as ImageMetadata rather than `?url` so these go through
+ * astro:assets: the intrinsic dimensions travel with the import, so the
+ * banners reserve their space and the page does not reflow as they decode.
+ * Not every release has one - releases without fall through to notes only,
+ * never an empty frame.
+ */
+const heroes = import.meta.glob<{ default: ImageMetadata }>(
+  "../../../../frontend/src/release-notes/*.webp",
+  { eager: true },
+);
+
+const HERO_BY_VERSION = new Map<string, ImageMetadata>();
+for (const [path, mod] of Object.entries(heroes)) {
+  const version = /\/(\d+\.\d+\.\d+)\.webp$/.exec(path)?.[1];
+  if (version) HERO_BY_VERSION.set(version, mod.default);
+}
+
+const entries = (await getCollection("changelog")).sort((a, b) =>
+  compareVersions(b.id, a.id),
+);
+
+// Rendered up front: `render()` is async and cannot be awaited inside the
+// template's map.
+const releases = await Promise.all(
+  entries.map(async (entry) => ({
+    version: entry.id,
+    title: entry.data.title,
+    date: entry.data.date,
+    hero: HERO_BY_VERSION.get(entry.id),
+    Content: (await render(entry)).Content,
+  })),
+);
+
+const dateFormat = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  timeZone: "UTC", // Frontmatter dates are bare YYYY-MM-DD: parsed as UTC
+});                // midnight, so any local zone west of it renders a day early.
+
+const latest = releases[0];
+
+const DESCRIPTION =
+  "Every Clawbits release, newest first - what changed for the people and agents using it.";
+
+const schema = [
+  {
+    "@type": "CollectionPage",
+    "@id": canonicalUrl("/changelog", Astro.site),
+    name: "Clawbits changelog",
+    description: DESCRIPTION,
+    isPartOf: { "@id": `${Astro.site}#website` },
+    about: { "@id": `${Astro.site}#software` },
+  },
+];
+---
+
+<Base
+  title="Changelog"
+  description={DESCRIPTION}
+  ogImage="/og/og-clawbits-changelog.png"
+  schema={schema}
+  nav="overlay"
+>
+  {/* ── Head canvas ────────────────────────────────────────────────────
+      The homepage's hero shape at interior-page scale, on the CTA's calmer
+      shader preset - a changelog should feel like the same site, not compete
+      with the homepage for the loudest gradient. */}
+  <div class="frame">
+    <section class="canvas" data-theme-anchor>
+      <div class="shader" aria-hidden="true">
+        {/* Intensity well under BOTH the hero (0.15 at ~2.5x this height) and
+            the CTA (0.32): the wave is sized to the canvas, so the shorter the
+            canvas the more of the frame it fills. At the CTA's 0.32 this band
+            read louder than the homepage hero itself, which inverts the page
+            hierarchy. Measured on screen, not guessed. */}
+        <ShaderBackdrop
+          client:only="react"
+          softness={0.78}
+          intensity={0.14}
+          noise={0.16}
+          speed={0.5}
+        />
+      </div>
+
+      <div class="head">
+        {
+          latest && (
+            <a class="badge" href={`#v${latest.version}`}>
+              v{latest.version} &middot; {dateFormat.format(latest.date)}
+              <span class="chev" aria-hidden="true">›</span>
+            </a>
+          )
+        }
+        <h1 class="display display-hero">What&rsquo;s new</h1>
+        <p class="lede">
+          Every release, written up the day it goes out - and waiting for you
+          inside the app.
+        </p>
+      </div>
+    </section>
+  </div>
+
+  {
+    releases.length === 0 ? (
+      <div class="rails">
+        <div class="block">
+          <p class="empty">No releases yet.</p>
+        </div>
+      </div>
+    ) : (
+      <div class="rails">
+        {releases.map(({ version, title, date, hero, Content }, i) => (
+          <article class="block release" id={`v${version}`}>
+            {/* Sticky on wide viewports so the version stays beside its notes
+                while a long entry scrolls past. */}
+            <div class="rail">
+              <a class="version" href={`#v${version}`}>v{version}</a>
+              <time datetime={date.toISOString().slice(0, 10)}>
+                {dateFormat.format(date)}
+              </time>
+              {i === 0 && <span class="latest">Latest</span>}
+            </div>
+
+            <div class="body">
+              {hero && (
+                <div class="shot">
+                  <Image
+                    src={hero}
+                    alt={`${title} - Clawbits v${version}`}
+                    widths={[480, 720, 960]}
+                    sizes="(min-width: 48rem) 30rem, 100vw"
+                    loading={i === 0 ? "eager" : "lazy"}
+                    decoding="async"
+                  />
+                </div>
+              )}
+
+              <h2>{title}</h2>
+
+              <div class="notes">
+                <Content />
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    )
+  }
+
+  {/* Closes the rails with one full-width line, exactly as the homepage's
+      .outro does - the last block draws none of its own. */}
+  <div class="tail">
+    <div class="tail-inner">
+      <p>
+        Tagged builds and their commit history are on <a
+          href={LINKS.github}
+          target="_blank"
+          rel="noopener noreferrer">GitHub</a
+        >.
+      </p>
+    </div>
+  </div>
+</Base>
+
+<style>
+  /* ── Head canvas ─────────────────────────────────────────────────────
+   * Same construction as the homepage hero: inset frame, rounded dark canvas,
+   * static candy gradient underneath the WebGL island. */
+  .frame {
+    padding: 1rem 1rem 0;
+  }
+
+  .canvas {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, rgb(0 0 0) 7%, var(--color-ink));
+    border-radius: clamp(0.75rem, 2.5vw, 2.125rem);
+    background: var(--color-canvas);
+    box-shadow:
+      0 20px 25px -5px rgb(0 0 0 / 0.1),
+      0 8px 10px -6px rgb(0 0 0 / 0.1);
+    /* Drives the fixed nav's slide-in (hoisted via timeline-scope on <body>).
+     * Required by nav="overlay": without it the bar never scrubs in. */
+    view-timeline-name: --hero-view;
+  }
+
+  /* What shows before the island hydrates, without JS, or without WebGL. */
+  .shader {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
+      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
+      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
+      var(--color-canvas);
+  }
+
+  /* Legibility scrim over the shader, under the text. Two layers, unlike the
+   * homepage's one: a radial pool for the headline, plus a top-down wash. The
+   * hero can rely on a radial alone because its text sits over a tall dark
+   * field; here the wave reaches the top edge, so the nav and badge need their
+   * own cover to stay legible. */
+  .shader::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(76% 64% at 50% 34%, rgb(20 19 17 / 0.66), transparent 78%),
+      linear-gradient(
+        to bottom,
+        rgb(20 19 17 / 0.55) 0%,
+        rgb(20 19 17 / 0.3) 52%,
+        rgb(20 19 17 / 0.12) 100%
+      );
+  }
+
+  .head {
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    color: var(--color-canvas-text);
+    /* Clears the 4rem fixed nav. Shorter than the homepage hero - this page's
+     * job is the list below it, not the headline. */
+    padding: clamp(6rem, 4vw + 4.5rem, 7.5rem) clamp(1.5rem, 5vw, 3rem)
+      clamp(4rem, 6vw, 5.5rem);
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    height: 1.625rem;
+    padding-inline: 0.75rem;
+    border-radius: 999px;
+    margin-bottom: 1.25rem;
+    background: rgb(255 255 255 / 0.1);
+    font-size: 0.75rem;
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.01em;
+    color: var(--color-canvas-text);
+    text-decoration: none;
+    transition: background 150ms ease;
+  }
+
+  .badge:hover {
+    background: rgb(255 255 255 / 0.18);
+  }
+
+  .chev {
+    line-height: 1;
+    translate: 0 -0.03em;
+  }
+
+  .head .lede {
+    margin: 1.25rem auto 0;
+    max-width: 34rem;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: color-mix(in srgb, var(--color-canvas-text) 72%, transparent);
+  }
+
+  /* ── Railed list ─────────────────────────────────────────────────────
+   * The site's standard block rhythm, tightened: seventeen releases at the
+   * homepage's 4.5-6.75rem cadence reads as a page with almost nothing on it.
+   * Same call the .cta-block makes for the closer. */
+  /* Narrower than the homepage's 70.5rem rails. That width is built for
+   * side-by-side visual blocks; this page is a column of prose, and prose set
+   * to 70rem reads as a wall. Sits between the homepage rails and the docs'
+   * 56rem reading measure - wide enough that the version rail still has its
+   * own column, tight enough that a release scans in one eyeline. */
+  .rails {
+    max-width: 60rem;
+    margin-inline: auto;
+    border-inline: 1px solid var(--color-line);
+  }
+
+  @media (max-width: 48rem) {
+    .rails {
+      border-inline: 0;
+    }
+  }
+
+  .block {
+    padding: clamp(2.75rem, 4.5vw, 4rem) clamp(1.25rem, 4vw, 3rem);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  /* The .tail's full-width top border is the single line that terminates the
+   * rails, so the last release draws none of its own. */
+  .rails .block:last-child {
+    border-bottom: 0;
+  }
+
+  .release {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    /* Clears the fixed nav when an anchor is jumped to. */
+    scroll-margin-top: 5rem;
+  }
+
+  .rail {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+
+  .version {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-paper);
+    text-decoration: none;
+  }
+
+  .version:hover {
+    color: var(--color-signal);
+  }
+
+  .rail time {
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-faint);
+  }
+
+  .latest {
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-signal) 12%, transparent);
+    font-size: 0.6875rem;
+    font-weight: 550;
+    color: var(--color-signal);
+  }
+
+  .body {
+    min-width: 0;
+  }
+
+  /* Same panel language as VisualSlot's neutral tint - a hairline-bordered
+   * rounded box. Borders are forbidden for SEPARATING blocks, not for framing
+   * a visual, which is what every product shot on the site sits in. */
+  /* Capped well under the column: a release screenshot is supporting evidence
+   * for the note, not the subject of the page. Left-aligned rather than
+   * centred so its edge lines up with the heading and the bullets. */
+  .shot {
+    margin-bottom: 1.5rem;
+    max-width: 30rem;
+    overflow: hidden;
+    border: 1px solid var(--color-line);
+    border-radius: 1rem;
+    background: var(--color-ink-raised);
+  }
+
+  .shot :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 2 / 1;
+    object-fit: cover;
+  }
+
+  .body h2 {
+    font-family: var(--font-display);
+    font-size: clamp(1.25rem, 0.6vw + 1.1rem, 1.5rem);
+    font-weight: 550;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    color: var(--color-paper);
+    text-wrap: balance;
+  }
+
+  /* Notes are authored for the app's renderer, which draws its own bullets and
+   * forces `em` upright. Matched here so a note reads the same on both - see
+   * frontend/src/components/release-notes/ReleaseNotesBody.tsx. */
+  .notes {
+    margin-top: 1rem;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--color-muted);
+    max-width: 44rem;
+  }
+
+  .notes :global(p) {
+    margin-block: 0.75rem;
+  }
+
+  .notes :global(p:first-child) {
+    margin-top: 0;
+  }
+
+  .notes :global(ul) {
+    margin: 0.875rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .notes :global(li) {
+    position: relative;
+    padding-left: 1.25rem;
+  }
+
+  .notes :global(li + li) {
+    margin-top: 0.625rem;
+  }
+
+  .notes :global(li)::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.62em;
+    width: 0.3125rem;
+    height: 0.3125rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-signal) 55%, transparent);
+  }
+
+  .notes :global(strong) {
+    font-weight: 550;
+    color: var(--color-paper);
+  }
+
+  .notes :global(em) {
+    font-style: normal;
+  }
+
+  .empty {
+    color: var(--color-muted);
+  }
+
+  /* ── Tail ── */
+  .tail {
+    border-top: 1px solid var(--color-line);
+  }
+
+  .tail-inner {
+    max-width: 70.5rem;
+    margin-inline: auto;
+    padding: clamp(2rem, 4vw, 3rem) clamp(1.25rem, 4vw, 3rem);
+    font-size: 0.9375rem;
+    color: var(--color-faint);
+  }
+
+  .tail-inner a {
+    color: var(--color-muted);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .tail-inner a:hover {
+    color: var(--color-paper);
+  }
+
+  /* Narrow screens turn the canvas PORTRAIT, and the gradient is sized to the
+   * canvas - so the same wave that sits low and wide on desktop rears up and
+   * fills the frame behind the copy. Two corrections, both measured on a
+   * 375px viewport: shorten the band so it stops being a full screen of
+   * gradient, and swap the radial-led scrim for a flat wash that covers the
+   * bottom half where the wave is brightest. */
+  @media (max-width: 48rem) {
+    .head {
+      padding-block: clamp(5rem, 18vw, 5.75rem) clamp(2.75rem, 9vw, 3.5rem);
+    }
+
+    .head .lede {
+      max-width: 22rem;
+      font-size: 0.9375rem;
+    }
+
+    .shader::after {
+      background: linear-gradient(
+        to bottom,
+        rgb(20 19 17 / 0.68) 0%,
+        rgb(20 19 17 / 0.5) 45%,
+        rgb(20 19 17 / 0.34) 100%
+      );
+    }
+  }
+
+  /* Two columns once the rails appear. */
+  @media (min-width: 48rem) {
+    .release {
+      grid-template-columns: 8.5rem 1fr;
+      gap: 0 2.5rem;
+    }
+
+    .rail {
+      position: sticky;
+      top: 5.5rem;
+      align-self: start;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 0.3125rem;
+      text-align: right;
+    }
+  }
+</style>

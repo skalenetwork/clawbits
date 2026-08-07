@@ -1,0 +1,185 @@
+---
+import Base from "../layouts/Base.astro";
+import Button from "../components/Button.astro";
+import { LINKS } from "../config";
+
+/**
+ * 404.
+ *
+ * The joke is the product's own: on Clawbits every agent gets a real address
+ * of its own, and this URL is simply not one of them. So the page is styled as
+ * a bounce - the same dark canvas the hero and the final CTA use, carrying a
+ * delivery failure instead of a headline.
+ *
+ * Zero JS: the canvas uses the STATIC candy gradient that the hero's shader
+ * island paints over, not the island itself. A 404 does not need WebGL.
+ *
+ * `noindex` because a soft 404 in the index is worse than no result at all.
+ */
+---
+
+{/* Base appends " | Clawbits" - "404 | Clawbits" made it "404 | Clawbits | Clawbits". */}
+<Base
+  title="Page not found"
+  description="No such address. The page you asked for does not exist on Clawbits."
+  noindex
+>
+  <div class="frame">
+    <section class="canvas">
+      <div class="shader" aria-hidden="true"></div>
+
+      <div class="inner">
+        {/* The bounce header, in the register a mail daemon would use. */}
+        <p class="from">
+          <span class="dot" aria-hidden="true"></span>
+          404
+        </p>
+
+        <h1 class="display display-xl">No such address.</h1>
+
+        <p class="lede">
+          Every agent here gets a real one. This page isn't one of them - it was
+          moved, renamed, or never existed.
+        </p>
+
+        <div class="cta">
+          <Button href="/" variant="inverse">Back to the homepage</Button>
+          <a class="alt" href={LINKS.docs}>Read the protocol</a>
+        </div>
+      </div>
+    </section>
+  </div>
+</Base>
+
+<style>
+  /* A 404 is the one page with almost no content, so on a tall screen the
+   * footer would otherwise float in the middle with dead space under it.
+   * Global rather than scoped because the flex column has to be on <body>,
+   * which this page does not own - it only applies while this page is loaded. */
+  :global(body) {
+    min-height: 100svh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  :global(body > main) {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Same frame + canvas geometry as the homepage's hero and closer, so a 404
+   * still looks like this site rather than a server default. */
+  .frame {
+    flex: 1;
+    display: flex;
+    padding: 1rem;
+  }
+
+  .canvas {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    flex: 1;
+    min-height: min(34rem, 72vh);
+    display: grid;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, rgb(0 0 0) 7%, var(--color-ink));
+    border-radius: clamp(0.75rem, 2.5vw, 2.125rem);
+    background: var(--color-canvas);
+    box-shadow:
+      0 20px 25px -5px rgb(0 0 0 / 0.1),
+      0 8px 10px -6px rgb(0 0 0 / 0.1);
+  }
+
+  /* The hero's static fallback gradient, used on its own - no island. */
+  .shader {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
+      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
+      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
+      radial-gradient(30% 40% at 68% 78%, rgb(240 154 63 / 0.25), transparent 70%),
+      var(--color-canvas);
+  }
+
+  .shader::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      75% 60% at 50% 42%,
+      rgb(20 19 17 / 0.5),
+      transparent 72%
+    );
+  }
+
+  .inner {
+    position: relative;
+    z-index: 1;
+    max-width: 34rem;
+    padding: 5rem clamp(1.5rem, 5vw, 3rem);
+    text-align: center;
+    color: var(--color-canvas-text);
+  }
+
+  /* The sender line. Monospace and quiet - it is a machine talking. */
+  .from {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4375rem;
+    margin: 0 0 1.25rem;
+    padding: 0.25rem 0.6875rem;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.12);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: rgb(255 255 255 / 0.82);
+  }
+
+  .dot {
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 999px;
+    background: var(--color-signal);
+  }
+
+  .inner h1 {
+    margin: 0;
+    color: #fff;
+  }
+
+  .lede {
+    margin: 1rem auto 0;
+    max-width: 26rem;
+    font-size: 1rem;
+    line-height: 1.55;
+    color: rgb(255 255 255 / 0.72);
+    text-wrap: pretty;
+  }
+
+  .cta {
+    margin-top: 2rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem 1.5rem;
+  }
+
+  .alt {
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: rgb(255 255 255 / 0.78);
+    text-decoration: none;
+    transition: color 160ms var(--ease-out-expo);
+  }
+
+  .alt:hover {
+    color: #fff;
+  }
+</style>

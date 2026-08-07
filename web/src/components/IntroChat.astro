@@ -1,0 +1,333 @@
+---
+/**
+ * The intro section's visual: the orange VisualSlot box, now occupied by a
+ * tiny staged conversation - two agents and you. hermes (the mailbox agent)
+ * surfaces a conference confirmation and offers quill (the notes agent);
+ * you say go; quill works, then ships to the repo and collects a reaction.
+ *
+ * Bubble and reaction anatomy is byte-for-byte the audited app spec, same
+ * as AppDemo: 15px/1.625 bodies in 16px-radius bubbles with the 8px tail
+ * corner, ink-5.5% for others / #2f6bf6 for you, 13px/600 muted names,
+ * 10px tabular meta, 17px-emoji reaction pills on the meta row.
+ *
+ * The sequence plays staggered once the box scrolls into view - the shared
+ * PlayOnView observer adds `play` to anything marked `data-play-on-view`.
+ * With reduced motion the finished conversation just sits there.
+ */
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = "" } = Astro.props;
+---
+
+<div class:list={["ichat", className]} data-play-on-view aria-hidden="true">
+  <div class="imsg m1">
+    <span class="gut">
+      <img class="iava" src="/avatars/agent-1.svg" alt="" width="128" height="128" loading="lazy" />
+    </span>
+    <div class="icol">
+      <div class="ibub">
+        <b class="inm">hermes</b>
+        <p>
+          <span class="imention">@chris</span> clawcon confirmed your friday keynote 🎉 want quill
+          to prep speech notes?
+        </p>
+        <span class="imeta">9:41 AM</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="imsg m2 own">
+    <div class="icol">
+      <div class="ibub">
+        <p>yep, go ahead</p>
+        <span class="imeta">9:42 AM</span>
+      </div>
+    </div>
+  </div>
+
+  {/* quill's run: ONE avatar, absolutely pinned to the run's bottom-left.
+      The stack is bottom-justified, so the run's bottom edge is
+      screen-stationary while it grows - the avatar never moves as the
+      continuation rises in behind it. */}
+  <div class="irun">
+    <img class="iava run-ava" src="/avatars/agent-4.svg" alt="" width="128" height="128" loading="lazy" />
+
+    <div class="imsg m3">
+      <span class="gut"></span>
+      <div class="icol">
+        <div class="ibub">
+          <b class="inm">quill</b>
+          <p>on it - pulling your outline now</p>
+          <span class="imeta">9:42 AM</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="imsg m4 cont">
+      <span class="gut"></span>
+      <div class="icol">
+        <div class="ibub">
+          <p>pushed the notes to the repo - speech-notes/clawcon.md ✏️</p>
+          <span class="imrow">
+            <span class="ireact">
+              <span class="re">🙌</span>
+              <span class="rn">1</span>
+            </span>
+            <span class="imeta">9:44 AM</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* The VisualSlot orange box at a fixed height: the conversation is
+   * bottom-anchored, so as new messages land they push older ones up
+   * and out of view, like a live channel. */
+  .ichat {
+    /* Excluded from scroll anchoring, along with its subtree.
+     *
+     * These visuals change the height of their own children on a loop. When
+     * the box is scrolled PART WAY past the top of the viewport, Chrome picks
+     * an anchor node inside it, sees that node move as the stack grows, and
+     * "corrects" by scrolling the page - measured at 192px of drift per cycle
+     * with the box top between roughly -60px and -160px. Nothing here is
+     * content a reader is tracking, so nothing here should ever be an anchor. */
+    overflow-anchor: none;
+    height: 20rem;
+    border-radius: 1rem;
+    background: linear-gradient(150deg, #fdf2e4, #f8dcba);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 1.125rem;
+    font-family: var(--ff-app);
+    letter-spacing: -0.025em;
+    color: #1e1e1e;
+    text-align: left;
+  }
+
+  /* ── App-exact bubble anatomy (MessageRow.tsx via the hero audit) ── */
+  .imsg {
+    display: flex;
+    align-items: flex-end;
+    flex-shrink: 0;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .imsg.cont {
+    margin-top: 2px;
+  }
+
+  .imsg.own {
+    justify-content: flex-end;
+  }
+
+  .gut {
+    width: 28px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  .iava {
+    width: 28px;
+    height: 28px;
+    display: block;
+    object-fit: cover;
+    background: #dbd7cc;
+    border-radius: 16px;
+    border-bottom-left-radius: 6px;
+  }
+
+  /* The run wrapper: a plain column whose bottom edge carries the
+   * absolutely-pinned avatar. */
+  .irun {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+
+  .run-ava {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+  }
+
+  .icol {
+    min-width: 0;
+    max-width: 86%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .imsg.own .icol {
+    align-items: flex-end;
+  }
+
+  .ibub {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-radius: 16px;
+    border-bottom-left-radius: 8px;
+    background: rgb(0 0 0 / 0.055);
+    padding: 8px 12px;
+  }
+
+  .imsg.own .ibub {
+    border-bottom-left-radius: 16px;
+    border-bottom-right-radius: 8px;
+    background: #2f6bf6;
+    color: #fff;
+  }
+
+  .inm {
+    margin-bottom: 2px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #5e5a52;
+  }
+
+  .ibub p {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.625;
+    overflow-wrap: break-word;
+  }
+
+  .imention {
+    color: #5486d4;
+    font-weight: 500;
+  }
+
+  .imeta {
+    margin-top: 4px;
+    align-self: flex-end;
+    font-size: 10px;
+    color: #5e5a52;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .imsg.own .imeta {
+    color: rgb(255 255 255 / 0.7);
+  }
+
+  /* Reaction pill on the meta row: mine-on-others ramp (ink 14%). */
+  .imrow {
+    margin-top: 4px;
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .imrow .imeta {
+    margin-top: 0;
+    flex-shrink: 0;
+  }
+
+  .ireact {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgb(30 30 30 / 0.14);
+    color: #1e1e1e;
+    line-height: 1;
+  }
+
+  .re {
+    font-size: 17px;
+    line-height: 1;
+  }
+
+  .rn {
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── The staged playback: one shared 13s cycle, looped. Each message
+   * owns a keyframe track that opens its slot (max-height + margin) at
+   * its cue - the bottom-anchored stack then pushes older bubbles up
+   * and out of the fixed box. At 88% everything fades, collapses while
+   * invisible, and the scene replays. Cues: 0.4s / 1.8s / 3.3s / 5.1s,
+   * reaction at 6.1s, ~5s of hold to read the finished exchange.
+   * Reduced motion just shows the finished conversation. ── */
+  @media (prefers-reduced-motion: no-preference) {
+    .imsg {
+      max-height: 0;
+      margin-top: 0;
+      opacity: 0;
+      overflow: hidden;
+    }
+
+    .ireact {
+      opacity: 0;
+    }
+
+    .run-ava {
+      opacity: 0;
+    }
+
+    .play .m1 { animation: loop-m1 13s ease infinite; }
+    .play .m2 { animation: loop-m2 13s ease infinite; }
+    .play .m3 { animation: loop-m3 13s ease infinite; }
+    .play .m4 { animation: loop-m4 13s ease infinite; }
+    .play .ireact { animation: loop-react 13s ease infinite; }
+    .play .run-ava { animation: loop-runava 13s ease infinite; }
+  }
+
+  @keyframes loop-runava {
+    0%, 25% { opacity: 0; }
+    28%, 88% { opacity: 1; }
+    92%, 100% { opacity: 0; }
+  }
+
+  @keyframes loop-m1 {
+    0%, 3% { max-height: 0; margin-top: 0; opacity: 0; translate: 0 14px; scale: 0.97; }
+    6%, 88% { max-height: 16em; margin-top: 12px; opacity: 1; translate: 0 0; scale: 1; }
+    92% { max-height: 16em; margin-top: 12px; opacity: 0; }
+    94%, 100% { max-height: 0; margin-top: 0; opacity: 0; translate: 0 14px; scale: 0.97; }
+  }
+
+  @keyframes loop-m2 {
+    0%, 14% { max-height: 0; margin-top: 0; opacity: 0; translate: 0 14px; scale: 0.97; }
+    17%, 88% { max-height: 16em; margin-top: 12px; opacity: 1; translate: 0 0; scale: 1; }
+    92% { max-height: 16em; margin-top: 12px; opacity: 0; }
+    94%, 100% { max-height: 0; margin-top: 0; opacity: 0; translate: 0 14px; scale: 0.97; }
+  }
+
+  @keyframes loop-m3 {
+    0%, 25% { max-height: 0; margin-top: 0; opacity: 0; translate: 0 14px; scale: 0.97; }
+    28%, 88% { max-height: 16em; margin-top: 12px; opacity: 1; translate: 0 0; scale: 1; }
+    92% { max-height: 16em; margin-top: 12px; opacity: 0; }
+    94%, 100% { max-height: 0; margin-top: 0; opacity: 0; translate: 0 14px; scale: 0.97; }
+  }
+
+  /* Continuation row: 2px group gap instead of 12px. */
+  @keyframes loop-m4 {
+    0%, 39% { max-height: 0; margin-top: 0; opacity: 0; translate: 0 14px; scale: 0.97; }
+    42%, 88% { max-height: 16em; margin-top: 2px; opacity: 1; translate: 0 0; scale: 1; }
+    92% { max-height: 16em; margin-top: 2px; opacity: 0; }
+    94%, 100% { max-height: 0; margin-top: 0; opacity: 0; translate: 0 14px; scale: 0.97; }
+  }
+
+  @keyframes loop-react {
+    0%, 47% { opacity: 0; scale: 0.4; }
+    50%, 88% { opacity: 1; scale: 1; }
+    91%, 100% { opacity: 0; scale: 0.4; }
+  }
+</style>

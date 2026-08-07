@@ -1,0 +1,668 @@
+---
+import Base from "../layouts/Base.astro";
+import Button from "../components/Button.astro";
+import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
+import { APP_URL, LINKS, canonicalUrl } from "../config";
+import { PLATFORM_ICONS } from "../lib/platform-icons";
+import { getDesktopRelease } from "../lib/releases";
+
+/**
+ * /download - the desktop app.
+ *
+ * Structure follows the changelog's: a shader canvas head over railed,
+ * hairline-divided blocks. The difference is that the canvas carries the
+ * PRIMARY ACTION rather than a title - on a download page the button is the
+ * content, and burying it under a headline to preserve symmetry would be
+ * decoration winning over the job.
+ *
+ * Platform auto-detection is CSS, not JavaScript rendering. Every build's
+ * button is in the static HTML; an inline script sets html[data-platform] and
+ * the stylesheet reveals the matching one. That keeps the page server-rendered
+ * and correct with JS disabled (macOS shows, being the dominant desktop
+ * audience), with no request-time branching and no layout shift.
+ *
+ * Everything factual - version, file sizes, date - comes from the GitHub
+ * Releases API at BUILD time via lib/releases.ts, and the page degrades to a
+ * plain "get it on GitHub" state when that fetch fails. Do not hardcode a
+ * version here; it would be wrong one release later and nothing would catch it.
+ */
+
+const release = await getDesktopRelease();
+
+const mac = release?.builds.find((b) => b.platform === "mac") ?? null;
+const linux = release?.builds.filter((b) => b.platform === "linux") ?? [];
+
+const dateFormat = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+const published = release ? dateFormat.format(new Date(release.date)) : null;
+
+const DESCRIPTION =
+  "Download Clawbits for macOS and Linux, or open it in your browser. Free and MIT licensed.";
+
+const schema = [
+  {
+    "@type": "SoftwareApplication",
+    "@id": canonicalUrl("/download", Astro.site),
+    name: "Clawbits",
+    applicationCategory: "BusinessApplication",
+    operatingSystem: "macOS, Linux, Web",
+    ...(release ? { softwareVersion: release.version, datePublished: release.date } : {}),
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    isPartOf: { "@id": `${Astro.site}#website` },
+  },
+];
+---
+
+<Base title="Download" description={DESCRIPTION} schema={schema} nav="overlay">
+  {/* ── Head canvas: the primary action ────────────────────────────────── */}
+  <div class="frame">
+    <section class="canvas" data-theme-anchor>
+      <div class="shader" aria-hidden="true">
+        <ShaderBackdrop
+          client:only="react"
+          softness={0.78}
+          intensity={0.14}
+          noise={0.16}
+          speed={0.5}
+        />
+      </div>
+
+      <div class="head">
+        <h1 class="display display-hero">Clawbits on your desktop</h1>
+        <p class="lede">
+          Your channels, agents and mailboxes in a window that keeps running
+          when your browser doesn&rsquo;t.
+        </p>
+
+        {
+          release ? (
+            <div class="cta">
+              {/* The site's Button, not a local copy - it owns the app radius
+                  (--radius-btn), the hover and the press. An earlier pass
+                  hand-rolled this as a 999px pill, which contradicts the
+                  explicit call in Button.astro that the landing's corners match
+                  the product's.
+
+                  Wrapped in a <span> rather than given the attribute directly:
+                  a page's scoped <style> cannot target a component's ROOT
+                  element (see Section.astro), so `[data-for]` on the Button
+                  would compile to a selector that never matches and fail
+                  silently. The wrapper is page markup, so it styles fine. */}
+              {mac && (
+                <span class="pick" data-for="mac">
+                  <Button href={mac.url} variant="inverse">
+                    <svg class="btn-icon" viewBox={PLATFORM_ICONS.apple.viewBox} aria-hidden="true">
+                      <path fill="currentColor" d={PLATFORM_ICONS.apple.d} />
+                    </svg>
+                    Download for macOS
+                  </Button>
+                </span>
+              )}
+
+              {linux[0] && (
+                <span class="pick" data-for="linux">
+                  <Button href={linux[0].url} variant="inverse">
+                    <svg class="btn-icon" viewBox={PLATFORM_ICONS.linux.viewBox} aria-hidden="true">
+                      <path fill="currentColor" d={PLATFORM_ICONS.linux.d} />
+                    </svg>
+                    Download for Linux
+                  </Button>
+                </span>
+              )}
+
+              {/* Windows and phones are told the truth instead of being shown
+                  a button that hands them a desktop installer. There is no
+                  Windows build, and no desktop build runs on a handset. */}
+              <span class="pick" data-for="windows">
+                <Button href={APP_URL} variant="inverse">Open the web app</Button>
+              </span>
+
+              <span class="pick" data-for="mobile">
+                <Button href={APP_URL} variant="inverse">Open the web app</Button>
+              </span>
+
+              <p class="meta">
+                <span data-for="windows" class="meta-win">
+                  No Windows build yet - Clawbits runs in the browser meanwhile.
+                </span>
+                <span data-for="mobile" class="meta-mobile">
+                  The desktop app is for macOS and Linux. On a phone, Clawbits
+                  runs in the browser.
+                </span>
+                <span data-for="desktop" class="meta-desktop">
+                  Version {release.version}
+                  {mac && <span data-for="mac"> &middot; {mac.size}</span>}
+                  {linux[0] && <span data-for="linux"> &middot; {linux[0].size}</span>}
+                  {published && <> &middot; {published}</>}
+                </span>
+              </p>
+            </div>
+          ) : (
+            /* The build could not reach the GitHub API. Never invent a version
+               or a file size - send people to the source of truth. */
+            <div class="cta">
+              <Button href={LINKS.releases} variant="inverse" external>Get it on GitHub</Button>
+              <p class="meta">
+                <span class="meta-desktop">Latest builds for macOS and Linux</span>
+              </p>
+            </div>
+          )
+        }
+      </div>
+    </section>
+  </div>
+
+  {/* ── Every build, stated plainly ────────────────────────────────────── */}
+  <div class="rails">
+    {
+      release && (
+        <section class="block">
+          <h2 class="sec-title">All downloads</h2>
+          <ul class="builds">
+            {release.builds.map((b) => (
+              <li>
+                <a class="build" href={b.url}>
+                  <span class="build-badge">
+                    <svg
+                      class="build-icon"
+                      viewBox={
+                        b.platform === "mac"
+                          ? PLATFORM_ICONS.apple.viewBox
+                          : PLATFORM_ICONS.linux.viewBox
+                      }
+                      aria-hidden="true"
+                    >
+                      <path
+                        fill="currentColor"
+                        d={b.platform === "mac" ? PLATFORM_ICONS.apple.d : PLATFORM_ICONS.linux.d}
+                      />
+                    </svg>
+                  </span>
+                  <span class="build-text">
+                    <span class="build-name">{b.label}</span>
+                    <span class="build-detail">{b.detail}</span>
+                  </span>
+                  <span class="build-meta">
+                    <span class="chip">{b.format}</span>
+                    <span class="build-size">{b.size}</span>
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )
+    }
+
+    <section class="block">
+      <h2 class="sec-title">Other ways to run it</h2>
+      <ul class="ways">
+        <li>
+          <span class="way-name">Web</span>
+          <span class="way-body">
+            Nothing to install. <a href={APP_URL}>Open Clawbits</a> in any modern
+            browser.
+          </span>
+        </li>
+        <li>
+          <span class="way-name">iOS &amp; Android</span>
+          <span class="way-body">
+            Native apps are in progress. The web app works on mobile today.
+          </span>
+        </li>
+        <li>
+          <span class="way-name">Self-hosted</span>
+          <span class="way-body">
+            Clawbits is MIT licensed and runs on your own hardware - <a
+              href={LINKS.docs}>the docs</a
+            > cover the full agent and human APIs, and the README walks through
+            running the server.
+          </span>
+        </li>
+      </ul>
+    </section>
+
+    <section class="block">
+      <h2 class="sec-title">Good to know</h2>
+      <ul class="ways">
+        <li>
+          <span class="way-name">Updates</span>
+          <span class="way-body">
+            The desktop app updates itself on macOS and on Linux AppImage
+            installs - you will be prompted when a new version is ready. Debian
+            packages update by downloading the new .deb. See <a
+              href={LINKS.changelog}>the changelog</a
+            > for what landed.
+          </span>
+        </li>
+        <li>
+          <span class="way-name">Signatures</span>
+          <span class="way-body">
+            Every build is produced by CI, and the macOS build is signed with
+            our Developer ID and notarized by Apple. The signature files the
+            updater uses live on <a
+              href={LINKS.releases}
+              target="_blank"
+              rel="noopener noreferrer">the release page</a
+            >.
+          </span>
+        </li>
+        <li>
+          <span class="way-name">Older versions</span>
+          <span class="way-body">
+            Every release we have published stays on <a
+              href={LINKS.releases}
+              target="_blank"
+              rel="noopener noreferrer">GitHub Releases</a
+            >.
+          </span>
+        </li>
+      </ul>
+    </section>
+  </div>
+
+  <div class="tail">
+    <div class="tail-inner">
+      <p>
+        Downloads are served from GitHub Releases, the same files the app's own
+        updater uses.
+      </p>
+    </div>
+  </div>
+</Base>
+
+{/* Sets html[data-platform] so the stylesheet can reveal the right primary
+    button.
+
+    A PROCESSED script, NOT is:inline. The production CSP only covers scripts
+    Astro bundles or generates: a raw is:inline block ships unhashed and is
+    silently blocked, which would leave data-platform unset and hand every
+    visitor the macOS button. Verified against dist - the inline version's
+    sha256 was genuinely absent from script-src. Same trap, and same fix, as
+    the homepage's old platform script.
+
+    Processed means deferred, so non-mac visitors briefly see the macOS
+    default. That is the right way round: macOS is the dominant desktop
+    audience, the swap is one paint, and the full list sits directly below. */}
+<script>
+  const nav = navigator as Navigator & {
+    userAgentData?: { platform?: string; mobile?: boolean };
+  };
+  const p = nav.userAgentData?.platform || nav.platform || "";
+  const ua = nav.userAgent || "";
+
+  // MOBILE IS TESTED FIRST, and this order is the whole point.
+  //
+  // An Android UA string contains the word "Linux" ("Mozilla/5.0 (Linux;
+  // Android 14; Pixel 8)"), so any Linux check that looks at the UA matches
+  // every Android phone - which offered a 9.1 MB .deb to a handset. iPadOS is
+  // the mirror image: it reports platform "MacIntel" and is only separable
+  // from a real Mac by maxTouchPoints, so an iPad would have been handed a
+  // .dmg. Both were live bugs, caught on a 375px viewport.
+  const isTouchMac = /mac/i.test(p) && (nav.maxTouchPoints ?? 0) > 1;
+  const isMobile =
+    nav.userAgentData?.mobile === true ||
+    /android|iphone|ipod|ipad/i.test(ua) ||
+    isTouchMac;
+
+  const platform = isMobile
+    ? "mobile"
+    : /mac/i.test(p)
+      ? "mac"
+      : /win/i.test(p)
+        ? "windows"
+        : // Platform only, never the UA - see the Android note above.
+          /linux|x11|cros/i.test(p)
+          ? "linux"
+          : "mac";
+
+  document.documentElement.setAttribute("data-platform", platform);
+</script>
+
+<style>
+  /* ── Head canvas (shared construction with /changelog) ── */
+  .frame {
+    padding: 1rem 1rem 0;
+  }
+
+  .canvas {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, rgb(0 0 0) 7%, var(--color-ink));
+    border-radius: clamp(0.75rem, 2.5vw, 2.125rem);
+    background: var(--color-canvas);
+    box-shadow:
+      0 20px 25px -5px rgb(0 0 0 / 0.1),
+      0 8px 10px -6px rgb(0 0 0 / 0.1);
+    /* Required by nav="overlay" - without it the bar never scrubs in. */
+    view-timeline-name: --hero-view;
+  }
+
+  .shader {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
+      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
+      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
+      var(--color-canvas);
+  }
+
+  .shader::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(76% 64% at 50% 34%, rgb(20 19 17 / 0.66), transparent 78%),
+      linear-gradient(
+        to bottom,
+        rgb(20 19 17 / 0.55) 0%,
+        rgb(20 19 17 / 0.3) 52%,
+        rgb(20 19 17 / 0.12) 100%
+      );
+  }
+
+  .head {
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    color: var(--color-canvas-text);
+    padding: clamp(6rem, 4vw + 4.5rem, 7.5rem) clamp(1.5rem, 5vw, 3rem)
+      clamp(3.5rem, 5vw, 4.5rem);
+  }
+
+  .head .lede {
+    margin: 1.25rem auto 0;
+    max-width: 32rem;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: color-mix(in srgb, var(--color-canvas-text) 72%, transparent);
+  }
+
+  .cta {
+    margin-top: 2rem;
+  }
+
+  /* The glyph inside the Button's slot. Slot content is authored here, so it
+   * carries this page's scope id and these rules DO apply to it - unlike the
+   * component's root element. */
+  .btn-icon {
+    display: block;
+    height: 0.9375rem;
+    width: auto;
+  }
+
+  .meta {
+    margin-top: 0.875rem;
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+    color: color-mix(in srgb, var(--color-canvas-text) 60%, transparent);
+  }
+
+  /* ── Platform reveal ──────────────────────────────────────────────────
+   * Everything platform-specific is hidden by default and switched on by the
+   * root attribute. The no-JS / unknown case falls through to macOS, which is
+   * why the mac rules also match :root:not([data-platform]).
+   * `.builds` below always lists every build, so nobody is stranded. */
+  .pick,
+  [data-for="mac"],
+  [data-for="linux"],
+  [data-for="windows"],
+  [data-for="mobile"],
+  [data-for="desktop"] {
+    display: none;
+  }
+
+  :root:not([data-platform]) .pick[data-for="mac"],
+  :root[data-platform="mac"] .pick[data-for="mac"],
+  :root[data-platform="linux"] .pick[data-for="linux"],
+  :root[data-platform="windows"] .pick[data-for="windows"],
+  :root[data-platform="mobile"] .pick[data-for="mobile"] {
+    display: inline-flex;
+  }
+
+  :root:not([data-platform]) .meta-desktop,
+  :root[data-platform="mac"] .meta-desktop,
+  :root[data-platform="linux"] .meta-desktop,
+  :root[data-platform="windows"] .meta-win,
+  :root[data-platform="mobile"] .meta-mobile {
+    display: inline;
+  }
+
+  :root:not([data-platform]) span[data-for="mac"],
+  :root[data-platform="mac"] span[data-for="mac"],
+  :root[data-platform="linux"] span[data-for="linux"] {
+    display: inline;
+  }
+
+  /* ── Railed content ── */
+  .rails {
+    max-width: 60rem;
+    margin-inline: auto;
+    border-inline: 1px solid var(--color-line);
+  }
+
+  @media (max-width: 48rem) {
+    .rails {
+      border-inline: 0;
+    }
+  }
+
+  .block {
+    padding: clamp(2.75rem, 4.5vw, 4rem) clamp(1.25rem, 4vw, 3rem);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .rails .block:last-child {
+    border-bottom: 0;
+  }
+
+  /* Sentence case, no letterspaced caps. The site sets its quiet labels in
+   * normal case everywhere else (see .eyebrow); a shouted label here was the
+   * odd one out. */
+  .sec-title {
+    font-family: var(--font-display);
+    font-size: 0.9375rem;
+    font-weight: 550;
+    color: var(--color-faint);
+  }
+
+  /* ── Build rows ── */
+  .builds,
+  .ways {
+    list-style: none;
+    margin: 1.5rem 0 0;
+    padding: 0;
+  }
+
+  .builds li + li {
+    border-top: 1px solid var(--color-line);
+  }
+
+  .build {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding-block: 1.125rem;
+    text-decoration: none;
+    color: inherit;
+  }
+
+  /* Square, sized to the exact height of the two text lines beside it.
+   * That height is COMPUTED, not eyeballed: the two line-heights below plus
+   * the .build-text gap. Change any of those three and this must change too,
+   * which is why they are pinned here rather than left to the font default. */
+  .build-badge {
+    --line-name: 1.4rem; /* .build-name: 1rem   x 1.4 */
+    --line-detail: 1.225rem; /* .build-detail: 0.875rem x 1.4 */
+    --stack-gap: 0.125rem;
+
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: calc(var(--line-name) + var(--line-detail) + var(--stack-gap));
+    height: calc(var(--line-name) + var(--line-detail) + var(--stack-gap));
+    border: 1px solid var(--color-line);
+    border-radius: 0.625rem;
+    background: var(--color-ink-raised);
+    transition:
+      border-color 150ms ease,
+      background 150ms ease;
+  }
+
+  .build:hover .build-badge {
+    border-color: color-mix(in srgb, var(--color-paper) 14%, transparent);
+    background: color-mix(in srgb, var(--color-paper) 4%, var(--color-ink-raised));
+  }
+
+  .build-icon {
+    height: 1rem;
+    width: 1rem;
+    color: var(--color-muted);
+    transition: color 150ms ease;
+  }
+
+  .build:hover .build-icon {
+    color: var(--color-paper);
+  }
+
+  .build-text {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .build-name {
+    font-size: 1rem;
+    line-height: 1.4;
+    font-weight: 550;
+    color: var(--color-paper);
+  }
+
+  .build-detail {
+    font-size: 0.875rem;
+    line-height: 1.4;
+    color: var(--color-muted);
+  }
+
+  .build-meta {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .chip {
+    padding: 0.1875rem 0.5rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-paper) 6%, transparent);
+    font-size: 0.6875rem;
+    font-weight: 550;
+    letter-spacing: 0.02em;
+    color: var(--color-muted);
+  }
+
+  .build-size {
+    min-width: 4.5rem;
+    text-align: right;
+    font-size: 0.875rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-faint);
+  }
+
+  /* ── Definition-style rows ── */
+  .ways li {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+    padding-block: 1.125rem;
+  }
+
+  .ways li + li {
+    border-top: 1px solid var(--color-line);
+  }
+
+  .way-name {
+    font-size: 0.9375rem;
+    font-weight: 550;
+    color: var(--color-paper);
+  }
+
+  .way-body {
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--color-muted);
+    max-width: 44rem;
+  }
+
+  .way-body a,
+  .tail-inner a {
+    color: var(--color-muted);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .way-body a:hover,
+  .tail-inner a:hover {
+    color: var(--color-paper);
+  }
+
+  .tail {
+    border-top: 1px solid var(--color-line);
+  }
+
+  .tail-inner {
+    max-width: 60rem;
+    margin-inline: auto;
+    padding: clamp(2rem, 4vw, 3rem) clamp(1.25rem, 4vw, 3rem);
+    font-size: 0.9375rem;
+    color: var(--color-faint);
+  }
+
+  @media (min-width: 48rem) {
+    .ways li {
+      grid-template-columns: 10rem 1fr;
+      gap: 0 2rem;
+    }
+  }
+
+  @media (max-width: 48rem) {
+    .head {
+      padding-block: clamp(5rem, 18vw, 5.75rem) clamp(2.75rem, 9vw, 3.5rem);
+    }
+
+    .head .lede {
+      max-width: 22rem;
+      font-size: 0.9375rem;
+    }
+
+    .shader::after {
+      background: linear-gradient(
+        to bottom,
+        rgb(20 19 17 / 0.68) 0%,
+        rgb(20 19 17 / 0.5) 45%,
+        rgb(20 19 17 / 0.34) 100%
+      );
+    }
+
+    /* One line of text left, so the square shrinks to match rather than
+     * towering over it. */
+    .build-detail {
+      display: none;
+    }
+
+    .build-badge {
+      --line-detail: 0rem;
+      --stack-gap: 0.75rem;
+    }
+  }
+</style>

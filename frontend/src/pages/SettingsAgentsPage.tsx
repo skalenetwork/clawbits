@@ -268,7 +268,7 @@ function BinderCard({agent}: {agent: AgentUser}) {
             )}
         >
             {/* Wrapper (not the card itself) carries the transient morph name so a
-                plain ref is enough — the card is `w-full`, so this box == card box.
+                plain ref is enough - the card is `w-full`, so this box == card box.
                 `data-agent-card-id` lets the REVERSE morph (detail → grid) find and
                 name this exact card as its target. */}
             <div ref={cardRef} data-agent-card-id={agent.agent_id} className="w-full">

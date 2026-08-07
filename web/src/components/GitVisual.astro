@@ -1,0 +1,696 @@
+---
+import { FolderGitIcon, GitBranchIcon } from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+
+/**
+ * The "Git repos" endowment card: a commit being written, and signed by the
+ * agent that wrote it.
+ *
+ * Unlike MailboxVisual there is no product screen to transcribe - repos are
+ * API-only today, with no frontend - so this is built from the contract
+ * instead, and it is deliberately narrow about what it claims:
+ *
+ *   - `main`, never a feature branch. create_commit() only ever runs
+ *     `git checkout <branch>` on a branch that already exists
+ *     (clawbits/git/repo_manager.py) and no endpoint creates one, so a card
+ *     showing `feat/…` would be selling something that 404s.
+ *   - Additions only, no PR, no push. The commit endpoint takes a list of
+ *     file changes and writes them; that is the whole of it.
+ *   - The author line is the point, and it is real: create_commit() sets
+ *     GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL from the agent, so the commits carry
+ *     its name exactly as the caption says. The email it signs with is the
+ *     same address the Mailbox card shows.
+ *
+ * The file is quill's, continuing the story IntroChat tells two blocks above -
+ * there quill says it pushed speech notes to the repo, here you watch it
+ * happen. Same avatar, same repo.
+ *
+ * Motion: ONE 15s loop, CSS only, held at 0% until PlayOnView marks it. Six
+ * lines are written into the file one at a time, each opening its height and
+ * then wiping in from the left, so the diff reads as being typed rather than
+ * pasted; the changed-line count rolls with them; the commit bar rises once
+ * the last line lands. The hunk is bottom-anchored, so the newest line is
+ * always the visible one no matter how tall the column is - the context above
+ * scrolls off under the crop. Seam and timing match MailboxVisual so the two
+ * cards read as one system.
+ *
+ * CSP NOTE: no style attributes anywhere - per-line cues are nth-of-type
+ * classes in the stylesheet. The production build drops inline styles.
+ */
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = "" } = Astro.props;
+
+const REPO = "speech-notes";
+const BRANCH = "main";
+const FILE = "clawcon.md";
+
+const COMMIT = {
+  author: "quill",
+  avatar: "/avatars/agent-4.svg",
+  sha: "a3f9c21",
+  message: "Draft the opening section",
+};
+
+interface Line {
+  text: string;
+  /** Markdown headings sit a shade heavier, as they would in any editor. */
+  head?: boolean;
+}
+
+/**
+ * The file as it already stands. Long on purpose: the hunk is bottom-anchored
+ * and the card's height swings from ~105px of diff on the narrowest column to
+ * ~313px on the widest, so there has to be enough file to fill the tallest one
+ * or the tablet card opens with a gap above the code. Everything above the
+ * crop is free texture.
+ */
+const CONTEXT: Line[] = [
+  { text: "# clawcon keynote", head: true },
+  { text: "" },
+  { text: "Friday, 20 minutes." },
+  { text: "" },
+  { text: "## Where we are", head: true },
+  { text: "Every team runs agents." },
+  { text: "Almost none are members." },
+  { text: "" },
+  { text: "A bot posts on your behalf." },
+  { text: "A teammate posts as itself." },
+  { text: "" },
+  { text: "## What to show", head: true },
+  { text: "Channel first, then email." },
+  { text: "Keep the demo under four." },
+  { text: "" },
+  { text: "## Notes", head: true },
+  { text: "Priya has the Q3 numbers." },
+  { text: "Ask Mara for the deploy log." },
+];
+
+/**
+ * What this commit takes out. These are ordinary lines of the file until the
+ * commit marks them, which is why they sit at the bottom of the context rather
+ * than collapsing like the additions: the placeholders were always there, and
+ * the six real lines below replace them.
+ */
+const REMOVED: Line[] = [
+  { text: "TODO: write the opening." },
+  { text: "TODO: list the three claims." },
+];
+
+/** What this commit adds, in the order it is written. */
+const ADDED: Line[] = [
+  { text: "## Opening", head: true },
+  { text: "Thanks for having me." },
+  { text: "## The three claims", head: true },
+  { text: "1. Agents are members." },
+  { text: "2. They hold their own keys." },
+];
+
+/** The changed-line count, rolling one step per line written. */
+const STATS = ADDED.map((_, i) => `+${String(i + 1)}`);
+---
+
+<div class:list={["gbox", className]} data-play-on-view aria-hidden="true">
+  <div class="gpanel">
+    <div class="ghead">
+      <span class="gic" set:html={ico(FolderGitIcon)} />
+      <span class="grepo">{REPO}</span>
+      <span class="gbranch">
+        <span class="gic gic-sm" set:html={ico(GitBranchIcon)} />
+        {BRANCH}
+      </span>
+    </div>
+
+    <div class="gfile">
+      <span class="gpath">{FILE}</span>
+      <span class="gstat">
+        <span class="gplus">
+          {STATS.map((n, i) => <i class:list={["d", `s${i + 1}`]}>{n}</i>)}
+        </span>
+        <span class="gminus">-{REMOVED.length}</span>
+      </span>
+    </div>
+
+    <div class="gdiff">
+      {
+        CONTEXT.map((l) => (
+          <div class:list={["gline", { gh: l.head }]}>
+            <span class="gsign" />
+            <span class="gcode">{l.text}</span>
+          </div>
+        ))
+      }
+      {
+        REMOVED.map((l) => (
+          <div class="gline grem">
+            <span class="gsign">-</span>
+            <span class="gcode">{l.text}</span>
+          </div>
+        ))
+      }
+      {
+        ADDED.map((l) => (
+          <div class:list={["gline", "gadd", { gh: l.head }]}>
+            <span class="gsign">+</span>
+            <span class="gcode">{l.text}</span>
+          </div>
+        ))
+      }
+    </div>
+
+    <div class="gcommit">
+      <img
+        class="gava"
+        src={COMMIT.avatar}
+        alt=""
+        width="128"
+        height="128"
+        loading="lazy"
+      />
+      <div class="gcbody">
+        <div class="gcline">
+          <span class="gcname">{COMMIT.author}</span>
+          <span class="gcverb">committed</span>
+          <span class="gcsha">{COMMIT.sha}</span>
+        </div>
+        <div class="gcmsg">{COMMIT.message}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── The card box: same geometry as the .pastel cards it replaces, and the
+   * same glass treatment as MailboxVisual, over the blue tint. ── */
+  .gbox {
+    /* Excluded from scroll anchoring, along with its subtree.
+     *
+     * These visuals change the height of their own children on a loop. When
+     * the box is scrolled PART WAY past the top of the viewport, Chrome picks
+     * an anchor node inside it, sees that node move as the stack grows, and
+     * "corrects" by scrolling the page - measured at 192px of drift per cycle
+     * with the box top between roughly -60px and -160px. Nothing here is
+     * content a reader is tracking, so nothing here should ever be an anchor. */
+    overflow-anchor: none;
+    position: relative;
+    aspect-ratio: 4 / 5;
+    border-radius: 1rem;
+    overflow: hidden;
+    background: linear-gradient(150deg, #e9f1fd, #cfe0f8);
+
+    /* Real app tokens (frontend/src/index.css, sRGB-converted). */
+    /* ── Shared card tokens ──────────────────────────────────────────────
+     * One value per role across all four endowment cards, chosen to match the
+     * real app (frontend/src/index.css, mirrored in AppDemo.astro). Change
+     * these together or the row stops reading as one system.
+     * ────────────────────────────────────────────────────────────────── */
+    --ink: #1e1e1e;
+    --mut: #5e5a52;
+    /* Secondary text. A colour, not an opacity - opacity over a tinted panel
+     * drifts toward the card's hue and each card drifted differently. */
+    --mut-2: rgb(94 90 82 / 0.85);
+    --line: rgb(212 205 191 / 0.7);
+    --chip: rgb(30 30 30 / 0.055);
+    --fill: #dbd7cc;
+    /* The tier above the panel: what a list, a well or a control sits on. The
+     * panel itself is translucent, so this is white rather than a grey - it
+     * lifts content OUT of the card tint instead of restaining it. */
+    --raise: rgb(255 255 255 / 0.72);
+    /* Run/diff outcomes, shared so green means one thing on this page. */
+    --ok: #047857;
+    --ok-fill: rgb(16 185 129 / 0.9);
+    --bad: #b91c1c;
+    --bad-fill: rgb(239 68 68 / 0.8);
+    /* Diff register: the two hues a diff cannot do without, at the
+     * app's own emerald/red rather than invented mid-tones. */
+    --add-bg: rgb(16 185 129 / 0.2);
+    --rem-bg: rgb(239 68 68 / 0.2);
+
+    font-family: var(--ff-app);
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    text-align: left;
+  }
+
+  @media (max-width: 30rem) {
+    .gbox {
+      aspect-ratio: 16 / 10;
+    }
+  }
+
+  .gpanel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: inherit;
+    /* Matches MailboxVisual: enough tint through the glass to hold its place
+     * in a row of saturated pastels. */
+    background: rgb(247 245 240 / 0.52);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    backdrop-filter: blur(28px) saturate(150%);
+    overflow: hidden;
+    /* The rim AppDemo gives the window: without it the panel has no edge and
+     * the card reads as a tinted field rather than a surface. */
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.55);
+    --pad: 22px;
+  }
+
+  /* ── Repo header ── */
+
+  .ghead {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+    padding: 17px var(--pad) 10.5px;
+  }
+
+  .gic {
+    display: inline-flex;
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    color: var(--mut);
+  }
+
+  .gic-sm {
+    width: 10.5px;
+    height: 10.5px;
+  }
+
+  .gic :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .grepo {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  /* `main`, and only ever `main` - see the note at the top of this file. */
+  .gbranch {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3.5px;
+    flex-shrink: 0;
+    padding: 2.5px 7px;
+    border-radius: 999px;
+    background: var(--chip);
+    font-family: var(--ff-mono);
+    font-size: 11px;
+    color: var(--mut);
+  }
+
+  /* ── File row ── */
+
+  .gfile {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    flex-shrink: 0;
+    padding: 4.5px var(--pad) 9px;
+    font-family: var(--ff-mono);
+    font-size: 12px;
+  }
+
+  .gpath {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: rgb(30 30 30 / 0.75);
+  }
+
+  .gstat {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Fixed-width count box: the states stack in one cell so the roll never
+   * nudges the path or the removal count beside it. */
+  .gplus {
+    position: relative;
+    display: inline-block;
+    width: 2ch;
+    height: 15px;
+    line-height: 15px;
+    color: var(--ok);
+  }
+
+  .gminus {
+    color: var(--bad);
+  }
+
+  .d {
+    position: absolute;
+    inset: 0;
+    font-style: normal;
+    opacity: 0;
+  }
+
+  /* Static baseline (no motion, or before the loop starts): the finished
+   * commit. */
+  .s4 {
+    opacity: 1;
+  }
+
+  /* ── The hunk ────────────────────────────────────────────────────────────
+   * Bottom-anchored: written lines open at the bottom and push the file up
+   * under the crop, so the newest line is always the one you can see. */
+  .gdiff {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+    /* The crop is a fade, not a guillotine - a hard cut through a line of
+     * text reads as a clipping bug rather than as more content above. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+  }
+
+  /* NO vertical padding - a border-box element cannot be shorter than its own
+   * block padding, so `max-height: 0` would leave every unwritten line
+   * holding a gap open. The row's height carries the rhythm instead.
+   *
+   * The inset is PADDING, not margin, so the +/- washes run the full width of
+   * the card the way a diff view draws them; the 7px plus the sign gutter is
+   * what lands the code on the header's own edge. (Inline padding is safe
+   * here - only BLOCK padding floors the collapse.) */
+  .gline {
+    display: flex;
+    gap: 0;
+    flex-shrink: 0;
+    height: 22px;
+    padding-inline: 7px;
+    font-family: var(--ff-mono);
+    font-size: 13px;
+    line-height: 22px;
+    color: var(--mut);
+    white-space: pre;
+  }
+
+  .gadd {
+    background: var(--add-bg);
+    color: var(--ink);
+  }
+
+  /* Removals are ordinary file lines until the commit marks them, so the wash
+   * is a background-image that WIPES in (0% -> 100% width) rather than a flat
+   * background that would have to pop. */
+  .grem {
+    background-image: linear-gradient(var(--rem-bg), var(--rem-bg));
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    color: rgb(30 30 30 / 0.72);
+  }
+
+  .gsign {
+    width: 14px;
+    flex-shrink: 0;
+    text-align: center;
+    color: var(--ok);
+  }
+
+  .grem .gsign {
+    color: var(--bad);
+  }
+
+  .gcode {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .gh {
+    font-weight: 500;
+    color: rgb(30 30 30 / 0.82);
+  }
+
+  .gadd.gh {
+    color: var(--ink);
+  }
+
+  /* ── The commit ── */
+
+  /* Fixed height and NO vertical padding, so the loop can collapse this to a
+   * true zero: a border-box element cannot be shorter than its own block
+   * padding, and reserving 55px of dead space under the hunk for the nine
+   * seconds before the commit exists left a visible hole in the card. The
+   * hairline is an inset shadow rather than a border for the same reason -
+   * a border would floor the height at 1px. */
+  .gcommit {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-shrink: 0;
+    height: 58px;
+    padding-inline: var(--pad);
+    overflow: hidden;
+    /* Inset divider. A rule bled to the panel edge cuts the card in two; an
+     * inset one separates the regions inside it. Drawn as a background rather
+     * than a border because only a background can be inset horizontally. */
+    background-image: linear-gradient(var(--line), var(--line));
+    background-repeat: no-repeat;
+    background-size: calc(100% - var(--pad) * 2) 1px;
+    background-position: var(--pad) 0;
+  }
+
+  /* The agent species shape (lib/avatarShapes.ts), scaled: round with the
+   * machined bottom-left tail. */
+  .gava {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    display: block;
+    object-fit: cover;
+    background: var(--fill);
+    border-radius: 999px;
+    border-bottom-left-radius: 4.5px;
+  }
+
+  .gcbody {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .gcline {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    height: 17px;
+  }
+
+  .gcname {
+    flex-shrink: 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .gcverb {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--mut);
+  }
+
+  .gcsha {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-family: var(--ff-mono);
+    font-size: 11px;
+    color: var(--mut);
+  }
+
+  .gcmsg {
+    margin-top: 1px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--mut);
+  }
+
+  /* ── The 15s loop ────────────────────────────────────────────────────────
+   * The commit marks its two placeholder lines for removal first (the red
+   * wash wipes across them at 5-7%), then writes the six that replace them at
+   * 12 / 22 / 32 / 42 / 52 / 62%. Each written line opens its height first
+   * (~180ms) and only then wipes in from the left (~270ms), so the line makes
+   * room and is then written into it - one motion, not two competing ones.
+   * The count rolls a beat behind each line; the commit bar opens at 66% once
+   * the hunk is whole, taking its height from the file above; 69 -> 86% holds.
+   *
+   * The seam matches MailboxVisual exactly: everything dissolves at 86-88.5%,
+   * the written lines collapse at 89.5% while invisible, and the file itself
+   * fades back in at 94-96.8% before the wrap, so 100% and 0% are the same
+   * frame. Neither the context nor the doomed lines ever collapse, so the card
+   * is never seen empty.
+   *
+   * Everything is settled by default, so reduced motion - and the moment
+   * before PlayOnView marks the card - both show the finished commit.
+   * ────────────────────────────────────────────────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    .gadd {
+      max-height: 0;
+      clip-path: inset(0 100% 0 0);
+    }
+
+    .grem {
+      background-size: 0% 100%;
+    }
+
+    .grem .gsign,
+    .gminus {
+      opacity: 0;
+    }
+
+    .s4 {
+      opacity: 0;
+    }
+
+    .gcommit {
+      max-height: 0;
+      opacity: 0;
+      translate: 0 9px;
+    }
+
+    .play .gline { animation: ctx 15s ease infinite; }
+
+    .play .gline:nth-of-type(19),
+    .play .gline:nth-of-type(20) { animation: rem 15s ease infinite; }
+
+    .play .gline:nth-of-type(19) .gsign,
+    .play .gline:nth-of-type(20) .gsign { animation: remsign 15s ease infinite; }
+
+    .play .gline:nth-of-type(21) { animation: a1 15s ease infinite; }
+    .play .gline:nth-of-type(22) { animation: a2 15s ease infinite; }
+    .play .gline:nth-of-type(23) { animation: a3 15s ease infinite; }
+    .play .gline:nth-of-type(24) { animation: a4 15s ease infinite; }
+
+    .play .gminus { animation: minus 15s ease infinite; }
+
+    .play .s1 { animation: n1 15s ease infinite; }
+    .play .s2 { animation: n2 15s ease infinite; }
+    .play .s3 { animation: n3 15s ease infinite; }
+    .play .s4 { animation: n6 15s ease infinite; }
+
+    .play .gcommit { animation: land 15s ease infinite; }
+  }
+
+  /* The two doomed lines: already in the file, marked by this commit. The
+   * wash wipes across them, and resets while the seam has them invisible. */
+  @keyframes rem {
+    0%, 5% { background-size: 0% 100%; opacity: 1; }
+    7%, 86% { background-size: 100% 100%; opacity: 1; }
+    88.5% { background-size: 100% 100%; opacity: 0; }
+    89.5%, 94% { background-size: 0% 100%; opacity: 0; }
+    96.8%, 100% { background-size: 0% 100%; opacity: 1; }
+  }
+
+  @keyframes remsign {
+    0%, 5% { opacity: 0; }
+    7%, 86% { opacity: 1; }
+    88.5%, 100% { opacity: 0; }
+  }
+
+  @keyframes minus {
+    0%, 5.5% { opacity: 0; translate: 0 3.5px; }
+    7%, 88% { opacity: 1; translate: 0 0; }
+    90%, 100% { opacity: 0; translate: 0 -3.5px; }
+  }
+
+  /* The file it is written into: never collapses, only dissolves for the seam
+   * and comes straight back before the wrap. */
+  @keyframes ctx {
+    0%, 86% { opacity: 1; }
+    88.5%, 94% { opacity: 0; }
+    96.8%, 100% { opacity: 1; }
+  }
+
+  @keyframes a1 {
+    0%, 12% { max-height: 0; clip-path: inset(0 100% 0 0); opacity: 1; }
+    13.2% { max-height: 22px; clip-path: inset(0 100% 0 0); opacity: 1; }
+    15%, 86% { max-height: 22px; clip-path: inset(0 0 0 0); opacity: 1; }
+    88.5% { max-height: 22px; clip-path: inset(0 0 0 0); opacity: 0; }
+    89.5%, 100% { max-height: 0; clip-path: inset(0 100% 0 0); opacity: 0; }
+  }
+
+  @keyframes a2 {
+    0%, 22% { max-height: 0; clip-path: inset(0 100% 0 0); opacity: 1; }
+    23.2% { max-height: 22px; clip-path: inset(0 100% 0 0); opacity: 1; }
+    25%, 86% { max-height: 22px; clip-path: inset(0 0 0 0); opacity: 1; }
+    88.5% { max-height: 22px; clip-path: inset(0 0 0 0); opacity: 0; }
+    89.5%, 100% { max-height: 0; clip-path: inset(0 100% 0 0); opacity: 0; }
+  }
+
+  @keyframes a3 {
+    0%, 32% { max-height: 0; clip-path: inset(0 100% 0 0); opacity: 1; }
+    33.2% { max-height: 22px; clip-path: inset(0 100% 0 0); opacity: 1; }
+    35%, 86% { max-height: 22px; clip-path: inset(0 0 0 0); opacity: 1; }
+    88.5% { max-height: 22px; clip-path: inset(0 0 0 0); opacity: 0; }
+    89.5%, 100% { max-height: 0; clip-path: inset(0 100% 0 0); opacity: 0; }
+  }
+
+  @keyframes a4 {
+    0%, 42% { max-height: 0; clip-path: inset(0 100% 0 0); opacity: 1; }
+    43.2% { max-height: 22px; clip-path: inset(0 100% 0 0); opacity: 1; }
+    45%, 86% { max-height: 22px; clip-path: inset(0 0 0 0); opacity: 1; }
+    88.5% { max-height: 22px; clip-path: inset(0 0 0 0); opacity: 0; }
+    89.5%, 100% { max-height: 0; clip-path: inset(0 100% 0 0); opacity: 0; }
+  }
+
+
+
+  /* The added-line count, one state per written line, rolling a beat
+   * behind it. */
+
+  @keyframes n1 {
+    0%, 14% { opacity: 0; translate: 0 3.5px; }
+    15.5%, 24% { opacity: 1; translate: 0 0; }
+    25.5%, 100% { opacity: 0; translate: 0 -3.5px; }
+  }
+
+  @keyframes n2 {
+    0%, 24% { opacity: 0; translate: 0 3.5px; }
+    25.5%, 34% { opacity: 1; translate: 0 0; }
+    35.5%, 100% { opacity: 0; translate: 0 -3.5px; }
+  }
+
+  @keyframes n3 {
+    0%, 34% { opacity: 0; translate: 0 3.5px; }
+    35.5%, 44% { opacity: 1; translate: 0 0; }
+    45.5%, 100% { opacity: 0; translate: 0 -3.5px; }
+  }
+
+
+
+  @keyframes n6 {
+    0%, 64% { opacity: 0; translate: 0 3.5px; }
+    65.5%, 88% { opacity: 1; translate: 0 0; }
+    90%, 100% { opacity: 0; translate: 0 -3.5px; }
+  }
+
+  /* The commit bar: opens once the hunk is whole, taking its 55px from the
+   * hunk above rather than holding them empty all cycle. Leaves with the
+   * seam, and is fully collapsed again before the wrap. */
+  @keyframes land {
+    0%, 50% { max-height: 0; opacity: 0; translate: 0 9px; }
+    53%, 86% { max-height: 58px; opacity: 1; translate: 0 0; }
+    88.5% { max-height: 58px; opacity: 0; translate: 0 9px; }
+    89.5%, 100% { max-height: 0; opacity: 0; translate: 0 9px; }
+  }
+</style>

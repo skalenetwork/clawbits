@@ -145,7 +145,7 @@ function upgradeErrorMessage(e: unknown): string {
 const CONNECT_STEPS: {text: string; code?: string}[] = [
     {text: "Start Reef on the machine that will host your agents."},
     {text: "Expose it with a tunnel:", code: "cloudflared tunnel --url http://127.0.0.1:8787"},
-    {text: "Paste the tunnel URL below — it's checked from your browser before saving."},
+    {text: "Paste the tunnel URL below - it's checked from your browser before saving."},
 ];
 
 /** Runtime brand marks — the shipped mascots (the same art the New Agent wizard
@@ -378,7 +378,7 @@ export default function SettingsReefPage() {
             />
 
             {/* Sub-sections are separated by divider lines + spacing rather than
-                nested cards — the content card itself is the surface (same
+                nested cards - the content card itself is the surface (same
                 structure as the Profile page). */}
             <div className="divide-y divide-border/60">
                 {/* ── Connection ─────────────────────────────────────────── */}
@@ -476,7 +476,7 @@ export default function SettingsReefPage() {
                             <div className="space-y-1.5">
                                 <h3 className="text-lg font-semibold tracking-tight text-foreground">Connect your Reef</h3>
                                 <p className="mx-auto max-w-md text-sm text-muted-foreground">
-                                    Run isolated agent VMs on your own machine. Paste your Reef's tunnel URL —
+                                    Run isolated agent VMs on your own machine. Paste your Reef's tunnel URL -
                                     your browser talks to it directly, so clawbits only ever stores the URL.
                                 </p>
                             </div>
@@ -610,7 +610,7 @@ export default function SettingsReefPage() {
                                     <h3 className="text-lg font-semibold tracking-tight text-foreground">Unlock the fleet</h3>
                                     <p className="mx-auto max-w-md text-sm text-muted-foreground">
                                         Enter your Reef admin token to view and manage agents. It stays in this
-                                        browser session only — never stored or sent to clawbits.
+                                        browser session only - never stored or sent to clawbits.
                                     </p>
                                 </div>
                                 <form onSubmit={submitToken} className="flex w-full max-w-md flex-col gap-2 sm:flex-row">
@@ -753,7 +753,7 @@ function FleetCard({
         onError: (e) => {
             if (e instanceof ReefAuthError) {
                 onAuthReject();
-                toast.error("Reef rejected the token — re-enter it");
+                toast.error("Reef rejected the token - re-enter it");
                 return;
             }
             toast.error(upgradeErrorMessage(e));
@@ -1015,7 +1015,7 @@ function ReefImagePanel({
             // fleet query for auth, so a mutation auth error has to do it itself).
             if (e instanceof ReefAuthError) {
                 onAuthReject();
-                toast.error("Reef rejected the token — re-enter it");
+                toast.error("Reef rejected the token - re-enter it");
                 return;
             }
             // One build at a time — on a 409, attach to the running job instead of
@@ -1027,7 +1027,7 @@ function ReefImagePanel({
                         const runningJob = jobs.find((j) => j.status === "running");
                         if (runningJob) {
                             setJobId(runningJob.id);
-                            toast.info("A build is already running — attached to it");
+                            toast.info("A build is already running - attached to it");
                             return;
                         }
                     } catch (err) {
@@ -1035,7 +1035,7 @@ function ReefImagePanel({
                         // as "a build is already running".
                         if (err instanceof ReefAuthError) {
                             onAuthReject();
-                            toast.error("Reef rejected the token — re-enter it");
+                            toast.error("Reef rejected the token - re-enter it");
                             return;
                         }
                         /* otherwise fall through to the generic message */
@@ -1074,7 +1074,7 @@ function ReefImagePanel({
         onError: (e) => {
             if (e instanceof ReefAuthError) {
                 onAuthReject();
-                toast.error("Reef rejected the token — re-enter it");
+                toast.error("Reef rejected the token - re-enter it");
                 return;
             }
             toast.error(e instanceof Error ? e.message : "Couldn't set the active image");
@@ -1095,7 +1095,7 @@ function ReefImagePanel({
                 <div className="rounded-2xl border border-border/60 bg-card px-4 py-6 text-center text-sm text-muted-foreground">
                     Couldn't load images
                     {imagesQuery.error instanceof Error && !(imagesQuery.error instanceof ReefAuthError)
-                        ? ` — ${imagesQuery.error.message}`
+                        ? ` - ${imagesQuery.error.message}`
                         : ""}
                     .
                 </div>
@@ -1256,7 +1256,7 @@ function RuntimeImageBlock({
                         {built && <span className="text-xs text-muted-foreground">updated {built}</span>}
                     </div>
                     <p className="mt-1 truncate font-mono text-[13px] text-muted-foreground">
-                        {active ? active.tag : `${runtime.label} — no active image`}
+                        {active ? active.tag : `${runtime.label} - no active image`}
                     </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5 self-start sm:self-center">
@@ -1299,7 +1299,7 @@ function RuntimeImageBlock({
                         <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
                             <span className="size-1.5 shrink-0 rounded-full bg-amber-500"/>
                             <span className="tabular-nums">
-                                <span className="font-medium">{staleCount}</span> {staleCount === 1 ? "agent is" : "agents are"} on an older image — upgrade in the fleet below.
+                                <span className="font-medium">{staleCount}</span> {staleCount === 1 ? "agent is" : "agents are"} on an older image - upgrade in the fleet below.
                             </span>
                         </div>
                     )}
@@ -1370,7 +1370,7 @@ function BuildLogPanel({job, errored, onDismiss}: {job: ReefBuildJob | null; err
     if (!job) {
         return errored ? (
             <div className="flex items-center justify-between gap-2 rounded-2xl border border-border/60 bg-card px-4 py-3 text-xs text-muted-foreground">
-                <span>Build status unavailable — refreshed the image list.</span>
+                <span>Build status unavailable - refreshed the image list.</span>
                 <button type="button" onClick={onDismiss} className="font-medium text-foreground hover:underline">
                     Dismiss
                 </button>
@@ -1499,7 +1499,7 @@ function ConfirmActivateDialog({
                         Set active image
                     </DialogTitle>
                     <DialogDescription>
-                        New agents — and every in-place upgrade — will boot{" "}
+                        New agents - and every in-place upgrade - will boot{" "}
                         <span className="font-mono text-foreground">{img.tag}</span>. This affects all
                         newly-created VMs fleet-wide. Existing agents keep running until you upgrade them.
                     </DialogDescription>
@@ -1564,7 +1564,7 @@ function BuildDialog({
                     <DialogDescription>
                         {isOpenclaw
                             ? "Pin a specific engine or plugin version, or leave them at the latest. New agents boot the image once it's built and set active."
-                            : "IronClaw builds from the pinned submodule and the clawbits channel in this tree — the engine and channel versions come from source, so there's nothing to pin."}
+                            : "IronClaw builds from the pinned submodule and the clawbits channel in this tree - the engine and channel versions come from source, so there's nothing to pin."}
                     </DialogDescription>
                 </DialogHeader>
 
@@ -1596,7 +1596,7 @@ function BuildDialog({
                     <label className="flex items-center justify-between gap-3 rounded-xl bg-muted/40 px-3.5 py-3">
                         <span className="min-w-0">
                             <span className="block text-[13px] font-medium text-foreground">Force fresh</span>
-                            <span className="block text-xs text-muted-foreground">Full no-cache rebuild — slower, ignores cached layers.</span>
+                            <span className="block text-xs text-muted-foreground">Full no-cache rebuild - slower, ignores cached layers.</span>
                         </span>
                         <Switch checked={forceFresh} onCheckedChange={setForceFresh}/>
                     </label>

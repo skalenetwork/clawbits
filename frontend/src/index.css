@@ -2,7 +2,15 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
-@import "@fontsource-variable/fraunces/full.css";
+/* Fraunces: the `opsz` cut, NOT `full`. `full` ships the SOFT and WONK axes as
+ * well, and nothing in the app ever sets `font-variation-settings`, so both sat
+ * pinned at their defaults for 53 KB (latin) + 45 KB (latin-ext) of dead weight.
+ * `opsz` keeps the whole 100..900 weight range AND the optical-size axis, which
+ * the browser drives automatically via `font-optical-sizing: auto` - that one
+ * matters, because this is the app's only display face (home hero + sign-in).
+ * Do NOT drop further to `wght`: it is another 60 KB lighter but kills optical
+ * sizing, which is the whole reason to run a serif at 36px. */
+@import "@fontsource-variable/fraunces/opsz.css";
 @import "@fontsource-variable/jetbrains-mono";
 
 @custom-variant dark (&:is(.dark *));
@@ -32,9 +40,59 @@
   --secondary-foreground: oklch(0.3012 0 0);
   --muted: oklch(0.8793 0.0155 90.2473);
   --muted-foreground: oklch(0.4688 0.0136 84.5932);
-  --accent: oklch(0.9755 0.0067 97.3510);
-  --accent-foreground: oklch(0.3012 0 0);
-  --destructive: oklch(0.5771 0.2152 27.3250);
+  /* MENU FOCUS, not a general "accent". Despite the shadcn name, --accent and
+   * --accent-foreground are consumed by exactly two files in this app -
+   * ui/dropdown-menu.tsx and ui/context-menu.tsx - where they paint the
+   * focused/highlighted row. Nothing else reads them.
+   *
+   * They used to be flat literals, and both themes were broken:
+   *   light  #f8f7f1 (L .9755) sat ABOVE --popover (L .9583) - a .017 delta, so
+   *          the focused row was invisible - and --accent-foreground (L .3012)
+   *          was LIGHTER than --popover-foreground (L .2350), so focusing a menu
+   *          item made its label fade instead of firm up.
+   *   dark   oklch(0 0 0) - literal black, punching a hole in a L .2264 popover.
+   *
+   * Now they are the same ink wash the nav rows use (see --sb-hover/--sb-active
+   * below), derived from --foreground so ONE definition serves both themes and
+   * the wash always runs toward the ink, never away from it. --sb-active is the
+   * right rung: a highlighted menu row is the "this is the active one" state,
+   * not a passive hover. Deliberately no .dark override - adding one would
+   * re-break the thing this fixes. */
+  --accent: var(--sb-active);
+  --accent-foreground: var(--foreground);
+  /* ── The brand accent ─────────────────────────────────────────────────────
+   * The claw red from the marketing site, corrected until it is legible.
+   *
+   * The landing ships --color-signal #d13a54, which measures 4.11:1 on the
+   * landing's OWN paper and 4.01:1 on this app's --background - i.e. it fails
+   * WCAG AA as text on both. (The comment in web/src/styles/global.css claiming
+   * 4.5:1 is true only against literal #ffffff, a ground neither site uses.)
+   * --signal is the same red, half a step darker and calmer: 4.52:1 on
+   * --background, 4.89:1 on --card. The landing should adopt these values too.
+   *
+   * THE FENCE, and it is the whole reason this is safe to ship: --signal marks
+   * NAVIGATION INTENT. It never marks status, and it never fills a control that
+   * performs an action. It sits 18 deg from --destructive, which is separation
+   * enough only because the two can never appear in the same role. Specifically
+   * it does NOT take: --primary (the send button, the compose FAB - the landing
+   * keeps its accent off every button too), --ring (see the focus floor below;
+   * focus and aria-invalid are told apart by hue alone, so a red ring would read
+   * as an error), ::selection or the Cmd+K match mark (a red highlight reads
+   * "wrong match", not "found it"), --unread, --accent, or any nav row fill.
+   *
+   * --signal-foreground INVERTS per theme rather than being white in both:
+   * white on the dark-mode signal is only 3.59:1. */
+  --signal: oklch(0.5492 0.1707 15.59);            /* #c0394f */
+  --signal-deep: oklch(0.4880 0.1633 15.49);       /* #a82840, hover/pressed */
+  --signal-foreground: oklch(0.9700 0.0090 91.00); /* #f7f5ee on a signal fill, 4.89:1 */
+  /* Retuned onto the candy palette's own rust (H33.9 is 1.7 dE from the shader's
+   * #b03927), for two reasons at once. It was #dc2626, which measures 4.10:1 on
+   * --background - an AA failure as text, and --destructive is ONLY ever text or
+   * a low-alpha wash here (there is no solid bg-destructive anywhere in src/ and
+   * --destructive-foreground has zero consumers). So it had to be darkened
+   * regardless. Darkening it along a more orange spoke costs nothing extra and
+   * buys the separation from --signal. Now 5.07:1 on --background. */
+  --destructive: oklch(0.5207 0.1724 33.85);       /* #b73416 */
   --destructive-foreground: oklch(1.0000 0 0);
   --border: oklch(0.8500 0.0200 84.5889);
   --input: oklch(0.8434 0.0231 87.1621);
@@ -54,14 +112,43 @@
   --shadow-spread: 0px;
   --shadow-opacity: 0.1;
   --shadow-color: #000000;
-  --shadow-2xs: 0px 4px 10px 0px hsl(0 0% 0% / 0.05);
-  --shadow-xs: 0px 4px 10px 0px hsl(0 0% 0% / 0.05);
-  --shadow-sm: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 1px 2px -1px hsl(0 0% 0% / 0.10);
-  --shadow: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 1px 2px -1px hsl(0 0% 0% / 0.10);
-  --shadow-md: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 2px 4px -1px hsl(0 0% 0% / 0.10);
-  --shadow-lg: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 4px 6px -1px hsl(0 0% 0% / 0.10);
-  --shadow-xl: 0px 4px 10px 0px hsl(0 0% 0% / 0.10), 0px 8px 10px -1px hsl(0 0% 0% / 0.10);
-  --shadow-2xl: 0px 4px 10px 0px hsl(0 0% 0% / 0.25);
+  /* ── Elevation ────────────────────────────────────────────────────────────
+   * FOUR real steps behind the eight Tailwind names.
+   *
+   * The old ladder was a fiction: every step carried the SAME `0 4px 10px`
+   * primary layer, 2xs and xs were byte-identical, sm and the bare token were
+   * byte-identical, and only a second layer's y-offset crept from 1px to 8px.
+   * Blur never grew, so nothing in the app read as further off the page than
+   * anything else - elevation communicated nothing.
+   *
+   * These steps are modelled on `.cmdk-panel` (further down this file), which is
+   * the one hand-tuned surface in the app and the reason the command palette
+   * looks better than every dialog next to it: a tight dark CONTACT layer plus a
+   * wide, soft, low-alpha DIFFUSE layer, both warm-tinted rather than pure black
+   * so they sit in the warm-paper palette instead of greying it out.
+   *
+   * The eight names are kept as aliases so no call site changes and relative
+   * ordering is preserved everywhere. */
+  --elevation-0: 0 1px 2px -1px oklch(0.28 0.03 60 / 0.08);
+  --elevation-1:
+    0 1px 2px -1px oklch(0.28 0.03 60 / 0.10),
+    0 2px 6px -2px oklch(0.24 0.035 55 / 0.10);
+  --elevation-2:
+    0 2px 4px -2px oklch(0.28 0.03 60 / 0.12),
+    0 8px 20px -8px oklch(0.24 0.035 55 / 0.16);
+  --elevation-3:
+    0 2px 4px -2px oklch(0.28 0.03 60 / 0.12),
+    0 8px 20px -8px oklch(0.24 0.035 55 / 0.16),
+    0 24px 56px -16px oklch(0.24 0.035 55 / 0.30);
+
+  --shadow-2xs: var(--elevation-0);
+  --shadow-xs: var(--elevation-0);
+  --shadow-sm: var(--elevation-1);
+  --shadow: var(--elevation-1);
+  --shadow-md: var(--elevation-2);
+  --shadow-lg: var(--elevation-2);
+  --shadow-xl: var(--elevation-3);
+  --shadow-2xl: var(--elevation-3);
   --tracking-normal: -0.025em;
   --spacing: 0.25rem;
   /* @mention text colour for both agents and humans — same hue family
@@ -187,13 +274,31 @@ html[data-tauri-platform="linux"] body {
   --popover-foreground: oklch(0.9173 0.0133 82.4015);
   --primary: oklch(0.8769 0.0190 100.1578);
   --primary-foreground: oklch(0.2264 0 0);
-  --secondary: oklch(0.8445 0.0196 93.6956);
-  --secondary-foreground: oklch(0.2512 0.0037 106.6627);
+  /* Dark --secondary used to be a LIGHT cream (L .8445) sitting 0.03L from the
+   * light --primary (L .8769), so `variant="secondary"` rendered as a slightly
+   * dimmer primary button instead of a quieter one - the two-tier button system
+   * collapsed into one tier. It is now a raised neutral surface: a tier above
+   * --card (L .2264) and just above --muted (L .2850), with a light foreground.
+   * (BrowseChannelsDialog.tsx:127 carries a local `dark:bg-muted` workaround
+   * that predates this fix; it is now redundant but harmless.) */
+  --secondary: oklch(0.3100 0.0040 106.6627);
+  --secondary-foreground: oklch(0.9173 0.0133 82.4015);
   --muted: oklch(0.2850 0 0);
   --muted-foreground: oklch(0.6348 0.0113 81.7875);
-  --accent: oklch(0 0 0);
-  --accent-foreground: oklch(0.8520 0.0205 100.6306);
-  --destructive: oklch(0.6368 0.2078 25.3313);
+  /* --accent/--accent-foreground are deliberately NOT overridden here - they
+   * resolve from --sb-active/--foreground in :root, which re-resolve per theme.
+   * See the long note beside their definition. */
+  /* Dark siblings. --signal holds the same H15.6 spoke as light so it reads as
+   * one colour across themes; only L and the glyph invert. --signal-deep goes
+   * LIGHTER here (hover means "firmer", which on ink means brighter), the
+   * mirror of light mode going darker. --signal-foreground is warm black
+   * because white on #df5b6b is 3.59:1. */
+  --signal: oklch(0.6440 0.1649 15.70);            /* #df5b6b, 4.74:1 on --card */
+  --signal-deep: oklch(0.7295 0.1397 15.62);       /* #f2808a */
+  --signal-foreground: oklch(0.1800 0.0050 84.60); /* #13110f on a signal fill, 5.24:1 */
+  /* Was #ef4444 at 4.53:1 on --card - passing with no headroom. Same rust spoke
+   * as light; now 5.32:1. */
+  --destructive: oklch(0.6720 0.1808 36.91);       /* #ef643b */
   --destructive-foreground: oklch(1.0000 0 0);
   --border: oklch(0.2931 0 0);
   --input: oklch(0.2931 0 0);
@@ -212,14 +317,31 @@ html[data-tauri-platform="linux"] body {
   --shadow-spread: 0px;
   --shadow-opacity: 0.3;
   --shadow-color: #000000;
-  --shadow-2xs: 0px 6px 15px 0px hsl(0 0% 0% / 0.15);
-  --shadow-xs: 0px 6px 15px 0px hsl(0 0% 0% / 0.15);
-  --shadow-sm: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 1px 2px -1px hsl(0 0% 0% / 0.30);
-  --shadow: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 1px 2px -1px hsl(0 0% 0% / 0.30);
-  --shadow-md: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 2px 4px -1px hsl(0 0% 0% / 0.30);
-  --shadow-lg: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 4px 6px -1px hsl(0 0% 0% / 0.30);
-  --shadow-xl: 0px 6px 15px 0px hsl(0 0% 0% / 0.30), 0px 8px 10px -1px hsl(0 0% 0% / 0.30);
-  --shadow-2xl: 0px 6px 15px 0px hsl(0 0% 0% / 0.75);
+  /* Dark elevation - same four steps, mirroring `.dark .cmdk-panel`. Shadows go
+   * pure black here (a warm tint over a near-black ground just reads as mud) and
+   * carry higher alpha, because a dark surface separates from a dark background
+   * by shadow density, not by hue. See the light-mode note above for why the
+   * eight Tailwind names collapse onto four real steps. */
+  --elevation-0: 0 1px 2px -1px oklch(0 0 0 / 0.30);
+  --elevation-1:
+    0 1px 2px -1px oklch(0 0 0 / 0.40),
+    0 2px 6px -2px oklch(0 0 0 / 0.35);
+  --elevation-2:
+    0 2px 6px -2px oklch(0 0 0 / 0.50),
+    0 10px 24px -10px oklch(0 0 0 / 0.50);
+  --elevation-3:
+    0 2px 6px -2px oklch(0 0 0 / 0.50),
+    0 10px 24px -10px oklch(0 0 0 / 0.50),
+    0 28px 64px -16px oklch(0 0 0 / 0.70);
+
+  --shadow-2xs: var(--elevation-0);
+  --shadow-xs: var(--elevation-0);
+  --shadow-sm: var(--elevation-1);
+  --shadow: var(--elevation-1);
+  --shadow-md: var(--elevation-2);
+  --shadow-lg: var(--elevation-2);
+  --shadow-xl: var(--elevation-3);
+  --shadow-2xl: var(--elevation-3);
   /* Dark-mode mention colour — slightly lighter L than the light-mode
    * variant to keep contrast against the dark background, same hue, and
    * a touch lower chroma so it reads as softer than link blue. */
@@ -270,6 +392,11 @@ html[data-tauri-platform="linux"] body {
   --color-sidebar-ring: var(--sidebar-ring);
   --color-mention: var(--mention);
   --color-unread: var(--unread);
+  /* The brand accent. See the fence documented beside --signal in :root before
+   * reaching for these - most roles are deliberately off-limits. */
+  --color-signal: var(--signal);
+  --color-signal-deep: var(--signal-deep);
+  --color-signal-foreground: var(--signal-foreground);
 
   --font-sans: 'Inter Variable', ui-sans-serif, sans-serif, system-ui;
   --font-serif: 'Fraunces Variable', serif;
@@ -299,12 +426,22 @@ html[data-tauri-platform="linux"] body {
   --shadow-xl: var(--shadow-xl);
   --shadow-2xl: var(--shadow-2xl);
 
+  /* The NEGATIVE rungs stay relative to --tracking-normal (-0.025em), which is
+   * the app's body tracking - tightening should compound with it.
+   *
+   * The POSITIVE rungs are absolute, and that asymmetry is the point. Built as
+   * `calc(var(--tracking-normal) + …)` they inherited the negative base and
+   * `tracking-wide` computed to exactly 0em - i.e. "wide" meant "browser
+   * default". All 19 of its call sites are uppercase or micro-labels (11-12px
+   * section headers, meta rows, menu shortcuts), which is precisely the register
+   * that needs POSITIVE tracking to stay readable; they were getting none.
+   * 0.05em is the all-caps convention. */
   --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
   --tracking-tight: calc(var(--tracking-normal) - 0.025em);
   --tracking-normal: var(--tracking-normal);
-  --tracking-wide: calc(var(--tracking-normal) + 0.025em);
-  --tracking-wider: calc(var(--tracking-normal) + 0.05em);
-  --tracking-widest: calc(var(--tracking-normal) + 0.1em);
+  --tracking-wide: 0.05em;
+  --tracking-wider: 0.075em;
+  --tracking-widest: 0.1em;
 
   /* Semantic content type-scale — each size pairs with its line-height so
    * content surfaces name intent (text-body / -caption / -label) instead of
@@ -352,6 +489,63 @@ html[data-tauri-platform="linux"] body {
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior-y: none;
   }
+
+  /* ── Selection ──────────────────────────────────────────────────────────
+   * The browser default is the OS highlight (blue on every platform we ship),
+   * which is the one un-themed surface left in a product that is otherwise
+   * warm paper and ink - and in a chat app you drag-select text constantly.
+   *
+   * BACKGROUND ONLY, deliberately. Setting `color` here would force selected
+   * text to a literal, and the message composer's textarea is `text-transparent`
+   * by design (MessageComposer.tsx:1428 - a highlight overlay renders the
+   * mention pills behind a transparent textarea). A `color` in this rule would
+   * make that hidden text paint on top of its own overlay the moment the user
+   * selected it, doubling every glyph. Leaving color alone keeps each element's
+   * own text color, transparent included.
+   *
+   * The wash is derived from --foreground so it re-resolves per theme, same as
+   * the nav row fills. No brand accent is invented here - that is a separate,
+   * still-open decision. */
+  ::selection {
+    background-color: color-mix(in oklch, var(--foreground) 20%, transparent);
+  }
+
+  /* ── Focus floor ────────────────────────────────────────────────────────
+   * A visible keyboard-focus indicator for everything that does NOT define its
+   * own. 40 call sites already opt out with `outline-none`/`outline-hidden` and
+   * draw a ring instead; those utilities live in a later cascade layer than this
+   * @layer base rule, so they still win and nothing double-draws.
+   *
+   * offset is 2px, NOT the 3px the marketing site uses: the mobile shell nests
+   * focusables inside `overflow-hidden` containers, where a 3px offset clips
+   * against the container edge and reads as a broken half-outline. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Skip link - the app had none on any route. Visually hidden until focused,
+   * then pinned to the top-left above all app chrome (the rail sits at z-40).
+   * Clears the Tauri title bar so it never lands under the traffic lights. */
+  .skip-link {
+    position: fixed;
+    top: calc(var(--titlebar-height) + 0.5rem);
+    left: 0.5rem;
+    z-index: 60;
+    padding: 0.5rem 0.875rem;
+    border-radius: var(--radius);
+    background-color: var(--popover);
+    color: var(--popover-foreground);
+    box-shadow: var(--shadow-lg);
+    font-size: 0.875rem;
+    font-weight: 500;
+    transform: translateY(calc(-100% - 1rem));
+    transition: transform 150ms ease;
+  }
+  .skip-link:focus-visible {
+    transform: translateY(0);
+  }
+
   /* Remove the legacy 300ms tap delay + double-tap zoom on controls while
    * preserving pinch-zoom for accessibility. */
   button,

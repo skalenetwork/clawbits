@@ -1,0 +1,322 @@
+---
+import { Font } from "astro:assets";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+import { ANALYTICS, LINKS, SITE } from "../config";
+import "../styles/global.css";
+
+interface Props {
+  title?: string;
+  description?: string;
+  /**
+   * Path to the OG image, relative to the site root.
+   *
+   * The art is hand-made per route and lives in public/og/. Every card is
+   * 1200x630 - if you add one at a different size, the og:image:width/height
+   * below stop being true and some scrapers will crop against the wrong box.
+   */
+  ogImage?: string;
+  /** Omit from search + AI crawlers. For thin or duplicate routes only. */
+  noindex?: boolean;
+  /** Extra JSON-LD nodes appended to the site @graph, e.g. a WebPage. */
+  schema?: Record<string, unknown>[];
+  /**
+   * Nav treatment. The homepage passes "overlay" so the fixed nav starts
+   * transparent over the hero shader canvas; every other page keeps the
+   * sticky solid bar.
+   */
+  nav?: "overlay" | "solid";
+}
+
+const {
+  title,
+  /* The SHORT one: this reaches <meta name="description"> and og:description,
+     both of which get truncated. The JSON-LD nodes below deliberately keep
+     SITE.description, which has no length budget. */
+  description = SITE.metaDescription,
+  ogImage = "/og/og-clawbits.png",
+  noindex = false,
+  schema = [],
+  nav = "solid",
+} = Astro.props;
+
+// The homepage owns the bare brand title; every other route is suffixed.
+const pageTitle = title ? `${title} | ${SITE.name}` : `${SITE.name} | Where humans and agents live together`;
+
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const ogImageUrl = new URL(ogImage, Astro.site).href;
+
+/**
+ * Whether this build emits the analytics tag at all.
+ *
+ * Two gates, and both are deliberate. `data-domains` (below) already stops the
+ * tracker from RUNNING off the real hosts, but the script still gets fetched
+ * from a third party to find that out - so the build decides whether the tag is
+ * there in the first place, and the tracker's own check is the belt behind it.
+ *
+ * Keyed off `Astro.site`, i.e. the SITE_URL the deploy was built with, because
+ * unlike the app this site ships a separate build per environment and therefore
+ * knows its own origin at build time. The consequence worth stating out loud:
+ * the production target is still SITE_URL=https://preview.clawbits.ai, so this
+ * emits NOTHING today and turns itself on at the Phase 6 apex cutover, when
+ * that variable becomes https://clawbits.ai. That is the intent - counting a
+ * noindex pre-launch preview in the same website as production would put
+ * rehearsal traffic in the launch numbers permanently.
+ *
+ * To smoke-test the wiring before then, add the preview host to
+ * ANALYTICS_HOSTS in config.ts, deploy, confirm the hit lands in Umami, and
+ * take it back out.
+ *
+ * import.meta.env.PROD keeps `astro dev` clean: SITE_URL is unset there, so
+ * Astro.site falls back to the apex and would otherwise match.
+ */
+const trackAnalytics = import.meta.env.PROD && ANALYTICS.hosts.includes(Astro.site?.hostname ?? "");
+
+/**
+ * Safari paints the status bar and toolbars with `theme-color`, so this is
+ * what fills the safe area above the page on iOS - a light value there is the
+ * white band over the hero.
+ *
+ * Light is the real page ground (--color-ink), not #fff. Pages that open on
+ * the shader canvas (nav="overlay") start dark so the canvas reads as running
+ * to the top of the screen, then flip back once the canvas scrolls away - see
+ * the observer below, which keys off [data-theme-anchor].
+ */
+const THEME_LIGHT = "#f2efe8";
+const THEME_DARK = "#141311";
+
+// Organization + WebSite + SoftwareApplication is the spine every page needs;
+// routes append their own node via the `schema` prop.
+//
+// Deliberately NO WebSite/SearchAction: the marketing site has no search, and
+// declaring a SearchAction that resolves to nothing is a lie told to a crawler
+// in a machine-readable format. Phase 4/5 add TechArticle and BlogPosting.
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${Astro.site}#organization`,
+      name: SITE.org,
+      url: Astro.site?.href,
+      sameAs: [LINKS.github, LINKS.x],
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${Astro.site}#website`,
+      url: Astro.site?.href,
+      name: SITE.name,
+      description: SITE.description,
+      publisher: { "@id": `${Astro.site}#organization` },
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": `${Astro.site}#software`,
+      name: SITE.name,
+      description: SITE.description,
+      applicationCategory: "BusinessApplication",
+      operatingSystem: "Web, macOS, Linux",
+      url: Astro.site?.href,
+      codeRepository: LINKS.github,
+      license: "https://opensource.org/licenses/MIT",
+      author: { "@id": `${Astro.site}#organization` },
+    },
+    ...schema,
+  ],
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    {/* No `viewport-fit=cover`, deliberately. It was tried for the band above
+        the hero and measured on-device: in normal Safari browsing the web view
+        already starts below the status bar, every env(safe-area-inset-*) reads
+        0, and the band is Safari's own chrome either way (see global.css). All
+        cover would add here is landscape notch insets we do not handle. */}
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    {/* No canonical on noindex routes. The 404 is the case that matters: with
+        `not_found_handling: "404-page"` Cloudflare serves that one document at
+        EVERY missing path, so a fixed self-canonical would tell a crawler that
+        /whatever-typo resolves to /404/ - a URL the build never emits as a
+        route. noindex already carries the instruction; a canonical here can
+        only contradict it. */}
+    {!noindex && <link rel="canonical" href={canonical} />}
+    {noindex && <meta name="robots" content="noindex, nofollow" />}
+
+    {/* The machine surfaces, declared where a parser can find them.
+        /llms.txt was previously reachable only through a COMMENT in robots.txt,
+        which every conforming parser discards - so the curated index this site
+        maintains was, formally, undiscoverable.
+
+        rel="alternate" + type is the standard "same content, other format"
+        pointer. rel="service-doc" is RFC 8631: human-readable documentation for
+        the API this site describes. The matching rel="service-desc" (the
+        machine-readable OpenAPI schema) is deliberately absent until the app's
+        schema URL resolves - pointing it at a 404 is worse than omitting it. */}
+    <link rel="alternate" type="text/plain" href="/llms.txt" title="Clawbits for language models" />
+    <link rel="service-doc" type="text/html" href="/docs/" title="Clawbits protocol documentation" />
+
+    {/* Per-route head additions, e.g. a doc page's Markdown twin. */}
+    <slot name="head" />
+
+    {/* CLAIMS the marker @paper-design/shaders looks for before injecting its
+        own stylesheet, so it never injects one.
+
+        shader-mount.js:49 guards on `querySelector("style[data-paper-shader]")`
+        and, finding none, prepends a <style> to <head> at runtime. That
+        stylesheet is the ONLY thing that positions the canvas
+        (position:absolute; inset:0; width:100%; height:100%) - and its hash is
+        not in the CSP Astro computes at build time, because it does not exist
+        at build time. The browser refuses it, the canvas falls into normal flow
+        at its attribute size (2x CSS px via minPixelRatio), and the hero paints
+        a giant canvas OVER the copy instead of behind it.
+
+        Invisible in `astro dev`, which does not emit the meta CSP at all. Only
+        `astro build` + `astro preview` reproduces it.
+
+        Empty on purpose: the equivalent rules live in global.css, where the
+        build hashes them like any other stylesheet. An empty style element
+        hashes to sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=, which is
+        already in every page's style-src.
+
+        If @paper-design/shaders is ever upgraded, re-check that
+        `defaultStyle` in shader-mount.js still matches the global.css rules. */}
+    <style is:inline data-paper-shader></style>
+
+    <link rel="icon" type="image/png" href="/brand/favicon.png" />
+    <link rel="apple-touch-icon" href="/brand/apple-touch-icon-180.png" />
+    <meta
+      name="theme-color"
+      content={nav === "overlay" ? THEME_DARK : THEME_LIGHT}
+      data-light={THEME_LIGHT}
+      data-dark={THEME_DARK}
+    />
+
+    {/* Self-hosted, preloaded, with generated fallback metrics so the hero
+        does not shift when the face lands. Geist carries the site; Inter is
+        the product's UI face inside the hero demo window (preloaded - the
+        window is the hero visual); Fraunces exists solely for the demo's
+        Home greeting. */}
+    <Font cssVariable="--ff-sans" preload />
+    <Font cssVariable="--ff-app" preload />
+    <Font cssVariable="--ff-mono" />
+    <Font cssVariable="--ff-serif" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={SITE.name} />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    {!noindex && <meta property="og:url" content={canonical} />}
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={pageTitle} />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageUrl} />
+    <meta name="twitter:site" content="@clawbitsai" />
+
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} is:inline />
+
+    {/* Umami. Cookieless by design - see the ANALYTICS block in src/config.ts
+        for why there is no cookie banner on this site and what would put one
+        back. cloud.umami.is has to be in BOTH script-src and connect-src in
+        astro.config.mjs: the tag below is the fetch, and the tracker POSTs its
+        events to /api/send on the same origin.
+
+        `is:inline` so Astro renders the tag verbatim. Without it Astro treats
+        this as a script to process and the data-* attributes the tracker reads
+        its own configuration from are not guaranteed to survive.
+
+        `defer` rather than `async`: nothing on the page calls `umami.track()`,
+        so there is no reason to let this compete with the hero for main-thread
+        time during load. */}
+    {
+      trackAnalytics && (
+        <script
+          is:inline
+          defer
+          src={ANALYTICS.scriptUrl}
+          data-website-id={ANALYTICS.websiteId}
+          data-domains={ANALYTICS.hosts.join(",")}
+        />
+      )
+    }
+  </head>
+
+  <body>
+    <a href="#main" class="skip">Skip to content</a>
+    <Nav variant={nav} />
+    <main id="main">
+      <slot />
+    </main>
+    <Footer />
+
+    {/* Keeps the browser chrome AND the document canvas background in step
+        with what is actually under them: dark while the shader canvas holds
+        the top of the viewport, the page ground after it leaves. body's
+        background is the only thing that reaches the band above the page on
+        iOS - see the note in global.css. No-ops on every page without a
+        [data-theme-anchor]. */}
+    <script>
+      const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+      const anchor = document.querySelector("[data-theme-anchor]");
+      const light = meta?.dataset.light;
+      const dark = meta?.dataset.dark;
+
+      if (meta && anchor && light && dark) {
+        // MEASURE the anchor; do not trust `entry.isIntersecting`.
+        //
+        // An IntersectionObserver delivers its first record as soon as it can,
+        // and engines differ on whether layout has settled by then. A record
+        // taken against a not-yet-laid-out anchor reports isIntersecting:false,
+        // which flips the bar to the LIGHT colour on a page whose hero is
+        // sitting right there in the viewport - and iOS Safari latches that
+        // first value, so the strip above the hero stays the page ground. Every
+        // callback re-measures instead, and a zero-height rect (layout not
+        // ready) says nothing at all rather than guessing wrong.
+        const sync = () => {
+          const rect = anchor.getBoundingClientRect();
+          if (rect.height === 0) return;
+          const holdsTop = rect.bottom > 0;
+          meta.setAttribute("content", holdsTop ? dark : light);
+          // Drives the canvas background too - see the [data-hero-top] note in
+          // global.css. An attribute rather than an inline style: the
+          // production CSP has no 'unsafe-inline' in style-src.
+          document.documentElement.toggleAttribute("data-hero-top", holdsTop);
+        };
+
+        requestAnimationFrame(sync);
+        // Shrink the root's top edge by 1px so a callback fires the moment the
+        // anchor's last row of pixels clears the top of the viewport.
+        new IntersectionObserver(sync, { rootMargin: "-1px 0px 0px 0px" }).observe(anchor);
+      }
+    </script>
+  </body>
+</html>
+
+<style>
+  .skip {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 200;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    padding: 0.75rem 1.25rem;
+    border-radius: 0 0 0.5rem 0;
+    font-size: 0.875rem;
+  }
+
+  .skip:focus {
+    left: 0;
+  }
+</style>

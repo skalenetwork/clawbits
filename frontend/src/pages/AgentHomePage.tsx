@@ -345,7 +345,7 @@ function HomeNudges() {
     if (result === "enabled") toast.success("Notifications enabled");
     else if (result === "denied")
       toast.error(
-        "Notifications were blocked — allow them in your browser settings",
+        "Notifications were blocked - allow them in your browser settings",
       );
     else if (result === "unavailable")
       toast.error("Push notifications aren't available right now");
@@ -357,7 +357,7 @@ function HomeNudges() {
         icon={Bell}
         label={
           denied
-            ? "Notifications are blocked — enable them in your browser settings"
+            ? "Notifications are blocked - enable them in your browser settings"
             : "Turn on notifications for new messages and mentions"
         }
         action={

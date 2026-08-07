@@ -148,7 +148,7 @@ export function useChannelActions(): ChannelActions {
                         ? {
                             title: "Leave this chat?",
                             description:
-                                "You're the only person here. Leaving removes this conversation with the agent for good — it can't be undone.",
+                                "You're the only person here. Leaving removes this conversation with the agent for good - it can't be undone.",
                             confirmLabel: "Leave & delete",
                         }
                         : {

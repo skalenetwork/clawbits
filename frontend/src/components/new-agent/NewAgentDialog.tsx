@@ -91,7 +91,7 @@ export function NewAgentDialog() {
         >
             {/* Esc / backdrop MINIMIZE a dirty session (the dock chip at the
                 sidebar's foot restores it) and fully close an untouched one;
-                the corner ✕ is the explicit "end it now" — it skips the chip
+                the corner ✕ is the explicit "end it now" - it skips the chip
                 entirely (guard-confirmed while a create is in flight or the
                 one-time password is unsaved). Height is content-driven and
                 animates per step. */}
@@ -124,7 +124,7 @@ export function NewAgentDialog() {
                 )}
                 {/* Ghost window controls in the slot the suppressed shared
                     close button vacates (see ui/dialog.tsx): minimize-to-chip
-                    (desktop only — the mobile shell has no dock for the chip)
+                    (desktop only - the mobile shell has no dock for the chip)
                     and the explicit close. */}
                 {active && (
                     <div className="absolute top-4 right-4 flex items-center gap-1">
@@ -427,7 +427,7 @@ function WizardBody({
     const createError: string | null =
         state.launched && state.mode === "reef" && createMutation.isError
             ? createMutation.error instanceof ReefAuthError
-                ? "Reef rejected the token — check it and retry."
+                ? "Reef rejected the token - check it and retry."
                 : createMutation.error instanceof ReefUnreachableError
                     ? "Can't reach Reef over its tunnel."
                     : createMutation.error instanceof Error
@@ -505,9 +505,9 @@ function WizardBody({
     // ── Error banner (rail-level, never a silent branch swap) ──
     const pastDeploy = state.step !== "deploy" && state.mode === "reef";
     const banner: string | null =
-        pastDeploy && healthQuery.isError ? "Reef unreachable — check its tunnel."
+        pastDeploy && healthQuery.isError ? "Reef unreachable - check its tunnel."
         : pastDeploy && tokenRejected ? "Reef rejected the admin token."
-        : pastDeploy && reefTooOld ? "This Reef predates provider discovery — update it."
+        : pastDeploy && reefTooOld ? "This Reef predates provider discovery - update it."
         : null;
 
     // Launch locks the rail on BOTH paths (it isn't a step of its own — the
@@ -560,7 +560,7 @@ function WizardBody({
                         title: heroName,
                         // "access code inside" only if there IS one (self-host
                         // creates have none; reef runtimes all mint a password).
-                        subtitle: createdPassword !== null ? "Ready — access code inside" : "Ready to chat",
+                        subtitle: createdPassword !== null ? "Ready - access code inside" : "Ready to chat",
                         status: "ready",
                         progress: null,
                     }

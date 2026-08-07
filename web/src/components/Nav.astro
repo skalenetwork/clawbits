@@ -1,0 +1,382 @@
+---
+import Logo from "./Logo.astro";
+import { LINKS, NAV, SITE, isExternal } from "../config";
+
+/**
+ * Site nav: logo left, links dead-center, sign-in + button right. Zero JS -
+ * the fixed bar's appearance is a CSS scroll-driven animation and the mobile
+ * menu is a native <details>.
+ *
+ * Two variants:
+ *
+ * overlay (homepage) - TWO headers, per the owner's spec:
+ *   1. nav-top: absolute over the hero canvas, white foreground, scrolls
+ *      away with the page like ordinary content.
+ *   2. nav-fixed: a fixed bar that slides in only when the hero canvas has
+ *      left the viewport, driven by the canvas's own view timeline
+ *      (--hero-view, hoisted via timeline-scope on <body>), so the trigger
+ *      is "end of the shader section" at every viewport size - no magic
+ *      scroll offsets. Its content column is the rails width (70.5rem), not
+ *      the viewport. It duplicates nav-top for MOUSE convenience only:
+ *      aria-hidden + tabindex="-1" throughout, so keyboard and screen-reader
+ *      users have exactly one nav (the real one at the document top).
+ *      Without scroll-timeline support it stays hidden - the base style is
+ *      off-screen and only the animation brings it in, so an unresolved or
+ *      unsupported timeline fails closed, never as a stuck double header.
+ *
+ * solid (docs, legal) - one sticky bar, same layout, no animation.
+ */
+
+interface Props {
+  variant?: "overlay" | "solid";
+}
+
+const { variant = "solid" } = Astro.props;
+
+/** The fixed duplicate is mouse-only chrome; keep it out of the tab order. */
+const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
+---
+
+{
+  [variant === "overlay" ? "top" : "solid", ...(variant === "overlay" ? ["fixed"] : [])].map(
+    (kind) => {
+      const hidden = kind === "fixed";
+      return (
+        <header
+          class:list={["nav", `nav-${kind}`]}
+          aria-hidden={hidden ? "true" : undefined}
+        >
+          {kind !== "top" && <div class="bar" aria-hidden="true" />}
+
+          <nav class="inner" aria-label={hidden ? undefined : "Primary"}>
+            <a href="/" class="home" aria-label={`${SITE.name} home`} tabindex={noTab(hidden)}>
+              <Logo />
+            </a>
+
+            <ul class="links">
+              {NAV.map((item) => (
+                <li>
+                  <a
+                    href={item.href}
+                    tabindex={noTab(hidden)}
+                    target={isExternal(item.href) ? "_blank" : undefined}
+                    rel={isExternal(item.href) ? "noopener noreferrer" : undefined}
+                  >
+                    {item.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+
+            <div class="actions">
+              <a href={LINKS.signin} class="signin" tabindex={noTab(hidden)}>
+                Sign in
+              </a>
+              <a href={LINKS.signup} class="pill" tabindex={noTab(hidden)}>
+                Get Started
+              </a>
+            </div>
+
+            <details class="menu">
+              <summary aria-label="Menu" tabindex={noTab(hidden)}>
+                <span /><span />
+              </summary>
+              <ul>
+                {NAV.map((item) => (
+                  <li>
+                    <a
+                      href={item.href}
+                      tabindex={noTab(hidden)}
+                      target={isExternal(item.href) ? "_blank" : undefined}
+                      rel={isExternal(item.href) ? "noopener noreferrer" : undefined}
+                    >
+                      {item.label}
+                    </a>
+                  </li>
+                ))}
+                <li>
+                  <a href={LINKS.signin} tabindex={noTab(hidden)}>
+                    Sign in
+                  </a>
+                </li>
+              </ul>
+            </details>
+          </nav>
+        </header>
+      );
+    },
+  )
+}
+
+<style>
+  .nav {
+    z-index: 50;
+  }
+
+  /* Scrolls away with the hero. Aligned to the canvas box (the 1rem frame),
+   * not the viewport. */
+  .nav-top {
+    position: absolute;
+    top: 1rem;
+    inset-inline: 1rem;
+    color: #fff;
+    /* Logo.astro flips the black artwork to white via this. */
+    --logo-invert: 1;
+  }
+
+  .nav-fixed {
+    position: fixed;
+    top: 0;
+    inset-inline: 0;
+    color: var(--color-paper);
+    /* Off-screen is the BASE state; only an active timeline reveals it. */
+    translate: 0 -110%;
+  }
+
+  /* BOTH properties, because the timeline crosses a subtree boundary.
+   *
+   * `animation-timeline` alone is the wrong test: the timeline is declared on
+   * the hero canvas in index.astro and reaches this bar only via
+   * `timeline-scope` on <body> (global.css), and the two properties did not
+   * ship together - Firefox carried animation-timeline for many releases
+   * before timeline-scope. In that gap the browser passes the old guard,
+   * applies `animation ... both` against a name that resolves to nothing, and
+   * the bar's resting state is whatever that engine does with an unresolved
+   * timeline under fill:both. Hidden is the intent (see the header comment),
+   * but it should be the base style holding, not an engine's read of an
+   * under-specified edge case - the failure mode in the other direction is a
+   * permanently stuck duplicate header. Testing the real dependency makes it
+   * deterministic. */
+  @supports (animation-timeline: scroll()) and (timeline-scope: --x) {
+    .nav-fixed {
+      animation: fixed-in linear both;
+      animation-timeline: --hero-view;
+      /* exit 80% -> 100%: the last fifth of the canvas leaving the viewport
+       * scrubs the bar in; it is fully present the moment the canvas is gone. */
+      animation-range: exit 80% exit 100%;
+    }
+  }
+
+  @keyframes fixed-in {
+    to {
+      translate: 0 0;
+    }
+  }
+
+  .nav-solid {
+    position: sticky;
+    top: 0;
+    color: var(--color-paper);
+  }
+
+  .bar {
+    position: absolute;
+    inset: 0;
+    background: var(--color-ink);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .inner {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: 4rem;
+    padding-inline: clamp(1rem, 2.5vw, 2rem);
+  }
+
+  /* The fixed bar's content column matches the rails, not the viewport. */
+  .nav-fixed .inner {
+    max-width: 70.5rem;
+    margin-inline: auto;
+    padding-inline: clamp(1.25rem, 4vw, 3rem);
+  }
+
+  /* Over the canvas the row hugs the corners tighter - the in-canvas nav is
+   * inset ~16-20px, roughly half the solid bars' gutter. The start side gets a
+   * few px extra: the wordmark's angled claw reads closer to the edge than the
+   * button's crisp right edge does. */
+  .nav-top .inner {
+    padding-inline: clamp(0.875rem, 1.5vw, 1.25rem);
+    padding-inline-start: clamp(1.25rem, 2vw, 1.75rem);
+  }
+
+  .home {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  /* Dead-center links, independent of the asymmetric sides. */
+  .links {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    translate: -50% -50%;
+    display: flex;
+    gap: 2rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .links a,
+  .signin {
+    color: inherit;
+    opacity: 0.72;
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition: opacity 160ms var(--ease-out-expo);
+  }
+
+  /* Room for the star count inside the GitHub link; inert for text-only
+   * links. */
+  .links a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+  }
+
+  .links a:hover,
+  .signin:hover {
+    opacity: 1;
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 1.125rem;
+    margin-inline-start: auto;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    height: 2rem;
+    padding-inline: 0.875rem;
+    border-radius: var(--radius-btn);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    text-decoration: none;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    transition: scale 120ms var(--ease-out-expo);
+  }
+
+  /* Slight press-in, matching the Button component. */
+  .pill:active {
+    scale: 0.97;
+  }
+
+  /* Over the shader a dark button vanishes; the top nav's is cream. */
+  .nav-top .pill {
+    background: var(--color-ink);
+    color: var(--color-paper);
+  }
+
+  /* ── Mobile ───────────────────────────────────────────────────────────── */
+
+  .menu {
+    display: none;
+    margin-inline-start: 0.25rem;
+  }
+
+  .menu summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    width: 2.5rem;
+    height: 2.5rem;
+    align-items: flex-end;
+    padding-inline-end: 0.25rem;
+  }
+
+  .menu summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .menu summary span {
+    display: block;
+    width: 1.125rem;
+    height: 1.5px;
+    background: currentColor;
+    transition: transform 220ms var(--ease-out-expo);
+  }
+
+  .menu[open] summary span:first-child {
+    transform: translateY(3.25px) rotate(45deg);
+  }
+
+  .menu[open] summary span:last-child {
+    transform: translateY(-3.25px) rotate(-45deg);
+  }
+
+  /* The dropdown is always the solid palette - it has to read over the shader
+   * and over cream alike. */
+  .menu ul {
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    inset-inline: 0.5rem;
+    margin: 0;
+    padding: 0.5rem 0;
+    list-style: none;
+    background: var(--color-ink);
+    border: 1px solid var(--color-line);
+    border-radius: 0.875rem;
+    box-shadow:
+      0 20px 25px -5px rgb(0 0 0 / 0.1),
+      0 8px 10px -6px rgb(0 0 0 / 0.1);
+  }
+
+  .menu ul a {
+    display: block;
+    padding: 0.6875rem 1.125rem;
+    color: var(--color-paper);
+    text-decoration: none;
+    font-size: 0.9375rem;
+  }
+
+  @media (max-width: 48rem) {
+    .links,
+    .signin {
+      display: none;
+    }
+
+    .menu {
+      display: block;
+    }
+
+    /* The overlay header only. On the hero canvas the phone shows a Get
+     * Started pill inches above the hero's own Get Started button - the same
+     * action twice, and the duplicate is the one competing with the headline.
+     * The fixed bar that slides in later keeps its pill: by then the hero
+     * button has scrolled away and it is the only CTA on screen. */
+    .nav-top .pill {
+      display: none;
+    }
+  }
+
+  /* Phones: the overlay bar joins the hero's alignment line.
+   *
+   * Its 1rem inset exists to match the canvas frame, and at this width the
+   * frame is gone - index.astro takes the canvas full-bleed. So the inset goes
+   * too, and the inner padding becomes the shared gutter: the wordmark's left
+   * edge and the menu's right edge then sit exactly where the headline, the
+   * button and the phone's body do.
+   *
+   * This also drops the asymmetric start padding above. That extra existed as
+   * an optical correction for the wordmark's angled claw; a visible shared
+   * line beats an invisible optical one, and the owner asked for the line. */
+  @media (max-width: 40rem) {
+    .nav-top {
+      inset-inline: 0;
+    }
+
+    .nav-top .inner {
+      padding-inline: var(--hero-gutter);
+    }
+  }
+</style>

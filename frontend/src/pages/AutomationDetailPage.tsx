@@ -316,7 +316,7 @@ export function AutomationDetailView({orgId, automationId, backTo, renderHeader}
                     {state.drifted && !isExternal && (
                         <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
                             This job changed outside Clawbits. The configuration below is the
-                            desired one — it re-applies on {agentName}'s next reconcile.
+                            desired one - it re-applies on {agentName}'s next reconcile.
                         </p>
                     )}
                 </section>

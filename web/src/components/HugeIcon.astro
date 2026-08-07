@@ -1,0 +1,75 @@
+---
+/**
+ * Renders a @hugeicons/core-free-icons glyph as plain inline SVG.
+ *
+ * The app draws these through @hugeicons/react, but this site keeps React for
+ * exactly one island (the hero shader) - shipping a component runtime to draw
+ * two footer glyphs would be the wrong trade. The icon data is a plain array,
+ * so it renders server-side to static markup with zero client JavaScript.
+ *
+ * Shape is `[tagName, attrs][]`, where attrs are REACT-style camelCase
+ * (strokeWidth, strokeLinecap) plus a `key` React needs and SVG does not.
+ * Both have to be converted or the browser silently drops them - camelCase SVG
+ * presentation attributes do not error, they just fail to apply, so the glyph
+ * renders with a default 1px miter stroke and looks subtly wrong rather than
+ * broken.
+ *
+ * The glyphs are strokes on a 24x24 grid and carry `stroke: currentColor`
+ * in their own data, so they tint from the surrounding text colour.
+ */
+
+/**
+ * Declared here rather than imported: the package's own `IconSvgObject` is
+ * exported from its internal types module but NOT re-exported from the package
+ * root, so `import type { IconSvgObject } from "@hugeicons/core-free-icons"`
+ * does not resolve. This is the readonly half of their union - the mutable
+ * half assigns to it structurally, so every icon export fits.
+ */
+type IconAttrs = { readonly [key: string]: string | number };
+type IconSvg = readonly (readonly [string, IconAttrs])[];
+
+interface Props {
+  /** A named export from @hugeicons/core-free-icons. */
+  icon: IconSvg;
+  /** Rendered box in px; the viewBox is always 24. */
+  size?: number;
+  class?: string;
+}
+
+const { icon, size = 20, class: className = "" } = Astro.props;
+
+const toKebab = (k: string) => k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+
+/**
+ * Serialised rather than rendered as dynamic `<Tag>` elements: a tag name held
+ * in a variable is not a valid component to Astro's type checker, and the
+ * casts needed to silence that are worse than building the markup.
+ *
+ * Safe to inject: both the tag names and the attribute values come from the
+ * bundled icon package, not from user input or content. Values are still
+ * quote-escaped so a future icon carrying a quote cannot break out of the
+ * attribute.
+ */
+const inner = icon
+  .map(([tag, attrs]) => {
+    const rendered = Object.entries(attrs)
+      .filter(([k]) => k !== "key")
+      .map(([k, v]) => `${toKebab(k)}="${String(v).replace(/"/g, "&quot;")}"`)
+      .join(" ");
+    return `<${tag} ${rendered} />`;
+  })
+  .join("");
+---
+
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 24 24"
+  width={size}
+  height={size}
+  fill="none"
+  class={className}
+  aria-hidden="true"
+  focusable="false"
+>
+  <Fragment set:html={inner} />
+</svg>

@@ -33,7 +33,7 @@ function fireBurst(emoji: string, x: number, y: number): void {
     angle: 90, // straight up; gravity arcs them back down into a fountain
     gravity: 1.6, // pull them back down quickly so they clear the screen
     decay: 0.9, // bleed velocity a touch faster
-    ticks: 90, // short lifetime — fade out fast instead of lingering
+    ticks: 90, // short lifetime - fade out fast instead of lingering
     flat: true, // emoji read better face-on than tumbling like paper confetti
     disableForReducedMotion: true,
   };

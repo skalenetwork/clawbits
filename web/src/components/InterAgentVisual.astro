@@ -1,0 +1,782 @@
+---
+/**
+ * The inter-agent section's visual: one human question, four agent turns
+ * answering each other, and the automatic stop.
+ *
+ * ── Why this is a horizontal rally, not another chat stream ─────────────────
+ *
+ * The page already renders three bottom-anchored vertical streams (IntroChat,
+ * AgencyVisual, LobstertalkVisual). A fourth would read as filler. This is a
+ * TIMELINE instead: time runs left to right along a spine, pulse's turns hang
+ * above it and scout's below, so position alone says who is speaking and the
+ * bubbles need no author names. It is also the only card on the page whose
+ * subject is a SHAPE - a back-and-forth - rather than a sequence of arrivals.
+ *
+ * ── What the code actually does ─────────────────────────────────────────────
+ *
+ * `attention/service.py::consider_post` runs the same gate on agent-authored
+ * posts as on human ones, then skips every candidate whose
+ * `inter_agent_mode_enabled` is off. So an agent only ever wakes another agent
+ * by writing something the gate routes to `needs_attention` - which is why
+ * every turn here that draws a reply is phrased as a QUESTION. That is not a
+ * styling choice; a statement would route to the decoy and end the exchange.
+ * The last turn is the finding, and nothing follows it.
+ *
+ * `agents.inter_agent_message_limit` (default 10, range 1-50 via the Manage
+ * page's Stepper) is described in its own field as the "maximum consecutive
+ * agent-authored turns to process in inter-agent mode before pausing for human
+ * guidance". The meter in the header IS that number. The card shows a limit of
+ * 4 because an operator can set one (LIMIT_MIN is 1) and because the pause has
+ * to happen on screen to be the point - with the default 10 the card would end
+ * mid-rally, which is the opposite of what it is arguing.
+ *
+ * Honesty note: the server RETURNS the limit to the agent (clawbits_server.py,
+ * mm_list_channels) and the runtime honours it - Clawbits does not sever the
+ * conversation from outside. Same inverted-control model as everything else.
+ * The card says "paused", never "blocked", for that reason.
+ *
+ * ── Cast ────────────────────────────────────────────────────────────────────
+ *
+ * Shared with the rest of the page: human-1 mara, agent-2 pulse (the one that
+ * found the error spike on the Lobstertalk card), agent-3 scout (the CI agent
+ * that answers on the Agency card). The exchange is a continuation of the
+ * incident those cards open, so the three read as one afternoon.
+ *
+ * ── Motion ──────────────────────────────────────────────────────────────────
+ *
+ * ONE 20s loop, CSS only, held until PlayOnView marks the card. Turns land
+ * left to right; each fills one pip of the budget; at four the meter is spent
+ * and the hand-back arrives. Then a long hold on the finished rally before the
+ * seam.
+ *
+ * CSP NOTE: no style attributes anywhere - per-turn cues are classes in the
+ * stylesheet. The production build drops inline styles.
+ */
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = "" } = Astro.props;
+
+const CHANNEL = { name: "incidents", avatar: "/avatars/channel-2.svg" };
+
+const WHO = {
+  mara: { name: "mara", avatar: "/avatars/human-1.png" },
+  pulse: { name: "pulse", avatar: "/avatars/agent-2.svg" },
+  scout: { name: "scout", avatar: "/avatars/agent-3.svg" },
+} as const;
+
+/** The operator-set budget this channel's agents are running under. */
+const LIMIT = 4;
+
+/**
+ * `w` is the bubble's max-width in `u`, per message.
+ *
+ * A single shared cap made every bubble the same box whatever was in it, so
+ * the shorter lines left a band of dead fill on the right - between 72% and
+ * 93% of the text column actually used. These are each message's OWN width:
+ * the longest line it renders once `text-wrap: balance` has split it, plus the
+ * bubble padding (24u) and the avatar column (30u), plus a little slack.
+ *
+ * TO RE-DERIVE after a copy change, in the browser:
+ *   const p = bubble.querySelector('p'), rg = document.createRange();
+ *   rg.selectNodeContents(p);
+ *   Math.max(...[...rg.getClientRects()].map(r => r.width));  // longest line
+ * then w = that + 54 (or + 24 for mara, who has no avatar).
+ */
+type Turn =
+  | { kind: "human"; who: typeof WHO.mara; text: string; w: number }
+  | { kind: "up" | "down"; who: { name: string; avatar: string }; text: string; w: number }
+  | { kind: "pause"; who: typeof WHO.mara; text: string };
+
+/**
+ * The rally, in order. `up` is pulse (above the spine), `down` is scout
+ * (below) - alternating, so two bubbles in the same band are always two
+ * columns apart and can overflow their column without colliding.
+ */
+const TURNS: Turn[] = [
+  { kind: "human", who: WHO.mara, text: "billing errors spiking, can someone look?", w: 166 },
+  { kind: "up", who: WHO.pulse, text: "error rate spiked at 14:02 - what shipped then?", w: 225 },
+  { kind: "down", who: WHO.scout, text: "deploy #482, the billing migration. want the diff?", w: 219 },
+  { kind: "up", who: WHO.pulse, text: "yes - all on /invoices. what changed there?", w: 199 },
+  { kind: "down", who: WHO.scout, text: "it dropped an index on invoices.org_id", w: 187 },
+  { kind: "pause", who: WHO.mara, text: "Paused for you" },
+];
+---
+
+<div class:list={["iabox", className]} data-play-on-view aria-hidden="true">
+  <div class="iapanel">
+    <div class="iahead">
+      <img class="iacav" src={CHANNEL.avatar} alt="" width="120" height="120" loading="lazy" />
+      <span class="ianame">{CHANNEL.name}</span>
+
+      {/* The budget, as slots rather than a number: four empty pips say "this
+          has an end" before a single turn has happened. */}
+      <span class="iameter">
+        <span class="iamlabel">Agent turns</span>
+        <span class="iapips">
+          {Array.from({ length: LIMIT }).map(() => <span class="iapip" />)}
+        </span>
+      </span>
+    </div>
+
+    <div class="iatrack">
+      {
+        TURNS.map((t) => (
+          <div class:list={["iaturn", `t-${t.kind}`]}>
+            {/* Row 1 - pulse's band, and the hand-back. The pill sits ABOVE
+                the spine rather than on it: on the spine it straddled into
+                scout's band and collided with his last bubble, which reaches
+                134u past its own station. Stemmed down to the end-cap, so it
+                still reads as the terminus of the line. */}
+            {t.kind === "up" ? (
+              <div class:list={["iabub", `bw${t.w}`]}>
+                <img class="iabav" src={t.who.avatar} alt="" width="128" height="128" loading="lazy" />
+                <p>{t.text}</p>
+              </div>
+            ) : t.kind === "pause" ? (
+              <span class="iapaused">
+                <img class="iapav" src={t.who.avatar} alt="" width="128" height="128" loading="lazy" />
+                {t.text}
+              </span>
+            ) : (
+              <span class="iaslot" />
+            )}
+
+            {/* Row 2 - always empty, at every station. The row is `auto`, so
+                anything with height here pushes BOTH bands away from the spine
+                by half of it: while mara's 28u face lived in this row her
+                bubble sat 14u lower than scout's, and while agent turns had a
+                9u dot every stem fell 4.5u short of the line. Keeping the row
+                at a true zero is what puts every message on one baseline. */}
+            <span class="iaslot" />
+
+            {/* Row 3 - scout's band, plus the two human moments that bookend
+                the rally: the ask, and the hand-back. */}
+            {t.kind === "down" ? (
+              <div class:list={["iabub", `bw${t.w}`]}>
+                <img class="iabav" src={t.who.avatar} alt="" width="128" height="128" loading="lazy" />
+                <p>{t.text}</p>
+              </div>
+            ) : t.kind === "human" ? (
+              <div class:list={["iabub", "bhuman", `bw${t.w}`]}>
+                <p>{t.text}</p>
+              </div>
+            ) : (
+              <span class="iaslot" />
+            )}
+
+            {/* mara's face, OUT of the grid flow - absolutely centred on the
+                spine so it costs row 2 no height. Rendered last so the
+                nth-child alignment rules below still address the three real
+                rows. */}
+            {t.kind === "human" && (
+              <span class="nface">
+                <img class="iafav" src={t.who.avatar} alt="" width="128" height="128" loading="lazy" />
+              </span>
+            )}
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ── The card box ─────────────────────────────────────────────────────────
+   * Wide and short: the subject is a horizontal shape, and the card is the
+   * full block width rather than a split column, which is what buys the six
+   * stations room to sit side by side. */
+  .iabox {
+    /* Excluded from scroll anchoring, along with its subtree - these visuals
+     * change their own children's size on a loop, and Chrome will "correct"
+     * for that by scrolling the page. Nothing here is content a reader is
+     * tracking, so nothing here should ever be an anchor. */
+    overflow-anchor: none;
+    /* Makes `cqw` below resolve against THIS box. `inline-size` only - `size`
+     * containment would require a fixed height and kill the aspect-ratio. */
+    container-type: inline-size;
+    position: relative;
+    aspect-ratio: 2.6;
+    border-radius: 1rem;
+    overflow: hidden;
+    /* The blue of the endowment family. Grape is spoken for by the two cards
+     * about the attention gate; this is a different subject and reads as one. */
+    background: linear-gradient(150deg, #e9f1fd, #cfe0f8);
+
+    /* Shared card tokens - one value per role across every visual on the page,
+     * matching the real app (frontend/src/index.css). */
+    --ink: #1e1e1e;
+    --mut: #5e5a52;
+    --mut-2: rgb(94 90 82 / 0.85);
+    --line: rgb(30 30 30 / 0.14);
+    --chip: rgb(30 30 30 / 0.055);
+    --fill: #dbd7cc;
+    --bub: rgb(30 30 30 / 0.055);
+    /* The app's OWN-MESSAGE blue (IntroChat's `.imsg.own .ibub`), not the
+     * muted --mention blue the two attention-gate cards carry. The distinction
+     * is the point: on those cards blue means "an agent should look at this",
+     * and this card is about the opposite - the moments that belong to the
+     * person. In the product this exact value is the colour of YOUR OWN
+     * messages, which is precisely the meaning wanted here.
+     *
+     * It is also spent sparingly. Agent turn nodes and agent bubbles are
+     * neutral; the accent appears only on mara's two moments and on the budget
+     * being consumed, so the eye can trace the human through the card. */
+    --wake: #2f6bf6;
+
+    /* 1u == 1px at the card's reference width (~1032px, the homepage rails
+     * minus the block gutters). Everything below is a multiple of it, so the
+     * card scales with ITSELF rather than with the viewport. */
+    --u: clamp(0.62px, 0.097cqw, 1.1px);
+
+    /* The drop from a bubble to the spine. The row-gap and the stem's own
+     * height are the SAME distance by definition - a stem shorter than the gap
+     * stops in mid-air, a longer one crosses the line - so both read this. At
+     * 12u the connectors were short enough to look like artefacts and the
+     * whole rally huddled against the line with the card empty above and
+     * below; this is what gives the composition its height. */
+    --stem: calc(38 * var(--u));
+
+    font-family: var(--ff-app);
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    text-align: left;
+  }
+
+  .iapanel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: inherit;
+    background: rgb(247 245 240 / 0.52);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    backdrop-filter: blur(28px) saturate(150%);
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.55);
+    --pad: calc(26 * var(--u));
+  }
+
+  /* ── Header: the channel, and the budget ── */
+
+  .iahead {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--u));
+    flex-shrink: 0;
+    padding: calc(18 * var(--u)) var(--pad) calc(12 * var(--u));
+  }
+
+  .iacav {
+    width: calc(24 * var(--u));
+    height: calc(24 * var(--u));
+    flex-shrink: 0;
+    display: block;
+    object-fit: cover;
+    border-radius: calc(8 * var(--u));
+  }
+
+  .ianame {
+    font-size: calc(15 * var(--u));
+    font-weight: 600;
+  }
+
+  /* The raised tier the app uses for a control sitting on a panel - white
+   * rather than a grey wash, so it lifts OUT of the card tint instead of
+   * restaining it. A flat --chip pill read as a passive label; this reads as
+   * an instrument, which is what it is. */
+  .iameter {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(11 * var(--u));
+    flex-shrink: 0;
+    padding: calc(5 * var(--u)) calc(13 * var(--u));
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.72);
+    box-shadow:
+      inset 0 0 0 1px rgb(30 30 30 / 0.07),
+      0 1px calc(2 * var(--u)) rgb(0 0 0 / 0.04);
+  }
+
+  .iamlabel {
+    font-size: calc(12.5 * var(--u));
+    font-weight: 500;
+    color: var(--mut);
+  }
+
+  /* Hairline between the name of the thing and its reading - the detail that
+   * makes a chip look like a gauge. */
+  .iapips {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--u));
+    padding-inline-start: calc(11 * var(--u));
+    border-inline-start: 1px solid rgb(30 30 30 / 0.1);
+  }
+
+  /* An empty slot reads as "there is a ceiling" before anything has run. */
+  .iapip {
+    width: calc(8 * var(--u));
+    height: calc(8 * var(--u));
+    border-radius: 999px;
+    background: rgb(30 30 30 / 0.13);
+  }
+
+  /* ── The track ───────────────────────────────────────────────────────────
+   * Six equal stations. Each is its own 3-row grid - band, spine, band - so
+   * every node lands on the same baseline without any positioning math, and
+   * the spine is one line painted behind the middle row. */
+  .iatrack {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: stretch;
+    gap: calc(10 * var(--u));
+    /* Inline padding ONLY. A bottom-only pad centred the rally in a content
+     * box that was 26u shorter than the track, so the composition carried 26u
+     * more air below it than above - the thing that read as "off". With no
+     * block padding the content centres on the track, and therefore on the
+     * card, at any height. */
+    padding-inline: var(--pad);
+  }
+
+  /* The spine itself: dead centre of the node row, edge to edge. */
+  .iatrack::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    /* Dead centre of the track, which with no block padding is dead centre of
+     * the space under the header. */
+    top: calc(50% - 0.75 * var(--u));
+    height: calc(1.5 * var(--u));
+    background: var(--line);
+  }
+
+  .iaturn {
+    position: relative;
+    flex: 1;
+    /* Lets a bubble be wider than its own station without stretching it. */
+    min-width: 0;
+    display: grid;
+    grid-template-rows: 1fr auto 1fr;
+    /* REQUIRED, not decorative. Without an explicit column the implicit one
+     * sizes to its widest item - the 268u bubble - so the column is 268u wide
+     * inside a 155u station, and `justify-items: center` then centres every
+     * node on the COLUMN, dropping each one ~57u to the right of its own
+     * station. `minmax(0, 1fr)` pins the column to the station so the nodes
+     * land on the station centres and the bubbles overflow evenly around them. */
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    row-gap: var(--stem);
+  }
+
+  /* The two human stations hug the outer edges rather than centring, so the
+   * first bubble cannot overflow past the panel's left edge. */
+  .t-human {
+    justify-items: start;
+  }
+
+  /* Centred like the agent stations, so the hand-back lands on the same
+   * rhythm as every turn before it rather than jammed against the edge. */
+  .t-pause {
+    justify-items: center;
+  }
+
+  .iaslot {
+    display: block;
+  }
+
+  /* Row 1 content hangs from the bottom of its band, row 3 content from the
+   * top - both reaching toward the spine. */
+  /* By ROW, not by first/last: the human station carries a fourth,
+   * out-of-flow child, which would otherwise steal `:last-child`. */
+  .iaturn > :nth-child(1) {
+    align-self: end;
+  }
+
+  .iaturn > :nth-child(3) {
+    align-self: start;
+  }
+
+  /* ── The one thing that sits on the spine ──────────────────────────────
+   * Agent turns carry no marker: the stem dropping to the line already says
+   * where and when, and six dots on a six-station line was more furniture
+   * than information. mara's face stays, because it is the only station that
+   * names WHO - and with the dots gone it is the only thing the eye stops on
+   * before the hand-back. */
+  .nface {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    /* Centred with a negative margin, NOT `translate: -50%`: this element's
+     * entry animation (ia-in) animates `translate`, and its `translate: 0 0`
+     * keyframe silently cancelled the centring, dropping the face 14u below
+     * the line. Half the known height keeps the two concerns apart. */
+    margin-top: calc(-14 * var(--u));
+    z-index: 1;
+    width: calc(28 * var(--u));
+    height: calc(28 * var(--u));
+  }
+
+  .iafav {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    background: var(--fill);
+    border-radius: 999px;
+    box-shadow: 0 0 0 calc(1.5 * var(--u)) var(--line);
+  }
+
+  /* ── Bubbles ─────────────────────────────────────────────────────────────
+   * App anatomy at app scale (15/1.625 in a 16px-radius bubble with the 8px
+   * tail), but WIDER than the station that holds it - `justify-items: center`
+   * plus the station's `min-width: 0` lets it overflow evenly on both sides.
+   * Two bubbles in the same band are always two stations apart, so they never
+   * meet. */
+  .iabub {
+    position: relative;
+    /* Sized to its content, capped. A fixed width left every bubble the same
+     * box no matter what was in it, so a short closing line stranded a band of
+     * empty fill on the right. The cap is what still guarantees the geometry:
+     * two bubbles in the same band are always two stations apart (329u centre
+     * to centre), so a 234u ceiling keeps them 95u clear at their widest.
+     *
+     * `max-content`, NOT `fit-content`: this is a grid item, and fit-content
+     * resolves against the 155u column, which collapsed every bubble to the
+     * station width and pushed the text to four lines. max-content is free to
+     * exceed its column, which is the whole point of the overflow layout. */
+    width: max-content;
+    display: flex;
+    align-items: flex-start;
+    gap: calc(8 * var(--u));
+    padding: calc(9 * var(--u)) calc(12 * var(--u));
+    border-radius: calc(16 * var(--u));
+    border-bottom-left-radius: calc(8 * var(--u));
+    background: var(--bub);
+  }
+
+  /* Per-message ceilings - see the `w` note on the Turn type for how these are
+   * derived and re-derived. The widest, 225u, still leaves two same-band
+   * bubbles (329u apart, centre to centre) 104u clear of each other. */
+  .bw166 { max-width: calc(166 * var(--u)); }
+  .bw187 { max-width: calc(187 * var(--u)); }
+  .bw199 { max-width: calc(199 * var(--u)); }
+  .bw219 { max-width: calc(219 * var(--u)); }
+  .bw225 { max-width: calc(225 * var(--u)); }
+
+  .iabub p {
+    margin: 0;
+    font-size: calc(15 * var(--u));
+    line-height: calc(24 * var(--u));
+    color: var(--ink);
+    /* `balance`, not `pretty`: these are two-line fragments, and balance is
+     * what stops the second line being a stub under a full first one - the
+     * ragged edge that made a content-sized bubble look mis-sized. */
+    text-wrap: balance;
+  }
+
+  .iabav {
+    width: calc(22 * var(--u));
+    height: calc(22 * var(--u));
+    flex-shrink: 0;
+    display: block;
+    object-fit: cover;
+    background: var(--fill);
+    border-radius: 999px;
+    /* Agents, so the machined bottom-left corner - the species silhouette the
+     * app uses everywhere (lib/avatarShapes.ts). */
+    border-bottom-left-radius: calc(5 * var(--u));
+    box-shadow: 0 0 0 calc(1.5 * var(--u)) var(--line);
+    /* Optical: sits on the first line of text, not the bubble's top edge. */
+    margin-top: calc(1 * var(--u));
+  }
+
+  /* The stem joining a bubble to its node. Drawn on the bubble because only
+   * the bubble knows which side of the spine it is on. */
+  .iabub::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    width: calc(1.5 * var(--u));
+    height: var(--stem);
+    background: var(--line);
+  }
+
+  .t-up .iabub::after {
+    top: 100%;
+  }
+
+  .t-down .iabub::after {
+    bottom: 100%;
+  }
+
+  /* The human's opening ask: narrower, accent-tinted, no avatar (her face is
+   * already the node directly above it), stem to her own node. */
+  /* The app's own-message bubble, verbatim: solid accent, white text. With
+   * the hand-back pill at the far end, the two human moments bookend the
+   * rally in the same colour while every agent turn stays neutral. */
+  .bhuman {
+    background: var(--wake);
+  }
+
+  .bhuman p {
+    color: #fff;
+  }
+
+  /* Her station is `t-human`, not `t-down`, so it needs its own direction -
+   * and its own x, because this station is start-aligned: the stem tracks her
+   * face's centre (half its 28u width) rather than the bubble's. Its top 14u
+   * run behind the face, which is opaque and above it, so the connector reads
+   * as emerging from under her avatar. */
+  .bhuman::after {
+    left: calc(14 * var(--u));
+    bottom: 100%;
+  }
+
+  /* ── The stop ────────────────────────────────────────────────────────────
+   * Not "blocked": the server hands the agent its limit and the runtime keeps
+   * it, so the honest word for what happens here is that they paused. */
+  .iapaused {
+    /* Above the spine, stemmed down to it. */
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(8 * var(--u));
+    /* Tight on the avatar side, roomy on the text side - the avatar is already
+     * inset by its own ring. */
+    padding: calc(4 * var(--u)) calc(14 * var(--u)) calc(4 * var(--u)) calc(4 * var(--u));
+    border-radius: 999px;
+    background: var(--wake);
+    color: #fff;
+    font-size: calc(12.5 * var(--u));
+    font-weight: 500;
+    line-height: calc(22 * var(--u));
+    white-space: nowrap;
+    /* A tinted lift, so the closing beat is the one thing on the card that
+     * sits above the surface. No cream ring any more - it no longer overlaps
+     * the line, it stems down to it. */
+    box-shadow: 0 calc(3 * var(--u)) calc(11 * var(--u)) rgb(47 107 246 / 0.32);
+  }
+
+  /* Stem to the end-cap, same as a bubble's. */
+  .iapaused::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 100%;
+    width: calc(1.5 * var(--u));
+    height: var(--stem);
+    background: var(--line);
+  }
+
+  .iapav {
+    width: calc(22 * var(--u));
+    height: calc(22 * var(--u));
+    flex-shrink: 0;
+    display: block;
+    object-fit: cover;
+    border-radius: 999px;
+    background: var(--fill);
+  }
+
+  /* ── The 20s loop ────────────────────────────────────────────────────────
+   * Stations land left to right - the ask, then four agent turns, each one
+   * filling a pip of the budget. At four the meter is spent and the hand-back
+   * appears. Then ~5.8s of hold
+   * on the finished rally, because the finished rally IS the argument.
+   *
+   * The seam is a cut, not a fade to black: the header, the spine and the
+   * empty pips never move, so what dissolves is only what the cycle added.
+   * ────────────────────────────────────────────────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    .iabub,
+    .nface,
+    .iapaused {
+      opacity: 0;
+    }
+
+    .play .t-human .iabub { animation: ia-in 20s ease infinite 0s; }
+    .play .t-human .nface { animation: ia-in 20s ease infinite 0s; }
+
+    .play .iaturn:nth-child(2) .iabub { animation: ia-t1 20s ease infinite; }
+    .play .iaturn:nth-child(3) .iabub { animation: ia-t2 20s ease infinite; }
+    .play .iaturn:nth-child(4) .iabub { animation: ia-t3 20s ease infinite; }
+    .play .iaturn:nth-child(5) .iabub { animation: ia-t4 20s ease infinite; }
+
+    .play .iapip:nth-child(1) { animation: ia-pip1 20s ease infinite; }
+    .play .iapip:nth-child(2) { animation: ia-pip2 20s ease infinite; }
+    .play .iapip:nth-child(3) { animation: ia-pip3 20s ease infinite; }
+    .play .iapip:nth-child(4) { animation: ia-pip4 20s ease infinite; }
+
+    .play .iapaused { animation: ia-stop 20s ease infinite; }
+  }
+
+  /* The human's ask, and her face on the spine. */
+  @keyframes ia-in {
+    0%, 2% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+    5%, 90% { opacity: 1; translate: 0 0; }
+    92.5%, 100% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+  }
+
+  @keyframes ia-t1 {
+    0%, 12% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+    15%, 90% { opacity: 1; translate: 0 0; }
+    92.5%, 100% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+  }
+
+  @keyframes ia-t2 {
+    0%, 24% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+    27%, 90% { opacity: 1; translate: 0 0; }
+    92.5%, 100% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+  }
+
+  @keyframes ia-t3 {
+    0%, 36% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+    39%, 90% { opacity: 1; translate: 0 0; }
+    92.5%, 100% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+  }
+
+  @keyframes ia-t4 {
+    0%, 48% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+    51%, 90% { opacity: 1; translate: 0 0; }
+    92.5%, 100% { opacity: 0; translate: 0 calc(6 * var(--u)); }
+  }
+
+  /* Each pip fills as its turn lands; the fourth also turns the meter spent. */
+  @keyframes ia-pip1 {
+    0%, 15% { background: rgb(30 30 30 / 0.16); }
+    17%, 90% { background: var(--wake); }
+    92.5%, 100% { background: rgb(30 30 30 / 0.16); }
+  }
+
+  @keyframes ia-pip2 {
+    0%, 27% { background: rgb(30 30 30 / 0.16); }
+    29%, 90% { background: var(--wake); }
+    92.5%, 100% { background: rgb(30 30 30 / 0.16); }
+  }
+
+  @keyframes ia-pip3 {
+    0%, 39% { background: rgb(30 30 30 / 0.16); }
+    41%, 90% { background: var(--wake); }
+    92.5%, 100% { background: rgb(30 30 30 / 0.16); }
+  }
+
+  @keyframes ia-pip4 {
+    0%, 51% { background: rgb(30 30 30 / 0.16); }
+    53%, 90% { background: var(--wake); }
+    92.5%, 100% { background: rgb(30 30 30 / 0.16); }
+  }
+
+
+  @keyframes ia-stop {
+    0%, 58% { opacity: 0; scale: 0.9; }
+    61%, 90% { opacity: 1; scale: 1; }
+    92.5%, 100% { opacity: 0; scale: 0.9; }
+  }
+
+  /* ── Narrow ──────────────────────────────────────────────────────────────
+   * A six-station rally needs width it does not have on a phone. Below the
+   * split's breakpoint the track stacks: the spine and the nodes go, the
+   * bubbles go full width, and what is left is the exchange itself, read top
+   * to bottom - which is still the point, just without the shape. */
+  @media (max-width: 62rem) {
+    /* Two things follow the shape out.
+     *
+     * `--u` is a viewport-derived unit with a 0.62px floor, tuned so the card
+     * scales with ITSELF down to the width where the rally still fits. Below
+     * that the rally is gone and only the thread is left, so the floor stops
+     * being a scale and becomes a squint - the app's 15u body text landed at
+     * 9px on a phone. Pinned near 1px here, which is the size that same text
+     * has in the product.
+     *
+     * And the ratio box goes with it. A fixed ratio belongs to a picture;
+     * this is now a list of messages whose height is however tall the exchange
+     * is. Held to 4/3 it clipped the header clean off the top of a phone and
+     * strung the turns across a half-empty box on a tablet. */
+    .iabox {
+      aspect-ratio: auto;
+      --u: clamp(0.95px, 0.13cqw, 1.1px);
+    }
+
+    /* Out of the absolute fill - otherwise .iabox has no in-flow content to
+     * take its height from and collapses to nothing. */
+    .iapanel {
+      position: static;
+    }
+
+    .iatrack {
+      flex-direction: column;
+      justify-content: center;
+      gap: calc(9 * var(--u));
+      padding-bottom: calc(20 * var(--u));
+    }
+
+    .iatrack::before {
+      display: none;
+    }
+
+    .iaturn {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      row-gap: 0;
+    }
+
+    /* scout's turns indent, so the alternation survives as an inset rather
+     * than as a side of the spine.
+     *
+     * The hand-back pill is NOT in this set. On the spine it was centred, an
+     * end-cap belonging to neither band; stacked there is no spine to cap, and
+     * right is scout's side - the pill read as one more agent turn. It is
+     * mara's, same as the opening ask directly above it, so it sits on her
+     * side and the exchange closes where it opened. */
+    .t-down {
+      justify-content: flex-end;
+    }
+
+    /* Every connector goes with the spine it connected to - including the
+     * hand-back pill's, which otherwise hangs off the bottom of the stack as a
+     * stray line to nowhere. */
+    .iaslot,
+    .nface,
+    .iabub::after,
+    .iapaused::after {
+      display: none;
+    }
+
+    .iabub {
+      width: min(calc(268 * var(--u)), 78%);
+    }
+
+    .bhuman {
+      width: min(calc(206 * var(--u)), 66%);
+    }
+  }
+
+  /* ── Phones ──────────────────────────────────────────────────────────────
+   * At a third of the tablet's width the fixed bubble width above stops being
+   * a cap and becomes a squeeze, so on a phone the bubbles go back to being
+   * sized by what is in them. */
+  @media (max-width: 40rem) {
+    /* Content-sized again, capped by the card. The per-message `bw*` ceilings
+     * exist to keep two bubbles in the SAME band clear of each other on the
+     * spine; with no bands they only strand each bubble at a width derived
+     * from a layout that is no longer on screen. */
+    .iabub {
+      width: max-content;
+      max-width: 86%;
+    }
+
+    .bhuman {
+      width: max-content;
+      max-width: 78%;
+    }
+  }
+</style>

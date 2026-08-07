@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.18.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,6 +20,7 @@
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@hugeicons/core-free-icons": "^4.2.2",
     "@hugeicons/react": "^1.1.9",
+    "@paper-design/shaders-react": "^0.0.78",
     "@shikijs/langs": "^4.3.0",
     "@shikijs/themes": "^4.3.0",
     "@tailwindcss/vite": "^4.3.2",

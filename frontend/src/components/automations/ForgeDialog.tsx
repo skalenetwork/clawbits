@@ -239,7 +239,7 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
                     queryKey: queryKeys.automations(activeOrgId),
                 });
             }
-            toast.success(`Sent to ${agentName} — pending until it confirms`);
+            toast.success(`Sent to ${agentName} - pending until it confirms`);
             onOpenChange(false);
         },
         onError: (err: unknown) => {
@@ -343,7 +343,7 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
                 )}
                 {agentId !== "" && agentStatus !== "available" && (
                     <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-snug text-amber-700 dark:text-amber-400">
-                        {agentName} is offline — the automation applies when it reconnects.
+                        {agentName} is offline - the automation applies when it reconnects.
                     </p>
                 )}
 

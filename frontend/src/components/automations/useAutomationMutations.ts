@@ -31,7 +31,7 @@ export function useAutomationMutations(orgId: string, opts?: {
         mutationFn: (a: Automation) => runAutomation(orgId, a.agent_id, a.automation_id),
         onSuccess: () => {
             invalidate();
-            toast.success("Run requested — the agent picks it up on its next reconcile");
+            toast.success("Run requested - the agent picks it up on its next reconcile");
         },
         onError: (err: unknown) => { toast.error(errMsg(err, "Couldn't request a run")); },
     });
@@ -46,7 +46,7 @@ export function useAutomationMutations(orgId: string, opts?: {
         },
         onSuccess: (_data, {enabled}) => {
             invalidate();
-            toast.success(enabled ? "Resuming — pending until the agent confirms" : "Pausing — keeps its configuration");
+            toast.success(enabled ? "Resuming - pending until the agent confirms" : "Pausing - keeps its configuration");
         },
         onError: (err: unknown) => { toast.error(errMsg(err, "Couldn't update the automation")); },
     });
@@ -55,7 +55,7 @@ export function useAutomationMutations(orgId: string, opts?: {
         mutationFn: (a: Automation) => deleteAutomation(orgId, a.agent_id, a.automation_id),
         onSuccess: (_data, a) => {
             invalidate();
-            toast.success("Removing — the agent stops it on its next reconcile");
+            toast.success("Removing - the agent stops it on its next reconcile");
             opts?.onDeleted?.(a);
         },
         onError: (err: unknown) => { toast.error(errMsg(err, "Couldn't remove the automation")); },

@@ -35,7 +35,11 @@ export default function ChangelogPage() {
 
       <main className="mx-auto max-w-3xl px-6 pb-24 pt-24 sm:pt-28">
         <header className="space-y-3">
-          <p className="text-sm font-medium text-muted-foreground">Changelog</p>
+          {/* The eyebrow is the landing's highest-volume use of the accent
+              (web/src/components/Eyebrow.astro) and the register carries over
+              exactly: 14px, medium, signal. Sentence case, not uppercase - the
+              marketing site has no uppercase register. */}
+          <p className="text-sm font-medium text-signal">Changelog</p>
           <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
             What&apos;s new
           </h1>
@@ -133,7 +137,7 @@ export default function ChangelogPage() {
 
         <footer className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <span>
-            © {new Date().getFullYear()} Byzantine Generals Research, Lda — Portugal
+            © {new Date().getFullYear()} SKALE Labs - Portugal
           </span>
           <div className="flex gap-5">
             <Link to="/terms" className="hover:text-foreground">
