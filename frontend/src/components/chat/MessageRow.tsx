@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 
 import {
   ArrowTurnBackwardIcon,
+  Attachment01Icon as Paperclip,
   Clock01Icon,
   Copy01Icon,
   Delete02Icon,
@@ -69,7 +70,7 @@ import { burstEmojiAt, burstEmojiFrom } from "@/lib/emojiBurst";
 import { MENU_SURFACE } from "@/lib/menuSurface";
 import { extractUrls } from "@/lib/extractUrls";
 import { formatRelativeAgo, formatTimeOnly } from "@/lib/formatting";
-import { mentionHandle, posterName } from "@/lib/messageHelpers";
+import { mentionHandle, posterName, quotedBodyText } from "@/lib/messageHelpers";
 import { formatReactors } from "@/lib/reactionTooltip";
 import { toast } from "@/lib/toast";
 
@@ -707,6 +708,10 @@ function ParentQuoteBlock({
     preview.poster_display_name
     ?? preview.agent_id
     ?? (preview.human_id != null ? `User ${String(preview.human_id)}` : "Unknown");
+  // Attachment-only parents have no text to quote — the body slot gets a
+  // paperclip + "Attachment" label instead of reading as blank.
+  const attachmentCount = preview.attachment_count ?? 0;
+  const isAttachmentOnly = !preview.message_excerpt.trim() && attachmentCount > 0;
   return (
     <button
       type="button"
@@ -723,8 +728,13 @@ function ParentQuoteBlock({
         ) : (
           <>
             <span className="block truncate text-[12px] font-medium text-foreground/85">{authorName}</span>
-            <span className="block truncate text-[12px] text-muted-foreground">
-              {preview.message_excerpt || "(empty message)"}
+            <span className="flex min-w-0 items-center gap-1 text-[12px] text-muted-foreground">
+              {isAttachmentOnly && (
+                <Icon icon={Paperclip} className="size-2.5! shrink-0 opacity-70"/>
+              )}
+              <span className="min-w-0 truncate">
+                {quotedBodyText(preview.message_excerpt, attachmentCount)}
+              </span>
             </span>
           </>
         )}

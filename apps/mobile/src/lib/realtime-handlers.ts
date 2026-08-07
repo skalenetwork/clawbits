@@ -58,10 +58,18 @@ export function applyRealtimeEvent(
     case 'channel.read':
       applyChannelRead(queryClient, event);
       return;
+    case 'post.deleted':
+      // The deleted post may have been the channel's denormalised
+      // last-message snapshot. We can't recompute the replacement
+      // preview from the event payload (it only carries the post id),
+      // so refetch the list and let the server answer. Cheap and rare
+      // — deletes are user-initiated, never streamed.
+      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
+      return;
     // Events handled elsewhere or intentionally ignored on the global
     // stream:
-    // - 'post.updated'/'post.deleted': only matter inside a channel,
-    //   which has its own per-channel SSE consumer.
+    // - 'post.updated': only matters inside a channel, which has its
+    //   own per-channel SSE consumer.
     // - 'member.status'/'member.read'/'presence.snapshot': per-channel
     //   only; never arrive here.
     // - 'user.status': no UI consumes presence cross-channel yet.

@@ -32,6 +32,20 @@ interface AttachmentViewerProps {
   onClose: () => void;
 }
 
+/** Height of the viewport-anchored top bar. The media size budget subtracts
+ *  it so the chrome can never end up sitting on the picture. Keep in sync
+ *  with the bar's ``h-14`` class. */
+const CHROME_H = "3.5rem";
+/** Room held back on each side for the prev/next chevrons, as a custom
+ *  property the image's width budget subtracts. Set only when there is
+ *  something to page to, and only from ``sm`` up: on a phone-width viewport
+ *  two 7rem gutters would eat most of the picture, so there the chevrons go
+ *  back to floating over the image's left/right edges (its least
+ *  content-dense strip) rather than shrinking it. */
+const NAV_GUTTER = "[--nav-w:0px] sm:[--nav-w:7rem]";
+/** Idle delay before the chrome fades down to a quiet state. */
+const IDLE_MS = 2500;
+
 /**
  * Full-screen, type-aware attachment viewer. Supersedes the image-only
  * lightbox: pages through ``files`` with ←/→, Esc closes, the backdrop
@@ -41,12 +55,17 @@ interface AttachmentViewerProps {
  * never executed). Anything else falls back to a download card.
  *
  * Chrome (filename + counter pill, action pill, chevrons, portal-to-body,
- * ``data-state="open"`` so page-level Esc handlers defer to it).
+ * ``data-state="open"`` so page-level Esc handlers defer to it) lives in a
+ * bar *outside* the media plus gutters beside it, with the media's size
+ * budget reserving that space, so no control is painted over the content
+ * (the one exception being the chevrons on a phone-width viewport — see
+ * ``NAV_GUTTER``). It fades to a quiet state while the user is just looking.
  */
 export function AttachmentViewer({ files, initialIndex, onClose }: AttachmentViewerProps) {
   const [index, setIndex] = useState(initialIndex);
   const current = files[index];
   const dialogRef = useRef<HTMLDivElement>(null);
+  const idle = useIdle(IDLE_MS);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -135,56 +154,59 @@ export function AttachmentViewer({ files, initialIndex, onClose }: AttachmentVie
   };
 
   const isImageKind = previewKind(current.filename, current.content_type) === "image";
+  const multiple = files.length > 1;
 
-  // Floating controls. For an image they sit on top of the image itself (the
-  // image is the surface); for other types they sit on the contained panel.
-  const chrome = (
-    <ViewerChrome
-      filename={current.filename}
-      index={index}
-      count={files.length}
-      onClose={onClose}
-      onDownload={() => { void download(); }}
-      onPrev={goPrev}
-      onNext={goNext}
-    />
-  );
+  const nav = multiple ? <ViewerNav idle={idle} onPrev={goPrev} onNext={goNext} /> : null;
 
   return createPortal(
     <div
       ref={dialogRef}
       tabIndex={-1}
-      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md outline-none"
+      className="fixed inset-0 z-50 flex flex-col bg-black/70 backdrop-blur-md outline-none"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label={current.filename}
       data-state="open"
     >
+      {/* The bar owns its own row, so the media below it starts where the bar
+          ends and no control is ever painted over the content. */}
+      <ViewerTopBar
+        filename={current.filename}
+        index={index}
+        count={files.length}
+        idle={idle}
+        onClose={onClose}
+        onDownload={() => { void download(); }}
+      />
+
       {isImageKind ? (
-        // The image is the surface: it sizes to its own aspect ratio and the
-        // controls float on top of *it*, not the viewport, so the viewer reads
-        // as one minimal image rather than a full-screen UI. ``relative flex``
-        // shrink-wraps the wrapper to the image so the chrome anchors to its
-        // corners. A click on the backdrop (or the image) bubbles to onClose.
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="relative flex">
-            <ViewerContent key={current.file_id} file={current} onDownload={download} />
-            {chrome}
-          </div>
+        // The image is the surface: it sizes to its own aspect ratio inside
+        // the space the bar left over, so the viewer still reads as one
+        // minimal image rather than a full-screen UI. ``pb-14`` mirrors the
+        // bar's row so the picture stays centred on the viewport instead of
+        // being pushed low by it. A click on the backdrop (or the image)
+        // bubbles to onClose.
+        <div
+          className={`relative flex min-h-0 flex-1 items-center justify-center pb-14 ${
+            multiple ? NAV_GUTTER : ""
+          }`}
+        >
+          <ViewerContent key={current.file_id} file={current} onDownload={download} />
+          {nav}
         </div>
       ) : (
         // Non-image surfaces (video / pdf / text / fallback) keep a contained,
         // rounded panel; ``stopPropagation`` so interacting with them doesn't
         // close the viewer.
         <div
-          className="absolute inset-4 flex items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-black/30 shadow-2xl sm:inset-6 md:inset-10"
+          className="relative mx-4 mb-4 flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-black/30 shadow-2xl sm:mx-6 sm:mb-6 md:mx-10 md:mb-10"
           onClick={(e) => { e.stopPropagation(); }}
         >
           {/* Per-file content. ``key`` resets the inner fetch/blob state when
               the user navigates to a different attachment. */}
           <ViewerContent key={current.file_id} file={current} onDownload={download} />
-          {chrome}
+          {nav}
         </div>
       )}
     </div>,
@@ -194,33 +216,70 @@ export function AttachmentViewer({ files, initialIndex, onClose }: AttachmentVie
 
 // ---------------------------------------------------------------------------
 
-/** Floating controls overlaid on the active surface — filename + counter
- *  (top-left), download + close (top-right), and prev/next chevrons. Buttons
- *  ``stopPropagation`` so a tap on a control never also triggers the backdrop
- *  close. Positioned ``absolute`` so it anchors to whatever wraps it — the
- *  image itself, or the contained panel for other file types. */
-function ViewerChrome({
+/** True once ``delay`` ms have passed with no pointer or keyboard activity;
+ *  any input wakes it back up. Drives the quiet-down of the chrome while the
+ *  user is just looking at the picture. */
+function useIdle(delay: number) {
+  const [idle, setIdle] = useState(false);
+  useEffect(() => {
+    let timer = window.setTimeout(() => { setIdle(true); }, delay);
+    const wake = () => {
+      // React bails out when the value is unchanged, so the common case
+      // (moving the pointer while already awake) costs no render.
+      setIdle(false);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => { setIdle(true); }, delay);
+    };
+    const events = ["pointermove", "pointerdown", "keydown", "wheel"] as const;
+    for (const e of events) window.addEventListener(e, wake, { passive: true });
+    return () => {
+      window.clearTimeout(timer);
+      for (const e of events) window.removeEventListener(e, wake);
+    };
+  }, [delay]);
+  return idle;
+}
+
+/** Idle styling for a chrome group: fades down but never out, so the controls
+ *  stay discoverable. Keyboard focus always restores full opacity, and users
+ *  who asked for reduced motion never see the fade at all. */
+function dimClass(idle: boolean) {
+  // Variant utilities are emitted after their plain counterparts, so
+  // ``focus-within:``/``motion-reduce:`` win over ``opacity-40`` on their own.
+  return `transition-opacity duration-300 focus-within:opacity-100 motion-reduce:opacity-100 motion-reduce:transition-none ${
+    idle ? "opacity-40" : "opacity-100"
+  }`;
+}
+
+// ---------------------------------------------------------------------------
+
+/** The viewer's own row above the media — filename + counter on the left,
+ *  download + close on the right. It occupies layout (``h-14``, matching
+ *  ``CHROME_H``) rather than floating, so it can never occlude the content.
+ *  Buttons ``stopPropagation`` so a tap on a control never also triggers the
+ *  backdrop close; empty bar space still closes, like the rest of the
+ *  backdrop. */
+function ViewerTopBar({
   filename,
   index,
   count,
+  idle,
   onClose,
   onDownload,
-  onPrev,
-  onNext,
 }: {
   filename: string;
   index: number;
   count: number;
+  idle: boolean;
   onClose: () => void;
   onDownload: () => void;
-  onPrev: () => void;
-  onNext: () => void;
 }) {
   const multiple = count > 1;
   return (
-    <>
-      {/* Top-left: filename + counter. */}
-      <div className="pointer-events-none absolute left-3 top-3 z-10 flex max-w-[70%] items-center gap-2 rounded-full bg-black/50 px-3 py-1.5 text-sm text-white/90 backdrop-blur-md">
+    <div
+      className={`flex h-14 shrink-0 items-center justify-between gap-3 px-3 ${dimClass(idle)}`}
+    >
+      <div className="pointer-events-none flex min-w-0 items-center gap-2 rounded-full bg-black/50 px-3 py-1.5 text-sm text-white/90 backdrop-blur-md">
         <span className="truncate font-medium">{filename}</span>
         {multiple && (
           <span className="shrink-0 rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-medium text-white/80">
@@ -229,8 +288,7 @@ function ViewerChrome({
         )}
       </div>
 
-      {/* Top-right: actions. */}
-      <div className="absolute right-3 top-3 z-10 flex items-center gap-0.5 rounded-full bg-black/50 p-1 backdrop-blur-md">
+      <div className="flex shrink-0 items-center gap-0.5 rounded-full bg-black/50 p-1 backdrop-blur-md">
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onDownload(); }}
@@ -248,28 +306,43 @@ function ViewerChrome({
           <Icon icon={Cancel01Icon} className="size-4" />
         </button>
       </div>
+    </div>
+  );
+}
 
-      {multiple && (
-        <>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onPrev(); }}
-            aria-label="Previous"
-            className="absolute left-3 top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white/85 backdrop-blur-md transition-colors hover:bg-black/70 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-          >
-            <Icon icon={ArrowLeft01Icon} className="size-5" />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onNext(); }}
-            aria-label="Next"
-            className="absolute right-3 top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white/85 backdrop-blur-md transition-colors hover:bg-black/70 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-          >
-            <Icon icon={ArrowRight01Icon} className="size-5" />
-          </button>
-        </>
-      )}
-    </>
+/** Prev/next chevrons, centred on the media area. For images the media
+ *  reserves ``--nav-w`` on each side so these land in the backdrop gutters
+ *  instead of on the picture. */
+function ViewerNav({
+  idle,
+  onPrev,
+  onNext,
+}: {
+  idle: boolean;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const cls =
+    "absolute top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white/85 backdrop-blur-md transition-colors hover:bg-black/70 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40";
+  return (
+    <div className={`pointer-events-none absolute inset-0 z-10 ${dimClass(idle)}`}>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onPrev(); }}
+        aria-label="Previous"
+        className={`pointer-events-auto left-3 ${cls}`}
+      >
+        <Icon icon={ArrowLeft01Icon} className="size-5" />
+      </button>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onNext(); }}
+        aria-label="Next"
+        className={`pointer-events-auto right-3 ${cls}`}
+      >
+        <Icon icon={ArrowRight01Icon} className="size-5" />
+      </button>
+    </div>
   );
 }
 
@@ -361,20 +434,28 @@ function ImageContent({ file }: { file: MmFile }) {
 
   const src = fullReady && full ? full : (thumb ?? full ?? "");
 
-  // Pin the displayed box to the file's known aspect ratio fitted into the
-  // viewport, so it's identical whether the cached thumbnail or the full-res
+  // The space the chrome left over: the top bar's row is already gone from the
+  // flex parent, and we hold back the same amount again at the bottom so the
+  // picture stays optically centred in the viewport. Sideways it's the chevron
+  // gutters the wrapper declares via ``--nav-w`` (0 when there's nothing to
+  // page to, and on narrow viewports — see NAV_GUTTER).
+  const availH = `88dvh - 2 * ${CHROME_H}`;
+  const availW = "92vw - 2 * var(--nav-w, 0px)";
+
+  // Pin the displayed box to the file's known aspect ratio fitted into that
+  // space, so it's identical whether the cached thumbnail or the full-res
   // image is showing. Without this the box would track each bitmap's natural
   // size and visibly jump (small thumbnail -> larger full-res), and the morph
   // would aim at the wrong final size. ``width`` is the binding constraint of:
-  // the viewport width (92vw), the width at which height hits 88dvh, and the
-  // image's own width (so small images stay their natural size and never
-  // upscale into a blurry full-screen blob). ``height: auto`` derives the rest
-  // from the width/height attributes' aspect ratio.
+  // the available width, the width at which height fills the available
+  // height, and the image's own width (so small images stay their natural size
+  // and never upscale into a blurry full-screen blob). ``height: auto``
+  // derives the rest from the width/height attributes' aspect ratio.
   const ratioWH = file.width && file.height ? file.width / file.height : null;
   const sizeStyle =
     ratioWH && file.width
       ? {
-          width: `min(92vw, calc(${ratioWH.toFixed(4)} * 88dvh), ${String(file.width)}px)`,
+          width: `min(calc(${availW}), calc(${ratioWH.toFixed(4)} * (${availH})), ${String(file.width)}px)`,
           height: "auto",
         }
       : undefined;
@@ -386,8 +467,13 @@ function ImageContent({ file }: { file: MmFile }) {
       draggable={false}
       width={file.width ?? undefined}
       height={file.height ?? undefined}
-      style={{ viewTransitionName: MEDIA_VT_NAME, ...sizeStyle }}
-      className="block max-h-[88dvh] max-w-[92vw] select-none rounded-2xl object-contain shadow-2xl"
+      style={{
+        viewTransitionName: MEDIA_VT_NAME,
+        maxHeight: `calc(${availH})`,
+        maxWidth: `calc(${availW})`,
+        ...sizeStyle,
+      }}
+      className="block select-none rounded-2xl object-contain shadow-2xl"
     />
   );
 }
@@ -422,7 +508,7 @@ function MediaContent({
   if (!src) return <Spinner />;
   if (tag === "video") {
     return (
-      <div className="flex size-full items-center justify-center px-4 py-14 sm:px-6">
+      <div className="flex size-full items-center justify-center p-4 sm:p-6">
         <Video
           src={src}
           poster={file.thumbnail_url ?? undefined}
@@ -502,13 +588,9 @@ function PdfContent({ file, onDownload }: { file: MmFile; onDownload: () => void
   const { blobUrl, error } = useFileBytes(file, "blob", "application/pdf");
   if (error) return <FallbackContent file={file} onDownload={onDownload} message={error} />;
   if (!blobUrl) return <Spinner />;
-  return (
-    <iframe
-      src={blobUrl}
-      title={file.filename}
-      className="size-full bg-white px-2 py-14 sm:px-6"
-    />
-  );
+  // The panel already clips and rounds it, and the chrome is out of the way,
+  // so the PDF gets the whole surface.
+  return <iframe src={blobUrl} title={file.filename} className="size-full bg-white" />;
 }
 
 function TextContent({ file, onDownload }: { file: MmFile; onDownload: () => void }) {
@@ -527,12 +609,11 @@ function TextContent({ file, onDownload }: { file: MmFile; onDownload: () => voi
   if (text === null) return <Spinner />;
   const lang = languageForFile(file.filename);
   // One immersive, full-bleed reading surface — the code fills the viewer
-  // (no nested card/border), with the filename + actions floating over it.
-  // ``pt-16`` clears the top pills; ``bg-card`` keeps Shiki tokens readable
-  // in both themes (they follow the page's .dark class).
+  // (no nested card/border). ``bg-card`` keeps Shiki tokens readable in both
+  // themes (they follow the page's .dark class).
   return (
     <div className="size-full overflow-auto bg-card text-card-foreground">
-      <div className="min-h-full px-5 pb-10 pt-16 sm:px-8">
+      <div className="min-h-full px-5 pb-10 pt-6 sm:px-8">
         <CodeBlock code={text.replace(/\n$/, "")} lang={lang} bare />
       </div>
     </div>

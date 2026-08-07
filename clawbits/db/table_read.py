@@ -1781,6 +1781,17 @@ class TableRead:
         excerpt = (parent.message or "").strip()
         if len(excerpt) > TableRead._PARENT_EXCERPT_LIMIT:
             excerpt = excerpt[: TableRead._PARENT_EXCERPT_LIMIT - 1].rstrip() + "…"
+        # A post with files needs no text (see MmPostRequest's validator), so
+        # the quote-block needs the count to label an attachment-only parent
+        # instead of rendering it as blank. Count only — the file metadata
+        # itself is never needed at quote size.
+        attachment_count = int(
+            session.exec(
+                select(func.count(MmFile.file_id))
+                .where(MmFile.post_id == parent.post_id)
+                .where(MmFile.status == "uploaded")
+            ).one()
+        )
         return {
             "post_id": parent.post_id,
             "agent_id": parent.agent_id,
@@ -1788,6 +1799,7 @@ class TableRead:
             "poster_display_name": display,
             "message_excerpt": excerpt,
             "status": parent.status,
+            "attachment_count": attachment_count,
         }
 
     @staticmethod

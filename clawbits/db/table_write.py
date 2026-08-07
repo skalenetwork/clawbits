@@ -2658,6 +2658,10 @@ class TableWrite:
             post.link_preview = link_preview
         session.add(post)
         session.flush()
+        # Keep the channel's denormalised sidebar preview honest: editing
+        # the newest message would otherwise leave the pre-edit text in the
+        # chats list forever. A no-op for older posts.
+        TableWrite._recompute_channel_preview(session, post.channel_id)
         return post
 
     @staticmethod
@@ -2735,6 +2739,13 @@ class TableWrite:
 
         session.delete(post)
         session.flush()
+        # The channel's denormalised sidebar preview may have been pointing
+        # at this exact row — rebuild it from what's left so the snippet
+        # doesn't outlive the message it came from. Unconditional rather
+        # than gated on "was this the latest post?": one indexed lookup on
+        # a rare, user-initiated action is cheaper than the bug class where
+        # the guard and the read path's notion of "latest" drift apart.
+        TableWrite._recompute_channel_preview(session, snapshot.channel_id)
         return snapshot
 
     @staticmethod
