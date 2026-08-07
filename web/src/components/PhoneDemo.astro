@@ -1419,11 +1419,28 @@ const rowPreview = (c: Chat) => c.preview;
    * get the resting layout, not an animation with no timeline to sit on. */
   @supports (animation-timeline: scroll()) {
     @media (prefers-reduced-motion: no-preference) {
+      /* LONGHANDS ONLY, and never the `animation` shorthand.
+       *
+       * `animation: linear both` has no name, so a minifier is free to fold it
+       * to `animation: none` - and because the shorthand also RESETS
+       * animation-timeline, Lightning CSS took the timeline declaration with
+       * it. Staging shipped `animation:none;animation-range:0 210px` and no
+       * timeline at all, which is why the feed sat at its resting position on
+       * the device while working perfectly in `astro dev` (which does not
+       * minify). Verify this rule against `bun run build` output, not dev.
+       *
+       * `animation-duration: auto` is also load-bearing: it is what maps an
+       * animation across a scroll range. The shorthand's omitted duration
+       * resolves to 0s in some engines, which finishes the animation instantly
+       * at the start of the range - the same wrong-looking result, arrived at
+       * a different way. */
       .cstack,
       .lcard {
-        animation: linear both;
+        animation-duration: auto;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
         animation-timeline: scroll(root block);
-        animation-range: 0 210px;
+        animation-range: 0px 210px;
       }
 
       .cstack {
@@ -1434,6 +1451,15 @@ const rowPreview = (c: Chat) => c.preview;
         animation-name: ph-list;
       }
     }
+  }
+
+  /* The opening frame, as a plain static value. Without this a browser that
+   * cannot run scroll-driven animations - or a build that loses the timeline,
+   * as staging did - falls back to translate 0, which is the END of the
+   * thread. Now the fallback is the composition we actually designed; it just
+   * does not move. */
+  .cstack {
+    translate: 0 calc(232 * var(--pu));
   }
 
   /* Bottom-anchored, so pushing the stack DOWN reveals earlier messages. */

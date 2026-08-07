@@ -638,6 +638,20 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
      * can), which is what stops the two drifting apart. */
     .frame {
       padding: 0;
+
+      /* What shows THROUGH the canvas's rounded corners.
+       *
+       * <main> declares the page ground (global.css - body's own background is
+       * the signal that colours Safari's chrome, so it cannot also be paint),
+       * which left cream notches at the corners the moment the top pair stopped
+       * being square. The two ends want different answers: the top corners
+       * continue the dark strip above the page, the bottom corners meet the
+       * cream rails below. A hard stop past the radius gives each its own. */
+      background: linear-gradient(
+        to bottom,
+        var(--color-canvas) 2rem,
+        var(--color-ink) 2rem
+      );
     }
 
     .canvas {
@@ -645,9 +659,21 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
        * depends on it (see --ph-crop). So the clip comes back here, where the
        * desktop window is display:none anyway. */
       overflow: hidden;
-      border-top: 0;
-      border-inline: 0;
-      border-radius: 0 0 clamp(1rem, 5vw, 1.75rem) clamp(1rem, 5vw, 1.75rem);
+      /* NO border at all here (owner, 2026-08-07). The top and sides went when
+       * the canvas became full-bleed - a hairline on an edge that coincides
+       * with the screen is just a line down the screen - and the bottom one
+       * follows now that all four corners are rounded, because a single edge
+       * of a rounded ring reads as an outline around the whole section. The
+       * canvas is still separated from the page by the thing that actually
+       * separates it: it is dark and the page is not. */
+      border: 0;
+      /* Rounded on all four corners now, not just the bottom. The top pair
+       * used to be square because a radius on an edge that touches the
+       * viewport shows the page ground through the corner - and the ground was
+       * cream. It is the canvas colour while the hero holds the top (see the
+       * [data-hero-top] note in global.css), so the corners now read as the
+       * shader being cut rather than as a leak. */
+      border-radius: clamp(1rem, 5vw, 1.75rem);
     }
 
     .hero-head {
