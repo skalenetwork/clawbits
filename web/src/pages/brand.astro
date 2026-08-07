@@ -562,6 +562,63 @@ const boilerplate = SITE.description;
     color: color-mix(in srgb, var(--color-canvas-text) 52%, transparent);
   }
 
+  /* Narrow screens turn the canvas PORTRAIT, and the shader's wave is sized to
+   * the canvas - so the same band that sits low and wide on desktop rears up
+   * and fills the frame behind the copy. The radial pool above assumes a tall
+   * dark field it no longer has, so it is swapped for a flat top-down wash
+   * that covers the bottom half, where the wave is brightest. Same correction,
+   * same values, as /download and /changelog. */
+  @media (max-width: 48rem) {
+    .cover {
+      padding-block: clamp(5rem, 18vw, 5.75rem) clamp(2.75rem, 9vw, 3.5rem);
+    }
+
+    .shader::after {
+      background: linear-gradient(
+        to bottom,
+        rgb(20 19 17 / 0.68) 0%,
+        rgb(20 19 17 / 0.5) 45%,
+        rgb(20 19 17 / 0.34) 100%
+      );
+    }
+  }
+
+  /* ── Phones: the cover canvas goes full-bleed ─────────────────────────
+   * The homepage's hero treatment at the same 40rem breakpoint, for the same
+   * reason: below this width Nav.astro drops the overlay header's 1rem inset
+   * and aligns it to --hero-gutter, so a cover that stays inside a framed card
+   * puts the wordmark and the title on two different left edges. See
+   * download.astro for the long version - /download, /changelog and /brand
+   * all carry this block. */
+  @media (max-width: 40rem) {
+    .frame {
+      padding: 0;
+      /* Fills the rounded corners: canvas colour above, page ground below. */
+      background: linear-gradient(
+        to bottom,
+        var(--color-canvas) 2rem,
+        var(--color-ink) 2rem
+      );
+    }
+
+    .canvas {
+      border: 0;
+      border-radius: clamp(1rem, 5vw, 1.75rem);
+    }
+
+    /* The one difference from the other two heads: this is a flex column, so
+     * the cross-axis alignment has to move with the text alignment or the
+     * button and the meta line stay centred under left-aligned copy. */
+    .cover {
+      align-items: flex-start;
+      text-align: left;
+      padding-inline: var(--hero-gutter);
+      /* Full-bleed puts the overlay header at y=0 rather than 1rem down, so
+       * the 48rem block's 5rem left the title sitting under the wordmark. */
+      padding-top: clamp(6.5rem, 20vw, 7.5rem);
+    }
+  }
+
   /* ── Rails ──────────────────────────────────────────────────────────── */
   /* 70.5rem, the same measure the homepage rails use, so /brand lines up with
    * every other page rather than running its own narrower column. */
