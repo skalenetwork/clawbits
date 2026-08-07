@@ -14,9 +14,22 @@ import { useEffect } from "react";
  *
  * `ANALYTICS_HOSTS` is the single source of truth: it drives both the load
  * decision here and Umami's own `data-domains` filter. To track a new host
- * (e.g. `www.` or `app.clawbits.ai`), add it here once.
+ * (e.g. `www.`), add it here once.
+ *
+ * ONE Umami website spans the app AND the marketing site (web/src/config.ts
+ * ships the same `websiteId`), so that a landing pageview and the signup that
+ * follows it belong to the same funnel instead of two dashboards that each show
+ * the other as a dead end. Hostname is recorded per event, so the two are still
+ * separable after the fact.
+ *
+ * Both hosts are listed rather than swapping one for the other at the Phase 6
+ * apex cutover (LANDING_SITE_PLAN §8, table row 8). The app is on `clawbits.ai`
+ * until the flip and on `app.clawbits.ai` after it, and the apex becomes the
+ * marketing site the same day - so the union is never true of two live app
+ * origins at once, and this file does not have to ship in lockstep with a DNS
+ * change to avoid a gap in the numbers.
  */
-const ANALYTICS_HOSTS = ["clawbits.ai"];
+const ANALYTICS_HOSTS = ["clawbits.ai", "app.clawbits.ai"];
 const UMAMI_WEBSITE_ID = "3b3f10a0-3d8a-4196-b692-1442deded2d9";
 
 export function Analytics() {

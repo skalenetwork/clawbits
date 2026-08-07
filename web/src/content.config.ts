@@ -47,8 +47,47 @@ function rewriteLinks(markdown: string): string {
     /\[([^\]]*)\]\((?!https?:|\/|#)([^)\s#]*?\.md)(#[^)\s]*)?\)/g,
     (_match, text: string, path: string, anchor = "") => {
       const slug = FILE_TO_SLUG.get(path.split("/").pop()!);
-      return slug ? `[${text}](/docs/${slug}${anchor})` : text;
+      // Trailing slash before any anchor: /docs/<slug>/#section. This is the
+      // canonical form (trailingSlash: "always"), and the specs cross-reference
+      // each other heavily - slash-less here meant every one of those links
+      // redirected.
+      return slug ? `[${text}](/docs/${slug}/${anchor})` : text;
     },
+  );
+}
+
+/**
+ * Replace the Markdown processor's table-alignment inline styles with classes.
+ *
+ * GFM alignment rows (`:---`, `:---:`, `---:`) render as
+ * `<td style="text-align: center">`. The site's CSP ships style-src hashes with
+ * no 'unsafe-inline', and hashes DO NOT apply to style attributes - so the
+ * browser refuses every one of them. 647 across the corpus today, each one a
+ * console error, and every centered column silently falling back to
+ * `.shell .prose th,td { text-align: start }`.
+ *
+ * The alternative - adding 'unsafe-hashes' or 'unsafe-inline' to style-src -
+ * was rejected: it would leave 647 dead attributes in the shipped HTML and
+ * permanently reopen attribute-style injection on a site whose strict CSP is a
+ * stated property.
+ *
+ * `left` is dropped rather than classed: it is already the inherited default,
+ * so a `.ta-left` class would be 522 attributes of pure noise.
+ *
+ * All THREE values are matched even though the corpus currently emits only two.
+ * A single `---:` column added to any spec later emits the third, and matching
+ * two literals would ship it blocked - the exact silent failure this replaces.
+ * `verify:no-inline-styles` (scripts/verify-no-inline-styles.mjs) fails the
+ * build if a fourth form ever appears.
+ *
+ * Safe as a regex over rendered HTML because the processor emits these on
+ * `<td>`/`<th>` only, with no other attributes and a fixed spelling - verified
+ * across all 17 published docs.
+ */
+function alignmentStylesToClasses(html: string): string {
+  return html.replace(
+    / style="text-align: (left|center|right)"/g,
+    (_match, align: string) => (align === "left" ? "" : ` class="ta-${align}"`),
   );
 }
 
@@ -75,12 +114,17 @@ const docs = defineCollection({
         }
 
         const body = rewriteLinks(raw);
+        // Post-processing `rendered.html` works HERE and would not work behind
+        // glob(): rendering is lazy there, so `entry.rendered` is unpopulated at
+        // load time and every rewrite is silently skipped (see the header note).
+        // This loader awaits renderMarkdown itself, so the HTML is real.
+        const rendered = await renderMarkdown(body);
         store.set({
           id: entry.slug,
           data: { title: entry.title, summary: entry.summary },
           body,
           digest: generateDigest(body),
-          rendered: await renderMarkdown(body),
+          rendered: { ...rendered, html: alignmentStylesToClasses(rendered.html) },
         });
       }
 

@@ -97,6 +97,30 @@
    * at 375px a 2rem corner eats the content, at 1440px a 0.75rem corner reads
    * as square. */
   --radius-canvas: clamp(0.75rem, 2.5vw, 2.125rem);
+
+  /* The phone hero's single vertical alignment line, measured in from each
+   * edge. Shared because three components have to agree on it: Nav.astro puts
+   * the wordmark and the hamburger on it, and index.astro puts the badge, the
+   * headline, the button and the phone's body on it. Only meaningful at the
+   * hero's full-bleed widths (<=40rem) - above that the canvas is an inset
+   * card and the nav aligns to its frame instead. */
+  --hero-gutter: 1.5rem;
+
+  /* How far the hero's app window carries on BELOW the shader canvas. Read in
+   * three places that have to agree: the stage pulls the canvas up by it, the
+   * rails' first block reserves it so the window has somewhere to hang, and
+   * the hairlines start at the canvas edge because of it. A token rather than
+   * a local because .frame and .rails are siblings - neither can inherit from
+   * the other. */
+  --hero-overhang: clamp(2.5rem, 7vw, 6.5rem);
+}
+
+/* Phones crop the phone demo against the canvas edge instead (see --ph-crop),
+ * so there is no overhang there and nothing to reserve for it. */
+@media (max-width: 40rem) {
+  :root {
+    --hero-overhang: 0px;
+  }
 }
 
 /* ── Base ───────────────────────────────────────────────────────────────── */
@@ -110,6 +134,39 @@
  * without the canvas. */
 body {
   timeline-scope: --hero-view;
+}
+
+/* Positions the shader canvas, replacing the stylesheet @paper-design/shaders
+ * would otherwise inject at runtime.
+ *
+ * The library prepends its own <style data-paper-shader> on mount, which the
+ * CSP refuses (its hash cannot exist at build time). Base.astro ships an empty
+ * element carrying that attribute so the library's guard short-circuits and
+ * never injects; these rules take its place, hashed normally by the build.
+ *
+ * Transcribed from `defaultStyle` in shader-mount.js. The library sets
+ * data-paper-shader on the canvas's PARENT, not the canvas - hence the child
+ * selector. `corner-shape` is dropped (border-radius: inherit carries the
+ * rounding this design needs); everything else is verbatim, and must stay in
+ * step with the library across upgrades.
+ *
+ * Unlayered on purpose: it has to beat Tailwind preflight's
+ * `canvas { display: block }`, which would otherwise leave the canvas in
+ * normal flow at its 2x attribute size. */
+[data-paper-shader] {
+  isolation: isolate;
+  position: relative;
+}
+
+[data-paper-shader] > canvas {
+  contain: strict;
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
 }
 
 html {

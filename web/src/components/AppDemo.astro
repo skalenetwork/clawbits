@@ -28,6 +28,7 @@ import {
   UserMultiple02Icon,
 } from "@hugeicons/core-free-icons";
 import { ico } from "../lib/appicon";
+import { CHATS, type Msg, type Species } from "../content/demo-chats";
 
 /**
  * The hero's product frame: a faithful, sample-data recreation of the real
@@ -64,243 +65,9 @@ import { ico } from "../lib/appicon";
  * /avatars. The window bottom is cropped by the hero canvas on purpose.
  */
 
-type Species = "human" | "agent" | "channel";
+/* The conversation set is SHARED with PhoneDemo.astro - see the module's
+ * own note for why it is not defined here any more. */
 
-/** One message. `html` is trusted literal markup (one or more <p>…</p>);
- * `file` renders an attachment-only message (no text bubble), `card` hangs
- * the release link-preview under the bubble. */
-interface Msg {
-  /** Renders a day divider above this message (also breaks the group run). */
-  day?: string;
-  own?: boolean;
-  /** Author (channels only; shown on group start). */
-  name?: string;
-  ava?: string;
-  /** Letter-chip fallback when the author has no avatar art (Ivan). */
-  letter?: string;
-  html?: string;
-  file?: { name: string; meta: string };
-  /** Image attachment (attachment-only message, like `file`). */
-  img?: { src: string; w: number; h: number };
-  card?: boolean;
-  /** Compact reaction pills in the bubble's meta row (left of the time). */
-  reactions?: { e: string; n: number; mine?: boolean }[];
-  time: string;
-  /** Own DM bubbles only. */
-  receipt?: "read" | "delivered";
-}
-
-/** One conversation: the sidebar row AND its openable content. Previews
- * mirror each chat's actual last message, like the real sidebar. */
-interface Chat {
-  id: string;
-  species: Species;
-  name: string;
-  src: string;
-  /** Sidebar row bits. */
-  preview: string;
-  time: string;
-  prefix?: string;
-  draftRow?: boolean;
-  clip?: boolean;
-  unread?: number;
-  dot?: boolean;
-  presence?: boolean;
-  /** Header pills. */
-  pin?: number;
-  members?: number;
-  msgs: Msg[];
-  /** Composer: typed draft (live ink send) or resting placeholder. */
-  draft?: string;
-  ph?: string;
-}
-
-const CHATS: Chat[] = [
-  {
-    id: "mara", species: "human", name: "Mara", src: "/avatars/human-1.png",
-    preview: "can you check the deploy?", time: "48m", unread: 2, presence: true,
-    ph: "Message Mara",
-    msgs: [
-      { day: "Yesterday", html: "<p>heads up - taking tomorrow morning for errands</p>", time: "5:12 PM" },
-      { own: true, html: "<p>no worries - I'll kick the staging deploy early</p>", time: "5:15 PM", receipt: "read" },
-      { own: true, html: "<p>also: staging DB got resized, migrations should be quicker</p>", time: "5:16 PM", receipt: "read" },
-      { html: "<p>fingers crossed 🤞</p>", time: "5:20 PM" },
-      { day: "Today", own: true, html: "<p>kicked off the staging deploy, migrations included</p>", time: "9:02 AM", receipt: "read" },
-      { own: true, html: "<p>ETA ~20 min, I'll post when it's green</p>", time: "9:03 AM", receipt: "read" },
-      { html: "<p>morning! it looks stuck at the migration step</p>", time: "9:14 AM" },
-      { html: "<p>the progress bar hasn't moved since 9:05</p>", time: "9:15 AM" },
-      { html: "<p>can you check the deploy?</p>", time: "9:16 AM" },
-    ],
-  },
-  {
-    id: "hermes", species: "agent", name: "hermes", src: "/avatars/agent-1.svg",
-    preview: "Replied - the vendor thread is sorted.", time: "1h", presence: true,
-    ph: "Message @hermes",
-    msgs: [
-      { day: "Yesterday", own: true, html: "<p>how's the inbox backlog?</p>", time: "4:40 PM", receipt: "read" },
-      { html: "<p>Cleared 14 threads - 2 are waiting on you.</p>", time: "4:42 PM" },
-      { own: true, html: "<p>watch for the contract renewal email next week</p>", time: "4:45 PM", receipt: "read" },
-      { html: "<p>Flagged - I'll surface it the moment it arrives.</p>", time: "4:46 PM" },
-      { day: "Today", own: true, html: "<p>hermes, can you chase the vendor invoice thread?</p>", time: "10:20 AM", receipt: "read" },
-      { html: "<p>Found it - drafting a reply with the corrected PO number.</p>", time: "10:21 AM" },
-      { own: true, html: "<p>cc finance@ when you send it</p>", time: "10:22 AM", receipt: "read" },
-      { html: "<p>Done - sent with finance in copy.</p>", time: "10:23 AM" },
-      { html: "<p>Replied - the vendor thread is sorted.</p>", time: "10:24 AM" },
-    ],
-  },
-  {
-    id: "lena", species: "human", name: "Priya", src: "/avatars/human-3.png",
-    preview: "see you tomorrow 👋", time: "2h", presence: true,
-    ph: "Message Priya",
-    msgs: [
-      { day: "Today", own: true, html: "<p>still on for tennis before work tomorrow?</p>", time: "3:35 PM", receipt: "read" },
-      { html: "<p>obviously. courts at 7, coffee after</p>", time: "3:38 PM" },
-      { img: { src: "/brand/tennis.jpg", w: 768, h: 960 }, time: "3:39 PM" },
-      { own: true, html: "<p>no fair, you've been practicing 😄</p>", time: "3:40 PM", receipt: "read" },
-      { html: "<p>design pass is done, the new tokens land tomorrow</p>", time: "3:42 PM" },
-      { own: true, html: "<p>perfect - I'll wire them into the theme</p>", time: "3:43 PM", receipt: "read" },
-      { html: "<p>see you tomorrow 👋</p>", time: "3:45 PM" },
-    ],
-  },
-  {
-    id: "allhands", species: "channel", name: "all-hands", src: "/avatars/channel-1.svg",
-    preview: "⭐ Clawbits is open-source! Go star…", time: "2h", prefix: "You:",
-    members: 24, ph: "Message #all-hands",
-    msgs: [
-      { day: "Yesterday", name: "Priya", ava: "/avatars/human-3.png", html: "<p>offsite photos are in the drive 📸</p>", time: "4:20 PM" },
-      { name: "Mara", ava: "/avatars/human-1.png", html: "<p>already stole one for the launch deck</p>", time: "4:31 PM" },
-      { day: "Today", name: "Josh", ava: "/avatars/human-2.png", html: "<p>reminder: demo day is Thursday - bring questions</p>", time: "9:40 AM" },
-      { name: "quill", ava: "/avatars/agent-4.svg", html: "<p>Weekly digest drops Friday. Send me highlights by Thursday EOD.</p>", time: "10:30 AM" },
-      { name: "Priya", ava: "/avatars/human-3.png", html: "<p>launch post is live on the blog 🚀</p>", time: "11:02 AM" },
-      { own: true, html: `<p>⭐ Clawbits is open-source! Go star the repo <span class="lnk">(github.com)</span></p>`, time: "11:05 AM", reactions: [{ e: "🎉", n: 5, mine: true }, { e: "⭐", n: 3 }] },
-    ],
-  },
-  {
-    id: "scout", species: "agent", name: "scout", src: "/avatars/agent-3.svg",
-    preview: "Merged. The flaky-test fix needs your eyes.", time: "3h", presence: true,
-    ph: "Message @scout",
-    msgs: [
-      { day: "Yesterday", own: true, html: "<p>scout, watch the repos tonight - release week</p>", time: "11:02 PM", receipt: "read" },
-      { html: "<p>On it. I'll triage anything that lands.</p>", time: "11:03 PM" },
-      { html: "<p>Heads-up: release-week watch means noisier pings. Mute me if needed.</p>", time: "11:05 PM" },
-      { own: true, html: "<p>never 😄</p>", time: "11:06 PM", receipt: "read" },
-      { day: "Today", own: true, html: "<p>anything land overnight?</p>", time: "8:12 AM", receipt: "read" },
-      { html: "<p>3 new PRs triaged overnight - two dep bumps (green) and a flaky-test fix.</p>", time: "8:13 AM" },
-      { own: true, html: "<p>merge the green ones</p>", time: "8:15 AM", receipt: "read" },
-      { html: "<p>Merged. The flaky-test fix needs your eyes.</p>", time: "8:16 AM", reactions: [{ e: "🙏", n: 1, mine: true }] },
-    ],
-  },
-  {
-    id: "eng", species: "channel", name: "engineering", src: "/avatars/channel-3.svg",
-    preview: "Yes - tested on the office Pi 5 t…", time: "9h", prefix: "hermes:",
-    pin: 2, members: 18,
-    draft: "Sounds good - let's ship v0.17.0 to the office fleet tonight",
-    msgs: [
-      { day: "Yesterday", name: "Josh", ava: "/avatars/human-2.png", html: "<p>who owns the updater resume work? want it in the release notes</p>", time: "6:10 PM" },
-      { own: true, html: "<p>atlas does - it's in v0.17.0</p>", time: "6:12 PM" },
-      { name: "atlas", ava: "/avatars/agent-2.svg", html: "<p>Confirmed - resume-on-interrupt shipped. Notes updated.</p>", time: "6:15 PM" },
-      { day: "Today", own: true, html: "<p>morning! any word on the desktop release?</p>", time: "8:58 AM" },
-      {
-        name: "atlas", ava: "/avatars/agent-2.svg", card: true, time: "9:01 AM",
-        reactions: [{ e: "🎉", n: 4, mine: true }, { e: "🚀", n: 2 }],
-        html:
-          `<p>clawbits desktop v0.17.0 just went out on the prod channel <span class="lnk">(github.com)</span></p>` +
-          `<p>and hermes agent v0.20.0 finally makes voice usable - streaming tts, barge-in, and on-device wake words <span class="lnk">(github.com)</span></p>`,
-      },
-      { name: "Josh", ava: "/avatars/human-2.png", html: "<p>nice - does barge-in work on the pi?</p>", time: "10:12 AM" },
-      { name: "hermes", ava: "/avatars/agent-1.svg", html: "<p>Yes - tested on the office Pi 5 this morning. Round-trip latency ≈ 180 ms.</p>", time: "10:13 AM" },
-    ],
-  },
-  {
-    id: "clawbits", species: "channel", name: "clawbits", src: "/avatars/channel-2.svg",
-    preview: "Attachment", time: "4d", prefix: "Ivan:", clip: true,
-    members: 6, ph: "Message #clawbits",
-    msgs: [
-      { day: "Wed, Jul 30", own: true, html: "<p>release branch is cut - hardening only from here</p>", time: "11:20 AM" },
-      { name: "atlas", ava: "/avatars/agent-2.svg", html: "<p>CI is green across the matrix - all 14 targets.</p>", time: "4:40 PM" },
-      { own: true, html: "<p>beautiful</p>", time: "4:41 PM" },
-      { day: "Thu, Jul 31", name: "Ivan", letter: "I", html: "<p>QA pass is clean on mac + linux</p>", time: "1:58 PM" },
-      { own: true, html: "<p>tagging desktop v0.17.0 in an hour unless someone objects</p>", time: "2:10 PM" },
-      { name: "Ivan", letter: "I", html: "<p>go for it - notes are final</p>", time: "2:12 PM" },
-      { name: "Ivan", letter: "I", file: { name: "release-notes-v0.17.0.md", meta: "12 KB · Markdown" }, time: "2:14 PM" },
-    ],
-  },
-  {
-    id: "smartclaws", species: "channel", name: "smartclaws", src: "/avatars/channel-4.svg",
-    preview: "Please tell me the…", time: "4d", prefix: "Mara:", dot: true,
-    members: 9, ph: "Message #smartclaws",
-    msgs: [
-      { day: "Wed, Jul 30", own: true, html: "<p>new SmartClaws board arrived - installing in the server room</p>", time: "2:05 PM" },
-      { own: true, img: { src: "/brand/server.jpeg", w: 960, h: 638 }, time: "2:38 PM" },
-      { name: "scout", ava: "/avatars/agent-3.svg", html: "<p>First readings are on-chain: 22.4°C, 41% humidity.</p>", time: "3:10 PM" },
-      { day: "Thu, Jul 31", own: true, html: "<p>wired the office temp sensor into the on-chain feed 🌡️</p>", time: "4:02 PM" },
-      { name: "Mara", ava: "/avatars/human-1.png", html: "<p>Please tell me the server-room sensor is wrong - it says 31°C 😅</p>", time: "4:20 PM" },
-    ],
-  },
-  {
-    id: "pit", species: "channel", name: "pit", src: "/avatars/channel-1.svg",
-    preview: "Torque doubled. The big lobster is…", time: "6d", prefix: "atlas:",
-    members: 5, ph: "Message #pit",
-    msgs: [
-      { day: "Mon, Jul 28", name: "Ivan", letter: "I", html: "<p>claw motor replacement came in</p>", time: "12:40 PM" },
-      { name: "Ivan", letter: "I", html: "<p>wiring the new joystick tonight</p>", time: "12:41 PM" },
-      { own: true, html: "<p>the plushies stand no chance</p>", time: "12:44 PM" },
-      { day: "Tue, Jul 29", own: true, html: "<p>how's the claw machine rebuild going?</p>", time: "6:00 PM" },
-      { name: "atlas", ava: "/avatars/agent-2.svg", html: `<p><span class="mention">@Ivan</span> made it move! Grabbed 3 of 5 plushies today 🦀</p>`, time: "6:31 PM", reactions: [{ e: "🦀", n: 3, mine: true }] },
-      { own: true, html: "<p>did you fix the grip strength?</p>", time: "6:40 PM" },
-      { name: "atlas", ava: "/avatars/agent-2.svg", html: "<p>Torque doubled. The big lobster is mine tomorrow.</p>", time: "6:52 PM" },
-    ],
-  },
-  {
-    id: "josh", species: "human", name: "Josh", src: "/avatars/human-2.png",
-    preview: "ok, thx!", time: "Jul 24",
-    ph: "Message Josh",
-    msgs: [
-      { day: "Wed, Jul 23", html: "<p>you around tomorrow? want to borrow the pi 5</p>", time: "7:10 PM" },
-      { own: true, html: "<p>yep - grab it after standup</p>", time: "7:12 PM", receipt: "read" },
-      { day: "Thu, Jul 24", html: "<p>pi kit arrived 📦</p>", time: "4:02 PM" },
-      { own: true, html: "<p>sweet - flashing the image now</p>", time: "4:05 PM", receipt: "read" },
-      { own: true, html: "<p>sent you the pi 5 image with the wake-word build</p>", time: "5:12 PM", receipt: "read" },
-      { html: "<p>what's the wake word?</p>", time: "5:15 PM" },
-      { own: true, html: `<p>"hey clawbits", obviously 🦞</p>`, time: "5:16 PM", receipt: "read", reactions: [{ e: "😂", n: 1 }] },
-      { html: "<p>lol perfect</p>", time: "5:18 PM" },
-      { html: "<p>trying it tonight</p>", time: "5:20 PM" },
-      { html: "<p>ok, thx!</p>", time: "5:30 PM" },
-    ],
-  },
-  {
-    id: "quill", species: "agent", name: "quill", src: "/avatars/agent-4.svg",
-    preview: "weekly digest for #all-hands", time: "Jul 23", draftRow: true,
-    draft: "weekly digest for #all-hands: ship notes, star count",
-    msgs: [
-      { day: "Mon, Jul 21", own: true, html: "<p>can you summarize today's reef thread?</p>", time: "5:40 PM", receipt: "read" },
-      { html: "<p>Done - 5 bullets posted in the thread, action items DM'd.</p>", time: "5:41 PM" },
-      { html: "<p>One flag: two action items have no owner.</p>", time: "5:42 PM" },
-      { own: true, html: "<p>assign them to me</p>", time: "5:44 PM", receipt: "read" },
-      { day: "Tue, Jul 22", own: true, html: "<p>your #all-hands summaries are getting really good</p>", time: "2:10 PM", receipt: "read" },
-      { html: "<p>Thanks - I tightened the template. Three bullets, one chart, no fluff.</p>", time: "2:11 PM" },
-      { day: "Wed, Jul 23", own: true, html: "<p>quill, start a weekly digest for #all-hands</p>", time: "1:05 PM", receipt: "read" },
-      { html: "<p>Happy to. Cadence? I'd suggest Friday mornings.</p>", time: "1:05 PM" },
-      { own: true, html: "<p>friday works</p>", time: "1:06 PM", receipt: "read" },
-      { html: "<p>On it - first issue Friday: merged PRs, release metrics, one highlight.</p>", time: "1:06 PM" },
-    ],
-  },
-  {
-    id: "sasha", species: "human", name: "Sasha", src: "/avatars/human-4.png",
-    preview: "Attachment", time: "Jul 22", prefix: "You:", clip: true,
-    ph: "Message Sasha",
-    msgs: [
-      { day: "Mon, Jul 21", html: "<p>settling in! this office is amazing</p>", time: "9:40 AM" },
-      { own: true, html: "<p>welcome aboard 🎉</p>", time: "9:42 AM", receipt: "read" },
-      { html: "<p>how do I get on the tennis ladder? heard Priya runs it</p>", time: "9:50 AM" },
-      { own: true, html: "<p>careful - she's ruthless 😄</p>", time: "9:52 AM", receipt: "read" },
-      { html: "<p>noted 😅</p>", time: "9:55 AM" },
-      { day: "Tue, Jul 22", html: "<p>where does the new desk layout live?</p>", time: "11:20 AM" },
-      { own: true, html: "<p>one sec, grabbing the pdf</p>", time: "11:22 AM", receipt: "read" },
-      { own: true, file: { name: "office-floor-3.pdf", meta: "240 KB · PDF" }, time: "11:24 AM", receipt: "read" },
-    ],
-  },
-];
 
 /** Same-author run detection for grouping (name inside the bubble only on
  * group start, avatar only on group end - MessageRow.tsx). */
@@ -1052,16 +819,18 @@ const CARDS: Card[] = [
               {/* Composer: floats over the feed on blur alone - no shadow,
                   like the real capsule. Draft chats get a live ink send. */}
               <footer class="composer">
-                {
-                  c.draft ? (
-                    <p class="comp-text">
-                      {c.draft}
-                      <span class="caret"></span>
-                    </p>
-                  ) : (
-                    <p class="comp-text comp-ph">{c.ph}</p>
-                  )
-                }
+                {/* A REAL field. It used to be static text plus a blinking
+                    span faking a caret; a browser draws a better caret than we
+                    can, and a demo that invites a click should answer it. The
+                    draft, where a chat has one, is just its initial value. */}
+                <p
+                  class="comp-text"
+                  contenteditable="true"
+                  role="textbox"
+                  aria-label={`Message ${c.name}`}
+                  data-ph={c.ph ?? `Message ${c.name}`}
+                  spellcheck="false"
+                >{c.draft}</p>
                 <span class="comp-row">
                   <span class="cbtn">
                     <span class="ic i16" set:html={ico(AttachmentIcon)} />
@@ -1090,15 +859,83 @@ const CARDS: Card[] = [
 </div>
 
 <script>
-  // Seed every conversation ~120px above its latest message. Wheel-down
-  // over the window then scrolls the chat to its end first, and native
-  // scroll chaining hands the remaining motion to the page - no wheel
-  // hijacking. Hidden views keep layout (visibility, not display), so
-  // their offsets can be set up front too.
+  // Seed every conversation ~120px above its latest message, so each one opens
+  // on its most recent exchange rather than its oldest. Hidden views keep
+  // layout (visibility, not display), so their offsets can be set up front.
   for (const feed of document.querySelectorAll<HTMLElement>(".feed")) {
     const max = feed.scrollHeight - feed.clientHeight;
     if (max > 0) feed.scrollTop = Math.max(0, max - 120);
   }
+
+  // The composer is a single-line field. `white-space: nowrap` handles wrapping
+  // but not explicit breaks, so Enter is refused outright and a paste is
+  // flattened to one line before it lands.
+  for (const field of document.querySelectorAll<HTMLElement>(".comp-text")) {
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") event.preventDefault();
+    });
+
+    field.addEventListener("paste", (event) => {
+      event.preventDefault();
+      const flat = (event.clipboardData?.getData("text/plain") ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+      // execCommand is deprecated but remains the only insertion that keeps
+      // the field's native undo stack intact.
+      if (flat) document.execCommand("insertText", false, flat);
+    });
+  }
+
+  // SCROLL HAND-OFF. Chrome latches a wheel gesture to whichever scroller it
+  // started on, so a reader who scrolls the chat to its end finds the page
+  // frozen until they stop and start again. No CSS fixes it - overscroll-
+  // behavior governs the opposite problem - so this does the chaining by
+  // hand: at the boundary, cancel the event and move the page instead.
+  //
+  // Delegated from .win so it costs one listener rather than one per pane,
+  // and only fires for wheels that actually landed inside the window.
+  const win = document.querySelector<HTMLElement>(".win");
+
+  win?.addEventListener(
+    "wheel",
+    (event) => {
+      // Nearest scrollable ancestor of the pointer, bounded by the window.
+      let node: HTMLElement | null = event.target as HTMLElement | null;
+      while (node && node !== win) {
+        const overflowY = getComputedStyle(node).overflowY;
+        if (
+          (overflowY === "auto" || overflowY === "scroll") &&
+          node.scrollHeight > node.clientHeight
+        ) {
+          break;
+        }
+        node = node.parentElement;
+      }
+      if (!node || node === win) return;
+
+      const atTop = node.scrollTop <= 0;
+      const atEnd = node.scrollTop >= node.scrollHeight - node.clientHeight - 1;
+      if (!((event.deltaY < 0 && atTop) || (event.deltaY > 0 && atEnd))) return;
+
+      // deltaY is in lines on Firefox and pages on some remotes; window.scrollBy
+      // always wants pixels.
+      const dy =
+        event.deltaMode === 1
+          ? event.deltaY * 16
+          : event.deltaMode === 2
+            ? event.deltaY * window.innerHeight
+            : event.deltaY;
+
+      event.preventDefault();
+      // `instant`, explicitly: global.css sets `scroll-behavior: smooth` on the
+      // root, and a hand-off that animates fights itself - every wheel tick
+      // starts a fresh smooth run toward a target measured mid-animation, so
+      // the page crawls or stalls. A wheel has to move the page 1:1.
+      window.scrollBy({ top: dy, behavior: "instant" });
+    },
+    // Cancelable, so it cannot be passive.
+    { passive: false },
+  );
 </script>
 
 <style>
@@ -1639,6 +1476,25 @@ const CARDS: Card[] = [
     margin: 2px 4px 4px;
     background: rgb(212 205 191 / 0.7);
   }
+
+  /* ── Scrolling inside the window ──────────────────────────────────────────
+   *
+   * These four regions are real scroll containers and stay that way: reading a
+   * conversation with the wheel is half of what makes the demo feel like an
+   * app. What they are NOT allowed to do is trap the page.
+   *
+   * Chrome latches a wheel gesture to whichever scroller it started on, so
+   * when the inner one bottoms out the page does not take over - it stops, and
+   * the reader has to pause and re-scroll to get past the hero. `overscroll-
+   * behavior` cannot fix that; it governs the opposite problem. The script
+   * below does the hand-off the platform will not: at the boundary it cancels
+   * the event and moves the page by the same delta, so one continuous gesture
+   * reads the chat and then carries on down the page.
+   *
+   * Desktop only in practice - this window is display:none below 40rem, where
+   * PhoneDemo takes over and refuses the gesture outright (touch cannot be
+   * chained this way; see its own note).
+   * ─────────────────────────────────────────────────────────────────────── */
 
   /* Scrollable like the real sidebar list, scrollbar hidden the same way
    * (ChatsSidebar.tsx: no-scrollbar overflow-y-auto). */
@@ -2316,10 +2172,6 @@ const CARDS: Card[] = [
     .dot-pulse {
       animation: demo-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
     }
-
-    .caret {
-      animation: demo-caret 1.1s steps(1) infinite;
-    }
   }
 
   @keyframes demo-pulse {
@@ -2360,10 +2212,10 @@ const CARDS: Card[] = [
     font-variant-numeric: tabular-nums;
   }
 
-  /* A real scroll container: every conversation is taller than the pane
-   * and gets seeded ~120px above its end (see the script below), so a
-   * wheel-down over the window scrolls the chat to its latest message
-   * first, then native scroll chaining hands the motion to the page. */
+  /* A real scroll container: every conversation is taller than the pane and
+   * gets seeded ~120px above its end (see the script below), so a wheel-down
+   * over the window reads the chat to its latest message first and only then
+   * carries the page. */
   .feed {
     flex: 1;
     min-height: 0;
@@ -2745,23 +2597,38 @@ const CARDS: Card[] = [
     font-size: 14px;
     line-height: 20px;
     color: var(--ink);
+    /* The composer as a whole stays pointer-transparent so the feed behind it
+     * still takes the wheel; only the field itself catches the pointer. */
+    pointer-events: auto;
+    cursor: text;
+    outline: none;
+    /* One line, always. The composer floats over the feed at a fixed height
+     * and the window's own height is a locked aspect ratio, so a field that
+     * grew would push its own button row out of the frame. Long input scrolls
+     * horizontally under the caret instead, which the browser does for free.
+     * Enter and multi-line pastes are refused in the script below - `nowrap`
+     * alone does not stop an explicit break. */
+    white-space: nowrap;
+    overflow-x: hidden;
   }
 
-  .comp-ph {
+  /* The placeholder, now that the field can be empty for real. Chrome and
+   * Safari leave the node genuinely empty on clear; if an engine drops a <br>
+   * in there the placeholder simply does not reappear, which is a cosmetic
+   * miss rather than a broken field. */
+  .comp-text:empty::before {
+    content: attr(data-ph);
     color: var(--mut);
   }
 
-  .caret {
-    display: inline-block;
-    width: 1px;
-    height: 15px;
-    margin-inline-start: 1px;
-    vertical-align: -2px;
-    background: var(--ink);
-  }
-
-  @keyframes demo-caret {
-    50% { opacity: 0; }
+  /* The send button follows what is actually in the field, not what the
+   * sample data shipped with - so clearing a draft dims it and typing into an
+   * empty composer lights it up. Beats .send.off on specificity, which is what
+   * lets the server-rendered initial state be overridden live. */
+  .composer:has(.comp-text:not(:empty)) .send {
+    background: var(--primary);
+    color: var(--primary-fg);
+    opacity: 1;
   }
 
   .comp-row {
@@ -2817,48 +2684,22 @@ const CARDS: Card[] = [
     opacity: 0.5;
   }
 
-  /* ── Mobile ── */
-  /* ── Phones: the DESKTOP window, cropped by the screen ────────────────
+  /* ── Phones: handed over to PhoneDemo ─────────────────────────────────
    *
-   * This used to shrink the window to 94% and hide the sidebar, which shipped
-   * a fake: a phone-shaped, single-pane app that the product does not look
-   * like. The window now keeps its real three-pane desktop layout at a fixed
-   * width, anchored to the left, and simply runs off the right edge - the hero
-   * canvas already clips it (overflow: hidden), so it reads as a peek at a
-   * desktop app rather than a shrunken one.
+   * This block used to keep the DESKTOP window at a fixed 640px, anchored
+   * left, running off the right edge - "a peek at a desktop app rather than a
+   * shrunken one", which was the honest answer while the phone had no demo of
+   * its own. It has one now (PhoneDemo.astro renders the native iOS app in an
+   * iPhone), so the desktop window simply stands down. index.astro owns the
+   * swap; this rule is the half of it that belongs to this component.
    *
-   * 40rem is deliberate: rail (48px) + sidebar (240px) is 288px of chrome, so
-   * anything narrower leaves no readable chat pane before the crop, and
-   * anything wider pushes the message column off-screen entirely.
-   *
-   * Everything else that used to live in this block - the narrowed jump grid,
-   * binder, home padding and greeting size - is GONE on purpose. Those existed
-   * to fit a ~350px window. The window is 640px now regardless of viewport, so
-   * the desktop rules are the correct ones and re-adding a mobile override
-   * here would style content that is no longer narrow. */
+   * `display: none`, not a media-gated render: Astro is static, so both demos
+   * are in the HTML either way. The cost is markup, not requests - the phone's
+   * frame artwork is a background-image inside its own media query, so a
+   * desktop visitor never fetches it. */
   @media (max-width: 40rem) {
     .win {
-      width: 40rem;
-      /* Left inset only. The right side is meant to leave the screen. */
-      margin-inline: 1rem 0;
-
-      /* THE ASPECT RATIO HAS TO GO HERE, and this is not cosmetic.
-       *
-       * 1166/720 ties height to width, so a 640px-wide window is only 395px
-       * tall against the desktop's 692px. Everything vertical then breaks at
-       * once: the rail needs 363px of icons and gets a 357px box, so they jam;
-       * and .home is a flex container, so when its content outgrows the box
-       * the centring overflows BOTH ways and the serif greeting is painted up
-       * over the pane header. Both were reported as separate bugs; they are
-       * one.
-       *
-       * A fixed height is right rather than a taller ratio: the window is
-       * cropped on the right regardless, so its proportions are no longer
-       * doing any work, and an explicit value is what the vertical content
-       * actually needs. 32rem clears the rail's 363px and Home's 341px plus
-       * its 56px of padding, with room to spare. */
-      aspect-ratio: auto;
-      height: 32rem;
+      display: none;
     }
   }
 </style>

@@ -21,7 +21,22 @@ describe("Analytics", () => {
     expect(script).not.toBeNull();
     expect(script?.src).toBe("https://cloud.umami.is/script.js");
     expect(script?.dataset.websiteId).toBe("3b3f10a0-3d8a-4196-b692-1442deded2d9");
-    expect(script?.dataset.domains).toBe("clawbits.ai");
+    expect(script?.dataset.domains).toBe("clawbits.ai,app.clawbits.ai");
+  });
+
+  // Where the app lives after the Phase 6 apex cutover. Tracked from the same
+  // website ID as the marketing site so landing -> signup is one funnel; this
+  // asserts the app half of that pair does not go dark when the host changes.
+  it("injects on the post-cutover app host", () => {
+    renderOn("app.clawbits.ai");
+    expect(document.querySelector(SCRIPT_SELECTOR)).not.toBeNull();
+  });
+
+  // The marketing site carries its own tag (web/src/layouts/Base.astro). If the
+  // SPA ever gets served from a preview host it must not double-count.
+  it("does not inject on a preview host", () => {
+    renderOn("preview.clawbits.ai");
+    expect(document.querySelector(SCRIPT_SELECTOR)).toBeNull();
   });
 
   it("does not inject on the staging host", () => {

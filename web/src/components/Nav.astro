@@ -133,7 +133,21 @@ const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
     translate: 0 -110%;
   }
 
-  @supports (animation-timeline: scroll()) {
+  /* BOTH properties, because the timeline crosses a subtree boundary.
+   *
+   * `animation-timeline` alone is the wrong test: the timeline is declared on
+   * the hero canvas in index.astro and reaches this bar only via
+   * `timeline-scope` on <body> (global.css), and the two properties did not
+   * ship together - Firefox carried animation-timeline for many releases
+   * before timeline-scope. In that gap the browser passes the old guard,
+   * applies `animation ... both` against a name that resolves to nothing, and
+   * the bar's resting state is whatever that engine does with an unresolved
+   * timeline under fill:both. Hidden is the intent (see the header comment),
+   * but it should be the base style holding, not an engine's read of an
+   * under-specified edge case - the failure mode in the other direction is a
+   * permanently stuck duplicate header. Testing the real dependency makes it
+   * deterministic. */
+  @supports (animation-timeline: scroll()) and (timeline-scope: --x) {
     .nav-fixed {
       animation: fixed-in linear both;
       animation-timeline: --hero-view;
@@ -342,6 +356,27 @@ const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
      * button has scrolled away and it is the only CTA on screen. */
     .nav-top .pill {
       display: none;
+    }
+  }
+
+  /* Phones: the overlay bar joins the hero's alignment line.
+   *
+   * Its 1rem inset exists to match the canvas frame, and at this width the
+   * frame is gone - index.astro takes the canvas full-bleed. So the inset goes
+   * too, and the inner padding becomes the shared gutter: the wordmark's left
+   * edge and the menu's right edge then sit exactly where the headline, the
+   * button and the phone's body do.
+   *
+   * This also drops the asymmetric start padding above. That extra existed as
+   * an optical correction for the wordmark's angled claw; a visible shared
+   * line beats an invisible optical one, and the owner asked for the line. */
+  @media (max-width: 40rem) {
+    .nav-top {
+      inset-inline: 0;
+    }
+
+    .nav-top .inner {
+      padding-inline: var(--hero-gutter);
     }
   }
 </style>

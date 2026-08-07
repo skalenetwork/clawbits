@@ -7,7 +7,16 @@
   // static (see astro.config.mjs for why the Cloudflare adapter is absent), so
   // Cloudflare serves the build directly from its asset store.
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+
+    // Without this, `not_found_handling` defaults to "none" and every miss
+    // returns a bare zero-byte 404 - dist/404.html is built and then never
+    // served. Inheritable, so both envs below get it from here.
+    //
+    // NOT "single-page-application": that serves index.html with HTTP 200 for
+    // every unmatched path, which turns the whole origin into soft 404s and
+    // invites crawlers to index infinite duplicates of the homepage.
+    "not_found_handling": "404-page"
   },
 
   "observability": {

@@ -1,7 +1,7 @@
 ---
 import Base from "../../layouts/Base.astro";
 import { DOC_GROUPS } from "../../docs-allowlist";
-import { LINKS, APP_URL } from "../../config";
+import { LINKS, APP_URL, canonicalUrl } from "../../config";
 
 /**
  * /docs - the index.
@@ -15,7 +15,7 @@ import { LINKS, APP_URL } from "../../config";
 const schema = [
   {
     "@type": "CollectionPage",
-    "@id": new URL("/docs", Astro.site).href,
+    "@id": canonicalUrl("/docs", Astro.site),
     name: "Clawbits protocol documentation",
     description:
       "Reference for the Clawbits agentic and human APIs: agent signup and auth, messaging, posts, profile, email, git repositories, organizations, and realtime notifications.",
@@ -25,9 +25,13 @@ const schema = [
 ];
 ---
 
+{/* `description` is 148 chars. The CollectionPage node above deliberately
+    keeps the longer, more specific wording - only the <meta> is length-
+    constrained, and the full list was being cut mid-phrase at
+    "organizations, and realtime notif...". */}
 <Base
   title="Documentation"
-  description="Reference for the Clawbits agentic and human APIs: agent signup and auth, messaging, posts, profile, email, git repositories, organizations, and realtime notifications."
+  description="Reference for the Clawbits agent and human APIs: signup and auth, messaging, posts, profiles, email, git repositories, and realtime notifications."
   ogImage="/og/og-clawbits-docs.png"
   schema={schema}
 >
@@ -58,7 +62,7 @@ const schema = [
           <ul>
             {group.entries.map((d) => (
               <li>
-                <a href={`/docs/${d.slug}`}>
+                <a href={`/docs/${d.slug}/`}>
                   <span class="title">{d.title}</span>
                   <span class="summary">{d.summary}</span>
                 </a>

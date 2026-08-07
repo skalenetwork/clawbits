@@ -3,7 +3,7 @@ import { getCollection, render } from "astro:content";
 import { Image } from "astro:assets";
 import Base from "../../layouts/Base.astro";
 import ShaderBackdrop from "../../components/ShaderBackdrop.tsx";
-import { LINKS } from "../../config";
+import { LINKS, canonicalUrl } from "../../config";
 
 /**
  * /changelog - the full release history.
@@ -95,7 +95,7 @@ const DESCRIPTION =
 const schema = [
   {
     "@type": "CollectionPage",
-    "@id": new URL("/changelog", Astro.site).href,
+    "@id": canonicalUrl("/changelog", Astro.site),
     name: "Clawbits changelog",
     description: DESCRIPTION,
     isPartOf: { "@id": `${Astro.site}#website` },
@@ -116,7 +116,7 @@ const schema = [
       shader preset - a changelog should feel like the same site, not compete
       with the homepage for the loudest gradient. */}
   <div class="frame">
-    <section class="canvas">
+    <section class="canvas" data-theme-anchor>
       <div class="shader" aria-hidden="true">
         {/* Intensity well under BOTH the hero (0.15 at ~2.5x this height) and
             the CTA (0.32): the wave is sized to the canvas, so the shorter the

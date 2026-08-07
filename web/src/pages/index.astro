@@ -4,6 +4,7 @@ import Button from "../components/Button.astro";
 import Eyebrow from "../components/Eyebrow.astro";
 import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
 import AppDemo from "../components/AppDemo.astro";
+import PhoneDemo from "../components/PhoneDemo.astro";
 import ReefVisual from "../components/ReefVisual.astro";
 import IntroChat from "../components/IntroChat.astro";
 import AgencyVisual from "../components/AgencyVisual.astro";
@@ -83,7 +84,7 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
 <Base nav="overlay">
   {/* ── 1 · Hero canvas ──────────────────────────────────────────────── */}
   <div class="frame">
-    <section class="canvas">
+    <section class="canvas" data-theme-anchor>
       <div class="shader" aria-hidden="true">
         <ShaderBackdrop client:only="react" />
       </div>
@@ -128,6 +129,13 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
           <img class="sicon s-herm" src="/brand/hermes-ios.png" alt="" width="256" height="256" loading="lazy" />
         </a>
         <AppDemo />
+
+        {/* The phone takes the stage on ≤40rem, where the desktop window
+            stands down (AppDemo's own mobile block). Both ship in the HTML -
+            Astro is static - but only the matching one paints, and the frame
+            artwork is a media-gated background so this costs desktop nothing
+            but markup. */}
+        <div class="phone-slot"><PhoneDemo /></div>
       </div>
     </section>
   </div>
@@ -326,6 +334,7 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
         </div>
         <div class="cta-inner">
           <h2 class="display display-xl">{FINAL_CTA.heading}</h2>
+          <p class="cta-note">{FINAL_CTA.note}</p>
           <div class="cta-btn">
             <Button href={LINKS.signup} variant="inverse">Get Started</Button>
           </div>
@@ -343,8 +352,19 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
   /* ── Hero canvas ──────────────────────────────────────────────────────
    * Inset 16px from every page edge, radius up to ~34px, shadow-xl, overflow
    * hidden; the window's bottom ~130px are cropped by the edge. */
-  /* No bottom padding: the rails' vertical hairlines must start at the
-   * canvas's lower edge, not a frame-width later. */
+  /* THE OVERHANG. The window no longer stops at the shader - it carries on
+   * past the canvas's lower edge and finishes on the cream, so the product
+   * frame bridges the two halves of the page instead of being severed by the
+   * seam. Its max width is 70.5rem, exactly the rails column, so the part that
+   * hangs below lands precisely between the two hairlines.
+   *
+   * --hero-overhang (global.css) is read in both directions: .stage pulls the
+   * canvas up by it, and the first railed block reserves it below. Which means
+   * the clearance lives INSIDE the rails, so their vertical hairlines still
+   * begin exactly at the canvas's lower edge and run up behind the part of the
+   * window that hangs past it. No bottom padding here - that would push the
+   * hairlines down and away from the canvas, which is the detail this whole
+   * arrangement exists to keep. */
   .frame {
     padding: 1rem 1rem 0;
   }
@@ -352,7 +372,11 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
   .canvas {
     position: relative;
     isolation: isolate;
-    overflow: hidden;
+    /* Visible, so the window can leave. The clip that used to live here has
+     * moved to .shader, which is the only child that actually needed it - the
+     * gradients and the WebGL canvas would otherwise spill past the rounded
+     * corners. (The phone still wants a crop; see the narrow block below.) */
+    overflow: visible;
     /* Visually identical to the rails hairlines. Those are 7%-alpha black
      * OVER CREAM; painted over this dark canvas the same alpha vanishes, so
      * the border uses the composited (opaque) result of line-over-ground. */
@@ -373,6 +397,8 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
     position: absolute;
     inset: 0;
     z-index: 0;
+    border-radius: inherit;
+    overflow: hidden;
     background:
       radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
       radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
@@ -458,7 +484,9 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
     position: relative;
     z-index: 1;
     margin-top: clamp(2.75rem, 4.9vw, 4.0625rem);
-    margin-bottom: clamp(-8.5rem, -9.9vw, -3rem);
+    /* Pulls the canvas's lower edge up across the window by exactly the
+     * overhang the frame reserved below it. */
+    margin-bottom: calc(var(--hero-overhang) * -1);
   }
 
   /* ── Agent icon stack, tucked behind the window's top-right corner.
@@ -579,6 +607,11 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
     width: 44px;
   }
 
+  /* Desktop shows the window; the phone waits for its media query. */
+  .phone-slot {
+    display: none;
+  }
+
   /* No room for the stack once the window goes near-full-bleed. */
   @media (max-width: 40rem) {
     .agent-stack {
@@ -598,11 +631,20 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
      * Corners stay rounded on the BOTTOM edge only - the top edge, the sides
      * and their borders now coincide with the screen, and a radius on an edge
      * that touches the viewport shows the page ground through the corner. */
+    /* ONE vertical line down each side of the hero. The wordmark, the badge,
+     * the headline, the button and the phone's BODY all start on it; the
+     * hamburger and the phone's other edge end on its mirror. Nav.astro reads
+     * the same variable (it is set on :root in global.css so both components
+     * can), which is what stops the two drifting apart. */
     .frame {
       padding: 0;
     }
 
     .canvas {
+      /* The phone IS cropped by the canvas edge - the whole composition
+       * depends on it (see --ph-crop). So the clip comes back here, where the
+       * desktop window is display:none anyway. */
+      overflow: hidden;
       border-top: 0;
       border-inline: 0;
       border-radius: 0 0 clamp(1rem, 5vw, 1.75rem) clamp(1rem, 5vw, 1.75rem);
@@ -612,11 +654,75 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
       text-align: left;
       /* Tighter than the old 2rem: buys the width that keeps the long first
        * headline line unwrapped at the clamp floor. */
-      padding-inline: 1.5rem;
+      padding-inline: var(--hero-gutter);
     }
 
     .hero-cta {
       justify-content: flex-start;
+    }
+
+    /* ── The phone takes the stage ──────────────────────────────────────
+     *
+     * Wide on purpose. A device sized to "sit in a scene" (~65% of the
+     * viewport) puts the app's 13pt preview text at 7.5px, which is a blurry
+     * stock mockup rather than a product shot - the desktop window is legible
+     * only because it renders at ~1:1, and a 402pt screen cannot do that on a
+     * 390px viewport. At 86% the screen scales to ~0.75 and the type holds.
+     *
+     * --phone-w is read twice, and both readings resolve their percentage
+     * against the same box (this canvas), which is what keeps the crop
+     * correct at every width. */
+    .stage {
+      /* THE ALIGNMENT. The artwork's flat body runs x 8..441 of 450, so 1.7778%
+       * of the element is transparent padding on each side and the element has
+       * to be WIDER than the gutter allows for its body to land on it:
+       *
+       *   bodyLeft = (W - E)/2 + 0.017778E = gutter   ->   E = (W - 2g)/0.964444
+       *
+       * Centred, so the right edge mirrors it for free. The side buttons still
+       * poke ~2px past the line, which is what a real phone does. */
+      --phone-w: calc((100% - 2 * var(--hero-gutter)) / 0.964444);
+
+      /* How much SCREEN the canvas cuts off, in iOS points. PhoneDemo reads the
+       * same variable to pad its message feed by the same amount, so the newest
+       * messages stay above the fold instead of being cut away with the chin.
+       *
+       * At 240 the iOS tab bar goes with it - deliberate. The phone opens on a
+       * conversation, which is a pushed route with no tab bar anyway, and a
+       * hero that ran past 1.3 viewports was the thing being fixed.
+       *
+       * The margin is that number plus the 23px of bezel below the screen, over
+       * the artwork's 450px width - a margin percentage has no other basis. */
+      --ph-crop: 240;
+      margin-bottom: calc(var(--phone-w) * (var(--ph-crop) + 23) / -450);
+    }
+
+    .phone-slot {
+      display: block;
+      width: var(--phone-w);
+      margin-inline: auto;
+    }
+
+    /* Entrance. The desktop hero already opens with the agent icons rising out
+     * from behind the window (stack-rise, above); this is the phone's version
+     * of the same beat - it arrives from under the canvas edge, which is where
+     * the crop already implies it continues to.
+     *
+     * On .phone-slot, not on the phone itself: the slot is a plain box, while
+     * .phone carries `container-type: inline-size` and the message feed's
+     * scroll-driven animation hangs off its descendants. Keeping the entrance
+     * one level out means the two never share a property. */
+    @media (prefers-reduced-motion: no-preference) {
+      .phone-slot {
+        animation: phone-rise 900ms var(--ease-out-expo) 120ms backwards;
+      }
+    }
+
+    @keyframes phone-rise {
+      from {
+        translate: 0 2.5rem;
+        opacity: 0;
+      }
     }
   }
 
@@ -638,6 +744,13 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
   .block {
     padding: clamp(4.5rem, 8vw, 6.75rem) clamp(1.25rem, 4vw, 3rem);
     border-bottom: 1px solid var(--color-line);
+  }
+
+  /* The first block starts under the window rather than behind it: its normal
+   * top padding plus however far the window hangs into this column. The
+   * hairlines still run the full height, so they pass behind the window. */
+  .rails > .block:first-child {
+    padding-top: calc(clamp(4.5rem, 8vw, 6.75rem) + var(--hero-overhang));
   }
 
   /* The rails close after the last railed block (Clients); the .outro's
@@ -1018,18 +1131,19 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
     color: var(--color-muted);
   }
 
-  /* Phones: one compact row of marks and names, nothing else.
+  /* Phones: one row of three full-width tiles and their names, nothing else.
    *
-   * The desktop treatment is three 16:10 tiles each carrying a sentence of
-   * prose. Held at a third of a 375px screen that becomes three columns about
-   * 100px wide, so every description breaks into five or six ragged lines and
-   * the section reads as the busiest thing on the page - for what is really
-   * just a compatibility list. The names ARE the message here: the point is
-   * that these three runtimes work, not what each one is. The section's own
-   * lede already says that, and each name still links out to the project.
+   * The descriptions go: held at a third of a 375px screen, each sentence
+   * breaks into five or six ragged lines and the section reads as the busiest
+   * thing on the page - for what is really just a compatibility list. The
+   * names ARE the message here: the point is that these three runtimes work,
+   * not what each one is. The section's own lede already says that, and each
+   * name still links out to the project.
    *
-   * Square tiles, not 16:10: at this size the wide crop left the marks
-   * floating in empty space. */
+   * The tiles keep the desktop's oversized, cropped marks (owner call
+   * 2026-08-07) - they just span the grid cell instead of a 60px thumbnail.
+   * Square, not 16:10: a third of a phone screen is too narrow for the wide
+   * crop, which left the marks floating in empty space. */
   @media (max-width: 40rem) {
     .agents {
       /* Stated explicitly even though it matches the base rule: the tablet
@@ -1043,28 +1157,37 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
 
     .agent-tile {
       aspect-ratio: 1;
-      max-width: 3.75rem;
-      margin-inline: auto;
-      border-radius: 0.75rem;
+      border-radius: 0.875rem;
     }
 
-    /* The per-agent rules place each mark absolutely at 14-25rem so it bleeds
-     * off the desktop tile - "the crop is the point". Against a 60px square
-     * that leaves a stray corner of a lobster claw and, for IronClaw, nothing
-     * but background. Undo the bleed here and simply centre the whole mark:
-     * at this size the logo has to be recognisable, not cropped. */
-    .agent-mark,
-    .ag-hermes .agent-mark,
-    .ag-ironclaw .agent-mark,
+    /* Percentages, not the desktop's fixed rem: inside this query the tile is
+     * square and its width only moves between ~100px and ~190px, so one
+     * proportional set holds the same crop across the range. (Above 40rem the
+     * fixed values still rule - see the note on .ag-openclaw for why.) The
+     * ratios are the desktop crop restated against a square: the fraction of
+     * each mark left hidden by the tile edge is unchanged. */
     .ag-openclaw .agent-mark {
-      position: static;
-      inset: auto;
-      width: 2.25rem;
-      height: 2.25rem;
+      left: -9%;
+      bottom: -24%;
+      width: 105%;
+      height: 105%;
+    }
+
+    .ag-hermes .agent-mark {
+      bottom: -18%;
+      width: 89%;
+      height: 95%;
+    }
+
+    .ag-ironclaw .agent-mark {
+      right: -18%;
+      bottom: -18%;
+      width: 130%;
+      height: 130%;
     }
 
     .agent-name {
-      margin-top: 0.5rem;
+      margin-top: 0.625rem;
       font-size: 0.8125rem;
     }
 
@@ -1210,6 +1333,9 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
   .cta-inner {
     position: relative;
     z-index: 1;
+    /* Symmetric. An asymmetric variant was tried on 2026-08-07 to compensate for
+       the h2's ascender space and read as too high - the canvas is tall enough
+       that geometric centring is what looks right here. */
     padding: 3rem clamp(1.5rem, 5vw, 3rem);
   }
 
@@ -1218,8 +1344,34 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
     color: #fff;
   }
 
+  /* EQUAL GAPS, owner call 2026-08-07: heading -> note -> button reads as one
+     evenly spaced rhythm rather than a heading+note block with the button set
+     apart. Both gaps are 1.5rem and must stay in step - if you change one,
+     change .cta-note's margin-bottom to match.
+     1.5rem rather than the button's original 2rem because equalising adds a gap
+     the composition did not have; at 2rem each the cluster grows 24px and the
+     heading rides up the canvas. Left as a :has() so the heading keeps its
+     original 2rem if the note is ever removed. */
+  .cta-inner h2:has(+ .cta-note) {
+    margin-bottom: 1.5rem;
+  }
+
   .cta-btn {
     display: flex;
     justify-content: center;
+  }
+
+  /* Quiet, under the button - the answer to "what does it cost", not a pitch.
+     0.72 matches the 404 page's lede (404.astro:161), which is the same job:
+     secondary text under a heading on a dark canvas. Nothing on this site sets
+     TEXT below 0.72 on a canvas, and this sits over the shader rather than a
+     flat fill, so the headroom is doing real work - measured 9.9:1 against the
+     canvas ground, which leaves room for the brightest part of the gradient. */
+  .cta-note {
+    margin: 0 0 1.5rem;
+    text-align: center;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: rgb(255 255 255 / 0.72);
   }
 </style>

@@ -9,14 +9,15 @@
   "scripts": {
     "dev": "astro dev --port ${PORT:-4321}",
     "brand:assets": "node scripts/build-brand-assets.mjs",
-    "build": "bun run brand:assets && astro build",
+    "build": "bun run brand:assets && astro build && node scripts/build-headers.mjs",
     "preview": "astro preview",
     "check": "astro check",
     "verify:legal": "node scripts/verify-legal-parity.mjs",
     "deploy:staging": "SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://freeclaws.ai bun run build && wrangler deploy --env staging",
     "deploy:production": "SITE_URL=https://preview.clawbits.ai PUBLIC_APP_URL=https://app.clawbits.ai bun run build && wrangler deploy --env production",
     "verify:links": "node scripts/verify-links.mjs",
-    "verify": "bun run check && bun run verify:legal && bun run verify:links"
+    "verify:no-inline-styles": "node scripts/verify-no-inline-styles.mjs",
+    "verify": "bun run check && bun run verify:legal && bun run verify:links && bun run verify:no-inline-styles"
   },
   "dependencies": {
     "@astrojs/react": "^6.0.2",

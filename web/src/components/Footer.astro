@@ -31,7 +31,14 @@ const columns = [
   {
     title: "Company",
     links: [
-      { href: LINKS.blog, label: "Blog" },
+      /* No "Blog" until there is a blog. LINKS.blog still points at
+       * github.com/skalenetwork/clawbits/tree/main/docs - a raw listing of
+       * internal engineering specs, most of which the docs allowlist
+       * deliberately refuses to publish. That was a reasonable placeholder
+       * while /docs did not exist; on all 25 pages of a launched site it is a
+       * link labelled "Blog" that opens a directory tree. The LINKS.blog key
+       * stays in config.ts so restoring this row is one line the day a first
+       * post ships. */
       { href: LINKS.brand, label: "Brand" },
       { href: LINKS.support, label: "Support" },
     ],
@@ -230,6 +237,26 @@ const columns = [
   @media (max-width: 40rem) {
     .grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    /* No crop on a phone (owner call 2026-08-07). The desktop mark is ~186px
+     * tall and losing its baseline to the page edge reads as a sign-off; the
+     * phone mark is only ~62px tall, so the same proportional crop reads as
+     * the page having been cut off mid-word. Show it whole, with room under
+     * it, and let the mask alone do the fading.
+     *
+     * Placed here, after the base .mark-img, rather than in the earlier
+     * phone query above it - same specificity, so source order is what
+     * cancels the negative margin. */
+    .mark {
+      margin-top: 2.5rem;
+      padding-bottom: 1.5rem;
+    }
+
+    .mark-img {
+      margin-bottom: 0;
+      -webkit-mask-image: linear-gradient(to bottom, #000 60%, rgb(0 0 0 / 0.35) 100%);
+      mask-image: linear-gradient(to bottom, #000 60%, rgb(0 0 0 / 0.35) 100%);
     }
   }
 </style>
