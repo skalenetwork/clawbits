@@ -57,7 +57,15 @@
   --color-signal-canvas-deep: #f2808a; /* 7.28:1 */
 
   /* The dark canvas surfaces (hero, final CTA, dark visual panels). Warm
-   * black, same hue family as the OG card, used as the shader's colorBack. */
+   * black, same hue family as the OG card, used as the shader's colorBack.
+   *
+   * Owner tried #0f0e0c and reverted, 2026-08-07.
+   *
+   * If it is ever changed again, change it HERE and nowhere else: <body>
+   * carries this same value while the hero holds the top of the viewport -
+   * that is what colours Safari's chrome above the page - and
+   * ShaderBackdrop.tsx keeps its own copy as the shader's ground. All three
+   * have to move together or the seam where the canvas ends becomes visible. */
   --color-canvas: #141311;
   --color-canvas-text: #f7f5f1;
 
@@ -127,6 +135,42 @@
 
 :root {
   color-scheme: light;
+}
+
+/* THE STRIP ABOVE THE PAGE ON iOS SAFARI.
+ *
+ * That band is Safari's own chrome, not the page: in normal browsing the web
+ * view starts BELOW it, which is why env(safe-area-inset-top) measured 0 on
+ * device even with viewport-fit=cover. The page cannot paint there. All it can
+ * do is tell Safari what colour to use, and Safari's order of preference is:
+ *
+ *   1. a fixed/sticky element's background-color
+ *   2. <body>'s background-color        <- the one that decides it here
+ *   3. <meta name="theme-color">        <- deprecated, ignored from iOS 26
+ *   4. the web app manifest
+ *
+ * So theme-color was never going to work, and neither was <html> - body's
+ * background wins over it. Which means body's colour has to become a SIGNAL
+ * rather than paint: main and footer below declare the page ground themselves,
+ * so body's own value is never visible and is free to say "the thing at the
+ * top of the viewport is dark".
+ *
+ * Base.astro's sync sets [data-hero-top] for exactly as long as the dark
+ * canvas holds the top. The bottom overscroll would also take this colour, but
+ * on a page taller than the viewport you cannot be at the hero and
+ * rubber-banding the footer at once, so the two states never collide. */
+html[data-hero-top] body {
+  background-color: var(--color-canvas);
+}
+
+/* The reader's ground, declared where it is painted rather than inherited from
+ * body - see above for why body's own background is not available for this.
+ *
+ * `body > footer`, not `footer`: the hero demo's composer is a <footer> too,
+ * and a bare element selector would hand it the page ground. */
+main,
+body > footer {
+  background-color: var(--color-ink);
 }
 
 /* Hoists the hero canvas's view timeline (declared in index.astro) up to

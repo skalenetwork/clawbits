@@ -130,6 +130,11 @@ const jsonLd = {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    {/* No `viewport-fit=cover`, deliberately. It was tried for the band above
+        the hero and measured on-device: in normal Safari browsing the web view
+        already starts below the status bar, every env(safe-area-inset-*) reads
+        0, and the band is Safari's own chrome either way (see global.css). All
+        cover would add here is landscape notch insets we do not handle. */}
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <title>{pageTitle}</title>
@@ -255,9 +260,12 @@ const jsonLd = {
     </main>
     <Footer />
 
-    {/* Keeps the browser chrome in step with what is actually under it: dark
-        while the shader canvas holds the top of the viewport, the page ground
-        after it leaves. No-ops on every page without a [data-theme-anchor]. */}
+    {/* Keeps the browser chrome AND the document canvas background in step
+        with what is actually under them: dark while the shader canvas holds
+        the top of the viewport, the page ground after it leaves. body's
+        background is the only thing that reaches the band above the page on
+        iOS - see the note in global.css. No-ops on every page without a
+        [data-theme-anchor]. */}
     <script>
       const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
       const anchor = document.querySelector("[data-theme-anchor]");
@@ -265,12 +273,31 @@ const jsonLd = {
       const dark = meta?.dataset.dark;
 
       if (meta && anchor && light && dark) {
-        new IntersectionObserver(
-          ([entry]) => meta.setAttribute("content", entry.isIntersecting ? dark : light),
-          // Shrink the root's top edge by 1px so "not intersecting" means the
-          // anchor's last row of pixels has cleared the top of the viewport.
-          { rootMargin: "-1px 0px 0px 0px" },
-        ).observe(anchor);
+        // MEASURE the anchor; do not trust `entry.isIntersecting`.
+        //
+        // An IntersectionObserver delivers its first record as soon as it can,
+        // and engines differ on whether layout has settled by then. A record
+        // taken against a not-yet-laid-out anchor reports isIntersecting:false,
+        // which flips the bar to the LIGHT colour on a page whose hero is
+        // sitting right there in the viewport - and iOS Safari latches that
+        // first value, so the strip above the hero stays the page ground. Every
+        // callback re-measures instead, and a zero-height rect (layout not
+        // ready) says nothing at all rather than guessing wrong.
+        const sync = () => {
+          const rect = anchor.getBoundingClientRect();
+          if (rect.height === 0) return;
+          const holdsTop = rect.bottom > 0;
+          meta.setAttribute("content", holdsTop ? dark : light);
+          // Drives the canvas background too - see the [data-hero-top] note in
+          // global.css. An attribute rather than an inline style: the
+          // production CSP has no 'unsafe-inline' in style-src.
+          document.documentElement.toggleAttribute("data-hero-top", holdsTop);
+        };
+
+        requestAnimationFrame(sync);
+        // Shrink the root's top edge by 1px so a callback fires the moment the
+        // anchor's last row of pixels clears the top of the viewport.
+        new IntersectionObserver(sync, { rootMargin: "-1px 0px 0px 0px" }).observe(anchor);
       }
     </script>
   </body>

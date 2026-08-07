@@ -28,7 +28,8 @@ import {
   UserMultiple02Icon,
 } from "@hugeicons/core-free-icons";
 import { ico } from "../lib/appicon";
-import { CHATS, type Msg, type Species } from "../content/demo-chats";
+import { CHATS, type Chat, type Msg, type Species } from "../content/demo-chats";
+import { LINKS } from "../config";
 
 /**
  * The hero's product frame: a faithful, sample-data recreation of the real
@@ -68,6 +69,23 @@ import { CHATS, type Msg, type Species } from "../content/demo-chats";
 /* The conversation set is SHARED with PhoneDemo.astro - see the module's
  * own note for why it is not defined here any more. */
 
+
+/** Which agents are agents, for the avatar shape and the reply author. */
+const AGENTS = new Set(["atlas", "hermes", "scout", "quill", "forge"]);
+
+/**
+ * Who answers when a visitor sends a message from the demo composer.
+ *
+ * A DM is answered by its counterpart; a channel by the last agent that spoke
+ * in it, which is the one the reader just watched being useful. Resolved here
+ * rather than in the script so the markup carries it per conversation and the
+ * script stays a dumb DOM builder.
+ */
+const replyFrom = (c: Chat) => {
+  if (c.species !== "channel") return { name: c.name, ava: c.src };
+  const last = [...c.msgs].reverse().find((m) => !m.own && m.name && AGENTS.has(m.name));
+  return last ? { name: last.name!, ava: last.ava! } : { name: c.name, ava: c.src };
+};
 
 /** Same-author run detection for grouping (name inside the bubble only on
  * group start, avatar only on group end - MessageRow.tsx). */
@@ -176,7 +194,7 @@ const CARDS: Card[] = [
 ];
 ---
 
-<div class="win" role="group" aria-label="Clawbits app demo">
+<div class="win" role="group" aria-label="Clawbits app demo" data-signup={LINKS.signup}>
   <input type="radio" name="demo-view" id="v-home" class="vr" aria-label="Show the Home view" />
   <input type="radio" name="demo-view" id="v-agents" class="vr" aria-label="Show the Agents view" />
   {CHATS.map((c) => (
@@ -645,7 +663,13 @@ const CARDS: Card[] = [
         {/* One view per conversation. */}
         {
           CHATS.map((c) => (
-            <section class:list={["view", "cv", `view-${c.id}`]} aria-label={`${c.name} conversation`}>
+            <section
+              class:list={["view", "cv", `view-${c.id}`]}
+              aria-label={`${c.name} conversation`}
+              data-reply-name={replyFrom(c).name}
+              data-reply-ava={replyFrom(c).ava}
+              data-channel={c.species === "channel" ? "" : undefined}
+            >
               <header class="pane-head chat-head">
                 <img
                   class:list={["ava", "s22", { "ava-h": c.species === "human", "ava-a": c.species === "agent", "ava-c": c.species === "channel" }]}
@@ -859,20 +883,138 @@ const CARDS: Card[] = [
 </div>
 
 <script>
-  // Seed every conversation ~120px above its latest message, so each one opens
-  // on its most recent exchange rather than its oldest. Hidden views keep
-  // layout (visibility, not display), so their offsets can be set up front.
+  // Seed every conversation just short of its end, so each one opens on its
+  // most recent exchange. The offset was 120px, from when a wheel-down was
+  // meant to run the chat to its bottom before chaining to the page - the
+  // hand-off below does that job now, so this only decides where the reader
+  // lands. Hidden views keep layout (visibility, not display), so their
+  // offsets can be set up front.
+  const SEED_ABOVE_END = 40;
+
   for (const feed of document.querySelectorAll<HTMLElement>(".feed")) {
     const max = feed.scrollHeight - feed.clientHeight;
-    if (max > 0) feed.scrollTop = Math.max(0, max - 120);
+    if (max > 0) feed.scrollTop = Math.max(0, max - SEED_ABOVE_END);
   }
 
-  // The composer is a single-line field. `white-space: nowrap` handles wrapping
-  // but not explicit breaks, so Enter is refused outright and a paste is
-  // flattened to one line before it lands.
+  // ── Sending ──────────────────────────────────────────────────────────────
+  //
+  // The composer is a single-line field, so Enter has nothing to insert and is
+  // free to mean "send". Whatever is typed becomes a real outgoing bubble, and
+  // the conversation's own agent answers - the one the reader has just watched
+  // being useful in that thread.
+  //
+  // The reply is the honest one. This demo is sample data and cannot answer
+  // anything; saying so and offering the real thing beats a canned response
+  // that pretends otherwise.
+  // Shared with the scroll hand-off further down.
+  const win = document.querySelector<HTMLElement>(".win");
+  const signup = win?.dataset.signup ?? "/";
+
+  // Astro scopes this component's CSS behind a `data-astro-cid-*` attribute it
+  // stamps on every element it renders. An element built with createElement
+  // has no such attribute, so NONE of the rules below reach it - a sent
+  // message came out as unstyled text with a full-size avatar. Every node this
+  // script creates is stamped with the same attribute the server used.
+  const scopeAttr = [...(document.querySelector(".msg")?.attributes ?? [])]
+    .map((a) => a.name)
+    .find((n) => n.startsWith("data-astro-cid-"));
+
+  /** createElement + the component's style scope. */
+  const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string) => {
+    const node = document.createElement(tag);
+    node.className = className;
+    if (scopeAttr) node.setAttribute(scopeAttr, "");
+    return node;
+  };
+
+  /** Same shape as a rendered .msg - see the message markup above. */
+  const appendMessage = (
+    feed: HTMLElement,
+    opts: { own?: boolean; name?: string; ava?: string; body: (string | Node)[][] },
+  ) => {
+    const msg = el("div", opts.own ? "msg own arrive" : "msg arrive");
+
+    if (opts.ava) {
+      const gutter = el("span", "m-gutter");
+      const img = el("img", "ava ava-a s28");
+      img.src = opts.ava;
+      img.alt = "";
+      img.width = 128;
+      img.height = 128;
+      gutter.append(img);
+      msg.append(gutter);
+    }
+
+    const bubble = el("div", "bubble");
+
+    if (opts.name) {
+      const who = el("b", "b-name");
+      who.textContent = opts.name;
+      bubble.append(who);
+    }
+
+    // One <p> per paragraph - the bubble already spaces them (p + p below),
+    // the same way the sample data's two-paragraph release note is rendered.
+    for (const para of opts.body) {
+      const p = el("p", "");
+      p.append(...para);
+      bubble.append(p);
+    }
+
+    const meta = el("span", "m-meta");
+    meta.textContent = new Date().toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    bubble.append(meta);
+
+    const col = el("div", "m-col");
+    col.append(bubble);
+    msg.append(col);
+
+    feed.append(msg);
+    feed.scrollTop = feed.scrollHeight;
+  };
+
+  const send = (field: HTMLElement) => {
+    const text = (field.textContent ?? "").trim();
+    if (!text) return;
+
+    const view = field.closest<HTMLElement>(".view");
+    const feed = view?.querySelector<HTMLElement>(".feed");
+    if (!view || !feed) return;
+
+    field.textContent = "";
+    appendMessage(feed, { own: true, body: [[text]] });
+
+    // A beat, so the reply reads as an answer rather than as part of the send.
+    window.setTimeout(() => {
+      const isChannel = view.hasAttribute("data-channel");
+      const link = el("a", "lnk");
+      link.href = signup;
+      // Bold, so the call to action reads as the one thing to do here rather
+      // than as another link in a sentence.
+      const label = el("b", "");
+      label.textContent = "Get started";
+      link.append(label);
+
+      appendMessage(feed, {
+        name: isChannel ? view.dataset.replyName : undefined,
+        ava: isChannel ? view.dataset.replyAva : undefined,
+        body: [
+          ["That's the kind of thing your own agent would pick up."],
+          ["This one is only a preview - ", link],
+        ],
+      });
+    }, 650);
+  };
+
   for (const field of document.querySelectorAll<HTMLElement>(".comp-text")) {
     field.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") event.preventDefault();
+      if (event.key !== "Enter") return;
+      // Nothing to insert on one line, so Enter sends instead.
+      event.preventDefault();
+      send(field);
     });
 
     field.addEventListener("paste", (event) => {
@@ -884,6 +1026,11 @@ const CARDS: Card[] = [
       // the field's native undo stack intact.
       if (flat) document.execCommand("insertText", false, flat);
     });
+
+    const button = field.closest(".composer")?.querySelector(".send");
+    button?.addEventListener("click", () => {
+      send(field);
+    });
   }
 
   // SCROLL HAND-OFF. Chrome latches a wheel gesture to whichever scroller it
@@ -894,8 +1041,6 @@ const CARDS: Card[] = [
   //
   // Delegated from .win so it costs one listener rather than one per pane,
   // and only fires for wheels that actually landed inside the window.
-  const win = document.querySelector<HTMLElement>(".win");
-
   win?.addEventListener(
     "wheel",
     (event) => {
@@ -1324,7 +1469,9 @@ const CARDS: Card[] = [
     flex: 1;
     min-width: 0;
     display: flex;
-    margin: 0 8px 0 0;
+    /* Bottom matches the right - the content card floats off both edges of
+     * the window rather than running into the bottom one. */
+    margin: 0 8px 8px 0;
     border-radius: 14px;
     border: 1px solid var(--line);
     background: rgb(242 239 232 / 0.82);
@@ -2174,6 +2321,24 @@ const CARDS: Card[] = [
     }
   }
 
+  /* Sent and received messages arrive rather than appear - the same rise the
+   * page's other card visuals use for a new bubble. Applied by the script to
+   * anything it appends; the server-rendered thread is already in place on
+   * load and must not replay it. */
+  @media (prefers-reduced-motion: no-preference) {
+    .msg.arrive {
+      animation: demo-msg-in 340ms var(--ease-out-expo) backwards;
+    }
+  }
+
+  @keyframes demo-msg-in {
+    from {
+      opacity: 0;
+      translate: 0 10px;
+      scale: 0.97;
+    }
+  }
+
   @keyframes demo-pulse {
     50% { opacity: 0.5; }
   }
@@ -2222,7 +2387,11 @@ const CARDS: Card[] = [
     width: 100%;
     max-width: 832px;
     margin-inline: auto;
-    padding: 0 8px 100px;
+    /* The bottom padding is the composer's clearance: the composer floats over
+     * this feed, so at the very end of a thread this is all that keeps the last
+     * bubble off it. Sized to the composer (~86px to its top edge) plus a
+     * breath, not to a round number. */
+    padding: 0 8px 106px;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
@@ -2669,6 +2838,8 @@ const CARDS: Card[] = [
   /* Send: 32px, radius 10; ink primary when there's a draft, the app's
    * disabled muted state when the composer is empty. */
   .send {
+    pointer-events: auto;
+    cursor: pointer;
     width: 32px;
     height: 32px;
     border-radius: 10px;
@@ -2676,6 +2847,19 @@ const CARDS: Card[] = [
     place-items: center;
     background: var(--primary);
     color: var(--primary-fg);
+    /* Same press language as the platform cards and agent tiles on this page:
+     * a small scale, quick in and slower out. */
+    transition: scale 120ms var(--ease-out-expo);
+  }
+
+  .send:active {
+    scale: 0.9;
+    transition-duration: 40ms;
+  }
+
+  /* A dead button should not pretend to be pressable. */
+  .send.off {
+    pointer-events: none;
   }
 
   .send.off {
