@@ -29,6 +29,7 @@ import { useTheme } from '@/hooks/use-theme';
 import type { MessageRow } from '@/lib/chat-grouping';
 import { matchAdminCommandText, type AdminCommandMatch } from '@/lib/admin-commands';
 import { extractUrls } from '@/lib/extract-urls';
+import { quotedBodyText } from '@/lib/formatting';
 
 const IMESSAGE_BLUE = '#0A84FF';
 const INCOMING_LIGHT = '#E9E9EB';
@@ -403,7 +404,11 @@ function ParentQuote({ preview, isOutgoing, onPress }: ParentQuoteProps) {
     preview.poster_display_name ??
     preview.agent_id ??
     (preview.human_id != null ? `User ${preview.human_id}` : 'Unknown');
-  const excerpt = removed ? 'Original message removed' : preview.message_excerpt;
+  // An attachment-only parent has no text to quote — label it from the
+  // file count rather than leaving the excerpt line blank.
+  const excerpt = removed
+    ? 'Original message removed'
+    : quotedBodyText(preview.message_excerpt, preview.attachment_count ?? 0);
 
   // The quote sits inside the bubble; tone it as a darker/lighter
   // overlay on the bubble's own bg so it reads as a nested zone.
@@ -439,7 +444,7 @@ function ParentQuote({ preview, isOutgoing, onPress }: ParentQuoteProps) {
             removed && styles.quoteRemoved,
           ]}
           numberOfLines={1}>
-          {excerpt || '(empty message)'}
+          {excerpt}
         </Text>
       </View>
     </Pressable>
