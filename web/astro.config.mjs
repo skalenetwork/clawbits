@@ -33,6 +33,27 @@ export default defineConfig({
   //      "main": "@astrojs/cloudflare/entrypoints/server"
   output: "static",
 
+  // The canonical form of every URL on this site ends in a slash.
+  //
+  // It already did, in the two places a crawler reads: `Astro.url.pathname`
+  // gives the canonical in Base.astro a trailing slash, and @astrojs/sitemap
+  // emits all 24 <loc>s with one. What did not agree was the site's own
+  // markup - every internal href was written slash-less, so each of ~700 links
+  // pointed at a URL that 307s to the one the page declares canonical.
+  //
+  // "always" rather than "never" because "always" is a no-op on what is
+  // already emitted: build.format stays "directory", the canonicals and the
+  // sitemap are unchanged, and Cloudflare's default auto-trailing-slash
+  // already serves the slashed form at 200. "never" would have meant rewriting
+  // all 24 sitemap entries and every canonical, and pinning a matching
+  // `html_handling` in wrangler.jsonc - a two-file invariant nothing in CI
+  // checks, where reverting either file silently points every canonical at a
+  // redirect.
+  //
+  // The `/docs/<slug>.md` endpoints are file paths, not routes, and keep no
+  // trailing slash.
+  trailingSlash: "always",
+
   // No floating widget over the design while previewing - the owner reviews
   // the page in the dev server and the toolbar reads as part of the layout.
   devToolbar: { enabled: false },
@@ -149,16 +170,30 @@ export default defineConfig({
   // `experimental` (that errors) and NOT as a top-level `csp` key (Astro strips
   // unknown top-level keys SILENTLY, so it builds fine and emits nothing).
   //
-  // script-src / style-src are deliberately absent: Astro manages those itself
-  // so it can inject the hashes it computes.
+  // script-src / style-src are deliberately absent from `directives`: Astro
+  // manages those itself so it can inject the hashes it computes. An extra
+  // HOST for script-src goes through `scriptDirective.resources` below, which
+  // Astro merges with its hashes - writing "script-src ..." into `directives`
+  // instead would fight it and drop every hash on the floor.
   security: {
     csp: {
       algorithm: "SHA-256",
+
+      // The one third-party origin on this site: the Umami tracker (see the
+      // ANALYTICS block in src/config.ts). 'self' must stay - Astro emits it by
+      // default, and `resources` REPLACES that default rather than adding to
+      // it, so dropping it here would block every bundled /_astro/*.js.
+      scriptDirective: {
+        resources: ["'self'", "https://cloud.umami.is"],
+      },
+
       directives: [
         "default-src 'self'",
         "img-src 'self' data:",
         "font-src 'self'",
-        "connect-src 'self'",
+        // cloud.umami.is: the tracker POSTs pageviews to its /api/send. Without
+        // it the script loads and every event is silently refused.
+        "connect-src 'self' https://cloud.umami.is",
         "frame-ancestors 'none'",
         "base-uri 'self'",
         "form-action 'self'",

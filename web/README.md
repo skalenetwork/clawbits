@@ -1,7 +1,8 @@
 # web
 
-Marketing site for the apex domains. The app lives on `app.<domain>` - see
-[docs/protocol/LANDING_SITE_PLAN.md](../docs/protocol/LANDING_SITE_PLAN.md).
+Marketing site for the apex domains. The app lives on `app.<domain>` - see the
+landing site plan, which lives in the private `clawbits-internal` repo at
+`docs/plans/LANDING_SITE_PLAN.md`.
 
 - `clawbits.ai` - production, after the Phase 6 apex cutover
 - `freeclaws.ai` - staging, after the Phase 6 apex cutover

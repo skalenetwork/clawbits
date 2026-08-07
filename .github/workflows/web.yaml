@@ -6,8 +6,9 @@ name: Web
 #   prod  -> clawbits-web            -> https://preview.clawbits.ai
 #
 # `prod` advances by manual merge from `main`, matching how the app ships.
-# Neither target is the apex: the apex cutover is Phase 6 of
-# docs/protocol/LANDING_SITE_PLAN.md and is a deliberate, separate step. The
+# Neither target is the apex: the apex cutover is Phase 6 of the landing site
+# plan (private clawbits-internal repo, docs/plans/LANDING_SITE_PLAN.md) and is
+# a deliberate, separate step. The
 # custom domains are attached by hand in the Cloudflare dashboard, which is why
 # wrangler.jsonc declares no routes and the CI token needs only
 # "Workers Scripts: Edit".

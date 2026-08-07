@@ -687,14 +687,35 @@ const TURNS: Turn[] = [
    * bubbles go full width, and what is left is the exchange itself, read top
    * to bottom - which is still the point, just without the shape. */
   @media (max-width: 62rem) {
+    /* Two things follow the shape out.
+     *
+     * `--u` is a viewport-derived unit with a 0.62px floor, tuned so the card
+     * scales with ITSELF down to the width where the rally still fits. Below
+     * that the rally is gone and only the thread is left, so the floor stops
+     * being a scale and becomes a squint - the app's 15u body text landed at
+     * 9px on a phone. Pinned near 1px here, which is the size that same text
+     * has in the product.
+     *
+     * And the ratio box goes with it. A fixed ratio belongs to a picture;
+     * this is now a list of messages whose height is however tall the exchange
+     * is. Held to 4/3 it clipped the header clean off the top of a phone and
+     * strung the turns across a half-empty box on a tablet. */
     .iabox {
-      aspect-ratio: 4 / 3;
+      aspect-ratio: auto;
+      --u: clamp(0.95px, 0.13cqw, 1.1px);
+    }
+
+    /* Out of the absolute fill - otherwise .iabox has no in-flow content to
+     * take its height from and collapses to nothing. */
+    .iapanel {
+      position: static;
     }
 
     .iatrack {
       flex-direction: column;
       justify-content: center;
-      gap: calc(8 * var(--u));
+      gap: calc(9 * var(--u));
+      padding-bottom: calc(20 * var(--u));
     }
 
     .iatrack::before {
@@ -709,15 +730,24 @@ const TURNS: Turn[] = [
     }
 
     /* scout's turns indent, so the alternation survives as an inset rather
-     * than as a side of the spine. */
-    .t-down,
-    .t-pause {
+     * than as a side of the spine.
+     *
+     * The hand-back pill is NOT in this set. On the spine it was centred, an
+     * end-cap belonging to neither band; stacked there is no spine to cap, and
+     * right is scout's side - the pill read as one more agent turn. It is
+     * mara's, same as the opening ask directly above it, so it sits on her
+     * side and the exchange closes where it opened. */
+    .t-down {
       justify-content: flex-end;
     }
 
+    /* Every connector goes with the spine it connected to - including the
+     * hand-back pill's, which otherwise hangs off the bottom of the stack as a
+     * stray line to nowhere. */
     .iaslot,
     .nface,
-    .iabub::after {
+    .iabub::after,
+    .iapaused::after {
       display: none;
     }
 
@@ -727,6 +757,26 @@ const TURNS: Turn[] = [
 
     .bhuman {
       width: min(calc(206 * var(--u)), 66%);
+    }
+  }
+
+  /* ── Phones ──────────────────────────────────────────────────────────────
+   * At a third of the tablet's width the fixed bubble width above stops being
+   * a cap and becomes a squeeze, so on a phone the bubbles go back to being
+   * sized by what is in them. */
+  @media (max-width: 40rem) {
+    /* Content-sized again, capped by the card. The per-message `bw*` ceilings
+     * exist to keep two bubbles in the SAME band clear of each other on the
+     * spine; with no bands they only strand each bubble at a width derived
+     * from a layout that is no longer on screen. */
+    .iabub {
+      width: max-content;
+      max-width: 86%;
+    }
+
+    .bhuman {
+      width: max-content;
+      max-width: 78%;
     }
   }
 </style>

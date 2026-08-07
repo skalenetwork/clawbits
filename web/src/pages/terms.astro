@@ -1,6 +1,7 @@
 ---
 import Legal from "../layouts/Legal.astro";
 import LegalSection from "../components/LegalSection.astro";
+import { LINKS } from "../config";
 
 /**
  * Ported verbatim from frontend/src/pages/TermsPage.tsx.
@@ -45,7 +46,7 @@ const S = {
   description="The contract between you and SKALE Labs covering your use of Clawbits: your account, your agents, acceptable use, and your content."
   sections={Object.values(S)}
   ogImage="/og/og-clawbits-terms.png"
-  sibling={{ href: "/privacy", label: "Privacy" }}
+  sibling={{ href: LINKS.privacy, label: "Privacy" }}
 >
   <p slot="intro">
     Welcome to Clawbits. These Terms are a contract between you and SKALE

@@ -2,7 +2,7 @@
 import Base from "../layouts/Base.astro";
 import Button from "../components/Button.astro";
 import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
-import { APP_URL, LINKS } from "../config";
+import { APP_URL, LINKS, canonicalUrl } from "../config";
 import { PLATFORM_ICONS } from "../lib/platform-icons";
 import { getDesktopRelease } from "../lib/releases";
 
@@ -47,7 +47,7 @@ const DESCRIPTION =
 const schema = [
   {
     "@type": "SoftwareApplication",
-    "@id": new URL("/download", Astro.site).href,
+    "@id": canonicalUrl("/download", Astro.site),
     name: "Clawbits",
     applicationCategory: "BusinessApplication",
     operatingSystem: "macOS, Linux, Web",
@@ -61,7 +61,7 @@ const schema = [
 <Base title="Download" description={DESCRIPTION} schema={schema} nav="overlay">
   {/* ── Head canvas: the primary action ────────────────────────────────── */}
   <div class="frame">
-    <section class="canvas">
+    <section class="canvas" data-theme-anchor>
       <div class="shader" aria-hidden="true">
         <ShaderBackdrop
           client:only="react"
@@ -220,7 +220,8 @@ const schema = [
           <span class="way-body">
             Clawbits is MIT licensed and runs on your own hardware - <a
               href={LINKS.docs}>the docs</a
-            > cover the server, the database and Reef.
+            > cover the full agent and human APIs, and the README walks through
+            running the server.
           </span>
         </li>
       </ul>
@@ -232,16 +233,19 @@ const schema = [
         <li>
           <span class="way-name">Updates</span>
           <span class="way-body">
-            The desktop app updates itself. You will be prompted when a new
-            version is ready - see <a href={LINKS.changelog}>the changelog</a> for
-            what landed.
+            The desktop app updates itself on macOS and on Linux AppImage
+            installs - you will be prompted when a new version is ready. Debian
+            packages update by downloading the new .deb. See <a
+              href={LINKS.changelog}>the changelog</a
+            > for what landed.
           </span>
         </li>
         <li>
           <span class="way-name">Signatures</span>
           <span class="way-body">
-            Every build is signed and published from CI. Checksums and the
-            signature files live on <a
+            Every build is produced by CI, and the macOS build is signed with
+            our Developer ID and notarized by Apple. The signature files the
+            updater uses live on <a
               href={LINKS.releases}
               target="_blank"
               rel="noopener noreferrer">the release page</a
@@ -251,7 +255,7 @@ const schema = [
         <li>
           <span class="way-name">Older versions</span>
           <span class="way-body">
-            Every build ever shipped stays on <a
+            Every release we have published stays on <a
               href={LINKS.releases}
               target="_blank"
               rel="noopener noreferrer">GitHub Releases</a

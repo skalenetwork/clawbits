@@ -1,7 +1,7 @@
 ---
 import Base from "./Base.astro";
 import { DOC_GROUPS, type DocEntry } from "../docs-allowlist";
-import { LINKS } from "../config";
+import { LINKS, canonicalUrl } from "../config";
 
 /**
  * Frame for a protocol doc.
@@ -26,7 +26,7 @@ interface Props {
 
 const { entry, headings } = Astro.props;
 
-const canonical = new URL(`/docs/${entry.slug}`, Astro.site).href;
+const canonical = canonicalUrl(`/docs/${entry.slug}`, Astro.site);
 
 // TechArticle, per plan §7. This is the highest-leverage structured data on
 // the site: an assistant citing Clawbits cites a doc page, not landing copy.
@@ -34,7 +34,7 @@ const schema = [
   {
     "@type": "TechArticle",
     "@id": canonical,
-    headline: entry.title,
+    headline: entry.headTitle,
     description: entry.summary,
     url: canonical,
     isPartOf: { "@id": `${Astro.site}#website` },
@@ -51,11 +51,22 @@ const toc = headings.filter((h) => h.depth === 2);
 
 {/* Every spec shares the one docs card - there is no per-page art. */}
 <Base
-  title={entry.title}
+  title={entry.headTitle}
   description={entry.summary}
   ogImage="/og/og-clawbits-docs.png"
   schema={schema}
 >
+  {/* The Markdown twin of this page, advertised rather than only linked in the
+      footer. An agent that follows this gets the spec without the sidebar, the
+      nav, or the stylesheet. */}
+  <link
+    slot="head"
+    rel="alternate"
+    type="text/markdown"
+    href={`/docs/${entry.slug}.md`}
+    title={`${entry.headTitle} as Markdown`}
+  />
+
   <div class="shell">
     <nav class="side" aria-label="Documentation">
       {
@@ -66,7 +77,7 @@ const toc = headings.filter((h) => h.depth === 2);
               {group.entries.map((d) => (
                 <li>
                   <a
-                    href={`/docs/${d.slug}`}
+                    href={`/docs/${d.slug}/`}
                     aria-current={d.slug === entry.slug ? "page" : undefined}
                   >
                     {d.title}
@@ -386,6 +397,21 @@ const toc = headings.filter((h) => h.depth === 2);
 
   .shell .prose td {
     color: var(--color-muted);
+  }
+
+  /* GFM column alignment. The Markdown processor emits this as
+   * `style="text-align: center"`, which the CSP refuses (hashes never apply to
+   * style attributes), so the docs loader rewrites those attributes into these
+   * classes at build time - see alignmentStylesToClasses in content.config.ts.
+   * `:---` (left) needs no class: the rule above already sets text-align:start. */
+  .shell .prose th.ta-center,
+  .shell .prose td.ta-center {
+    text-align: center;
+  }
+
+  .shell .prose th.ta-right,
+  .shell .prose td.ta-right {
+    text-align: end;
   }
 
   .shell .prose hr {
