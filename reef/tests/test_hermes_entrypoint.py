@@ -120,15 +120,41 @@ def test_model_provider_is_pinned_not_left_on_auto():
     matches the key reef actually injected."""
     code = _code(RUN)
     assert "reef_configure_model" in code
-    # The two native providers reef can satisfy, with their real endpoints.
+    # The native providers reef can satisfy, with their real endpoints.
     assert 'provider="anthropic"' in code and "https://api.anthropic.com" in code
     assert 'provider="openai-api"' in code and "https://api.openai.com/v1" in code
     # …and it must actually write them into hermes' config.
     assert "hermes config set model.provider" in code
     assert "hermes config set model.base_url" in code
     assert "hermes config set model.default" in code
-    # Never leave the openrouter default in place when we hold a key for a real provider.
-    assert "openrouter" not in code
+    # The provider is always pinned explicitly; `auto` (the resolver that
+    # caused the mis-mapping above) must never be written back.
+    assert 'provider="auto"' not in code
+
+
+def test_openrouter_is_only_reachable_via_its_own_key():
+    """The fixed version of the docstring's story: openrouter as a *deliberate*
+    provider. The branch must be keyed on OPENROUTER_API_KEY — the whole bug was
+    reaching openrouter.ai while holding some OTHER provider's key, so the only
+    thing allowed to select it is openrouter's own key. Its fallback model is a
+    full vendor/model slug (that's what the openrouter API takes), unlike the
+    bare native ids every other branch pins."""
+    code = _code(RUN)
+    orte = code.index('elif [ -n "${OPENROUTER_API_KEY:-}" ]')
+    branch = code[orte : code.index("else", orte)]
+    assert 'provider="openrouter"' in branch
+    assert 'base_url="https://openrouter.ai/api/v1"' in branch
+    # The fallback is a FREE catalog model (matching the pickers' curated
+    # default) — a no-pick agent must not spend on its owner's key.
+    assert 'fallback_model="nvidia/nemotron-nano-9b-v2:free"' in branch
+    # Exactly one openrouter selection site, and it is that keyed branch —
+    # nothing else (a stray default, a resurrected `auto`) may route there.
+    assert code.count('provider="openrouter"') == 1
+    # Preference: a real native-provider key wins over openrouter (registry
+    # order) — anthropic/openai/gemini branches all come first.
+    assert code.index('provider="anthropic"') < orte
+    assert code.index('provider="openai-api"') < orte
+    assert code.index('provider="gemini"') < orte
 
 
 def test_model_is_configured_before_the_gateway_starts():

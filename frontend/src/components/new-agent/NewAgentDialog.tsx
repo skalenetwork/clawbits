@@ -26,7 +26,8 @@ import {
     type AgentUser, type MmChannel, type Org,
 } from "@/lib/api";
 import {
-    reefCreate, reefProviders, reefImages, reefHealth, reefOllamaModels, getReefToken, setReefToken,
+    reefCreate, reefProviders, reefImages, reefHealth, reefOllamaModels, reefOpenRouterModels,
+    getReefToken, setReefToken,
     terminalAuthUrl, ReefAuthError, ReefUnreachableError,
     type ReefCreateBody, type ReefProvider, type ReefImage,
 } from "@/lib/reefApi";
@@ -313,6 +314,16 @@ function WizardBody({
         retry: false,
         staleTime: 30_000,
     });
+    // ── OpenRouter catalog (live public listing, proxied REEF-side). Fetched
+    //    once per dialog visit; failure (or an older Reef without the proxy)
+    //    degrades the picker to curated pills + free text. ──
+    const openRouterModelsQuery = useQuery({
+        queryKey: ["org", targetOrgId ?? "none", "reef-openrouter-models", debouncedToken],
+        queryFn: () => reefOpenRouterModels(reefUrl ?? ""),
+        enabled: state.providerId === "openrouter" && Boolean(reefUrl),
+        retry: false,
+        staleTime: 5 * 60_000,
+    });
     // One onboarding prompt per runtime; an unpicked runtime falls back to OpenClaw
     // (the Connect step only renders once a runtime is chosen).
     const selfPrompt = SELF_PROMPTS[state.runtime ?? "openclaw"](targetOrg, signupToken);
@@ -387,6 +398,7 @@ function WizardBody({
                     if (own && picked.id === "anthropic") body.anthropic_api_key = own;
                     if (own && picked.id === "gemini") body.gemini_api_key = own;
                     if (own && picked.id === "nearai") body.nearai_api_key = own;
+                    if (own && picked.id === "openrouter") body.openrouter_api_key = own;
                     if (own && picked.id === "ollama") body.ollama_host = own;
                 }
                 // Only send what THIS reef accepts — older Pydantic drops silently.
@@ -672,6 +684,11 @@ function WizardBody({
                             models: ollamaModelsQuery.data?.models ?? null,
                             loading: ollamaModelsQuery.isFetching,
                             error: ollamaModelsQuery.isError,
+                        }}
+                        openRouterCatalog={{
+                            models: openRouterModelsQuery.data?.models ?? null,
+                            loading: openRouterModelsQuery.isFetching,
+                            error: openRouterModelsQuery.isError,
                         }}
                         onByo={(id, value) => { dispatch({type: "set-byo", id, value}); }}
                         onModel={(model) => { dispatch({type: "set-model", model}); }}

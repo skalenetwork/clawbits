@@ -52,13 +52,14 @@ def test_gemini_onboards_with_dedicated_auth_choice():
     # OpenClaw reads GEMINI_API_KEY natively; the auth-choice wires it at
     # onboard (verified vs the shipped openclaw 2026.6.10/.11 wizard enum).
     assert "--auth-choice gemini-api-key --gemini-api-key" in text
-    # Preference order: anthropic wins, gemini before nearai before ollama,
-    # else skip.
+    # Preference order: anthropic wins, gemini before nearai before openrouter
+    # before ollama, else skip.
     ant = text.index("--auth-choice anthropic-api-key")
     gem = text.index("--auth-choice gemini-api-key")
     near = text.index("--auth-choice custom-api-key")
+    orte = text.index("--auth-choice openrouter-api-key")
     oll = text.index("--auth-choice ollama")
-    assert ant < gem < near < oll
+    assert ant < gem < near < orte < oll
 
 
 def test_nearai_onboards_as_custom_openai_compatible_provider():
@@ -87,6 +88,49 @@ def test_nearai_model_qualification_handles_hf_paths():
     # prefix.
     assert 'reef_model="nearai/${reef_model}"' in text
     assert '"" | nearai/*' in text
+
+
+def test_openrouter_onboards_with_native_auth_choice():
+    text = ENTRYPOINT.read_text()
+    # OpenClaw bundles an openrouter provider plugin (enabled by default), so
+    # unlike nearai there is no custom-api-key onboard: the native auth-choice
+    # writes the key, and with no model pick the plugin's own openrouter/auto
+    # default applies (no --custom-model-id requirement to satisfy).
+    assert "--auth-choice openrouter-api-key" in text
+    assert '--openrouter-api-key "${OPENROUTER_API_KEY}"' in text
+
+
+def test_openrouter_plugin_is_allowlisted_when_keyed():
+    text = ENTRYPOINT.read_text()
+    # The openrouter PROVIDER is a bundled plugin, and the clawbits-only
+    # allowlist blocks it (the codex trap from the other side): onboarding
+    # writes the key fine — plugins load before the allowlist lands on first
+    # boot — and then every openrouter/* model errors "unavailable from the
+    # provider" at run time. Both allowlist branches must carry it when the
+    # key is present; it ships enabled, so no entries.*.enabled flip.
+    assert '\'["clawbits","openrouter"]\'' in text
+    assert '\'["clawbits","codex","openrouter"]\'' in text
+    # The minimal allowlists survive for key-less / non-openrouter agents.
+    assert '\'["clawbits"]\'' in text
+    assert '\'["clawbits","codex"]\'' in text
+
+
+def test_openrouter_model_qualification_handles_vendor_slugs():
+    text = ENTRYPOINT.read_text()
+    # OpenRouter model ids are vendor/model slugs (openai/gpt-5.4), the same
+    # first-slash collision class as NEAR's HF paths: when the OpenRouter key
+    # is the effective provider, anything not already openrouter/-prefixed
+    # gets the prefix (openai/gpt-5.4 → openrouter/openai/gpt-5.4).
+    assert 'reef_model="openrouter/${reef_model}"' in text
+    assert "openrouter/*) ;;" in text
+
+
+def test_openrouter_no_pick_defaults_to_a_free_model():
+    text = ENTRYPOINT.read_text()
+    # No model pick must land on a FREE catalog model (the pickers' curated
+    # default), never the plugin's openrouter/auto paid routing — a fresh
+    # BYO-key agent doesn't spend until its owner chooses.
+    assert '"") reef_model="openrouter/nvidia/nemotron-nano-9b-v2:free"' in text
 
 
 def test_ollama_onboard_falls_back_to_detached_boot():

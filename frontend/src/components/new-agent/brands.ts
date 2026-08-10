@@ -5,7 +5,7 @@
  *  Ollama is monochrome (neutral wash). Unknown ids (a future registry entry)
  *  get the neutral wash + no glyph — the tile still renders. */
 import type React from "react";
-import {AnthropicIcon, CodexColorIcon, GeminiIcon, NearAiIcon, OllamaIcon, OpenAiIcon} from "@/components/ProviderIcons";
+import {AnthropicIcon, CodexColorIcon, GeminiIcon, NearAiIcon, OllamaIcon, OpenAiIcon, OpenRouterIcon} from "@/components/ProviderIcons";
 
 export interface ProviderBrand {
     Glyph: React.ComponentType<{className?: string}> | null;
@@ -48,6 +48,14 @@ export const PROVIDER_BRANDS: Record<string, ProviderBrand> = {
         Glyph: NearAiIcon,
         tile: "linear-gradient(180deg, #1f1f1f, #000000)",
         line: "GLM, DeepSeek & open models",
+    },
+    // OpenRouter (openrouter.ai): one key across every hosted model, ids as
+    // vendor/model slugs. The brand is monochrome; a dark slate wash keeps it
+    // apart from NEAR's black and the neutral ollama tile.
+    openrouter: {
+        Glyph: OpenRouterIcon,
+        tile: "linear-gradient(180deg, #333a4d, #171b26)",
+        line: "One key, many models",
     },
     ollama: {
         Glyph: OllamaIcon,

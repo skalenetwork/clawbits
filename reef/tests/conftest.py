@@ -24,4 +24,5 @@ def _no_ambient_provider_keys(monkeypatch):
     monkeypatch.delenv("REEF_OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("REEF_GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("REEF_NEARAI_API_KEY", raising=False)
+    monkeypatch.delenv("REEF_OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("REEF_OLLAMA_HOST", raising=False)

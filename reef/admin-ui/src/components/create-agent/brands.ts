@@ -12,6 +12,7 @@ import {
   NearAiIcon,
   OllamaIcon,
   OpenAiIcon,
+  OpenRouterIcon,
 } from "@/components/agent-icons"
 
 export interface ProviderBrand {
@@ -55,6 +56,14 @@ export const PROVIDER_BRANDS: Record<string, ProviderBrand> = {
     Glyph: NearAiIcon,
     tile: "linear-gradient(180deg, #1f1f1f, #000000)",
     line: "GLM, DeepSeek & open models",
+  },
+  // OpenRouter (openrouter.ai): one key across every hosted model, ids as
+  // vendor/model slugs. The brand is monochrome; a dark slate wash keeps it
+  // apart from NEAR's black and the neutral ollama tile.
+  openrouter: {
+    Glyph: OpenRouterIcon,
+    tile: "linear-gradient(180deg, #333a4d, #171b26)",
+    line: "One key, many models",
   },
   ollama: {
     Glyph: OllamaIcon,

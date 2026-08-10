@@ -14,7 +14,7 @@ from reef.providers import (
     resolve_model,
 )
 
-ANTHROPIC, OPENAI, OPENAI_CODEX, GEMINI, NEARAI, OLLAMA = PROVIDERS
+ANTHROPIC, OPENAI, OPENAI_CODEX, GEMINI, NEARAI, OPENROUTER, OLLAMA = PROVIDERS
 
 
 def test_registry_order_is_picker_order():
@@ -27,6 +27,7 @@ def test_registry_order_is_picker_order():
         "openai-codex",
         "gemini",
         "nearai",
+        "openrouter",
         "ollama",
     ]
 
@@ -38,6 +39,7 @@ def test_registry_kinds_and_runtimes():
         "oauth",
         "api_key",
         "api_key",
+        "api_key",
         "endpoint",
     ]
     # Every keyed/endpoint provider is consumable by OpenClaw + IronClaw (IronClaw's
@@ -46,12 +48,14 @@ def test_registry_kinds_and_runtimes():
     #
     # Hermes advertises exactly what its image can actually consume — no more, or the
     # operator gets a key that silently does nothing:
-    #   openai / anthropic / gemini → native hermes providers reading the same guest
-    #     env vars reef injects (openai-api, anthropic, gemini).
+    #   openai / anthropic / gemini / openrouter → native hermes providers reading
+    #     the same guest env vars reef injects (openai-api, anthropic, gemini,
+    #     openrouter — the last is auth.resolve_provider's own OPENROUTER_API_KEY
+    #     mapping, pinned explicitly by the run script).
     #   openai-codex → OAuth; no key, the owner completes a device-code login in the
     #     agent's web terminal (`hermes login --provider openai-codex --no-browser`).
     #   nearai / ollama → no native hermes provider wired, so deliberately absent.
-    hermes_keyed = {"openai", "anthropic", "gemini"}
+    hermes_keyed = {"openai", "anthropic", "gemini", "openrouter"}
     for p in PROVIDERS:
         if p.kind == "oauth":
             # Both runtimes whose CLI has a device-code login (IronClaw has none).
@@ -132,6 +136,21 @@ def test_byok_satisfies_an_unconfigured_nearai_pick():
 def test_unconfigured_nearai_pick_rejected():
     with pytest.raises(ValueError, match="REEF_NEARAI_API_KEY or pass nearai_api_key"):
         resolve_creds("nearai", {})
+
+
+def test_pick_openrouter(monkeypatch):
+    monkeypatch.setenv("REEF_OPENROUTER_API_KEY", "srv-or")
+    assert resolve_creds("openrouter", {}) == {"openrouter_api_key": "srv-or"}
+
+
+def test_byok_satisfies_an_unconfigured_openrouter_pick():
+    creds = resolve_creds("openrouter", {"openrouter_api_key": "sk-or-mine"})
+    assert creds == {"openrouter_api_key": "sk-or-mine"}
+
+
+def test_unconfigured_openrouter_pick_rejected():
+    with pytest.raises(ValueError, match="REEF_OPENROUTER_API_KEY or pass openrouter_api_key"):
+        resolve_creds("openrouter", {})
 
 
 def test_pick_ollama_reef_level(monkeypatch):

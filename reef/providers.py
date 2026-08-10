@@ -4,7 +4,8 @@ Two value sources, resolved at create time (``reef.fleet.FleetService.create``):
 
   * **per-request** (BYO) - the caller passes the provider's cred field
     (``openai_api_key`` / ``anthropic_api_key`` / ``gemini_api_key`` /
-    ``ollama_host``) in the create body. Always wins.
+    ``nearai_api_key`` / ``openrouter_api_key`` / ``ollama_host``) in the
+    create body. Always wins.
   * **reef-level** - the maintainer sets the provider's ``REEF_*`` var
     (``REEF_ANTHROPIC_API_KEY``, ``REEF_OLLAMA_HOST``, …) in reef's own
     environment (/etc/reef/reef.env) and reef forwards it into agent VMs. The
@@ -144,6 +145,24 @@ PROVIDERS: tuple[Provider, ...] = (
         server_env="REEF_NEARAI_API_KEY",
         guest_env="NEARAI_API_KEY",
         runtimes=("openclaw", "ironclaw"),
+    ),
+    Provider(
+        id="openrouter",
+        label="OpenRouter",
+        kind=KIND_API_KEY,
+        # OpenRouter: OpenAI-compatible aggregator at https://openrouter.ai/api/v1
+        # (Bearer auth; model ids are vendor/model slugs like
+        # anthropic/claude-opus-4.6 — the same first-slash shape as NEAR's HF
+        # paths, so the entrypoints qualify/strip the same way). All three
+        # runtimes consume it natively: IronClaw has a first-class `openrouter`
+        # backend (LLM_BACKEND=openrouter reads OPENROUTER_API_KEY, base URL
+        # built into its dedicated client), OpenClaw bundles an enabled-by-
+        # default openrouter provider plugin (--auth-choice openrouter-api-key),
+        # and Hermes' auth.resolve_provider maps OPENROUTER_API_KEY → openrouter.
+        cred_key="openrouter_api_key",
+        server_env="REEF_OPENROUTER_API_KEY",
+        guest_env="OPENROUTER_API_KEY",
+        runtimes=("openclaw", "ironclaw", "hermes"),
     ),
     Provider(
         id="ollama",
@@ -324,6 +343,43 @@ async def fetch_ollama_models(base_url: str) -> list[dict[str, object]]:
                 "parameter_size": details.get("parameter_size") or None,
             }
         )
+    return models
+
+
+# ── OpenRouter model catalog ──────────────────────────────────────────────────
+# The pickers' OpenRouter dropdown offers the live catalog. Fetched REEF-side to
+# mirror the ollama probe (one admin-gated surface, no per-browser CORS story);
+# the listing is public and keyless, so nothing secret rides the request.
+
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+# WAN fetch of a ~300-entry JSON — roomier than the LAN-ish ollama probe.
+_OPENROUTER_PROBE_TIMEOUT = 8.0
+
+
+async def fetch_openrouter_models() -> list[dict[str, object]]:
+    """``GET openrouter.ai/api/v1/models`` → ``[{id, name, context_length}]``,
+    sorted by id (the shape the pickers render). ``id`` is the vendor/model
+    slug the create's ``model`` field takes. Network/HTTP failures raise
+    ``httpx.HTTPError`` — the API maps them to a readable 502."""
+    async with httpx.AsyncClient(timeout=_OPENROUTER_PROBE_TIMEOUT) as client:
+        resp = await client.get(OPENROUTER_MODELS_URL)
+        resp.raise_for_status()
+        body = resp.json()
+    models: list[dict[str, object]] = []
+    for m in body.get("data") or []:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        context = m.get("context_length")
+        models.append(
+            {
+                "id": str(m["id"]),
+                "name": str(m["name"]) if m.get("name") else None,
+                "context_length": context if isinstance(context, int) else None,
+            }
+        )
+    # Free (:free) variants first, then alphabetical: the pickers surface the
+    # no-cost options before the (mostly paid) rest of the catalog.
+    models.sort(key=lambda m: (0 if str(m["id"]).endswith(":free") else 1, str(m["id"])))
     return models
 
 
