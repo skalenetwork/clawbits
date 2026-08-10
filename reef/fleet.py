@@ -79,8 +79,8 @@ RESERVED_ENV_KEYS = frozenset(
     # LLM_BACKEND stays deliberately
     # UNreserved: reef only pins it when it injects a provider (merge order
     # protects that case), and a custom LLM_BACKEND + custom key env is the
-    # supported power-user path to backends reef doesn't broker (openrouter,
-    # groq, …) on IronClaw.
+    # supported power-user path to backends reef doesn't broker (groq, …)
+    # on IronClaw.
     | {p.guest_env for p in PROVIDERS}
     | {"OLLAMA_BASE_URL"}
 )
@@ -669,6 +669,7 @@ class FleetService:
         anthropic_api_key: str | None = None,
         gemini_api_key: str | None = None,
         nearai_api_key: str | None = None,
+        openrouter_api_key: str | None = None,
         ollama_host: str | None = None,
         provider: str | None = None,
         model: str | None = None,
@@ -681,7 +682,8 @@ class FleetService:
         agent" prompt) to wire it to a Clawbits org — the agent enrolls itself
         on boot with the token, no approval step. The per-request provider
         values (``*_api_key`` / ``ollama_host``, all optional) are injected
-        under their guest env vars (``OPENAI_API_KEY`` … ``OLLAMA_HOST``) so
+        under their guest env vars (``OPENAI_API_KEY`` … ``OPENROUTER_API_KEY``
+        … ``OLLAMA_HOST``) so
         those models work out of the box; ``provider`` picks which REEF-LEVEL
         value (maintainer-configured ``REEF_*``) to forward instead — see
         ``reef.providers.resolve_creds`` for the precedence rules. ``model``
@@ -748,6 +750,7 @@ class FleetService:
                     "anthropic_api_key": anthropic_api_key,
                     "gemini_api_key": gemini_api_key,
                     "nearai_api_key": nearai_api_key,
+                    "openrouter_api_key": openrouter_api_key,
                     "ollama_host": ollama_host,
                 },
                 agent_type=agent_type,

@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input"
 import { Icon } from "@/components/Icon"
 import { cn } from "@/lib/utils"
 import type { ProviderInfo } from "@/lib/api"
+import { useOpenRouterModels } from "@/lib/queries"
 import { providerBrand } from "./brands"
 import { CURATED_MODELS, TIER_META, type CuratedModel } from "./models"
 import { AddEnvRowButton, EnvVarRow, ENV_KEY_RE } from "./bits"
@@ -79,10 +80,34 @@ export function OptionsStep({
   const [modelOpen, setModelOpen] = useState(false)
   const keyCollapsed = configured && !keyOpen
   const modelCollapsed = configured && !isEndpoint && !modelOpen
+  // OpenRouter: feed the free-text model field a datalist of the live catalog
+  // (reef-proxied; see useOpenRouterModels). Any failure just means no
+  // suggestions — the field itself already accepts any vendor/model slug.
+  const isOpenRouter = picked?.id === "openrouter"
+  const orCatalog = useOpenRouterModels(isOpenRouter)
+  const orModels = orCatalog.data?.models ?? []
+
+  // Pills validated against that catalog: hand-curated slugs are written blind
+  // and CAN drift from what openrouter.ai actually serves (a phantom pill pins
+  // a model the agent then refuses to run). Once the catalog is loaded, drop
+  // any pill it doesn't confirm and top back up to two with real :free entries
+  // — free-by-default, provably available. An unloaded/failed catalog keeps
+  // the static picks (benefit of the doubt).
+  const pills = (() => {
+    if (!isOpenRouter || orModels.length === 0) return curated
+    const ids = new Set(orModels.map((m) => m.id))
+    const confirmed = curated.filter((m) => ids.has(m.id))
+    const derived = orModels
+      .filter((m) => m.id.endsWith(":free") && !confirmed.some((c) => c.id === m.id))
+      .slice(0, Math.max(0, 2 - confirmed.length))
+      .map((m): CuratedModel => ({ id: m.id, label: m.name ?? m.id, blurb: "Free on OpenRouter" }))
+    return [...confirmed, ...derived]
+  })()
+
   const modelLabel =
     state.model.trim() === ""
       ? "Runtime default"
-      : (curated.find((m) => m.id === state.model)?.label ?? state.model)
+      : (pills.find((m) => m.id === state.model)?.label ?? state.model)
 
   const envKeys = state.envRows.map((r) => r.key.trim()).filter((k) => k.length > 0)
   const envInvalid =
@@ -221,9 +246,34 @@ export function OptionsStep({
                 type="text"
                 value={state.model}
                 onChange={onModel}
-                placeholder={isEndpoint ? "Model (required) - e.g. llama3.2" : "Runtime default"}
+                placeholder={
+                  isEndpoint
+                    ? "Model (required) - e.g. llama3.2"
+                    : isOpenRouter
+                      ? "Runtime default - type to search the catalog"
+                      : "Runtime default"
+                }
                 disabled={pending}
+                list={isOpenRouter ? "openrouter-catalog" : undefined}
               />
+              {isOpenRouter && (
+                <>
+                  <datalist id="openrouter-catalog">
+                    {orModels.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name ?? m.id}
+                      </option>
+                    ))}
+                  </datalist>
+                  <p className="px-1 text-xs text-muted-foreground">
+                    {orCatalog.isFetching
+                      ? "Loading the catalog from openrouter.ai…"
+                      : orModels.length > 0
+                        ? `${String(orModels.length)} models, live from openrouter.ai - or type any vendor/model slug.`
+                        : "Couldn't load the catalog - type a vendor/model slug (e.g. openai/gpt-5.4)."}
+                  </p>
+                </>
+              )}
               <div className="flex flex-col gap-2">
                 {!isEndpoint && (
                   <ModelOption
@@ -235,7 +285,7 @@ export function OptionsStep({
                     }}
                   />
                 )}
-                {curated.map((m) => (
+                {pills.map((m) => (
                   <ModelOption
                     key={m.id}
                     model={m}
@@ -404,6 +454,11 @@ function ModelOption({
   onClick: () => void
 }) {
   const tier = model.tier ? TIER_META[model.tier] : null
+  // :free catalog variants (OpenRouter) cost nothing — say so with a chip in
+  // the cost accent colour (amber) and DROP the coins meter: a 1-of-3 cost
+  // meter reads "cheap", which undersells free. Derived from the id, so
+  // catalog-substituted pills get the chip too.
+  const isFree = model.id.endsWith(":free")
   const hasMeters =
     model.intelligence != null || model.speed != null || model.cost != null
   return (
@@ -437,12 +492,17 @@ function ModelOption({
             {tier.label}
           </span>
         )}
+        {isFree && (
+          <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+            Free
+          </span>
+        )}
       </div>
       {hasMeters && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <StatMeter icon={Brain01Icon} label="Intelligence" level={model.intelligence ?? 0} />
           <StatMeter icon={FlashIcon} label="Speed" level={model.speed ?? 0} />
-          <StatMeter icon={Coins01Icon} label="Cost" level={model.cost ?? 0} cost />
+          {!isFree && <StatMeter icon={Coins01Icon} label="Cost" level={model.cost ?? 0} cost />}
         </div>
       )}
     </button>

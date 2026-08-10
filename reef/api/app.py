@@ -34,7 +34,7 @@ Config (all optional, ``REEF_*``):
     REEF_RESTART_BACKOFF_BASE / _CAP  crash-loop backoff bounds in seconds (default 10 / 300)
     REEF_RESTART_STABLE_RESET  seconds running before the restart counter resets (default 300)
     REEF_ANTHROPIC_API_KEY / REEF_OPENAI_API_KEY / REEF_GEMINI_API_KEY /
-    REEF_NEARAI_API_KEY  maintainer-level model keys
+    REEF_NEARAI_API_KEY / REEF_OPENROUTER_API_KEY  maintainer-level model keys
                         forwarded into agent VMs at create time (the request's
                         ``provider`` field narrows to one; per-request keys win).
                         GET /providers reports presence booleans only - the
@@ -59,6 +59,8 @@ from reef.api.schemas import (
     LatestVersionsOut,
     OllamaModelOut,
     OllamaModelsOut,
+    OpenRouterModelOut,
+    OpenRouterModelsOut,
     ProviderOut,
     ProvidersOut,
     ReconcilerHealth,
@@ -70,7 +72,13 @@ from reef.build_jobs import BuildJobManager
 from reef.errors import RuntimeUnavailable, SandboxNotFound
 from reef.fleet import FleetService
 from reef.manager import SandboxManager
-from reef.providers import PROVIDERS, fetch_ollama_models, is_configured, resolve_ollama_probe_url
+from reef.providers import (
+    PROVIDERS,
+    fetch_ollama_models,
+    fetch_openrouter_models,
+    is_configured,
+    resolve_ollama_probe_url,
+)
 from reef.reconciler import Reconciler
 from reef.runtime import AdminRuntime
 from reef.runtime_factory import default_backend, make_runtime, make_store
@@ -325,6 +333,23 @@ def create_app(service: FleetService | None = None) -> FastAPI:
                 status_code=502, detail=f"can't reach the ollama server: {e}"
             ) from None
         return OllamaModelsOut(models=[OllamaModelOut(**m) for m in models])
+
+    @app.get(
+        "/providers/openrouter/models",
+        response_model=OpenRouterModelsOut,
+        tags=["meta"],
+        dependencies=[Depends(admin_auth)],
+    )
+    async def openrouter_models() -> OpenRouterModelsOut:
+        # The picker's OpenRouter catalog: the live public listing, fetched
+        # REEF-side to mirror the ollama probe (one admin-gated surface, no
+        # per-browser CORS story). Keyless — the listing is public, so there
+        # is nothing to configure and no host parameter to validate.
+        try:
+            models = await fetch_openrouter_models()
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"can't reach openrouter.ai: {e}") from None
+        return OpenRouterModelsOut(models=[OpenRouterModelOut(**m) for m in models])
 
     def _settings_out() -> SettingsOut:
         return SettingsOut(

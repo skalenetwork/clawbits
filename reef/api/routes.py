@@ -108,6 +108,7 @@ async def create_sandbox(
             anthropic_api_key=body.anthropic_api_key,
             gemini_api_key=body.gemini_api_key,
             nearai_api_key=body.nearai_api_key,
+            openrouter_api_key=body.openrouter_api_key,
             ollama_host=body.ollama_host,
             provider=body.provider,
             model=body.model,

@@ -333,6 +333,8 @@ class IronClawProfile:
             env["LLM_BACKEND"] = "gemini"
         elif env.get("NEARAI_API_KEY"):
             env["LLM_BACKEND"] = "nearai"
+        elif env.get("OPENROUTER_API_KEY"):
+            env["LLM_BACKEND"] = "openrouter"
         elif env.get("OLLAMA_BASE_URL"):
             env["LLM_BACKEND"] = "ollama"
         # Stable secret-store master key for headless boot (no keychain in a

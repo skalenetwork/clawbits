@@ -167,6 +167,7 @@ function WizardBody({
         if (own && picked.id === "anthropic") body.anthropic_api_key = own
         if (own && picked.id === "gemini") body.gemini_api_key = own
         if (own && picked.id === "nearai") body.nearai_api_key = own
+        if (own && picked.id === "openrouter") body.openrouter_api_key = own
         if (own && picked.id === "ollama") body.ollama_host = own
       }
       if (state.model.trim()) body.model = state.model.trim()

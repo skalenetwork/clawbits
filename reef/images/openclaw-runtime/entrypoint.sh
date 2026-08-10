@@ -9,6 +9,7 @@
 #   OPENCLAW_GATEWAY_TOKEN  (optional)  ANTHROPIC_API_KEY (optional)
 #   OPENAI_API_KEY (optional — the gateway reads it natively for OpenAI models)
 #   NEARAI_API_KEY (optional — wired as a custom OpenAI-compatible provider below)
+#   OPENROUTER_API_KEY (optional — native auth-choice for the bundled plugin below)
 #   CLAWBITS_ENDPOINT / CLAWBITS_ORG_ID / CLAWBITS_SIGNUP_TOKEN /
 #   CLAWBITS_AGENT_ID / CLAWBITS_API_KEY / CLAWBITS_CHANNEL_ID  (clawbits channel)
 set -eu
@@ -83,6 +84,13 @@ if [ "$(openclaw config get gateway.mode 2>/dev/null)" != "local" ]; then
       --custom-model-id "${_near_model}" \
       --custom-api-key "${NEARAI_API_KEY}" \
       --custom-compatibility openai
+  elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    # OpenClaw bundles an openrouter provider plugin (enabled by default), so
+    # the native auth-choice writes the key — no custom-api-key onboard needed.
+    # The plugin's own no-model default is openrouter/auto (paid routing); the
+    # model block below overrides that with a FREE catalog model, and a
+    # create-time REEF_DEFAULT_MODEL is qualified to openrouter/<vendor>/<model>.
+    reef_onboard --auth-choice openrouter-api-key --openrouter-api-key "${OPENROUTER_API_KEY}"
   elif [ -n "${OLLAMA_HOST:-}" ]; then
     # OpenClaw has no OLLAMA_HOST env support — `--auth-choice ollama` is the
     # documented non-interactive path: it probes the server (/api/tags), pulls
@@ -118,11 +126,26 @@ fi
 # enable it here — otherwise agentRuntime.id=codex (pinned below) fails at run
 # time with "Requested agent harness 'codex' is not registered". Keyed agents use
 # the direct runtime, so they keep the minimal allowlist.
+#
+# OpenRouter agents hit the same trap from the other side: the openrouter
+# PROVIDER is itself a bundled plugin (ships ENABLED, so no entries.*.enabled
+# flip needed) and the clawbits-only allowlist would block it — the onboard
+# above still writes the key (plugins load before the allowlist lands on first
+# boot), and then every openrouter/* model dies at run time with "model is
+# unavailable from the provider". Allow it whenever the key is present.
 if [ "${REEF_OPENAI_AUTH:-}" = "subscription" ]; then
-  openclaw config set plugins.allow '["clawbits","codex"]' --json
+  if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    openclaw config set plugins.allow '["clawbits","codex","openrouter"]' --json
+  else
+    openclaw config set plugins.allow '["clawbits","codex"]' --json
+  fi
   openclaw config set plugins.entries.codex.enabled true --json
 else
-  openclaw config set plugins.allow '["clawbits"]' --json
+  if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    openclaw config set plugins.allow '["clawbits","openrouter"]' --json
+  else
+    openclaw config set plugins.allow '["clawbits"]' --json
+  fi
 fi
 
 # Default model. A create-time model pick rides in as REEF_DEFAULT_MODEL (a
@@ -161,6 +184,23 @@ if [ -n "${did_onboard}" ] || ! openclaw config get agents.defaults.model.primar
     case "${reef_model}" in
       "" | nearai/*) ;;
       *) reef_model="nearai/${reef_model}" ;;
+    esac
+  elif [ -n "${OPENROUTER_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] \
+    && [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ] \
+    && [ -z "${NEARAI_API_KEY:-}" ]; then
+    # Same slash hazard as nearai: OpenRouter model ids are vendor/model slugs
+    # (openai/gpt-5.4, moonshotai/kimi-k2), so the generic "contains a slash ⇒
+    # already provider-qualified" rule would misparse them (the first segment
+    # collides with a real provider). When the OpenRouter key is the effective
+    # provider, anything not already openrouter/-prefixed gets the prefix —
+    # openai/gpt-5.4 → openrouter/openai/gpt-5.4. No pick defaults to a FREE
+    # catalog model (the pickers' curated default), NOT the plugin's
+    # openrouter/auto paid routing — a fresh BYO-key agent shouldn't spend
+    # until its owner chooses a model.
+    case "${reef_model}" in
+      "") reef_model="openrouter/nvidia/nemotron-nano-9b-v2:free" ;;
+      openrouter/*) ;;
+      *) reef_model="openrouter/${reef_model}" ;;
     esac
   else
     case "${reef_model}" in
