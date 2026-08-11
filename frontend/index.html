@@ -27,7 +27,9 @@
       Per-environment favicon. The frontend ships a single static build that
       serves both staging and prod (only the backend's APP_ENV differs), so the
       env can't be baked in at build time — we pick it from the hostname at
-      runtime. clawbits.ai keeps the default prod favicon above; freeclaws.ai
+      runtime. Any *.clawbits.ai host (the app lives at app.clawbits.ai; the
+      apex itself serves the marketing site) keeps the default prod favicon
+      above; freeclaws.ai
       gets the STAGING icon and everything else (localhost, *.ts.net, IPs,
       preview hosts) gets the DEV icon. Runs inline before paint so the swap
       lands before the bundle loads. Source art: desktop/icons-src/{dev,staging}.png.

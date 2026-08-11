@@ -674,7 +674,7 @@ def test_normalize_local_endpoint_leaves_public_and_unknown_untouched():
     # Prod/staging endpoints (and anything on an unrecognized backend) must
     # never be rewritten — the guest reaches them over public egress.
     norm = _normalize_local_endpoint
-    for public in ("https://clawbits.ai", "https://freeclaws.ai", "http://10.3.155.205:8000"):
+    for public in ("https://app.clawbits.ai", "https://freeclaws.ai", "http://10.3.155.205:8000"):
         assert norm(public, "microsandbox") == public
         assert norm(public, "docker") == public
     assert norm("http://localhost:8000", "fake") == "http://localhost:8000"
@@ -706,8 +706,8 @@ def test_create_normalizes_local_endpoint_per_runtime():
 
 
 def test_create_keeps_public_clawbits_endpoint_untouched():
-    # Prod (clawbits.ai) and staging (freeclaws.ai) flow through verbatim.
-    for i, url in enumerate(("https://clawbits.ai", "https://freeclaws.ai")):
+    # Prod (app.clawbits.ai) and staging (freeclaws.ai) flow through verbatim.
+    for i, url in enumerate(("https://app.clawbits.ai", "https://freeclaws.ai")):
         svc, rt, _store = _svc_with_manager(backend="microsandbox")
         asyncio.run(svc.create("openclaw", name=f"oc-pub-{i}", org_id="acme", clawbits_url=url))
         spec = rt.created[-1]
@@ -1307,12 +1307,12 @@ def test_create_ollama_net_allow_unions_with_clawbits_endpoint():
     asyncio.run(
         svc.create(
             "openclaw", name="oc-oll-union", org_id="acme",
-            clawbits_url="https://clawbits.ai",
+            clawbits_url="https://app.clawbits.ai",
             provider="ollama", ollama_host="http://localhost:11434", model="llama3.2",
         )
     )
     spec = rt.created[-1]
-    assert spec.env["CLAWBITS_ENDPOINT"] == "https://clawbits.ai"
+    assert spec.env["CLAWBITS_ENDPOINT"] == "https://app.clawbits.ai"
     assert spec.env["OLLAMA_HOST"] == "http://host.microsandbox.internal:11434"
     assert spec.net_allow == ("public", "host")
 

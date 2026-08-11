@@ -28,8 +28,8 @@ working local stack with attachments, real auth, and email disabled.
 | File              | Committed? | What's in it |
 |-------------------|------------|--------------|
 | `.env.development` | ✅ encrypted | Local dev — `localhost:5173`, dev-auth on |
-| `.env.staging`    | ✅ encrypted | `clawbits.ai` — WorkOS `sk_test_…` |
-| `.env.production` | ✅ encrypted | `clawbits.ai` — WorkOS `sk_live_…` |
+| `.env.staging`    | ✅ encrypted | `freeclaws.ai` — WorkOS `sk_test_…` |
+| `.env.production` | ✅ encrypted | `app.clawbits.ai` — WorkOS `sk_live_…` |
 | `.env.keys`       | ❌ gitignored | All `DOTENV_PRIVATE_KEY_*` you have access to |
 | `.env.example`    | ✅ plaintext | Schema reference + dev defaults, no secrets |
 
