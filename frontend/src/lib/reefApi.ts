@@ -242,6 +242,7 @@ export interface ReefCreateBody {
   anthropic_api_key?: string
   gemini_api_key?: string
   nearai_api_key?: string
+  openrouter_api_key?: string
   /** Ollama server URL (plain http(s), no user:pass@). Host-local values are
    *  normalized by the Reef for its runtime and allowed through egress. */
   ollama_host?: string
@@ -322,6 +323,23 @@ export const reefOllamaModels = (baseUrl: string, host?: string) =>
     `/providers/ollama/models${host ? `?host=${encodeURIComponent(host)}` : ""}`,
     { auth: true },
   )
+
+/** One model in OpenRouter's live catalog (public listing, proxied REEF-side).
+ *  `id` is the vendor/model slug — exactly what the create's `model` takes. */
+export interface ReefOpenRouterModel {
+  id: string
+  name?: string | null
+  context_length?: number | null
+}
+
+/** OpenRouter's full model catalog, fetched REEF-side (mirrors the ollama
+ *  probe: one admin-gated surface, no per-browser CORS story). 502 =
+ *  openrouter.ai unreachable; 404 = an older Reef without the proxy — the
+ *  picker degrades to the curated pills + free text either way. */
+export const reefOpenRouterModels = (baseUrl: string) =>
+  reefReq<{ models: ReefOpenRouterModel[] }>(baseUrl, "/providers/openrouter/models", {
+    auth: true,
+  })
 
 /** Open the OpenClaw Control UI pre-authenticated via the gateway's native
  *  `#token=` fragment (client-only — never sent to the server). Mirrors

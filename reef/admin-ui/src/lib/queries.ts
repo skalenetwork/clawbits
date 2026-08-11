@@ -28,6 +28,20 @@ export function useProviders(enabled = true) {
   })
 }
 
+/** OpenRouter's live model catalog, reef-proxied (`GET
+ *  /providers/openrouter/models`). Feeds the create dialog's model datalist
+ *  when the openrouter provider is picked; a failure just leaves the free-text
+ *  field without suggestions. */
+export function useOpenRouterModels(enabled: boolean) {
+  return useQuery({
+    queryKey: ["openrouter-models"],
+    queryFn: api.openrouterModels,
+    enabled,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
 /** Operator settings (`GET /settings`) - today the public-URL override. */
 export function useSettings() {
   return useQuery({

@@ -69,7 +69,7 @@ Then add provider keys - fresh and spend-capped (any agent VM that receives a
 key can read it, so never reuse a dev key):
 
 ```bash
-sudoedit /etc/reef/reef.env    # REEF_ANTHROPIC_API_KEY=sk-ant-…  (and/or REEF_OPENAI_API_KEY / REEF_GEMINI_API_KEY / REEF_NEARAI_API_KEY)
+sudoedit /etc/reef/reef.env    # REEF_ANTHROPIC_API_KEY=sk-ant-…  (and/or REEF_OPENAI_API_KEY / REEF_GEMINI_API_KEY / REEF_NEARAI_API_KEY / REEF_OPENROUTER_API_KEY)
 sudo systemctl restart reef-api
 ```
 

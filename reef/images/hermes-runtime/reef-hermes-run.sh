@@ -57,7 +57,8 @@ reef_persist_injected_env() {
   for key in \
     CLAWBITS_BASE_URL CLAWBITS_API_KEY CLAWBITS_AGENT_ID CLAWBITS_CHANNEL_ID \
     CLAWBITS_CHALLENGE_ANSWER CLAWBITS_PLUGIN_VERSION OPENAI_API_KEY ANTHROPIC_API_KEY \
-    GEMINI_API_KEY GATEWAY_ALLOW_ALL_USERS REEF_DEFAULT_MODEL REEF_OPENAI_AUTH
+    GEMINI_API_KEY OPENROUTER_API_KEY GATEWAY_ALLOW_ALL_USERS REEF_DEFAULT_MODEL \
+    REEF_OPENAI_AUTH
   do
     value="${!key:-}"
     # An `if` block, NOT `[ -n "$value" ] && reef_save_env …`. Under `set -e` that
@@ -84,13 +85,16 @@ reef_configure_model() {
   # single reply died with `401 Missing Authentication header`. The key was fine; it
   # was being offered to the wrong provider.
   #
-  # Hermes DOES have native providers for both keys reef can inject — they are just
+  # Hermes DOES have native providers for the keys reef can inject — they are just
   # never chosen by `auto`:
   #     anthropic  -> https://api.anthropic.com   (ANTHROPIC_API_KEY)
   #     openai-api -> https://api.openai.com/v1   (OPENAI_API_KEY)
   # Pin one explicitly. Model ids are the bare native ids reef's wizard already hands
   # over in REEF_DEFAULT_MODEL (gpt-5.4, claude-opus-4-8, …) — NOT the provider/model
-  # slugs openrouter uses.
+  # slugs openrouter uses. The one exception is the deliberate openrouter branch
+  # below: it fires only on an injected OPENROUTER_API_KEY (the fixed version of
+  # the story above — the key and the endpoint finally match), and ITS model ids
+  # ARE the full vendor/model slugs (anthropic/claude-opus-4.6).
   # Priority is deterministic because reef forwards ALL configured reef-level keys when
   # the operator doesn't pick a provider — several may be present at once. The explicit
   # ChatGPT-subscription pick wins outright; otherwise anthropic > openai > gemini,
@@ -118,6 +122,12 @@ reef_configure_model() {
     provider="gemini"
     base_url="https://generativelanguage.googleapis.com/v1beta"
     fallback_model="gemini-3.5-flash"
+  elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    provider="openrouter"
+    base_url="https://openrouter.ai/api/v1"
+    # Full vendor/model slug (what the openrouter API takes), and a FREE one —
+    # the pickers' curated default; no spend until the owner picks a model.
+    fallback_model="nvidia/nemotron-nano-9b-v2:free"
   else
     # No key injected — leave the stock config alone. The owner configures a provider
     # in the dashboard; overriding here would only trade one broken default for another.

@@ -202,7 +202,7 @@ def test_build_env_shapes():
     assert p.access_info(exposed, url="https://x", secret="s3cret").password == "s3cret"
 
 
-def test_backend_chain_covers_gemini_nearai_and_ollama():
+def test_backend_chain_covers_gemini_nearai_openrouter_and_ollama():
     text = ENTRYPOINT.read_text()
     # Fallback derivation (reef's profile pre-pins LLM_BACKEND when it injects a
     # provider): registry preference order, ollama keyed off OLLAMA_BASE_URL
@@ -212,9 +212,11 @@ def test_backend_chain_covers_gemini_nearai_and_ollama():
     oai = chain.index('LLM_BACKEND="openai"')
     gem = chain.index('LLM_BACKEND="gemini"')
     near = chain.index('LLM_BACKEND="nearai"')
+    orte = chain.index('LLM_BACKEND="openrouter"')
     oll = chain.index('LLM_BACKEND="ollama"')
-    assert ant < oai < gem < near < oll
+    assert ant < oai < gem < near < orte < oll
     assert '[ -n "${NEARAI_API_KEY:-}" ]' in chain
+    assert '[ -n "${OPENROUTER_API_KEY:-}" ]' in chain
     assert '[ -n "${OLLAMA_BASE_URL:-}" ]' in chain
 
 
@@ -233,7 +235,28 @@ def test_model_pin_never_strips_nearai_hf_paths():
     # backend the full path IS the model id, so the generic strip is guarded —
     # only an explicit nearai/ prefix is removed.
     assert 'nearai/*) reef_model="${reef_model#nearai/}"' in text
-    assert '[ "${LLM_BACKEND:-}" = "nearai" ] || reef_model="${reef_model#*/}"' in text
+    assert '[ "${LLM_BACKEND:-}" = "nearai" ] || [ "${LLM_BACKEND:-}" = "openrouter" ]' in text
+    assert '|| reef_model="${reef_model#*/}"' in text
+
+
+def test_openrouter_no_pick_defaults_to_a_free_model():
+    text = ENTRYPOINT.read_text()
+    # Mirrors the openai gpt-5-mini pin: a keyed agent with no model pick gets
+    # a known-good default — for openrouter a FREE catalog model (bare slug,
+    # IronClaw takes OpenRouter ids raw), so no spend until the owner chooses.
+    assert '[ "${LLM_BACKEND:-}" = "openrouter" ]; then' in text
+    assert 'reef_model="nvidia/nemotron-nano-9b-v2:free"' in text
+
+
+def test_model_pin_never_strips_openrouter_vendor_paths():
+    text = ENTRYPOINT.read_text()
+    # OpenRouter slugs are vendor/model paths (openai/gpt-5.4) — same collision
+    # class as NEAR's HF paths, same guard on the generic strip (asserted
+    # above). An explicit openrouter/ qualifier is stripped ONLY when a vendor
+    # path remains: openrouter/auto is itself a complete slug (vendor
+    # "openrouter") and must survive the strip intact.
+    assert '_rest="${reef_model#openrouter/}"' in text
+    assert 'case "${_rest}" in */*) reef_model="${_rest}" ;; esac' in text
 
 
 def test_build_env_gemini_nearai_and_ollama_shapes():
@@ -245,9 +268,15 @@ def test_build_env_gemini_nearai_and_ollama_shapes():
     assert near["NEARAI_API_KEY"] == "sk-near"
     assert near["LLM_BACKEND"] == "nearai"
     assert near["REEF_DEFAULT_MODEL"] == "zai-org/GLM-5.1-FP8"
-    # Preference order: anthropic wins when both keys ride along.
+    orte = p.build_env({"openrouter_api_key": "sk-or-1", "model": "openai/gpt-5.4"})
+    assert orte["OPENROUTER_API_KEY"] == "sk-or-1"
+    assert orte["LLM_BACKEND"] == "openrouter"
+    assert orte["REEF_DEFAULT_MODEL"] == "openai/gpt-5.4"
+    # Preference order: anthropic wins when several keys ride along.
     multi = p.build_env({"anthropic_api_key": "sk-ant", "nearai_api_key": "sk-near"})
     assert multi["LLM_BACKEND"] == "anthropic"
+    multi_or = p.build_env({"anthropic_api_key": "sk-ant", "openrouter_api_key": "sk-or-1"})
+    assert multi_or["LLM_BACKEND"] == "anthropic"
     oll = p.build_env({"ollama_host": "http://h:11434", "model": "llama3.2"})
     assert oll["OLLAMA_HOST"] == "http://h:11434"
     assert oll["OLLAMA_BASE_URL"] == "http://h:11434"  # IronClaw's spelling

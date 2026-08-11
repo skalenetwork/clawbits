@@ -134,6 +134,7 @@ export interface CreateSandboxIn {
   anthropic_api_key?: string
   gemini_api_key?: string
   nearai_api_key?: string
+  openrouter_api_key?: string
   ollama_host?: string
   /** Which reef-level (REEF_*) provider value to forward: a provider id from
    *  GET /providers, or "none". Omitted: all configured reef-level API keys
@@ -198,6 +199,15 @@ export interface ProvidersResult {
   /** Create-API capability flags (e.g. "env"); absent on older Reefs. The
    *  admin-ui ships with reef so it doesn't gate on this — clawbits does. */
   features?: string[]
+}
+
+/** One model in OpenRouter's live catalog (public listing, reef-proxied —
+ *  `GET /providers/openrouter/models`). `id` is the vendor/model slug the
+ *  create's `model` field takes. */
+export interface OpenRouterModel {
+  id: string
+  name?: string | null
+  context_length?: number | null
 }
 
 /** Operator-adjustable settings (`GET /settings`). Today: the public URL agent
@@ -350,6 +360,7 @@ const enc = encodeURIComponent
 export const api = {
   health: () => req<Health>("/healthz"),
   providers: () => req<ProvidersResult>("/providers"),
+  openrouterModels: () => req<{ models: OpenRouterModel[] }>("/providers/openrouter/models"),
   settings: () => req<SettingsResult>("/settings"),
   updateSettings: (public_url: string | null) =>
     req<SettingsResult>("/settings", {
