@@ -37,7 +37,7 @@
     "expo-system-ui": "~56.0.5",
     "expo-web-browser": "~56.0.5",
     "react": "19.2.3",
-    "react-dom": "19.2.3",
+    "react-dom": "19.2.8",
     "react-native": "0.85.3",
     "react-native-awesome-gallery": "0.4.3",
     "react-native-edge-to-edge": "^1.8.1",
