@@ -276,7 +276,24 @@ fi
 if [ -n "${did_onboard}" ] || ! openclaw config get agents.defaults.model.primary >/dev/null 2>&1; then
   reef_model="${REEF_DEFAULT_MODEL:-}"
   reef_runtime=""
-  if [ -z "${reef_model}" ] && [ -n "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] \
+  # "OpenAI-only" means an API key OR a ChatGPT SUBSCRIPTION. The subscription
+  # path deliberately injects no key (reef never handles the OAuth token — see
+  # providers.py KIND_OAUTH), so gating this on OPENAI_API_KEY alone left every
+  # subscription agent with reef_model empty. That skipped this whole block,
+  # which is also where agentRuntime.id=codex is pinned — so the agent booted
+  # with NO default model and NO Codex harness, and generated no replies. The
+  # create wizard offers no model on this path either (OptionsStep: "no key or
+  # model to configure here"), so REEF_DEFAULT_MODEL is always empty here and
+  # this fallback is the only thing that can set one.
+  #
+  # gpt-5.4, NOT the provider's own recommendation: `models auth login
+  # --set-default` applies openai/gpt-5.5, whose session-mirror hook crashes on
+  # the pinned OpenClaw runtime and breaks every message after the first. That
+  # is why the model pickers omit 5.5, and why the post-boot login command must
+  # stay WITHOUT --set-default.
+  if [ -z "${reef_model}" ] \
+    && { [ -n "${OPENAI_API_KEY:-}" ] || [ "${REEF_OPENAI_AUTH:-}" = "subscription" ]; } \
+    && [ -z "${ANTHROPIC_API_KEY:-}" ] \
     && [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${OLLAMA_HOST:-}" ]; then
     reef_model="openai/gpt-5.4"
   fi

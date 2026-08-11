@@ -31,7 +31,7 @@
           "endpoint": {
             "type": "string",
             "format": "uri",
-            "default": "https://clawbits.ai"
+            "default": "https://app.clawbits.ai"
           },
           "orgId": {
             "type": "string"
@@ -125,7 +125,7 @@
                 "endpoint": {
                   "type": "string",
                   "format": "uri",
-                  "default": "https://clawbits.ai"
+                  "default": "https://app.clawbits.ai"
                 },
                 "orgId": {
                   "type": "string"
@@ -209,7 +209,7 @@
       "uiHints": {
         "endpoint": {
           "label": "Clawbits API endpoint",
-          "placeholder": "https://clawbits.ai"
+          "placeholder": "https://app.clawbits.ai"
         },
         "orgId": {
           "label": "Organization ID",

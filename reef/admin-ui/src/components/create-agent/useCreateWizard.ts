@@ -37,7 +37,9 @@ export interface WizardState {
   /** Custom guest env rows (the Options step edits these). */
   envRows: { key: string; value: string }[]
   /** Opt-in capabilities (reef/capabilities.py). Only the ones whose blast radius
-   *  leaves the microVM are listed here; everything the VM contains is ungated. */
+   *  leaves the microVM are listed here; everything the VM contains is ungated.
+   *  Seeded from DEFAULT_CAPABILITIES; the create always sends this array, so an
+   *  unticked box really does produce a bare agent. */
   capabilities: string[]
   /** Create fired: the launch phase is live. */
   launched: boolean
@@ -67,6 +69,12 @@ export function nextStep(state: WizardState): StepId {
   return STEP_SEQUENCE[Math.min(i + 1, STEP_SEQUENCE.length - 1)] ?? state.step
 }
 
+/** Capabilities ticked when the wizard opens. MIRRORS
+ *  reef/capabilities.py DEFAULT_CAPABILITIES - keep the two in sync. `gh` is on
+ *  because reef injects no GitHub token, so the grant is inert until a human
+ *  supplies one; `cron` is not, because nothing gates it a second time. */
+export const DEFAULT_CAPABILITIES = ["gh"]
+
 export const INITIAL: WizardState = {
   step: "type",
   runtime: null,
@@ -79,7 +87,7 @@ export const INITIAL: WizardState = {
   byoValues: {},
   model: "",
   envRows: [],
-  capabilities: [],
+  capabilities: [...DEFAULT_CAPABILITIES],
   launched: false,
 }
 

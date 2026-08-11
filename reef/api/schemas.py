@@ -101,7 +101,7 @@ class SandboxDetailOut(BaseModel):
     access: AccessOut | None = None
     status: dict | None = None  # agent-volunteered telemetry (versions, …); None if unreported
     # Opt-in capabilities granted to this agent (reef.capabilities). Always a list,
-    # never null: [] means "the safe baseline", which is a real answer, not missing
+    # never null: [] means "nothing granted", which is a real answer, not missing
     # data. Managed sandboxes only — a drift VM reports [].
     capabilities: list[str] = []
 
@@ -159,8 +159,12 @@ class CreateSandboxIn(BaseModel):
     # restarts, but a destroyed agent must be recreated with it re-supplied.
     env: dict[str, str] | None = None
     # Opt-in capabilities for this agent (reef.capabilities): currently "gh" and
-    # "cron". Omitted/[] ⇒ the safe baseline. Unknown names are a 422 rather than
-    # being dropped, so the UI can never claim a capability the agent didn't get.
+    # "cron". OMITTED ⇒ reef.capabilities.DEFAULT_CAPABILITIES (today: "gh");
+    # an explicit [] ⇒ nothing. The two are deliberately NOT the same — both UIs
+    # send the field whenever the reef advertises it, so an unticked box means a
+    # bare agent, while an older/scripted caller that never heard of capabilities
+    # gets the defaults. Unknown names are a 422 rather than being dropped, so the
+    # UI can never claim a capability the agent didn't get.
     # NOT settable through ``env`` above: every capability toggle is a REEF_* var
     # and that prefix is reserved, so an agent cannot self-grant one.
     capabilities: list[str] | None = None

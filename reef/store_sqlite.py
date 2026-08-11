@@ -150,8 +150,11 @@ def _from_row(row: sqlite3.Row) -> Sandbox:
         last_restart_at=(
             datetime.fromisoformat(row["last_restart_at"]) if row["last_restart_at"] else None
         ),
-        # NULL (pre-v5 row) and '' (explicitly no capabilities) both mean the safe
-        # baseline, so both land on ().
+        # NULL (pre-v5 row) and '' (explicitly no capabilities) both land on ().
+        # Note this does NOT pick up DEFAULT_CAPABILITIES: those apply at CREATE,
+        # to an omitted field. An existing agent's granted set is operator state,
+        # so a later change to the defaults must not silently widen it on the next
+        # upgrade — re-grant explicitly via PATCH /fleet/{id}.
         capabilities=tuple(c for c in (row["capabilities"] or "").split(",") if c),
     )
 

@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-DEFAULT_ENDPOINT = "https://clawbits.ai"
+DEFAULT_ENDPOINT = "https://app.clawbits.ai"
 CHALLENGE_ATTEMPTS = 16
 
 # Cloudflare fronts clawbits.ai and answers the urllib default User-Agent

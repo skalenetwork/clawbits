@@ -29,7 +29,7 @@ import { useOpenRouterModels } from "@/lib/queries"
 import { providerBrand } from "./brands"
 import { CURATED_MODELS, TIER_META, type CuratedModel } from "./models"
 import { AddEnvRowButton, EnvVarRow, ENV_KEY_RE } from "./bits"
-import type { WizardState } from "./useCreateWizard"
+import { DEFAULT_CAPABILITIES, type WizardState } from "./useCreateWizard"
 
 /** The AI-model section's tile wash (shared by the compact row + full section). */
 const MODEL_TILE = "linear-gradient(180deg, #f778387d, #1cb8d985)"
@@ -332,8 +332,8 @@ export function OptionsStep({
         >
           <div className="flex flex-col gap-2.5">
             <p className="px-1 text-xs text-muted-foreground">
-              Off by default. These reach outside the agent's VM - everything
-              inside it (shell, packages, browser) is always available.
+              These reach outside the agent's VM - everything inside it (shell,
+              packages, browser) is always available and not listed here.
             </p>
             {CAPABILITY_OPTIONS.map((cap) => (
               <CapabilityRow
@@ -654,7 +654,16 @@ function CapabilityRow({
         onChange={onToggle}
       />
       <span className="flex flex-col gap-0.5">
-        <span className="text-sm">{cap.label}</span>
+        <span className="flex items-center gap-1.5 text-sm">
+          {cap.label}
+          {DEFAULT_CAPABILITIES.includes(cap.id) && (
+            // The box arrives ticked; say why, so it reads as a default rather
+            // than a stray click the operator has to undo.
+            <span className="rounded-full bg-foreground/[0.06] px-1.5 py-px text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+              Default
+            </span>
+          )}
+        </span>
         <span className="text-xs text-muted-foreground">{cap.blurb}</span>
       </span>
     </label>

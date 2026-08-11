@@ -37,7 +37,9 @@ export interface WizardState {
     /** Custom guest env rows (the Launch "Advanced" sheet edits these). */
     envRows: {key: string; value: string}[];
     /** Opt-in capabilities (reef/capabilities.py). Only things that reach OUTSIDE
-     *  the agent's VM are listed; everything the VM contains is always on. */
+     *  the agent's VM are listed; everything the VM contains is always on.
+     *  Seeded from DEFAULT_CAPABILITIES; the create always sends this array, so
+     *  an unticked box really does produce a bare agent. */
     capabilities: string[];
     /** Create fired (reef) / prompt copied (self): the launch phase is live. */
     launched: boolean;
@@ -89,6 +91,12 @@ export function agentLabel(a: AgentUser): string {
     return dn.length > 0 ? dn : nk.length > 0 ? nk : a.agent_id;
 }
 
+/** Capabilities ticked when the wizard opens. MIRRORS
+ *  reef/capabilities.py DEFAULT_CAPABILITIES — keep the two in sync. `gh` is on
+ *  because reef injects no GitHub token, so the grant is inert until a human
+ *  supplies one; `cron` is not, because nothing gates it a second time. */
+export const DEFAULT_CAPABILITIES = ["gh"];
+
 export const INITIAL: WizardState = {
     step: "deploy",
     mode: null,
@@ -98,7 +106,7 @@ export const INITIAL: WizardState = {
     byoValues: {},
     model: "",
     envRows: [],
-    capabilities: [],
+    capabilities: [...DEFAULT_CAPABILITIES],
     launched: false,
 };
 

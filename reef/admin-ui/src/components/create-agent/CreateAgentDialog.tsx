@@ -182,7 +182,9 @@ function WizardBody({
     // Only send when this reef advertises the field: an older reef's Pydantic
     // would silently DROP it, producing an agent whose real capabilities differ
     // from what this wizard just showed. `features` comes from GET /providers.
-    if (state.capabilities.length > 0 && supportsCapabilities) {
+    // Sent even when EMPTY - omitting it means "apply the server defaults", so a
+    // length check would quietly re-grant what the operator just unticked.
+    if (supportsCapabilities) {
       body.capabilities = state.capabilities
     }
     return body
