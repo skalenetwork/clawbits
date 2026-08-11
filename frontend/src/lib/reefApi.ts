@@ -246,6 +246,11 @@ export interface ReefCreateBody {
   /** Ollama server URL (plain http(s), no user:pass@). Host-local values are
    *  normalized by the Reef for its runtime and allowed through egress. */
   ollama_host?: string
+  /** Opt-in capabilities (reef/capabilities.py): "gh" | "cron". Omit/[] => the
+   *  safe baseline. Only send when GET /providers `features` includes
+   *  "capabilities" - an older reef drops unknown fields silently, which would
+   *  create an agent less capable than the wizard claimed. */
+  capabilities?: string[]
   /** Which reef-level (REEF_*) provider value the VM gets: a provider id from
    *  GET /providers, or "none". Omitted: all configured reef-level API keys
    *  (legacy behavior). The explicit fields above always win. */

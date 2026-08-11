@@ -373,11 +373,18 @@ def test_get_detail_status_none_when_unreported():
 
 def test_build_env_optional_clawbits_creds():
     p = OpenClawProfile(image="x")
-    assert p.build_env({}) == {}  # detached: no creds → no CLAWBITS_* keys
+    # Detached: no creds → no CLAWBITS_* keys. REEF_CAPS is always present and
+    # empty — the entrypoint needs "granted nothing" to be distinguishable from
+    # "this reef predates capabilities" so it can turn the gated features OFF.
+    assert p.build_env({}) == {"REEF_CAPS": ""}
     # org-only (no token) → endpoint + org only; the entrypoint can't enroll
     # without a signup token, so no token / minted keys are injected
     org_only = p.build_env({"org_id": "o"})
-    assert org_only == {"CLAWBITS_ENDPOINT": "https://clawbits.ai", "CLAWBITS_ORG_ID": "o"}
+    assert org_only == {
+        "CLAWBITS_ENDPOINT": "https://clawbits.ai",
+        "CLAWBITS_ORG_ID": "o",
+        "REEF_CAPS": "",
+    }
     assert "CLAWBITS_API_KEY" not in org_only
     assert "CLAWBITS_SIGNUP_TOKEN" not in org_only
     # org + signup token → token injected for the entrypoint's auto-enroll

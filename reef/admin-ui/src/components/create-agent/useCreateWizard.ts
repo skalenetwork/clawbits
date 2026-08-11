@@ -36,6 +36,9 @@ export interface WizardState {
   model: string
   /** Custom guest env rows (the Options step edits these). */
   envRows: { key: string; value: string }[]
+  /** Opt-in capabilities (reef/capabilities.py). Only the ones whose blast radius
+   *  leaves the microVM are listed here; everything the VM contains is ungated. */
+  capabilities: string[]
   /** Create fired: the launch phase is live. */
   launched: boolean
 }
@@ -50,6 +53,7 @@ export type WizardAction =
   | { type: "set-byo"; id: string; value: string }
   | { type: "set-model"; model: string }
   | { type: "set-env"; rows: { key: string; value: string }[] }
+  | { type: "toggle-capability"; id: string }
   | { type: "goto"; step: StepId }
   | { type: "launch" }
   | { type: "unlaunch" } // create failed -> back to an editable wizard
@@ -75,6 +79,7 @@ export const INITIAL: WizardState = {
   byoValues: {},
   model: "",
   envRows: [],
+  capabilities: [],
   launched: false,
 }
 
@@ -115,6 +120,15 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
       return { ...state, model: action.model }
     case "set-env":
       return { ...state, envRows: action.rows }
+    case "toggle-capability": {
+      const on = state.capabilities.includes(action.id)
+      return {
+        ...state,
+        capabilities: on
+          ? state.capabilities.filter((c) => c !== action.id)
+          : [...state.capabilities, action.id],
+      }
+    }
     case "goto": {
       // Never leave launch once launched (the rail freezes; create-failure
       // dispatches "unlaunch").

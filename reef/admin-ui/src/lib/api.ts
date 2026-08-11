@@ -91,6 +91,10 @@ export interface SandboxDetail {
   last_restart_at: string | null
   access: AccessInfo | null
   status: AgentStatus | null
+  /** Granted opt-in capabilities. Always an array — [] means "the safe baseline",
+   *  which is a real answer, not missing data. Reflects reef's RECORD, so it can
+   *  differ from what the RUNNING container booted with until the next upgrade. */
+  capabilities: string[]
 }
 
 /** Reconciler restart policies (mirrors reef.runtime.RestartPolicy). */
@@ -136,6 +140,11 @@ export interface CreateSandboxIn {
   nearai_api_key?: string
   openrouter_api_key?: string
   ollama_host?: string
+  /** Opt-in capabilities (reef/capabilities.py): "gh" | "cron". Omit/[] ⇒ the
+   *  safe baseline. An unknown name is a 422, never a silent drop. Only send this
+   *  when GET /providers `features` includes "capabilities" — an older reef would
+   *  drop the field and produce an agent less capable than the UI claimed. */
+  capabilities?: string[]
   /** Which reef-level (REEF_*) provider value to forward: a provider id from
    *  GET /providers, or "none". Omitted: all configured reef-level API keys
    *  (endpoint-kind is never forwarded implicitly). The explicit fields above

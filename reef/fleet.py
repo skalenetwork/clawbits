@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
 
 from reef.agents import AGENT_TYPES, infer_type
+from reef.capabilities import normalize as _normalize_caps
+from reef.capabilities import to_env as _caps_to_env
 from reef.errors import RuntimeUnavailable, SandboxNotFound
 from reef.exposure import Exposure, surface_digest
 from reef.manager import SandboxManager
@@ -175,6 +177,7 @@ class SandboxDetail:
     last_restart_at: datetime | None = None
     access: AccessInfo | None = None
     status: dict | None = None  # agent-volunteered telemetry (versions, …); None if unreported
+    capabilities: tuple[str, ...] = ()  # granted opt-in capabilities (managed only)
 
 
 def _image_ref(cfg: dict) -> str:
@@ -601,6 +604,10 @@ class FleetService:
             last_restart_at=rec.last_restart_at if rec else None,
             access=_access_info(agent_type, full_env, url, terminal_url),
             status=status,
+            # From the RECORD, never from the guest env: REEF_CAPS in a running
+            # container is what it booted with, which goes stale the moment an
+            # operator PATCHes the grant. A drift VM has no record, so ().
+            capabilities=rec.capabilities if rec else (),
         )
 
     async def reveal_access(self, sandbox_id: str) -> AccessInfo | None:
@@ -675,6 +682,7 @@ class FleetService:
         model: str | None = None,
         restart_policy: str | None = None,
         env: dict[str, str] | None = None,
+        capabilities: list[str] | None = None,
     ) -> tuple[Sandbox, Exposure]:
         """Create + expose a new agent VM of ``agent_type``. Detached by default
         (no clawbits identity); pass ``org_id`` + required ``clawbits_url`` +
@@ -725,6 +733,7 @@ class FleetService:
                 )
             profile.image = image
         user_env = _validate_user_env(env)  # fail fast, before any runtime round-trip
+        caps = _normalize_caps(capabilities)  # 422 on an unknown name, before any I/O
         # Auto-named VMs get a Docker-style ``adjective-noun`` — unique against the
         # names the runtime already knows (managed + drift), so the create can't clash.
         taken: set[str] = set()
@@ -769,6 +778,11 @@ class FleetService:
                 creds["ollama_host"], self._manager.backend
             )
         policy = _parse_restart_policy(restart_policy)
+        # creds carries it to the profile's build_env (→ REEF_CAPS in the guest);
+        # the kwarg persists it on the record. Both, deliberately: the guest needs
+        # it at boot, the operator needs it to still be answerable a month later.
+        if caps:
+            creds["capabilities"] = ",".join(caps)
         exposure = await self._manager.expose(
             sandbox_id,
             profile,
@@ -778,6 +792,7 @@ class FleetService:
             net_allow=_net_allow_union(clawbits_url, creds.get("ollama_host")),
             user_env=user_env,
             restart_policy=policy,
+            capabilities=caps,
         )
         sandbox = await self._store.get(sandbox_id)
         if sandbox is None:  # expose() persists before returning — defensive
@@ -875,6 +890,13 @@ class FleetService:
             injected.get("OLLAMA_HOST"),
             injected.get("OLLAMA_BASE_URL"),
         )
+        # Capabilities are the ONE thing we do not replay from the container: the
+        # RECORD is authoritative, so a PATCH that granted or revoked something
+        # since the last boot actually takes effect here rather than being
+        # overwritten by the stale REEF_CAPS the old container was started with.
+        # This is also why an empty grant still writes an explicit empty value —
+        # a revoke has to be able to reach the guest.
+        injected.update(_caps_to_env(rec.capabilities))
         return await self._manager.recreate_with_image(
             sandbox_id, profile, injected, limits=limits, net_allow=net_allow
         )
@@ -884,11 +906,25 @@ class FleetService:
         return await self.update_settings(sandbox_id, color=color)
 
     async def update_settings(
-        self, sandbox_id: str, *, color: str | None = None, restart_policy: str | None = None
+        self,
+        sandbox_id: str,
+        *,
+        color: str | None = None,
+        restart_policy: str | None = None,
+        capabilities: list[str] | None = None,
     ) -> Sandbox:
-        """Patch operator-editable settings on a managed sandbox: dashboard ``color``
-        and/or self-healing ``restart_policy``. Only the provided fields change. Drift
-        VMs (no store record) and invalid values raise ``ValueError``."""
+        """Patch operator-editable settings on a managed sandbox: dashboard ``color``,
+        self-healing ``restart_policy``, and/or granted ``capabilities``. Only the
+        provided fields change. Drift VMs (no store record) and invalid values raise
+        ``ValueError``.
+
+        NOTE on ``capabilities``: this updates reef's record, which is the source of
+        truth the operator UI shows and which ``upgrade`` replays into the guest. It
+        does NOT reach into a running VM - the guest reads ``REEF_CAPS`` once at boot,
+        and reef cannot rewrite a live container's env. So a capability change lands
+        on the agent's next upgrade/recreate, and callers should say so rather than
+        implying it took effect immediately. Passing ``[]`` explicitly REVOKES
+        everything (distinct from omitting the field, which leaves it unchanged)."""
         rec = await self._store.get(sandbox_id)
         if rec is None:
             raise ValueError(f"{sandbox_id} is not a managed sandbox")
@@ -900,6 +936,8 @@ class FleetService:
             rec.color = color
         if restart_policy is not None:
             rec.restart_policy = _parse_restart_policy(restart_policy)
+        if capabilities is not None:
+            rec.capabilities = _normalize_caps(capabilities)
         rec.updated_at = _now()
         await self._store.put(rec)
         return rec

@@ -3,7 +3,7 @@
 Agents are installed as a **pinned remote ClawHub package**:
 
 ```bash
-openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --acknowledge-clawhub-risk
+openclaw plugins install clawhub:clawbits-openclaw-plugin --pin
 ```
 
 When an agent is told, in plain language, to "update your Clawbits plugin," the
@@ -30,7 +30,7 @@ printed. Add `--json` for a single machine-readable recommendation.
 For a remote install, `openclaw clawbits update` prints:
 
 ```bash
-openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force --acknowledge-clawhub-risk
+openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force
 ```
 
 Why this exact form:
@@ -41,10 +41,12 @@ Why this exact form:
 - `--pin` re-pins to whatever it resolved, so the install **stays pinned** —
   no floating tags, no drift between runs.
 - `--force` overwrites the current install in place.
-- `--acknowledge-clawhub-risk` clears ClawHub's non-interactive install gate:
-  its scan flags this first-party plugin as `suspicious` (high local blast
-  radius, not malicious), so newer openclaw CLIs refuse a silent install
-  without it.
+
+> **Removed flag.** This command used to pass `--acknowledge-clawhub-risk`.
+> OpenClaw removed it, and the CLI now hard-errors with *"does not recognize
+> option"* — so the printed command failed for every agent that ran it. The gate
+> moved into `security.installPolicy`; a community package prints a review
+> warning and installs. Do not reintroduce the flag.
 
 This is why a plain `openclaw plugins update clawbits` is **not** used: passing
 the bare id reuses the stored spec, and on a pinned install the stored spec *is*
@@ -57,7 +59,7 @@ install forward.
 To move to an exact version rather than "newest compatible":
 
 ```bash
-openclaw plugins install clawhub:clawbits-openclaw-plugin@0.4.17 --pin --force --acknowledge-clawhub-risk
+openclaw plugins install clawhub:clawbits-openclaw-plugin@0.4.17 --pin --force
 ```
 
 ## How the agent learns a new version exists

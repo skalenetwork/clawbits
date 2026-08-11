@@ -100,19 +100,25 @@ def test_openrouter_onboards_with_native_auth_choice():
     assert '--openrouter-api-key "${OPENROUTER_API_KEY}"' in text
 
 
-def test_openrouter_plugin_is_allowlisted_when_keyed():
+def test_openrouter_plugin_loads_without_an_allowlist_entry():
+    """Supersedes the old "openrouter must be in plugins.allow" guard.
+
+    The openrouter PROVIDER is a bundled plugin, and the clawbits-only
+    allowlist blocked it (the codex trap from the other side): onboarding wrote
+    the key fine, then every openrouter/* model errored "unavailable from the
+    provider" at run time. That was patched by adding openrouter to both
+    allowlist branches; the entrypoint now sets NO allowlist at all, so every
+    bundled plugin loads on its own and the per-plugin entries are gone.
+
+    The guarantee this test protects is the outcome, not the mechanism: a keyed
+    openrouter agent must end up with a loadable provider plugin. Re-adding any
+    `plugins.allow` write would silently break that again — and would also take
+    browser/document-extract/web-readability down with it."""
     text = ENTRYPOINT.read_text()
-    # The openrouter PROVIDER is a bundled plugin, and the clawbits-only
-    # allowlist blocks it (the codex trap from the other side): onboarding
-    # writes the key fine — plugins load before the allowlist lands on first
-    # boot — and then every openrouter/* model errors "unavailable from the
-    # provider" at run time. Both allowlist branches must carry it when the
-    # key is present; it ships enabled, so no entries.*.enabled flip.
-    assert '\'["clawbits","openrouter"]\'' in text
-    assert '\'["clawbits","codex","openrouter"]\'' in text
-    # The minimal allowlists survive for key-less / non-openrouter agents.
-    assert '\'["clawbits"]\'' in text
-    assert '\'["clawbits","codex"]\'' in text
+    assert "openclaw config unset plugins.allow" in text
+    assert "config set plugins.allow" not in text
+    # The onboard branch that writes the key must still be there.
+    assert "--auth-choice openrouter-api-key" in text
 
 
 def test_openrouter_model_qualification_handles_vendor_slugs():
@@ -170,10 +176,79 @@ def test_codex_subscription_routes_openai_through_codex_harness():
     assert 'reef_runtime="codex"' in text
     # Whatever reef_runtime resolves to is written to the model's agentRuntime.id.
     assert '"agents.defaults.models[\\"${reef_model}\\"].agentRuntime.id"' in text
-    # The Codex harness plugin is bundled but ships DISABLED and is blocked by the
-    # clawbits-only allowlist, so subscription agents must allow + enable it — else
-    # the codex runtime pin fails at run time ("harness 'codex' is not registered").
-    assert '["clawbits","codex"]' in text
+    # The Codex harness plugin is bundled but ships DISABLED, so subscription
+    # agents must ENABLE it — else the codex runtime pin fails at run time
+    # ("harness 'codex' is not registered"). Enabling the entry is what actually
+    # turns it on; there is no allowlist involved any more (see the plugin-policy
+    # test below).
     assert "plugins.entries.codex.enabled true" in text
-    # Keyed agents keep the minimal allowlist (no codex plugin).
-    assert '\'["clawbits"]\'' in text
+
+
+def test_no_exclusive_plugin_allowlist():
+    """`plugins.allow` is an EXCLUSIVE allowlist: setting it to '["clawbits"]'
+    disabled 95 of OpenClaw's 96 BUNDLED plugins (browser, document-extract,
+    web-readability, canvas, every provider extension). The entrypoint must not
+    set one, and must actively UNSET it so agents carrying the old value in their
+    persisted ~/.openclaw config recover on their next boot."""
+    text = ENTRYPOINT.read_text()
+    assert "openclaw config unset plugins.allow" in text
+    assert "config set plugins.allow" not in text
+
+
+def test_browser_tool_is_allowed_and_configured():
+    """Chromium in the image is not enough: `browser` is absent from the `coding`
+    tool profile, so it must be merged in via alsoAllow (never plain `allow`,
+    which REPLACES the profile), and headless+noSandbox are mandatory for
+    Chromium to start at all in this container."""
+    text = ENTRYPOINT.read_text()
+    assert "tools.alsoAllow '[\"browser\"]'" in text
+    assert "config set tools.allow" not in text
+    assert "browser.noSandbox true" in text
+    assert "browser.headless true" in text
+    # Enablement is probed, not assumed, so a slim (non `-browser`) build does not
+    # advertise a browser it cannot launch.
+    assert "ms-playwright/chromium-" in text
+
+
+def test_capabilities_are_gated_and_revocable():
+    """REEF_CAPS drives the two capabilities whose blast radius leaves the microVM.
+    Each must write BOTH branches: the config is persisted in ~/.openclaw, so a
+    revoke has to actively turn the feature off rather than merely stop enabling
+    it. Anything the VM contains (shell, packages, browser) is NOT gated here."""
+    text = ENTRYPOINT.read_text()
+    assert "reef_has_cap" in text
+    # cron: BOTH halves gated - the `cron` TOOL (so the model can create
+    # schedules) and `cron.enabled` (so the gateway actually runs them) - each
+    # with an explicit off-branch. Gating one half would leave jobs that can be
+    # created but never fire, or jobs that keep firing after a revoke.
+    assert "cron.enabled true" in text
+    assert "cron.enabled false" in text
+    assert "tools.alsoAllow '[\"browser\",\"cron\"]'" in text
+    # `cron.triggers.*` is NOT in the config schema: writing it fails validation
+    # and takes the gateway down on boot. Only the comment warning about it may
+    # mention the name.
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        assert "cron.triggers" not in stripped
+    # gh: linked in when granted, and the link REMOVED when not
+    assert "/opt/reef/gh-bin/gh" in text
+    assert 'rm -f "${HOME}/.local/bin/gh"' in text
+
+
+def test_no_capability_grants_messaging():
+    """group:messaging reaches other humans/agents in the customer's org with no
+    boundary in between - no VM, egress rule or resource limit touches it. It is
+    deliberately not a capability. Asserted against what the entrypoint SETS, not
+    against the prose: the comments discuss messaging on purpose."""
+    text = ENTRYPOINT.read_text()
+    # The only tool merged in is `browser`; nothing grants a messaging group.
+    assert "tools.alsoAllow '[\"browser\"]'" in text
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped:
+            continue  # comments may name it; only executable lines matter
+        assert "group:messaging" not in stripped
+        # tools.profile="full" would pull messaging in silently.
+        assert "tools.profile" not in stripped

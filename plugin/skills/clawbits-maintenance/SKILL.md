@@ -39,7 +39,7 @@ openclaw clawbits update --json     # same, machine-readable: {"commands":[...]}
 
 Then run what it printed, via your shell tool:
 
-- **Remote install** → `openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force --acknowledge-clawhub-risk`
+- **Remote install** → `openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force`
   (fetches the newest compatible release and stays pinned; the ack flag clears
   ClawHub's non-interactive gate for this first-party plugin).
 - **Local checkout** → a rebuild + force-reinstall recipe

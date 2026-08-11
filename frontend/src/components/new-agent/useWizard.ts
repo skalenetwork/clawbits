@@ -36,6 +36,9 @@ export interface WizardState {
     model: string;
     /** Custom guest env rows (the Launch "Advanced" sheet edits these). */
     envRows: {key: string; value: string}[];
+    /** Opt-in capabilities (reef/capabilities.py). Only things that reach OUTSIDE
+     *  the agent's VM are listed; everything the VM contains is always on. */
+    capabilities: string[];
     /** Create fired (reef) / prompt copied (self): the launch phase is live. */
     launched: boolean;
 }
@@ -48,6 +51,7 @@ export type WizardAction =
     | {type: "set-byo"; id: string; value: string}
     | {type: "set-model"; model: string}
     | {type: "set-env"; rows: {key: string; value: string}[]}
+    | {type: "toggle-capability"; id: string}
     | {type: "goto"; step: StepId}
     | {type: "launch"}
     | {type: "unlaunch"} // create failed → back to an editable wizard
@@ -94,6 +98,7 @@ export const INITIAL: WizardState = {
     byoValues: {},
     model: "",
     envRows: [],
+    capabilities: [],
     launched: false,
 };
 
@@ -124,6 +129,15 @@ function reduce(state: WizardState, action: WizardAction): WizardState {
             return {...state, byoValues: {...state.byoValues, [action.id]: action.value}};
         case "set-model":
             return {...state, model: action.model};
+        case "toggle-capability": {
+            const on = state.capabilities.includes(action.id);
+            return {
+                ...state,
+                capabilities: on
+                    ? state.capabilities.filter(c => c !== action.id)
+                    : [...state.capabilities, action.id],
+            };
+        }
         case "set-env":
             return {...state, envRows: action.rows};
         case "goto": {

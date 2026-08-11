@@ -51,10 +51,17 @@ class RestartPolicy(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Limits:
-    """Per-sandbox resource caps enforced by the runtime."""
+    """Per-sandbox resource caps enforced by the runtime.
+
+    ``memory_mb`` was raised from 2048 when the OpenClaw image gained Chromium: a
+    Node gateway (~300-500 MB) plus a headless Chromium with a few tabs does not
+    fit comfortably in 2 GB, and the failure mode is an OOM-killed browser rather
+    than a clear error. This is the knob that decides fleet density on the box —
+    callers can still override per agent via ``CreateSandboxIn.memory_mib``.
+    """
 
     cpus: float = 2.0
-    memory_mb: int = 2048
+    memory_mb: int = 4096
 
 
 @dataclass(frozen=True, slots=True)

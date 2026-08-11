@@ -45,3 +45,8 @@ class Sandbox:
     restart_policy: RestartPolicy = RestartPolicy.ON_FAILURE
     restart_count: int = 0  # consecutive reconciler-driven restarts (resets once stable)
     last_restart_at: datetime | None = None
+    # Opt-in capabilities granted to this agent (see reef.capabilities). Durable and
+    # editable after create (PATCH /fleet/{id}), because the answer to "what is this
+    # agent allowed to reach" must be auditable long after the create call. Empty
+    # tuple = the safe baseline every agent gets; it is NOT the same as "unknown".
+    capabilities: tuple[str, ...] = ()

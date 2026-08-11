@@ -1,9 +1,13 @@
 {
   "id": "clawbits",
   "name": "Clawbits Human Channel",
-  "version": "0.15.0",
-  "channels": ["clawbits"],
-  "skills": ["./skills"],
+  "version": "0.15.1",
+  "channels": [
+    "clawbits"
+  ],
+  "skills": [
+    "./skills"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -18,67 +22,185 @@
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "name": { "type": "string" },
-          "enabled": { "type": "boolean" },
-          "endpoint": { "type": "string", "format": "uri", "default": "https://clawbits.ai" },
-          "orgId": { "type": "string" },
-          "org_id": { "type": "string" },
-          "ownerEmail": { "type": "string" },
-          "agentId": { "type": "string" },
-          "apiKey": { "type": "string" },
-          "channelId": { "type": "string" },
-          "interAgentMode": { "type": "boolean", "default": false },
-          "websocketEnabled": { "type": "boolean", "default": true },
-          "pollIntervalMs": { "type": "integer", "minimum": 1, "default": 30000 },
-          "emailEnabled": { "type": "boolean", "default": true },
-          "emailPollIntervalMs": { "type": "integer", "minimum": 30000, "default": 60000 },
-          "websocketReconcileIntervalMs": { "type": "integer", "minimum": 0, "default": 300000 },
-          "inboundQueueTtlMs": { "type": "integer", "minimum": 0, "default": 600000 },
-          "channelContextBacklog": { "type": "integer", "minimum": 0, "default": 100 },
+          "name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "default": "https://clawbits.ai"
+          },
+          "orgId": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "ownerEmail": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "channelId": {
+            "type": "string"
+          },
+          "interAgentMode": {
+            "type": "boolean",
+            "default": false
+          },
+          "websocketEnabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "pollIntervalMs": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 30000
+          },
+          "emailEnabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "emailPollIntervalMs": {
+            "type": "integer",
+            "minimum": 30000,
+            "default": 60000
+          },
+          "websocketReconcileIntervalMs": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 300000
+          },
+          "inboundQueueTtlMs": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 600000
+          },
+          "channelContextBacklog": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 100
+          },
           "knownAnswers": {
             "type": "object",
-            "additionalProperties": { "type": "string" }
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "allowFrom": {
             "type": "array",
             "description": "Optional inbound sender allowlist. Empty or missing allows everyone. Use values like human:123 or agent:agent_abc; bare numbers alias human:<id>.",
-            "items": { "type": ["string", "number"] }
+            "items": {
+              "type": [
+                "string",
+                "number"
+              ]
+            }
           },
-          "defaultTo": { "type": "string" },
-          "defaultAccount": { "type": "string" },
+          "defaultTo": {
+            "type": "string"
+          },
+          "defaultAccount": {
+            "type": "string"
+          },
           "accounts": {
             "type": "object",
             "additionalProperties": {
               "type": "object",
               "additionalProperties": true,
               "properties": {
-                "name": { "type": "string" },
-                "enabled": { "type": "boolean" },
-                "endpoint": { "type": "string", "format": "uri", "default": "https://clawbits.ai" },
-                "orgId": { "type": "string" },
-                "org_id": { "type": "string" },
-                "ownerEmail": { "type": "string" },
-                "agentId": { "type": "string" },
-                "apiKey": { "type": "string" },
-                "channelId": { "type": "string" },
-                "interAgentMode": { "type": "boolean", "default": false },
-                "websocketEnabled": { "type": "boolean", "default": true },
-                "pollIntervalMs": { "type": "integer", "minimum": 1, "default": 30000 },
-                "emailEnabled": { "type": "boolean", "default": true },
-                "emailPollIntervalMs": { "type": "integer", "minimum": 30000, "default": 60000 },
-                "websocketReconcileIntervalMs": { "type": "integer", "minimum": 0, "default": 300000 },
-                "inboundQueueTtlMs": { "type": "integer", "minimum": 0, "default": 600000 },
-                "channelContextBacklog": { "type": "integer", "minimum": 0, "default": 100 },
+                "name": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint": {
+                  "type": "string",
+                  "format": "uri",
+                  "default": "https://clawbits.ai"
+                },
+                "orgId": {
+                  "type": "string"
+                },
+                "org_id": {
+                  "type": "string"
+                },
+                "ownerEmail": {
+                  "type": "string"
+                },
+                "agentId": {
+                  "type": "string"
+                },
+                "apiKey": {
+                  "type": "string"
+                },
+                "channelId": {
+                  "type": "string"
+                },
+                "interAgentMode": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "websocketEnabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "pollIntervalMs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 30000
+                },
+                "emailEnabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "emailPollIntervalMs": {
+                  "type": "integer",
+                  "minimum": 30000,
+                  "default": 60000
+                },
+                "websocketReconcileIntervalMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 300000
+                },
+                "inboundQueueTtlMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 600000
+                },
+                "channelContextBacklog": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 100
+                },
                 "knownAnswers": {
                   "type": "object",
-                  "additionalProperties": { "type": "string" }
+                  "additionalProperties": {
+                    "type": "string"
+                  }
                 },
                 "allowFrom": {
                   "type": "array",
                   "description": "Optional inbound sender allowlist. Empty or missing allows everyone. Use values like human:123 or agent:agent_abc; bare numbers alias human:<id>.",
-                  "items": { "type": ["string", "number"] }
+                  "items": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  }
                 },
-                "defaultTo": { "type": "string" }
+                "defaultTo": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -97,10 +219,19 @@
           "label": "Owner email (legacy)",
           "placeholder": "you@example.com"
         },
-        "agentId": { "label": "Agent ID" },
-        "emailEnabled": { "label": "Email integration enabled" },
-        "apiKey": { "label": "API key", "sensitive": true },
-        "channelId": { "label": "Mattermost channel ID" }
+        "agentId": {
+          "label": "Agent ID"
+        },
+        "emailEnabled": {
+          "label": "Email integration enabled"
+        },
+        "apiKey": {
+          "label": "API key",
+          "sensitive": true
+        },
+        "channelId": {
+          "label": "Mattermost channel ID"
+        }
       }
     }
   }

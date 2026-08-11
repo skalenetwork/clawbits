@@ -169,7 +169,7 @@ fi
 
 step "Done"
 echo "Install with (pinned remote):"
-echo "  openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --acknowledge-clawhub-risk"
+echo "  openclaw plugins install clawhub:clawbits-openclaw-plugin --pin"
 echo "Self-update later with: openclaw clawbits update"
-echo "  → prints: openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force --acknowledge-clawhub-risk"
+echo "  → prints: openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force"
 echo "    (re-fetches the newest compatible release and stays pinned)"

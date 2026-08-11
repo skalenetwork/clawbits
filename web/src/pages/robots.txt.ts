@@ -56,7 +56,15 @@ const CRAWLERS = [
  * preview hosts: robots.txt stops the crawl, the header stops the indexing of
  * a URL someone linked to anyway. Both are needed; neither is sufficient.
  */
-const INDEXABLE_HOSTS = ["clawbits.ai", "freeclaws.ai"];
+/*
+ * Owner decision 2026-08-10: `clawbits.ai` is the ONLY indexable origin. Staging
+ * serves byte-identical marketing content, so leaving `freeclaws.ai` in this list
+ * would - the moment the apex cutover lands - publish a full duplicate of
+ * production on a second origin with no cross-canonical, and invite the fourteen
+ * crawlers below into it by name. Whichever origin a crawler reached first could
+ * win as canonical. Staging stays `Disallow: /` permanently.
+ */
+const INDEXABLE_HOSTS = ["clawbits.ai"];
 
 export const GET: APIRoute = ({ site }) => {
   const sitemap = new URL("sitemap-index.xml", site).href;
