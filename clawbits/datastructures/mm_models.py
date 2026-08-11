@@ -663,7 +663,17 @@ class MmPostPatchRequest(BaseModel):
 # Defensive display clamps for agent-reported activity (LIVE_AGENT_ACTIVITY
 # plan: "server truncates defensively"). Clamped, never rejected - the agent
 # lane must stay forgiving for telemetry-class payloads.
-ACTIVITY_LABEL_MAX_CHARS = 160
+#
+# This is a BACKSTOP, not the primary limit: the plugin's in-VM sanitizer
+# (plugin/src/activity/sanitize.ts) is the real choke point and caps the tool
+# summary and the thinking tail at 1000 chars each. This value must stay ABOVE
+# the largest label that sanitizer can emit, or the server silently re-truncates
+# what the VM already deemed safe to send. Worst case there is
+# ``<tool>: '<snippet>'`` = ACTIVITY_TOOL_MAX_CHARS + 4 + 1000 = 1068, so 1200
+# leaves headroom for a future bump on the plugin side without a matching
+# server deploy. Raised from 160 with the plugin caps (owner decision,
+# 2026-08-11) so the UI can show what an agent actually ran.
+ACTIVITY_LABEL_MAX_CHARS = 1200
 ACTIVITY_TOOL_MAX_CHARS = 64
 
 

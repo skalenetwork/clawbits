@@ -1,0 +1,10 @@
+# The Clawbits application (app.clawbits.ai). Nothing here is public: every
+# route behind the login wall is org-private, and the SPA router answers 200 for
+# any path, so a crawler that starts here walks an unbounded URL space of login
+# shells. Disallow everything.
+#
+# The marketing site on the apex (clawbits.ai) is the indexable surface and
+# invites AI crawlers by name — see web/src/pages/robots.txt.ts. These two files
+# describe two different origins and must not be reconciled.
+User-agent: *
+Disallow: /

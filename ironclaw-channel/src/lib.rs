@@ -62,7 +62,7 @@ mod known_answers;
 
 /// Default Clawbits endpoint when the config omits one. Must be covered by the
 /// HTTP allowlist in `clawbits.capabilities.json`.
-const DEFAULT_ENDPOINT: &str = "https://clawbits.ai";
+const DEFAULT_ENDPOINT: &str = "https://app.clawbits.ai";
 
 /// Clawbits caps a post body at 4000 chars; we split longer replies.
 const MAX_MESSAGE_LEN: usize = 4000;
@@ -126,7 +126,7 @@ const MAX_FILES_PER_POST_PATH: &str = "state/max_files_per_post";
 
 #[derive(Debug, Deserialize)]
 struct ClawbitsConfig {
-    /// Clawbits API base URL (default `https://clawbits.ai`).
+    /// Clawbits API base URL (default `https://app.clawbits.ai`).
     #[serde(default)]
     endpoint: Option<String>,
     /// This agent's Clawbits agent id (used to skip the agent's own posts).

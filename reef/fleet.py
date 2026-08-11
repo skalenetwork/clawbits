@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
 
 from reef.agents import AGENT_TYPES, infer_type
+from reef.capabilities import DEFAULT_CAPABILITIES
 from reef.capabilities import normalize as _normalize_caps
 from reef.capabilities import to_env as _caps_to_env
 from reef.errors import RuntimeUnavailable, SandboxNotFound
@@ -703,7 +704,10 @@ class FleetService:
         only — like the access secret it is never persisted by reef: it
         survives stop/start/self-heal, but a destroyed agent must be recreated
         with it re-supplied, and it is ignored when the name matches an
-        existing managed sandbox. Returns the stored sandbox and its one-time
+        existing managed sandbox. ``capabilities`` grants opt-in capabilities
+        (see ``reef.capabilities``); OMITTING it applies
+        ``DEFAULT_CAPABILITIES``, while an explicit ``[]`` grants nothing.
+        Returns the stored sandbox and its one-time
         access (URL + password — for Hermes that's the dashboard proxy's
         basic-auth secret, minted once and never recomputable, see
         ``HermesProfile``). Raises ``ValueError`` for an unknown /
@@ -733,7 +737,12 @@ class FleetService:
                 )
             profile.image = image
         user_env = _validate_user_env(env)  # fail fast, before any runtime round-trip
-        caps = _normalize_caps(capabilities)  # 422 on an unknown name, before any I/O
+        # None (field omitted) ⇒ the defaults; an explicit list — INCLUDING [] —
+        # ⇒ exactly that. Both frontends always send the field when the reef
+        # advertises it, so an unticked box really does produce a bare agent.
+        caps = _normalize_caps(
+            DEFAULT_CAPABILITIES if capabilities is None else capabilities
+        )  # 422 on an unknown name, before any I/O
         # Auto-named VMs get a Docker-style ``adjective-noun`` — unique against the
         # names the runtime already knows (managed + drift), so the create can't clash.
         taken: set[str] = set()

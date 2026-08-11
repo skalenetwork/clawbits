@@ -77,8 +77,9 @@ export function AutomationCard({automation, agentName, agentAvatarUrl, now, acti
 
     // The card leads with identity (name + cadence); state lives in the chip.
     // The state's one crucial sentence ("will apply when X reconnects",
-    // the sync error) surfaces via the card tooltip + the detail page.
-    const cardTitle = state.detail ?? undefined;
+    // the sync error) surfaces via the card tooltip + the detail page. A run
+    // failure outranks it — that's the sentence the operator needs first.
+    const cardTitle = state.lastError ?? state.detail ?? undefined;
 
     const openDetail = () => {
         morphHeroNavigation({
@@ -231,12 +232,19 @@ export function AttentionRow({automation, agent, now, scopeAgentId}: {
     const state = automationVisualState(a, agentStatus, agentName, now);
     const name = a.name ?? "Untitled automation";
 
+    // Failing runs lead: a sync error is about applying the spec, a streak is
+    // about the work itself, and the runtime's own error text is the only thing
+    // that tells the operator which one they're looking at.
+    const failureReason = state.failing
+        ? `${String(state.failStreak)} runs in a row failed${state.lastError ? ` - ${state.lastError}` : "."}`
+        : null;
     const baseReason =
         state.key === "failed"
             ? state.detail ?? "The agent couldn't apply this automation."
-            : state.drifted
-              ? "Changed outside Clawbits - the desired version re-applies on the next reconcile."
-              : state.detail ?? "Waiting for the agent.";
+            : failureReason
+              ?? (state.drifted
+                  ? "Changed outside Clawbits - the desired version re-applies on the next reconcile."
+                  : state.detail ?? "Waiting for the agent.");
     // The shelf strips rows out of their agent group, so the group header's
     // offline note must travel with them.
     const reason =
@@ -264,7 +272,7 @@ export function AttentionRow({automation, agent, now, scopeAgentId}: {
                 aria-hidden
                 className={cn(
                     "size-2 shrink-0 rounded-full",
-                    state.key === "failed" ? "bg-red-500" : "bg-amber-400",
+                    state.key === "failed" || state.failing ? "bg-red-500" : "bg-amber-400",
                 )}
             />
             <div className="min-w-0 flex-1">
@@ -275,7 +283,13 @@ export function AttentionRow({automation, agent, now, scopeAgentId}: {
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">{reason}</p>
             </div>
             <span className="shrink-0 text-xs font-medium text-muted-foreground transition-colors group-hover:text-foreground">
-                {state.key === "failed" ? "Sync failed" : state.drifted ? "Drifted" : "Pending"}
+                {state.key === "failed"
+                    ? "Sync failed"
+                    : state.failing
+                      ? "Failing"
+                      : state.drifted
+                        ? "Drifted"
+                        : "Pending"}
             </span>
         </div>
     );

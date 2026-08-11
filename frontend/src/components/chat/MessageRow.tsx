@@ -29,8 +29,7 @@ import { MessageAttachments } from "@/components/MessageAttachments";
 import { MessageMarkdown, type MessageMentions } from "@/components/MessageMarkdown";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { GeneratingIndicator } from "@/components/chat/GeneratingIndicator";
-import { ToolTimelineCard } from "@/components/chat/ToolTimelineCard";
-import { ThinkingTimelineCard } from "@/components/chat/ThinkingTimelineCard";
+import { TurnTrace } from "@/components/chat/TurnTrace";
 import { StreamingMarkdown } from "@/components/chat/StreamingMarkdown";
 import { SettleBody } from "@/components/chat/SettleBody";
 import { useSmoothedText } from "@/hooks/useSmoothedText";
@@ -763,8 +762,6 @@ function DraftBody({
   // reads as a smooth typewriter rather than landing in chunks. DraftBody is
   // mounted only while the post is streaming, so metering is always on here.
   const smoothed = useSmoothedText(text, true);
-  const hasTools = (toolSteps?.length ?? 0) > 0;
-  const hasThinking = (thinkingSteps?.length ?? 0) > 0;
   // Empty draft → the shared {@link GeneratingIndicator} (its own animated
   // panel). Match the outer sizing of MessageMarkdown so the indicator sits
   // where a finished reply would and the presence-row → streaming-post handoff
@@ -788,8 +785,7 @@ function DraftBody({
   return (
     <div>
       <StreamingMarkdown text={smoothed} mentions={mentions} />
-      {hasThinking && thinkingSteps && <ThinkingTimelineCard steps={thinkingSteps} sealed />}
-      {hasTools && toolSteps && <ToolTimelineCard steps={toolSteps} />}
+      <TurnTrace toolSteps={toolSteps} thinkingSteps={thinkingSteps} sealed />
     </div>
   );
 }
@@ -1056,12 +1052,7 @@ export function MessageRow({
         : (
             <>
               <MessageMarkdown content={post.message} mentions={mentions}/>
-              {finishedThinking && finishedThinking.length > 0 && (
-                <ThinkingTimelineCard steps={finishedThinking} sealed />
-              )}
-              {finishedTools && finishedTools.length > 0 && (
-                <ToolTimelineCard steps={finishedTools} />
-              )}
+              <TurnTrace toolSteps={finishedTools} thinkingSteps={finishedThinking} sealed />
             </>
           );
   const reactions = post.reactions ?? [];

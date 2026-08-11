@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import type { BrailleSpinnerName } from "unicode-animations";
 
 import { AnimateHeight } from "@/components/AnimateHeight";
+import { Icon } from "@/components/Icon";
 import { UnicodeSpinner } from "@/components/UnicodeSpinner";
-import { ToolTimelineCard } from "@/components/chat/ToolTimelineCard";
-import { ThinkingTimelineCard } from "@/components/chat/ThinkingTimelineCard";
+import { TurnTrace } from "@/components/chat/TurnTrace";
+import { roomOf } from "@/lib/traceRooms";
+import type { RoomPresentation } from "@/lib/traceRooms";
 import { useAgentGeneratingWord } from "@/hooks/useGeneratingWord";
 import { spinnerForAgent, warmingWordForAgent } from "@/lib/generatingWords";
 import type { AgentActivity, ThinkingStep, ToolStep } from "@/hooks/useChannelEvents";
@@ -58,10 +60,14 @@ function StatusLine({
   spinner,
   showSpinner,
   label,
+  liveRoom,
 }: {
   spinner: BrailleSpinnerName;
   showSpinner: boolean;
   label: StatusLabel;
+  /** Room of the tool running right now, if any — renders as a chip in the
+   *  spinner slot so the live line matches the expanded trace's vocabulary. */
+  liveRoom?: RoomPresentation | null;
 }) {
   const [current, setCurrent] = useState(label);
   const [previous, setPrevious] = useState<StatusLabel | null>(null);
@@ -84,13 +90,25 @@ function StatusLine({
 
   return (
     <p className="my-1 flex min-w-0 items-center gap-2 first:mt-0 last:mb-0">
-      <span aria-hidden className="flex w-4 shrink-0 justify-center">
-        {showSpinner && (
-          <UnicodeSpinner
-            name={spinner}
-            className="text-muted-foreground/90 tabular-nums"
-            ariaLabel={current.variant === "thinking" ? "thinking…" : `${current.primary.toLowerCase()}…`}
-          />
+      <span aria-hidden className="flex w-5 shrink-0 justify-center">
+        {liveRoom ? (
+          // While a tool is running, the live line shows that step's ROOM chip
+          // — the same object the expanded trace uses — so the streaming state
+          // and the settled state speak one vocabulary.
+          <span
+            className="grid size-5 place-items-center rounded-md bg-(--room-chip) text-(--room-ink)"
+            style={{ "--room-chip": `var(--room-${liveRoom.room}-chip)`, "--room-ink": `var(--room-${liveRoom.room}-ink)` } as React.CSSProperties}
+          >
+            <Icon icon={liveRoom.icon} className="size-3.5 [&_*]:[stroke-width:var(--trace-stroke)]" />
+          </span>
+        ) : (
+          showSpinner && (
+            <UnicodeSpinner
+              name={spinner}
+              className="text-muted-foreground/90 tabular-nums"
+              ariaLabel={current.variant === "thinking" ? "thinking…" : `${current.primary.toLowerCase()}…`}
+            />
+          )
         )}
       </span>
       <span className="grid min-w-0">
@@ -135,6 +153,9 @@ export function GeneratingIndicator({
   const spinner: BrailleSpinnerName = agentId ? spinnerForAgent(agentId) : "braille";
 
   const hasTools = (toolSteps?.length ?? 0) > 0;
+  // The step actually in flight right now (if any) drives the live chip.
+  const runningStep = toolSteps?.findLast((s) => s.status === "running") ?? null;
+  const liveRoom = runningStep ? roomOf(runningStep.tool) : null;
   const thinkingLine =
     activity?.kind === "thinking" && activity.label?.trim() ? activity.label.trim() : null;
 
@@ -157,12 +178,10 @@ export function GeneratingIndicator({
   return (
     <AnimateHeight>
       <div className="animate-activity-in">
-        <StatusLine spinner={spinner} showSpinner label={label} />
-        {/* Footers sit BELOW the status line (end of the block): captured
-            reasoning first, then tools - the order they happen in. Each is a
-            quiet, self-hiding disclosure line. */}
-        {thinkingSteps && <ThinkingTimelineCard steps={thinkingSteps} />}
-        {hasTools && toolSteps && <ToolTimelineCard steps={toolSteps} />}
+        <StatusLine spinner={spinner} showSpinner label={label} liveRoom={liveRoom} />
+        {/* One merged chronological trace below the status line, replacing the
+            two twinned counters. Self-hides while empty. */}
+        <TurnTrace toolSteps={toolSteps} thinkingSteps={thinkingSteps} />
       </div>
     </AnimateHeight>
   );

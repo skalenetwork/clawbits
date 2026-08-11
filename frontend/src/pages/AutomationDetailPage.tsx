@@ -52,6 +52,8 @@ import {
 } from "@/lib/automations";
 import {automationsRefetchInterval} from "@/lib/automationsPolling";
 import {agentDisplay} from "@/lib/agentDisplay";
+import {formatRelativeAgo} from "@/lib/formatting";
+import {formatInstant} from "@/lib/schedule";
 import {queryKeys} from "@/lib/queryKeys";
 import {cn} from "@/lib/utils";
 
@@ -120,7 +122,10 @@ export function AutomationDetailView({orgId, automationId, backTo, renderHeader}
     const spec = automation?.desired_spec ?? automation?.reported_spec ?? null;
     const state = automation ? automationVisualState(automation, agentStatus, agentName, now) : null;
 
-    const deliveryTo = (spec?.delivery as {to?: string} | undefined)?.to ?? null;
+    const delivery = spec?.delivery as
+        | {mode?: string; to?: string; channel?: string}
+        | undefined;
+    const deliveryTo = delivery?.to ?? null;
     const deliveryChannel = channelsQuery.data?.channels.find(c => c.channel_id === deliveryTo) ?? null;
     // "Agent has left" is only a fact once the channels query SUCCEEDED
     // without the target; while loading/errored, stay neutral.
@@ -138,6 +143,29 @@ export function AutomationDetailView({orgId, automationId, backTo, renderHeader}
     // channel is the agent's DM with someone and keeps its own name.
     const isOwnerDm = !deliveryTo;
     const isExternal = automation?.managed_by === "external";
+    // Routes Clawbits can name but not show as one of its own channels. A
+    // mirror may carry any route the runtime accepts, so say which one it is
+    // rather than collapsing every case into "Managed outside Clawbits".
+    // (Operator-authored specs are normalized to {mode:"announce", to} server
+    // side and never reach these branches.)
+    const deliveryNote =
+        delivery?.mode === "none"
+            ? "Nowhere - the output is discarded"
+            : delivery?.mode === "webhook"
+              ? "A webhook outside Clawbits"
+              : delivery?.channel != null && delivery.channel !== "clawbits"
+                ? `Another surface (${delivery.channel})`
+                : isExternal && !deliveryTo
+                  ? "Managed outside Clawbits"
+                  : null;
+
+    // Live timing from the reported mirror. Both are runtime facts that exist
+    // for EVERY automation, mirrors included — the page used to show only the
+    // cadence sentence, so "every 15 min" never said when, or whether it ever
+    // actually ran.
+    const nextRunAtMs = automation?.reported_state?.nextRunAtMs ?? null;
+    const lastRunAtMs = automation?.reported_state?.lastRunAtMs ?? null;
+    const lastRunAgo = formatRelativeAgo(lastRunAtMs);
     const canRunNow = automation != null && !isExternal && automation.gateway_job_id != null;
     const prompt = (spec?.payload as {message?: string} | undefined)?.message ?? null;
     const specMismatch =
@@ -313,6 +341,20 @@ export function AutomationDetailView({orgId, automationId, backTo, renderHeader}
                             {state.detail}
                         </p>
                     )}
+                    {/* Why the runs are failing. A separate fact from a sync
+                        failure above (that one is about applying the spec), and
+                        the only one that answers "×78 of what?". */}
+                    {state.lastError && (
+                        <p className="mt-3 break-words rounded-lg bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-700 dark:text-red-400">
+                            <span className="font-medium">
+                                {state.failStreak > 1
+                                    ? `The last ${String(state.failStreak)} runs failed`
+                                    : "The last run failed"}
+                                {lastRunAgo ? ` (${lastRunAgo})` : ""}:
+                            </span>{" "}
+                            {state.lastError}
+                        </p>
+                    )}
                     {state.drifted && !isExternal && (
                         <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
                             This job changed outside Clawbits. The configuration below is the
@@ -325,15 +367,29 @@ export function AutomationDetailView({orgId, automationId, backTo, renderHeader}
                 <section className="grid gap-4 sm:grid-cols-3">
                     <div className="min-w-0 space-y-2.5 rounded-xl border border-border/60 bg-card p-4">
                         <SectionHeader icon={Calendar}>Schedule</SectionHeader>
-                        <p title={humanizeSchedule(spec)} className="truncate text-lg font-bold text-foreground">{humanizeSchedule(spec)}</p>
+                        <div className="min-w-0">
+                            <p title={humanizeSchedule(spec)} className="truncate text-lg font-bold text-foreground">{humanizeSchedule(spec)}</p>
+                            {/* The runtime's own next-fire time. Only shown
+                                while it's still ahead of us and the job is
+                                live — a paused job's leftover marker would
+                                promise a run that isn't coming. */}
+                            {nextRunAtMs != null && nextRunAtMs > now && !paused && (
+                                <p
+                                    title={formatInstant(nextRunAtMs)}
+                                    className="mt-0.5 truncate text-xs text-muted-foreground"
+                                >
+                                    Next {formatInstant(nextRunAtMs)}
+                                </p>
+                            )}
+                        </div>
                     </div>
 
                     <div className="min-w-0 space-y-2.5 rounded-xl border border-border/60 bg-card p-4">
                         <SectionHeader icon={Sent}>Delivery</SectionHeader>
-                        {isExternal && !deliveryTo ? (
-                            // The mirror carries no delivery info — never
-                            // fabricate the owner-DM default for it.
-                            <p className="text-sm text-muted-foreground">Managed outside Clawbits</p>
+                        {deliveryNote ? (
+                            // A route Clawbits doesn't own (or none reported at
+                            // all) — never fabricate the owner-DM default for it.
+                            <p className="text-sm text-muted-foreground">{deliveryNote}</p>
                         ) : (
                             <button
                                 type="button"
@@ -399,9 +455,36 @@ export function AutomationDetailView({orgId, automationId, backTo, renderHeader}
 
                 {/* Runs — a card like its Schedule/Delivery/Sync siblings. */}
                 <section className="space-y-3 rounded-xl border border-border/60 bg-card p-4">
-                    <SectionHeader icon={Activity}>Runs</SectionHeader>
+                    <div className="flex items-baseline justify-between gap-3">
+                        <SectionHeader icon={Activity}>Runs</SectionHeader>
+                        {/* The mirror's own last-run fact, which exists even
+                            when no run rows do — the only honest signal a
+                            mirror has that it is running at all. */}
+                        {lastRunAgo && (
+                            <span
+                                title={lastRunAtMs != null ? formatInstant(lastRunAtMs) : undefined}
+                                className={cn(
+                                    "shrink-0 text-xs",
+                                    state.failStreak > 0
+                                        ? "text-red-600 dark:text-red-400"
+                                        : "text-muted-foreground",
+                                )}
+                            >
+                                Last run {state.failStreak > 0 ? "failed " : ""}{lastRunAgo}
+                            </span>
+                        )}
+                    </div>
                     <RunStrip runs={runs} pendingGhost={a.run_pending}/>
-                    <RunList runs={runs} isLoading={runsQuery.isLoading} isError={runsQuery.isError}/>
+                    <RunList
+                        runs={runs}
+                        isLoading={runsQuery.isLoading}
+                        isError={runsQuery.isError}
+                        emptyLabel={
+                            isExternal
+                                ? "Run history isn't reported for automations managed outside Clawbits."
+                                : undefined
+                        }
+                    />
                 </section>
 
                 {/* Owner agent footer */}

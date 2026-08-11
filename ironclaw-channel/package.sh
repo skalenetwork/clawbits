@@ -9,7 +9,7 @@
 #
 #     tar xzf clawbits-ironclaw-<version>.tar.gz
 #     cd clawbits-ironclaw-<version>
-#     ./clawbits-ironclaw install --endpoint https://clawbits.ai --api-key ck_...
+#     ./clawbits-ironclaw install --endpoint https://app.clawbits.ai --api-key ck_...
 #     ironclaw run
 #
 # Requires clawbits.wasm to exist (run ./build.sh first — the channel is built

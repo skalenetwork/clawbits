@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent
 CHANNEL_NAME = "clawbits"
-DEFAULT_ENDPOINT = "https://clawbits.ai"
+DEFAULT_ENDPOINT = "https://app.clawbits.ai"
 
 
 def ironclaw_home() -> Path:
@@ -520,7 +520,7 @@ def print_next_steps(home: Path) -> None:
     print("Boot screen should show: channels  clawbits")
     print()
     print("New agent/reconfigure example:")
-    print("    ./clawbits-ironclaw reinstall --new-agent --endpoint https://clawbits.ai --org-id org_... --signup-token human-...")
+    print("    ./clawbits-ironclaw reinstall --new-agent --endpoint https://app.clawbits.ai --org-id org_... --signup-token human-...")
 
 
 def add_common_config_args(parser: argparse.ArgumentParser) -> None:

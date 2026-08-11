@@ -16,7 +16,7 @@ from reef import (
 
 CREDS = {
     "anthropic_api_key": "sk-ant-test",
-    "endpoint": "https://clawbits.ai",
+    "endpoint": "https://app.clawbits.ai",
     "api_key": "agent-key",
     "agent_id": "SilverPigeon3",
     "org_id": "org_123",
@@ -44,7 +44,7 @@ def test_ensure_running_creates_and_starts():
     # the spec env carried the mapped creds (never the raw creds dict)
     env = runtime.created[0].env
     assert env["CLAWBITS_AGENT_ID"] == "SilverPigeon3"
-    assert env["CLAWBITS_ENDPOINT"] == "https://clawbits.ai"
+    assert env["CLAWBITS_ENDPOINT"] == "https://app.clawbits.ai"
     assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
     # the profile's mount dest flows into the spec (the runtime stays agent-agnostic)
     assert runtime.created[0].volume_dest == "/home/node/.openclaw/workspace"

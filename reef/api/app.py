@@ -153,6 +153,15 @@ def _cors_config() -> tuple[list[str], str | None]:
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()], None
     return [
+        # Both the apex and app.* are listed while the app migrates off the
+        # apex. A UNION, not a swap: the browser Origin is whichever host served
+        # the SPA, and during the cutover that can be either. Dropping the apex
+        # entries early makes every reef panel read "Offline" (the API is fine —
+        # it is the preflight that fails), which is a misleading symptom that
+        # sends you debugging the tunnel. Drop them once the apex serves only
+        # the marketing site.
+        "https://app.clawbits.ai",
+        "https://app.freeclaws.ai",  # staging web app
         "https://clawbits.ai",
         "https://freeclaws.ai",    # staging web app
         "tauri://localhost",       # Tauri macOS/Windows webview origin

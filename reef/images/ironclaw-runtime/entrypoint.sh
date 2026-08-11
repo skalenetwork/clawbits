@@ -187,7 +187,7 @@ fi
 # The channel files are baked at ${CHANNELS_DIR}. Activate + wire only when we
 # have a usable API key; otherwise leave it inactive (detached), so the channel
 # never comes up unauthenticated (which would just 401 every poll).
-endpoint="${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+endpoint="${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
 host="${endpoint#*://}"; host="${host%%/*}"; host="${host%%:*}"
 
 # Insecure-http opt-in. IronClaw's WASM HTTP gate requires https AND rejects
@@ -198,7 +198,7 @@ host="${endpoint#*://}"; host="${host%%/*}"; host="${host%%:*}"
 # (host.microsandbox.internal / host.docker.internal → *.internal), *.local, and
 # RFC1918 literals. A plaintext http endpoint on a PUBLIC host is refused (use
 # https) so we never send agent creds in the clear over the network. Default is
-# no exemption, so prod (https://clawbits.ai) stays strict.
+# no exemption, so prod (https://app.clawbits.ai) stays strict.
 if [ "${endpoint%%://*}" = "http" ]; then
   case "${host}" in
     localhost|127.*|::1|*.internal|*.local|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)

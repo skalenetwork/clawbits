@@ -132,17 +132,41 @@ jobs:
         # purpose: verify:links walks dist/ and hard-exits if it is missing.
         run: bun run verify
 
-      - name: Assert preview build is not indexable
-        # The one mistake in this pipeline that costs money to undo. Both
-        # targets are preview hosts, so robots.txt must refuse every crawler
-        # (src/pages/robots.txt.ts keys off SITE_URL's hostname). Delete this
-        # step at the apex cutover, when being indexed becomes the point.
+      - name: Assert indexability matches the deploy target
+        # The one mistake in this pipeline that costs money to undo, and it can
+        # be made in BOTH directions - so this guard is two-directional and
+        # keyed on the resolved host rather than assuming a preview target.
+        #
+        # The previous version asserted only that `Disallow: /` was PRESENT. It
+        # therefore fired on the commit that correctly points SITE_URL at the
+        # apex, and stayed silent on the far worse case: the apex served with a
+        # preview SITE_URL, which ships a fully de-indexed launch with CI green.
+        #
+        # clawbits.ai is the ONLY indexable origin (owner decision 2026-08-10;
+        # src/pages/robots.txt.ts INDEXABLE_HOSTS). freeclaws.ai and both
+        # preview.* hosts serve byte-identical marketing content, so indexing
+        # any of them creates a duplicate origin with no cross-canonical.
+        env:
+          SITE: ${{ steps.target.outputs.site }}
         run: |
-          if ! grep -qx 'Disallow: /' dist/robots.txt; then
-            echo "::error::robots.txt would allow indexing of ${{ steps.target.outputs.site }}"
-            cat dist/robots.txt
-            exit 1
+          host="$(printf '%s' "$SITE" | sed -E 's#^https?://##; s#/.*$##')"
+          if [ "$host" = "clawbits.ai" ]; then
+            if grep -qx 'Disallow: /' dist/robots.txt; then
+              echo "::error::$host is the production apex but robots.txt de-indexes it"
+              cat dist/robots.txt; exit 1
+            fi
+            canonical="$(grep -o 'rel="canonical" href="[^"]*"' dist/index.html | head -1 | sed -E 's#.*href="([^"]*)".*#\1#')"
+            case "$canonical" in
+              "$SITE"/*|"$SITE") ;;
+              *) echo "::error::canonical '$canonical' does not match SITE_URL '$SITE'"; exit 1 ;;
+            esac
+          else
+            if ! grep -qx 'Disallow: /' dist/robots.txt; then
+              echo "::error::robots.txt would allow indexing of non-production host $host"
+              cat dist/robots.txt; exit 1
+            fi
           fi
+          echo "indexability OK for $host"
 
       - name: Deploy to Cloudflare Workers
         if: github.event_name != 'pull_request'

@@ -147,6 +147,6 @@ jobs:
               --repo "$TARGET_REPO" \
               --latest=false \
               --title "IronClaw Clawbits channel v$VERSION" \
-              --notes "Self-contained install tarball for the IronClaw Clawbits WASM channel. Extract it and run \`./clawbits-ironclaw install --endpoint https://clawbits.ai --api-key ck_...\` to add the channel to a (hosted) IronClaw agent (needs python3 + ironclaw, no Rust toolchain)."
+              --notes "Self-contained install tarball for the IronClaw Clawbits WASM channel. Extract it and run \`./clawbits-ironclaw install --endpoint https://app.clawbits.ai --api-key ck_...\` to add the channel to a (hosted) IronClaw agent (needs python3 + ironclaw, no Rust toolchain)."
           fi
           gh release upload "$TAG" dist/* --repo "$TARGET_REPO" --clobber
