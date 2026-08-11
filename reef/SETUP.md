@@ -285,7 +285,7 @@ deployment reachable beyond localhost. All are read from the process env
 | `REEF_API_HOST` / `REEF_API_PORT` | `127.0.0.1` / `8787` | Bind address (keep private; front with a tunnel) |
 | `REEF_ADMIN_TOKEN` | unset | **Required (prod)** unless Access is set. Bearer token for every `/fleet` + `/providers` call (clawbits browser sessions + the dashboard). Unset + no Access = open API (dev only) |
 | `REEF_ACCESS_TEAM_DOMAIN` / `REEF_ACCESS_AUD` | unset | Cloudflare Access operator SSO (verifies `Cf-Access-Jwt-Assertion`) |
-| `REEF_CORS_ORIGINS` | clawbits.ai + web dev `:5173` + Tauri (`tauri://localhost`, `http://tauri.localhost`, dev `:5176`) | Comma-separated browser origins. Overriding **replaces** the whole default list |
+| `REEF_CORS_ORIGINS` | app.clawbits.ai (+ the apex during the cutover) + web dev `:5173` + Tauri (`tauri://localhost`, `http://tauri.localhost`, dev `:5176`) | Comma-separated browser origins. Overriding **replaces** the whole default list |
 | `REEF_PUBLIC_URL` | unset | This API's public (tunnel) URL - informational, echoed in the startup banner |
 | `REEF_LOG_LEVEL` | `INFO` | `reef.*` log level (reconciler heals log at INFO) |
 | `REEF_API_RELOAD` | unset | Any value enables uvicorn auto-reload (dev only) |

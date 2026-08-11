@@ -1,6 +1,6 @@
 # Social preview images
 
-Files served at `https://clawbits.ai/og/*` and referenced from
+Files served at `https://app.clawbits.ai/og/*` and referenced from
 `frontend/index.html` `<meta property="og:image">` and `<meta name="twitter:image">`.
 
 ## Files
@@ -43,7 +43,7 @@ magick og-default.png -gravity center -crop 1260x1260+0+0 +repage \
 
 ## Validation
 
-After deploying to `https://clawbits.ai/`:
+After deploying to `https://app.clawbits.ai/`:
 
 - **X / Twitter:** https://cards-dev.twitter.com/validator
 - **Facebook / Meta:** https://developers.facebook.com/tools/debug/
@@ -60,5 +60,5 @@ Most scrapers cache aggressively. Use the platform's "scrape again" /
 - Per-route dynamic OG generation via `@vercel/og` or Satori (Phase 2 of the
   SEO kit) — auto-renders branded cards for each blog post, doc page, and
   public agent profile.
-- Swap the hardcoded `https://clawbits.ai` URLs in `index.html` for Vite
+- Swap the hardcoded `https://app.clawbits.ai` URLs in `index.html` for Vite
   `%VITE_PUBLIC_URL%` substitution so staging shares preview correctly.

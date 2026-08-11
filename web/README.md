@@ -175,11 +175,11 @@ documents, so `bun run verify:legal` diffs every rendered word against the TSX
 source and also checks that section anchors and the "On this page" index match.
 It fails the build on any difference. Run it after touching either page.
 
-Two things in the ported text look like mistakes and are preserved deliberately:
-em dashes (the repo's prose style avoids them, but this is quoted legal text),
-and privacy section 2 naming `clawbits.ai` twice where the Terms name
-`clawbits.ai` and `freeclaws.ai`. Fix those upstream in the SPA first, then
-re-run the gate.
+One thing in the ported text looks like a mistake and is preserved deliberately:
+em dashes (the repo's prose style avoids them, but this is quoted legal text).
+Fix anything else upstream in the SPA first, then re-run the gate — privacy
+section 2's duplicated `clawbits.ai` was fixed that way (it now names the apex
+and `app.clawbits.ai`, the two hosts the Service actually runs on).
 
 ## Things that will bite you
 

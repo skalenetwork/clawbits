@@ -84,7 +84,7 @@ reads them from the env (IronClaw and the channel's `.env` fallback both do):
   private IP still works). A plaintext-http **public** host is refused (use https).
   Requires the ironclaw base to carry the exemption (`src/tools/wasm/{allowlist,
   host}.rs`, `http_security.rs`). Default: no exemption, so prod
-  (`https://clawbits.ai`) stays strict.
+  (`https://app.clawbits.ai`) stays strict.
 - **Headless boot:** a microVM has no TTY, so the entrypoint pins a non-`tui`
   `cli_mode` (+ `cli_enabled = false`) in `${IRONCLAW_BASE_DIR}/config.toml`. The
   `cli_mode` default is `Some("tui")` and resolves settings-first, so an env var
