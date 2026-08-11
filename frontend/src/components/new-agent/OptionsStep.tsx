@@ -31,7 +31,7 @@ import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
 import {Icon} from "@/components/Icon";
 import {cn} from "@/lib/utils";
-import type {ReefOllamaModel, ReefProvider} from "@/lib/reefApi";
+import type {ReefOllamaModel, ReefOpenRouterModel, ReefProvider} from "@/lib/reefApi";
 import {providerBrand} from "./brands";
 import {CURATED_MODELS, TIER_META, type CuratedModel} from "./models";
 import {AddEnvRowButton, EnvVarRow} from "./bits";
@@ -46,6 +46,7 @@ const KEY_PREFIXES: Record<string, string> = {
     openai: "sk-",
     anthropic: "sk-ant-",
     gemini: "AIza",
+    openrouter: "sk-or-",
 };
 
 function keyFormatWarning(providerId: string, value: string, label: string): string | null {
@@ -58,6 +59,12 @@ import type {WizardState} from "./useWizard";
 
 export interface OllamaProbe {
     models: ReefOllamaModel[] | null; // null = not probed / failed
+    loading: boolean;
+    error: boolean;
+}
+
+export interface OpenRouterCatalog {
+    models: ReefOpenRouterModel[] | null; // null = not fetched / failed
     loading: boolean;
     error: boolean;
 }
@@ -97,6 +104,7 @@ export function OptionsStep({
     capabilitiesSupported,
     onToggleCapability,
     ollamaProbe,
+    openRouterCatalog,
     onByo,
     onModel,
     onEnvRows,
@@ -112,6 +120,7 @@ export function OptionsStep({
     capabilitiesSupported: boolean;
     onToggleCapability: (id: string) => void;
     ollamaProbe: OllamaProbe;
+    openRouterCatalog: OpenRouterCatalog;
     onByo: (id: string, value: string) => void;
     onModel: (model: string) => void;
     onEnvRows: (rows: {key: string; value: string}[]) => void;
@@ -152,9 +161,27 @@ export function OptionsStep({
     const capsOpen = capsOpenState ?? state.capabilities.length > 0;
     const showOllamaOpen = ollamaOpen ?? true;
     const showOauthOpen = oauthOpen ?? true;
+    // OpenRouter pills are validated against the live catalog: hand-curated
+    // slugs are written blind and CAN drift from what openrouter.ai actually
+    // serves (a phantom pill pins a model the agent then refuses to run). Once
+    // the catalog is loaded, drop any pill it doesn't confirm and top back up
+    // to two with real :free entries — free-by-default, provably available.
+    // An unloaded/failed catalog keeps the static picks (benefit of the doubt).
+    const orCatalogModels = openRouterCatalog.models ?? [];
+    const pills = (() => {
+        if (picked?.id !== "openrouter" || orCatalogModels.length === 0) return curated;
+        const ids = new Set(orCatalogModels.map(m => m.id));
+        const confirmed = curated.filter(m => ids.has(m.id));
+        const derived = orCatalogModels
+            .filter(m => m.id.endsWith(":free") && !confirmed.some(c => c.id === m.id))
+            .slice(0, Math.max(0, 2 - confirmed.length))
+            .map((m): CuratedModel => ({id: m.id, label: m.name ?? m.id, blurb: "Free on OpenRouter"}));
+        return [...confirmed, ...derived];
+    })();
+
     const modelLabel = state.model.trim() === ""
         ? "Runtime default"
-        : (curated.find(m => m.id === state.model)?.label ?? state.model);
+        : (pills.find(m => m.id === state.model)?.label ?? state.model);
 
     const envKeys = state.envRows.map(r => r.key.trim()).filter(k => k.length > 0);
     const envInvalid =
@@ -165,6 +192,13 @@ export function OptionsStep({
     const listed = ollamaProbe.models ?? [];
     const modelInList = listed.some(m => m.id === state.model);
     const showOllamaDropdown = !customOllama && listed.length > 0 && (state.model === "" || modelInList);
+
+    // OpenRouter catalog search: the input is a third way to set state.model
+    // (after "Runtime default" and the pills). It shows the model only when it
+    // ISN'T a pill's — a pill pick highlights the pill and clears the box, a
+    // typed/datalist pick reads back from the box; one value, one owner.
+    const pillIds = new Set(pills.map(m => m.id));
+    const catalogValue = state.model === "" || pillIds.has(state.model) ? "" : state.model;
 
     const nothingToConfigure =
         !showKey && !isEndpoint && !showModelPills && !envSupported && !isOauth && !capabilitiesSupported;
@@ -335,7 +369,7 @@ export function OptionsStep({
                                 disabled={pending}
                                 onClick={() => { onModel(""); }}
                             />
-                            {curated.map((m) => (
+                            {pills.map((m) => (
                                 <ModelOption
                                     key={m.id}
                                     model={m}
@@ -344,6 +378,32 @@ export function OptionsStep({
                                     onClick={() => { onModel(m.id); }}
                                 />
                             ))}
+                            {picked?.id === "openrouter" && (
+                                <div className="flex flex-col gap-1.5 pt-1">
+                                    <input
+                                        type="text"
+                                        list="openrouter-catalog"
+                                        value={catalogValue}
+                                        onChange={(e) => { onModel(e.target.value.trim()); }}
+                                        placeholder="Search the full catalog — e.g. moonshotai/kimi-k2"
+                                        disabled={pending}
+                                        className="h-12 w-full rounded-xl border border-border/60 bg-background/40 px-3.5 text-base"
+                                        aria-label="OpenRouter model"
+                                    />
+                                    <datalist id="openrouter-catalog">
+                                        {(openRouterCatalog.models ?? []).map((m) => (
+                                            <option key={m.id} value={m.id}>{m.name ?? m.id}</option>
+                                        ))}
+                                    </datalist>
+                                    <p className="px-1 text-xs text-muted-foreground">
+                                        {openRouterCatalog.loading
+                                            ? "Loading the catalog from openrouter.ai…"
+                                            : openRouterCatalog.models
+                                                ? `${String(openRouterCatalog.models.length)} models, live from openrouter.ai — or type any vendor/model slug.`
+                                                : "Couldn't load the catalog — type a vendor/model slug (e.g. openai/gpt-5.4)."}
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     </Section>
                 )}
@@ -569,6 +629,11 @@ function ModelOption({
     onClick: () => void;
 }) {
     const tier = model.tier ? TIER_META[model.tier] : null;
+    // :free catalog variants (OpenRouter) cost nothing — say so with a chip in
+    // the cost accent colour (amber) and DROP the coins meter: a 1-of-3 cost
+    // meter reads "cheap", which undersells free. Derived from the id, so
+    // catalog-substituted pills get the chip too.
+    const isFree = model.id.endsWith(":free");
     const hasMeters =
         model.intelligence != null || model.speed != null || model.cost != null;
     return (
@@ -602,12 +667,17 @@ function ModelOption({
                         {tier.label}
                     </span>
                 )}
+                {isFree && (
+                    <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                        Free
+                    </span>
+                )}
             </div>
             {hasMeters && (
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                     <StatMeter icon={Brain} label="Intelligence" level={model.intelligence ?? 0}/>
                     <StatMeter icon={Flash} label="Speed" level={model.speed ?? 0}/>
-                    <StatMeter icon={Coins} label="Cost" level={model.cost ?? 0} cost/>
+                    {!isFree && <StatMeter icon={Coins} label="Cost" level={model.cost ?? 0} cost/>}
                 </div>
             )}
         </button>

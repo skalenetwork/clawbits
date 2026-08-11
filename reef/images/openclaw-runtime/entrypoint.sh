@@ -9,6 +9,7 @@
 #   OPENCLAW_GATEWAY_TOKEN  (optional)  ANTHROPIC_API_KEY (optional)
 #   OPENAI_API_KEY (optional — the gateway reads it natively for OpenAI models)
 #   NEARAI_API_KEY (optional — wired as a custom OpenAI-compatible provider below)
+#   OPENROUTER_API_KEY (optional — native auth-choice for the bundled plugin below)
 #   CLAWBITS_ENDPOINT / CLAWBITS_ORG_ID / CLAWBITS_SIGNUP_TOKEN /
 #   CLAWBITS_AGENT_ID / CLAWBITS_API_KEY / CLAWBITS_CHANNEL_ID  (clawbits channel)
 set -eu
@@ -83,6 +84,13 @@ if [ "$(openclaw config get gateway.mode 2>/dev/null)" != "local" ]; then
       --custom-model-id "${_near_model}" \
       --custom-api-key "${NEARAI_API_KEY}" \
       --custom-compatibility openai
+  elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    # OpenClaw bundles an openrouter provider plugin (enabled by default), so
+    # the native auth-choice writes the key — no custom-api-key onboard needed.
+    # The plugin's own no-model default is openrouter/auto (paid routing); the
+    # model block below overrides that with a FREE catalog model, and a
+    # create-time REEF_DEFAULT_MODEL is qualified to openrouter/<vendor>/<model>.
+    reef_onboard --auth-choice openrouter-api-key --openrouter-api-key "${OPENROUTER_API_KEY}"
   elif [ -n "${OLLAMA_HOST:-}" ]; then
     # OpenClaw has no OLLAMA_HOST env support — `--auth-choice ollama` is the
     # documented non-interactive path: it probes the server (/api/tags), pulls
@@ -127,6 +135,13 @@ fi
 # of the trade. `plugins.deny` is the right tool if a specific plugin ever needs
 # blocking — note it is a default, not a control, since the agent can rewrite its
 # own config (see the exec-policy note below).
+#
+# This SUPERSEDES the per-plugin allowlist entries that used to be added here one
+# trap at a time (`codex` for subscription agents, then `openrouter` once its
+# bundled PROVIDER plugin turned out to be blocked the same way, which surfaced as
+# "model is unavailable from the provider" at run time). With no allowlist, every
+# bundled plugin — openrouter included — loads on its own, so a new bundled
+# provider no longer needs a matching entry here to work.
 openclaw config unset plugins.allow >/dev/null 2>&1 || true
 
 # ChatGPT-subscription agents run through the bundled Codex harness (plugin id
@@ -283,6 +298,23 @@ if [ -n "${did_onboard}" ] || ! openclaw config get agents.defaults.model.primar
     case "${reef_model}" in
       "" | nearai/*) ;;
       *) reef_model="nearai/${reef_model}" ;;
+    esac
+  elif [ -n "${OPENROUTER_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] \
+    && [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ] \
+    && [ -z "${NEARAI_API_KEY:-}" ]; then
+    # Same slash hazard as nearai: OpenRouter model ids are vendor/model slugs
+    # (openai/gpt-5.4, moonshotai/kimi-k2), so the generic "contains a slash ⇒
+    # already provider-qualified" rule would misparse them (the first segment
+    # collides with a real provider). When the OpenRouter key is the effective
+    # provider, anything not already openrouter/-prefixed gets the prefix —
+    # openai/gpt-5.4 → openrouter/openai/gpt-5.4. No pick defaults to a FREE
+    # catalog model (the pickers' curated default), NOT the plugin's
+    # openrouter/auto paid routing — a fresh BYO-key agent shouldn't spend
+    # until its owner chooses a model.
+    case "${reef_model}" in
+      "") reef_model="openrouter/nvidia/nemotron-nano-9b-v2:free" ;;
+      openrouter/*) ;;
+      *) reef_model="openrouter/${reef_model}" ;;
     esac
   else
     case "${reef_model}" in

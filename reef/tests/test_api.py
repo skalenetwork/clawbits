@@ -146,6 +146,8 @@ def test_providers_reports_presence_only(monkeypatch):
              "kind": "api_key", "runtimes": all3},
             {"id": "nearai", "label": "NEAR AI", "configured": False,
              "kind": "api_key", "runtimes": both},
+            {"id": "openrouter", "label": "OpenRouter", "configured": False,
+             "kind": "api_key", "runtimes": all3},
             {"id": "ollama", "label": "Ollama", "configured": True,
              "kind": "endpoint", "runtimes": both},
         ],
@@ -504,3 +506,54 @@ def test_ollama_models_unreachable_is_502(monkeypatch):
     r = _client()[0].get("/providers/ollama/models?host=http://127.0.0.1:11434")
     assert r.status_code == 502
     assert "can't reach the ollama server" in r.json()["detail"]
+
+
+def test_openrouter_models_endpoint(monkeypatch):
+    # The fetch itself is stubbed — this covers wiring, auth, and error mapping
+    # (same pattern as the ollama probe; the openrouter listing takes no host).
+    import importlib
+
+    app_mod = importlib.import_module("reef.api.app")
+
+    async def fake_fetch():
+        return [
+            {"id": "anthropic/claude-opus-4.6", "name": "Anthropic: Claude Opus 4.6",
+             "context_length": 200000},
+            {"id": "openai/gpt-5.4-mini", "name": None, "context_length": None},
+        ]
+
+    monkeypatch.setattr(app_mod, "fetch_openrouter_models", fake_fetch)
+    client, _ = _client()
+    r = client.get("/providers/openrouter/models")
+    assert r.status_code == 200
+    assert r.json() == {
+        "models": [
+            {"id": "anthropic/claude-opus-4.6", "name": "Anthropic: Claude Opus 4.6",
+             "context_length": 200000},
+            {"id": "openai/gpt-5.4-mini", "name": None, "context_length": None},
+        ]
+    }
+
+
+def test_openrouter_models_gated_by_admin_token(monkeypatch):
+    # Rides the same admin guard as /providers (it triggers reef-side egress,
+    # so it must not be an open relay).
+    monkeypatch.setenv("REEF_ADMIN_TOKEN", "s3cret")
+    client, _ = _client()
+    assert client.get("/providers/openrouter/models").status_code == 401
+
+
+def test_openrouter_models_unreachable_is_502(monkeypatch):
+    import importlib
+
+    import httpx
+
+    app_mod = importlib.import_module("reef.api.app")
+
+    async def fake_fetch():
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(app_mod, "fetch_openrouter_models", fake_fetch)
+    r = _client()[0].get("/providers/openrouter/models")
+    assert r.status_code == 502
+    assert "can't reach openrouter.ai" in r.json()["detail"]

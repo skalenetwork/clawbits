@@ -516,6 +516,25 @@ def test_hermes_gets_the_provider_key_and_the_model_pick():
     assert env["REEF_DEFAULT_MODEL"] == "gpt-5.4"
 
 
+def test_hermes_gets_the_openrouter_key():
+    # The deliberate version of the openrouter story above: with an
+    # OPENROUTER_API_KEY injected, the key and the stock openrouter.ai
+    # endpoint finally match (the run script pins provider=openrouter). The
+    # model pick is a full vendor/model slug for this provider.
+    svc, rt, _store = _svc_with_manager()
+    asyncio.run(
+        svc.create(
+            "hermes",
+            name="hm-or",
+            openrouter_api_key="sk-or-1",
+            model="anthropic/claude-opus-4.6",
+        )
+    )
+    env = rt.created[-1].env
+    assert env["OPENROUTER_API_KEY"] == "sk-or-1"
+    assert env["REEF_DEFAULT_MODEL"] == "anthropic/claude-opus-4.6"
+
+
 def test_hermes_gateway_defers_authorization_to_clawbits():
     """Hermes' gateway denies unknown senders by default and falls back to a DM-pairing
     flow ("ask the bot owner to run `hermes pairing approve clawbits <code>`") — which
@@ -771,6 +790,16 @@ def test_create_openclaw_injects_optional_nearai_key():
     asyncio.run(svc.create("openclaw", name="oc-near", nearai_api_key="sk-near-123"))
     spec = rt.created[-1]
     assert spec.env["NEARAI_API_KEY"] == "sk-near-123"
+    assert not any(k.startswith("CLAWBITS_") for k in spec.env)
+
+
+def test_create_openclaw_injects_optional_openrouter_key():
+    # Same shape for OpenRouter: the key rides as OPENROUTER_API_KEY (the
+    # entrypoint onboards the bundled plugin's native auth-choice from it).
+    svc, rt, _store = _svc_with_manager()
+    asyncio.run(svc.create("openclaw", name="oc-or", openrouter_api_key="sk-or-123"))
+    spec = rt.created[-1]
+    assert spec.env["OPENROUTER_API_KEY"] == "sk-or-123"
     assert not any(k.startswith("CLAWBITS_") for k in spec.env)
 
 

@@ -52,13 +52,14 @@ def test_gemini_onboards_with_dedicated_auth_choice():
     # OpenClaw reads GEMINI_API_KEY natively; the auth-choice wires it at
     # onboard (verified vs the shipped openclaw 2026.6.10/.11 wizard enum).
     assert "--auth-choice gemini-api-key --gemini-api-key" in text
-    # Preference order: anthropic wins, gemini before nearai before ollama,
-    # else skip.
+    # Preference order: anthropic wins, gemini before nearai before openrouter
+    # before ollama, else skip.
     ant = text.index("--auth-choice anthropic-api-key")
     gem = text.index("--auth-choice gemini-api-key")
     near = text.index("--auth-choice custom-api-key")
+    orte = text.index("--auth-choice openrouter-api-key")
     oll = text.index("--auth-choice ollama")
-    assert ant < gem < near < oll
+    assert ant < gem < near < orte < oll
 
 
 def test_nearai_onboards_as_custom_openai_compatible_provider():
@@ -87,6 +88,55 @@ def test_nearai_model_qualification_handles_hf_paths():
     # prefix.
     assert 'reef_model="nearai/${reef_model}"' in text
     assert '"" | nearai/*' in text
+
+
+def test_openrouter_onboards_with_native_auth_choice():
+    text = ENTRYPOINT.read_text()
+    # OpenClaw bundles an openrouter provider plugin (enabled by default), so
+    # unlike nearai there is no custom-api-key onboard: the native auth-choice
+    # writes the key, and with no model pick the plugin's own openrouter/auto
+    # default applies (no --custom-model-id requirement to satisfy).
+    assert "--auth-choice openrouter-api-key" in text
+    assert '--openrouter-api-key "${OPENROUTER_API_KEY}"' in text
+
+
+def test_openrouter_plugin_loads_without_an_allowlist_entry():
+    """Supersedes the old "openrouter must be in plugins.allow" guard.
+
+    The openrouter PROVIDER is a bundled plugin, and the clawbits-only
+    allowlist blocked it (the codex trap from the other side): onboarding wrote
+    the key fine, then every openrouter/* model errored "unavailable from the
+    provider" at run time. That was patched by adding openrouter to both
+    allowlist branches; the entrypoint now sets NO allowlist at all, so every
+    bundled plugin loads on its own and the per-plugin entries are gone.
+
+    The guarantee this test protects is the outcome, not the mechanism: a keyed
+    openrouter agent must end up with a loadable provider plugin. Re-adding any
+    `plugins.allow` write would silently break that again — and would also take
+    browser/document-extract/web-readability down with it."""
+    text = ENTRYPOINT.read_text()
+    assert "openclaw config unset plugins.allow" in text
+    assert "config set plugins.allow" not in text
+    # The onboard branch that writes the key must still be there.
+    assert "--auth-choice openrouter-api-key" in text
+
+
+def test_openrouter_model_qualification_handles_vendor_slugs():
+    text = ENTRYPOINT.read_text()
+    # OpenRouter model ids are vendor/model slugs (openai/gpt-5.4), the same
+    # first-slash collision class as NEAR's HF paths: when the OpenRouter key
+    # is the effective provider, anything not already openrouter/-prefixed
+    # gets the prefix (openai/gpt-5.4 → openrouter/openai/gpt-5.4).
+    assert 'reef_model="openrouter/${reef_model}"' in text
+    assert "openrouter/*) ;;" in text
+
+
+def test_openrouter_no_pick_defaults_to_a_free_model():
+    text = ENTRYPOINT.read_text()
+    # No model pick must land on a FREE catalog model (the pickers' curated
+    # default), never the plugin's openrouter/auto paid routing — a fresh
+    # BYO-key agent doesn't spend until its owner chooses.
+    assert '"") reef_model="openrouter/nvidia/nemotron-nano-9b-v2:free"' in text
 
 
 def test_ollama_onboard_falls_back_to_detached_boot():

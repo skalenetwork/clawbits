@@ -124,9 +124,10 @@ class CreateSandboxIn(BaseModel):
     signup_token: str | None = None
     # Optional provider values, injected under their guest env vars
     # (OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY / NEARAI_API_KEY /
-    # OLLAMA_HOST — the runtimes read them natively; IronClaw's ollama spelling
-    # is mapped in its profile, OpenClaw's nearai wiring lives in its
-    # entrypoint). Leave unset to add a model later in the agent's Control UI.
+    # OPENROUTER_API_KEY / OLLAMA_HOST — the runtimes read them natively;
+    # IronClaw's ollama spelling is mapped in its profile, OpenClaw's nearai
+    # wiring lives in its entrypoint). Leave unset to add a model later in the
+    # agent's Control UI.
     # ``ollama_host`` must be a plain http(s) URL (no user:pass@); a host-local
     # one (localhost / a runtime alias) is normalized for THIS reef's runtime
     # and allowed through the guest's egress rules.
@@ -134,6 +135,7 @@ class CreateSandboxIn(BaseModel):
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
     nearai_api_key: str | None = None
+    openrouter_api_key: str | None = None
     ollama_host: str | None = None
     # Which reef-level (maintainer-configured, REEF_*) provider value to
     # forward: a provider id from GET /providers, or "none". Omitted = forward
@@ -250,6 +252,18 @@ class OllamaModelOut(BaseModel):
 
 class OllamaModelsOut(BaseModel):
     models: list[OllamaModelOut]
+
+
+class OpenRouterModelOut(BaseModel):
+    """One model in OpenRouter's live catalog (public listing, reef-proxied)."""
+
+    id: str  # the vendor/model slug, e.g. "openai/gpt-5.4" — what `model` takes
+    name: str | None = None  # display name, e.g. "OpenAI: GPT-5.4"
+    context_length: int | None = None  # tokens, when reported
+
+
+class OpenRouterModelsOut(BaseModel):
+    models: list[OpenRouterModelOut]
 
 
 class ProvidersOut(BaseModel):

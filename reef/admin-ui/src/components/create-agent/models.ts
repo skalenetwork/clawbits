@@ -142,6 +142,29 @@ export const CURATED_MODELS: Record<string, CuratedModel[]> = {
       cost: 1,
     },
   ],
+  // OpenRouter ids are vendor/model slugs - like nearai, the id IS the full
+  // path (no openrouter/ prefix; the runtime entrypoints qualify/strip as
+  // their config needs). The curated picks are FREE (:free) catalog models on
+  // purpose - a fresh BYO-key agent shouldn't surprise-spend - and the same
+  // slug is the entrypoints' no-pick default. The full (mostly paid) catalog
+  // stays a search away in the field below the pills.
+  openrouter: [
+    // Deliberately bare rows — name + the "Free" chip (derived from the :free
+    // id suffix; no `cost`, or the coins meter would read "cheap" instead).
+    // No tier and no meters: those describe a provider's OWN lineup, and on a
+    // whole-catalog aggregator they'd be editorializing; bare also matches the
+    // pills the live-catalog validation substitutes in.
+    {
+      id: "nvidia/nemotron-3-ultra-550b-a55b:free",
+      label: "Nemotron 3 Ultra",
+      blurb: "NVIDIA's largest open model",
+    },
+    {
+      id: "nvidia/nemotron-nano-9b-v2:free",
+      label: "Nemotron Nano 9B",
+      blurb: "NVIDIA's efficient open model",
+    },
+  ],
   // Ollama models are whatever the operator's server has pulled - suggestions
   // only; the field itself is free text and REQUIRED (no sane default). Local,
   // so speed/cost ride on the host's hardware - no meters, just a "Local" chip.

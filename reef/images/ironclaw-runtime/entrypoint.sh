@@ -106,17 +106,19 @@ fi
 
 # --- 2. Provider / model ------------------------------------------------------
 # Provider values ride the env (ANTHROPIC_API_KEY / OPENAI_API_KEY /
-# GEMINI_API_KEY / NEARAI_API_KEY / OLLAMA_BASE_URL — the same fields the
-# clawbits "Add agent" dialog forwards, or Reef's own REEF_* values, REEF.md
-# §14). IronClaw defaults to the `nearai` backend, so derive + pin the backend
-# from whichever value is present (registry preference order; Anthropic wins
-# when several are) unless one was set explicitly — otherwise an injected value
-# is silently ignored for nearai. Reef's IronClaw profile pre-pins LLM_BACKEND
-# whenever it injects a provider, so this chain is the fallback for detached /
-# hand-wired boots. (ollama needs no key: LLM_BACKEND=ollama + OLLAMA_BASE_URL
-# is the whole setup; gemini reads GEMINI_API_KEY; nearai reads NEARAI_API_KEY,
-# base URL auto-defaults to cloud-api.near.ai when a key is present — all
-# verified against the pinned IronClaw build.)
+# GEMINI_API_KEY / NEARAI_API_KEY / OPENROUTER_API_KEY / OLLAMA_BASE_URL — the
+# same fields the clawbits "Add agent" dialog forwards, or Reef's own REEF_*
+# values, REEF.md §14). IronClaw defaults to the `nearai` backend, so derive +
+# pin the backend from whichever value is present (registry preference order;
+# Anthropic wins when several are) unless one was set explicitly — otherwise an
+# injected value is silently ignored for nearai. Reef's IronClaw profile
+# pre-pins LLM_BACKEND whenever it injects a provider, so this chain is the
+# fallback for detached / hand-wired boots. (ollama needs no key:
+# LLM_BACKEND=ollama + OLLAMA_BASE_URL is the whole setup; gemini reads
+# GEMINI_API_KEY; nearai reads NEARAI_API_KEY, base URL auto-defaults to
+# cloud-api.near.ai when a key is present; openrouter reads OPENROUTER_API_KEY,
+# base URL built into its dedicated client — all verified against the pinned
+# IronClaw build.)
 if [ -z "${LLM_BACKEND:-}" ]; then
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     LLM_BACKEND="anthropic"
@@ -126,6 +128,8 @@ if [ -z "${LLM_BACKEND:-}" ]; then
     LLM_BACKEND="gemini"
   elif [ -n "${NEARAI_API_KEY:-}" ]; then
     LLM_BACKEND="nearai"
+  elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    LLM_BACKEND="openrouter"
   elif [ -n "${OLLAMA_BASE_URL:-}" ]; then
     LLM_BACKEND="ollama"
   fi
@@ -145,19 +149,33 @@ if [ "${FRESH_BOOT}" = "1" ] && [ -z "${OPENAI_MODEL:-}" ]; then
   reef_model="${REEF_DEFAULT_MODEL:-}"
   # IronClaw's selected_model is a BARE id — strip an openclaw-style
   # provider/ prefix so one REEF_DEFAULT_MODEL value serves both runtimes.
-  # nearai is the exception: its bare ids are HF-style org/model paths whose
-  # FIRST segment can collide with a real provider (NEAR hosts
-  # openai/gpt-oss-120b) — on the nearai backend the full path IS the model
-  # id, so only an explicit nearai/ prefix is stripped and the rest passes
+  # nearai and openrouter are the exceptions: their bare ids are org/model
+  # paths whose FIRST segment can collide with a real provider (NEAR hosts
+  # openai/gpt-oss-120b; OpenRouter's slugs are vendor/model like
+  # openai/gpt-5.4) — on those backends the full path IS the model id, so only
+  # an explicit nearai//openrouter/ qualifier is stripped and the rest passes
   # through untouched (zai-org/GLM-5.1-FP8 matches no pattern anyway).
   case "${reef_model}" in
     nearai/*) reef_model="${reef_model#nearai/}" ;;
+    openrouter/*)
+      # Strip the qualifier ONLY when a vendor path remains: openrouter/auto
+      # is itself a complete slug (vendor "openrouter") and must survive.
+      _rest="${reef_model#openrouter/}"
+      case "${_rest}" in */*) reef_model="${_rest}" ;; esac
+      ;;
     anthropic/* | openai/* | google/* | gemini/* | ollama/*)
-      [ "${LLM_BACKEND:-}" = "nearai" ] || reef_model="${reef_model#*/}"
+      [ "${LLM_BACKEND:-}" = "nearai" ] || [ "${LLM_BACKEND:-}" = "openrouter" ] \
+        || reef_model="${reef_model#*/}"
       ;;
   esac
   if [ -z "${reef_model}" ] && [ "${LLM_BACKEND:-}" = "openai" ]; then
     reef_model="gpt-5-mini"
+  fi
+  if [ -z "${reef_model}" ] && [ "${LLM_BACKEND:-}" = "openrouter" ]; then
+    # FREE catalog model (the pickers' curated default), not the client's paid
+    # default_model — a fresh BYO-key agent shouldn't spend until its owner
+    # chooses. Bare slug: IronClaw takes OpenRouter ids raw, no prefix.
+    reef_model="nvidia/nemotron-nano-9b-v2:free"
   fi
   if [ -n "${reef_model}" ]; then
     log "fresh boot, no model configured — pinning default model ${reef_model}"
