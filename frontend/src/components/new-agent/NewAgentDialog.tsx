@@ -243,6 +243,9 @@ function WizardBody({
     const features = providersQuery.data?.features ?? [];
     const envSupported = features.includes("env");
     const modelSupported = features.includes("model");
+    // Older reefs drop unknown create fields silently, which would hand back an
+    // agent less capable than the wizard just claimed — so hide, do not guess.
+    const capabilitiesSupported = features.includes("capabilities");
     const tokenRejected = providersQuery.error instanceof ReefAuthError;
     const reefUnreachable = providersQuery.error instanceof ReefUnreachableError;
     // LOCKED: no legacy-reef degraded modes — anything else is "update your Reef".
@@ -409,6 +412,9 @@ function WizardBody({
                     .map(r => [r.key.trim(), r.value] as const)
                     .filter(([k]) => k.length > 0);
                 if (entries.length > 0) body.env = Object.fromEntries(entries);
+            }
+            if (capabilitiesSupported && state.capabilities.length > 0) {
+                body.capabilities = state.capabilities;
             }
             const res = await reefCreate(reefUrl, body);
             // Record which reef VM the signup token will enroll into — the hero
@@ -680,6 +686,10 @@ function WizardBody({
                         providers={providerList}
                         modelSupported={modelSupported}
                         envSupported={envSupported}
+                        capabilitiesSupported={capabilitiesSupported}
+                        onToggleCapability={(id: string) => {
+                            dispatch({type: "toggle-capability", id});
+                        }}
                         ollamaProbe={{
                             models: ollamaModelsQuery.data?.models ?? null,
                             loading: ollamaModelsQuery.isFetching,

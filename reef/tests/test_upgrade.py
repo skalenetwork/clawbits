@@ -251,3 +251,46 @@ def test_upgrade_net_allow_covers_hermes_base_url_spelling(monkeypatch):
         assert rt.created[-1].net_allow == ("public", "host")
 
     asyncio.run(scenario())
+
+
+def test_upgrade_takes_capabilities_from_the_record_not_the_container(monkeypatch):
+    """Capabilities are the ONE thing upgrade does not replay from the container.
+
+    The running container carries the REEF_CAPS it BOOTED with, which goes stale
+    the moment an operator PATCHes the grant. The record is authoritative, so a
+    grant made since the last boot must land, and a revoke must actually reach
+    the guest (hence an explicit empty value rather than an absent key)."""
+    monkeypatch.setenv("REEF_OPENCLAW_IMAGE", "reef-oc:new")
+
+    async def scenario():
+        rt = FakeAdminRuntime()
+        store = InMemorySandboxStore()
+        mgr = SandboxManager(rt, store, backend="fake")
+        svc = FleetService(rt, store, manager=mgr)
+        rec = _seed_running(store, rt, image="reef-oc:old")
+        rec.capabilities = ("cron",)  # operator PATCHed since the container booted
+        await store.put(rec)
+        rt.inspect_data["oc1"] = {
+            "config": {
+                "env": [
+                    ["OPENCLAW_GATEWAY_TOKEN", "tok"],
+                    ["REEF_CAPS", "gh"],  # stale: what it booted with
+                ],
+            }
+        }
+        rt.image_env_data = {}
+
+        await svc.upgrade("oc1")
+        assert rt.created[-1].env["REEF_CAPS"] == "cron"
+
+        # And a full revoke reaches the guest as an explicit empty value.
+        rec2 = await store.get("oc1")
+        rec2.capabilities = ()
+        await store.put(rec2)
+        rt.inspect_data["oc1"] = {
+            "config": {"env": [["OPENCLAW_GATEWAY_TOKEN", "tok"], ["REEF_CAPS", "cron"]]}
+        }
+        await svc.upgrade("oc1")
+        assert rt.created[-1].env["REEF_CAPS"] == ""
+
+    asyncio.run(scenario())

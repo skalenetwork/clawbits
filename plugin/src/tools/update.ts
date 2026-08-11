@@ -15,13 +15,17 @@
 // and re-pins to it, so the install stays pinned without any version
 // bookkeeping:
 //
-//     openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force --acknowledge-clawhub-risk
+//     openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force
 //
 // (`--force` overwrites in place; the version-less spec resolves to the
-// newest compatible release; `--pin` pins to whatever it resolved;
-// `--acknowledge-clawhub-risk` clears ClawHub's non-interactive install gate,
-// which flags this first-party plugin as `suspicious` - high local blast
-// radius, not malicious.)
+// newest compatible release; `--pin` pins to whatever it resolved.)
+//
+// This command used to carry `--acknowledge-clawhub-risk`. OpenClaw REMOVED
+// that flag - the CLI now hard-errors with "does not recognize option", so the
+// printed command failed for every agent that ran it. The gate moved into
+// `security.installPolicy`; a community package prints a review warning and
+// installs. Do not reintroduce the flag; if installs ever fail closed again,
+// the fix is that config key.
 //
 // `--from-source` is a developer escape hatch for a local checkout: rebuild
 // `dist/` and force-reinstall from the directory. OpenClaw never compiles
@@ -45,10 +49,8 @@ const PACKAGE_NAME = "clawbits-openclaw-plugin";
 const CLAWHUB_SPEC = `clawhub:${PACKAGE_NAME}`;
 /** Upgrade a pinned remote install to the newest compatible build, staying
  *  pinned. Version-less spec → newest compatible; --pin re-pins to it;
- *  --force overwrites the current install in place; --acknowledge-clawhub-risk
- *  clears ClawHub's non-interactive gate (this first-party plugin scans as
- *  `suspicious`: high local blast radius, not malicious). */
-const PINNED_UPDATE_COMMAND = `openclaw plugins install ${CLAWHUB_SPEC} --pin --force --acknowledge-clawhub-risk`;
+ *  --force overwrites the current install in place. */
+const PINNED_UPDATE_COMMAND = `openclaw plugins install ${CLAWHUB_SPEC} --pin --force`;
 
 export interface UpdateCliOptions {
   /** Developer escape hatch: rebuild + force-reinstall from a local checkout. */

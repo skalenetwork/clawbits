@@ -113,6 +113,7 @@ async def create_sandbox(
             provider=body.provider,
             model=body.model,
             restart_policy=body.restart_policy,
+            capabilities=body.capabilities,
             env=body.env,
         )
     except ValueError as e:
@@ -212,7 +213,10 @@ async def patch_sandbox(
 ) -> SandboxPatchOut:
     try:
         rec = await service.update_settings(
-            sandbox_id, color=body.color, restart_policy=body.restart_policy
+            sandbox_id,
+            color=body.color,
+            restart_policy=body.restart_policy,
+            capabilities=body.capabilities,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
@@ -220,6 +224,7 @@ async def patch_sandbox(
         sandbox_id=rec.sandbox_id,
         color=rec.color,
         restart_policy=rec.restart_policy.value if rec.restart_policy else None,
+        capabilities=list(rec.capabilities),
     )
 
 

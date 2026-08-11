@@ -28,7 +28,7 @@ from reef.models import Sandbox
 from reef.runtime import DesiredState, RestartPolicy, SandboxState
 
 # Bump when the schema changes; tracked via ``PRAGMA user_version`` (no ORM/Alembic).
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 # Columns mirror the ``Sandbox`` dataclass 1:1. Deliberately NO password/token
 # column — the record is secret-free and so is this table.
@@ -53,6 +53,7 @@ _COLUMNS = (
     "restart_policy",
     "restart_count",
     "last_restart_at",
+    "capabilities",
 )
 
 _CREATE_TABLE = """
@@ -76,7 +77,8 @@ CREATE TABLE IF NOT EXISTS sandboxes (
     desired_state   TEXT,
     restart_policy  TEXT,
     restart_count   INTEGER,
-    last_restart_at TEXT
+    last_restart_at TEXT,
+    capabilities    TEXT
 )
 """
 
@@ -111,6 +113,9 @@ def _to_row(s: Sandbox) -> tuple:
         s.restart_policy.value,
         s.restart_count,
         s.last_restart_at.isoformat() if s.last_restart_at else None,
+        # Comma-separated; normalize() guarantees a stable order and no commas
+        # inside a name, so a plain join round-trips without quoting.
+        ",".join(s.capabilities or ()),
     )
 
 
@@ -145,6 +150,9 @@ def _from_row(row: sqlite3.Row) -> Sandbox:
         last_restart_at=(
             datetime.fromisoformat(row["last_restart_at"]) if row["last_restart_at"] else None
         ),
+        # NULL (pre-v5 row) and '' (explicitly no capabilities) both mean the safe
+        # baseline, so both land on ().
+        capabilities=tuple(c for c in (row["capabilities"] or "").split(",") if c),
     )
 
 
@@ -216,6 +224,14 @@ class SqliteSandboxStore:
             # existing rows — they get an id on their next upgrade.
             try:
                 conn.execute("ALTER TABLE sandboxes ADD COLUMN created_image_id TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already present (fresh CREATE above)
+        if version < 5:
+            # v4 → v5: per-agent opt-in capabilities (reef.capabilities). Left NULL
+            # on existing rows, which reads back as () — the safe baseline, so an
+            # upgrade never silently grants an existing agent anything new.
+            try:
+                conn.execute("ALTER TABLE sandboxes ADD COLUMN capabilities TEXT")
             except sqlite3.OperationalError:
                 pass  # column already present (fresh CREATE above)
         conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")

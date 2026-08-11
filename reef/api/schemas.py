@@ -100,6 +100,10 @@ class SandboxDetailOut(BaseModel):
     last_restart_at: datetime | None = None
     access: AccessOut | None = None
     status: dict | None = None  # agent-volunteered telemetry (versions, …); None if unreported
+    # Opt-in capabilities granted to this agent (reef.capabilities). Always a list,
+    # never null: [] means "the safe baseline", which is a real answer, not missing
+    # data. Managed sandboxes only — a drift VM reports [].
+    capabilities: list[str] = []
 
 
 class CreateSandboxIn(BaseModel):
@@ -154,6 +158,12 @@ class CreateSandboxIn(BaseModel):
     # env (secret-named keys value-masked in fleet detail) and survives
     # restarts, but a destroyed agent must be recreated with it re-supplied.
     env: dict[str, str] | None = None
+    # Opt-in capabilities for this agent (reef.capabilities): currently "gh" and
+    # "cron". Omitted/[] ⇒ the safe baseline. Unknown names are a 422 rather than
+    # being dropped, so the UI can never claim a capability the agent didn't get.
+    # NOT settable through ``env`` above: every capability toggle is a REEF_* var
+    # and that prefix is reserved, so an agent cannot self-grant one.
+    capabilities: list[str] | None = None
 
 
 class CreateSandboxOut(BaseModel):
@@ -166,16 +176,23 @@ class CreateSandboxOut(BaseModel):
 class PatchSandboxIn(BaseModel):
     """Operator-editable settings; only the provided fields change. ``color`` ∈
     ``reef.fleet.AGENT_COLORS``; ``restart_policy`` ∈ ``always|on-failure|never``
-    (both validated in the service)."""
+    (both validated in the service).
+
+    ``capabilities`` replaces the whole granted set (``[]`` revokes everything;
+    omitting the field leaves it untouched). It updates reef's record — the guest
+    reads REEF_CAPS at boot, so the change reaches the agent on its next
+    upgrade/recreate, NOT immediately. Surface that in the UI."""
 
     color: str | None = None
     restart_policy: str | None = None
+    capabilities: list[str] | None = None
 
 
 class SandboxPatchOut(BaseModel):
     sandbox_id: str
     color: str | None = None
     restart_policy: str | None = None
+    capabilities: list[str] = []
 
 
 class LogsOut(BaseModel):
@@ -408,6 +425,7 @@ def sandbox_detail_out(d: SandboxDetail) -> SandboxDetailOut:
         last_restart_at=d.last_restart_at,
         access=access_out(d.access),
         status=d.status,
+        capabilities=list(d.capabilities),
     )
 
 

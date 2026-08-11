@@ -65,6 +65,7 @@ class SandboxManager:
         extra_env: dict[str, str] | None = None,
         user_env: dict[str, str] | None = None,
         restart_policy: RestartPolicy = RestartPolicy.ON_FAILURE,
+        capabilities: Sequence[str] = (),
     ) -> Sandbox:
         """Reconcile the sandbox to RUNNING. Idempotent: missing -> create+start;
         stopped/failed -> start; already running -> no-op. ``ports``/``extra_env``/
@@ -109,6 +110,7 @@ class SandboxManager:
                 sandbox_id=sandbox_id,
                 profile=profile.name,
                 backend=self._backend,
+                capabilities=tuple(capabilities),
                 state=SandboxState.CREATING,
                 image=spec.image,
                 volume=spec.volume,
@@ -142,6 +144,7 @@ class SandboxManager:
         net_allow: Sequence[str] = (),
         user_env: dict[str, str] | None = None,
         restart_policy: RestartPolicy = RestartPolicy.ON_FAILURE,
+        capabilities: Sequence[str] = (),
     ) -> Exposure:
         """Ensure the agent is running with its web surfaces reachable, and return
         how to reach them. First creation allocates a host port for the Control UI
@@ -199,6 +202,7 @@ class SandboxManager:
                 extra_env=profile.exposure_env(password=pw, public_url=url),
                 user_env=user_env,
                 restart_policy=restart_policy,
+                capabilities=capabilities,
             )
         else:
             # Already created with its -p + secret baked in — just (re)start it.

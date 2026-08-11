@@ -305,7 +305,7 @@ def create_app(service: FleetService | None = None) -> FastAPI:
             # CreateSandboxIn.model. Rides the authed pre-create probe both
             # pickers already call, so a newer clawbits UI can hide a control
             # against an older reef (whose Pydantic would silently drop the field).
-            features=["env", "model"],
+            features=["env", "model", "capabilities"],
         )
 
     @app.get(
