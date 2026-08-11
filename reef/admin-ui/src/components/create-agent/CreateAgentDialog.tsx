@@ -81,6 +81,9 @@ function WizardBody({
 
   const providersQuery = useProviders(true)
   const providerList = providersQuery.data?.providers ?? null
+  // Create-API feature negotiation: an older self-hosted reef silently drops
+  // unknown create fields, so hide the control rather than lie about it.
+  const supportsCapabilities = (providersQuery.data?.features ?? []).includes("capabilities")
   const imagesQuery = useImages(false)
   const images = imagesQuery.data ?? null
 
@@ -175,6 +178,12 @@ function WizardBody({
       .map((r) => [r.key.trim(), r.value] as const)
       .filter(([k]) => k.length > 0)
     if (env.length > 0) body.env = Object.fromEntries(env)
+    // Only send when this reef advertises the field: an older reef's Pydantic
+    // would silently DROP it, producing an agent whose real capabilities differ
+    // from what this wizard just showed. `features` comes from GET /providers.
+    if (state.capabilities.length > 0 && supportsCapabilities) {
+      body.capabilities = state.capabilities
+    }
     return body
   }
 
@@ -241,6 +250,10 @@ function WizardBody({
                 }}
                 onEnvRows={(rows) => {
                   dispatch({ type: "set-env", rows })
+                }}
+                supportsCapabilities={supportsCapabilities}
+                onToggleCapability={(id) => {
+                  dispatch({ type: "toggle-capability", id })
                 }}
                 onContinue={() => {
                   dispatch({ type: "goto", step: "connect" })

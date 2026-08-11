@@ -151,7 +151,7 @@ def test_providers_reports_presence_only(monkeypatch):
         ],
         # Create-API capability flags: lets a newer clawbits UI detect that this
         # reef accepts CreateSandboxIn.env / .model (older reefs omit them).
-        "features": ["env", "model"],
+        "features": ["env", "model", "capabilities"],
     }
     assert "srv-ant" not in r.text  # api_key values never cross the wire
     # The ollama host VALUE is presence-only here too — the picker shows

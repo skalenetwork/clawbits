@@ -10,7 +10,7 @@ import { runUpdateCommand } from "../src/tools/update.js";
 // openclaw.plugin.json and update-from-source.sh.
 const CHECKOUT = path.resolve(import.meta.dirname, "..");
 const PINNED_CMD =
-  "openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force --acknowledge-clawhub-risk";
+  "openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force";
 
 /** Capture stdout (JSON mode) while running `body`. Returns parsed events. */
 function captureJson(run: () => number): { code: number; events: Record<string, unknown>[] } {

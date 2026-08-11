@@ -5,6 +5,7 @@ profiles; adding another is a new profile, not a change anywhere else.
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from reef.capabilities import to_env as _caps_to_env
 from reef.providers import KIND_OAUTH, PROVIDERS
 
 
@@ -193,6 +194,12 @@ class OpenClawProfile:
             env.setdefault("REEF_TERMINAL_SHELL", "openclaw")
         if creds.get("gateway_token"):
             env["OPENCLAW_GATEWAY_TOKEN"] = creds["gateway_token"]
+        # Opt-in capabilities (reef.capabilities) → REEF_CAPS for the entrypoint.
+        # ALWAYS set, even when empty: the entrypoint needs to tell "granted
+        # nothing" apart from "this reef predates capabilities" so it can actively
+        # turn the gated features OFF rather than inheriting whatever a previous
+        # boot left in the agent's persisted config.
+        env.update(_caps_to_env(creds.get("capabilities", "")))
         return env
 
     def exposure_env(self, *, password: str, public_url: str) -> dict[str, str]:

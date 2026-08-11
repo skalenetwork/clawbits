@@ -67,6 +67,21 @@ function gb(bytes: number | null | undefined): string | null {
     return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
+/** Opt-in capabilities, mirroring reef/capabilities.py. Keep ids in sync — the
+ *  API rejects an unknown one with a 422 rather than dropping it. */
+const CAPABILITY_OPTIONS: {id: string; label: string; blurb: string}[] = [
+    {
+        id: "gh",
+        label: "GitHub CLI",
+        blurb: "Puts `gh` on the agent's PATH. Inert until you give it a token — reef supplies none.",
+    },
+    {
+        id: "cron",
+        label: "Scheduling",
+        blurb: "Lets the agent schedule its own recurring work. Persists beyond a conversation.",
+    },
+];
+
 /** The "let the runtime decide" option — a plain row, no tier or meters. */
 const RUNTIME_DEFAULT: CuratedModel = {
     id: "",
@@ -79,6 +94,8 @@ export function OptionsStep({
     providers,
     modelSupported,
     envSupported,
+    capabilitiesSupported,
+    onToggleCapability,
     ollamaProbe,
     onByo,
     onModel,
@@ -91,6 +108,9 @@ export function OptionsStep({
     providers: ReefProvider[] | null;
     modelSupported: boolean;
     envSupported: boolean;
+    /** This reef advertises the create-API `capabilities` field. */
+    capabilitiesSupported: boolean;
+    onToggleCapability: (id: string) => void;
     ollamaProbe: OllamaProbe;
     onByo: (id: string, value: string) => void;
     onModel: (model: string) => void;
@@ -121,11 +141,15 @@ export function OptionsStep({
     const [keyOpen, setKeyOpen] = useState<boolean | null>(null);
     const [modelOpen, setModelOpen] = useState<boolean | null>(null);
     const [envOpen, setEnvOpen] = useState<boolean | null>(null);
+    const [capsOpenState, setCapsOpen] = useState<boolean | null>(null);
     const [ollamaOpen, setOllamaOpen] = useState<boolean | null>(null);
     const [oauthOpen, setOauthOpen] = useState<boolean | null>(null);
     const showKeyOpen = keyOpen ?? !configured;
     const showModelOpen = modelOpen ?? false;
     const showEnvOpen = envOpen ?? state.envRows.length > 0;
+    // Collapsed unless something is already granted — the safe default should
+    // not look like a checklist the operator is expected to fill in.
+    const capsOpen = capsOpenState ?? state.capabilities.length > 0;
     const showOllamaOpen = ollamaOpen ?? true;
     const showOauthOpen = oauthOpen ?? true;
     const modelLabel = state.model.trim() === ""
@@ -143,7 +167,7 @@ export function OptionsStep({
     const showOllamaDropdown = !customOllama && listed.length > 0 && (state.model === "" || modelInList);
 
     const nothingToConfigure =
-        !showKey && !isEndpoint && !showModelPills && !envSupported && !isOauth;
+        !showKey && !isEndpoint && !showModelPills && !envSupported && !isOauth && !capabilitiesSupported;
 
     return (
         <div className="flex flex-col">
@@ -319,6 +343,54 @@ export function OptionsStep({
                                     disabled={pending}
                                     onClick={() => { onModel(m.id); }}
                                 />
+                            ))}
+                        </div>
+                    </Section>
+                )}
+
+                {capabilitiesSupported && (
+                    <Section
+                        tile="linear-gradient(180deg, rgba(245,158,11,0.20), rgba(245,158,11,0.10))"
+                        tileClass="text-amber-600 ring-amber-500/15 dark:text-amber-400"
+                        icon={<Icon icon={SourceCode}/>}
+                        title="Capabilities"
+                        summary={
+                            state.capabilities.length > 0
+                                ? CAPABILITY_OPTIONS.filter(c =>
+                                      state.capabilities.includes(c.id),
+                                  )
+                                      .map(c => c.label)
+                                      .join(", ")
+                                : "None"
+                        }
+                        open={capsOpen}
+                        onToggle={() => { setCapsOpen(!capsOpen); }}
+                    >
+                        <div className="flex flex-col gap-2.5">
+                            <p className="px-1 text-xs text-muted-foreground">
+                                Off by default. These reach outside the agent&apos;s VM —
+                                everything inside it (shell, packages, browser) is always
+                                available.
+                            </p>
+                            {CAPABILITY_OPTIONS.map(cap => (
+                                <label
+                                    key={cap.id}
+                                    className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border/50 px-3 py-2.5 transition-colors hover:bg-foreground/[0.02]"
+                                >
+                                    <input
+                                        type="checkbox"
+                                        className="mt-0.5 size-4 shrink-0 accent-foreground"
+                                        checked={state.capabilities.includes(cap.id)}
+                                        disabled={pending}
+                                        onChange={() => { onToggleCapability(cap.id); }}
+                                    />
+                                    <span className="flex flex-col gap-0.5">
+                                        <span className="text-sm">{cap.label}</span>
+                                        <span className="text-xs text-muted-foreground">
+                                            {cap.blurb}
+                                        </span>
+                                    </span>
+                                </label>
                             ))}
                         </div>
                     </Section>

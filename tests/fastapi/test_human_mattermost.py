@@ -79,6 +79,24 @@ def _create_agent(tc: TestClient, owner_email: str = "stan@clawbits.ai") -> dict
     return data
 
 
+def _read_pointer(tc: TestClient, channel_id: str, human_id: int) -> int | None:
+    """Read ``human_channel_state.last_read_post_id`` straight from the DB.
+
+    The pointer isn't on the channels-list payload (it's exposed per member
+    on the members endpoint), so read-state assertions go to the source."""
+    from sqlmodel import Session, select
+
+    from clawbits.db.models import HumanChannelState
+
+    with Session(tc.app._engine) as db:
+        row = db.exec(
+            select(HumanChannelState)
+            .where(HumanChannelState.channel_id == channel_id)
+            .where(HumanChannelState.human_id == human_id)
+        ).first()
+    return row.last_read_post_id if row else None
+
+
 def _agent_auth(api_key: str) -> dict:
     return {"Authorization": f"Bearer {api_key}"}
 
@@ -666,6 +684,113 @@ def test_human_delete_refreshes_channel_preview(test_client):
     assert ch["last_message_text"] is None
     assert ch["last_message_author_human_id"] is None
     assert ch["last_message_author_display_name"] is None
+
+
+def test_human_delete_preserves_read_pointer(test_client):
+    """Regression: deleting a post must not re-mark the channel unread.
+
+    ``human_channel_state.last_read_post_id`` has no ON DELETE cascade, so
+    the delete has to move any pointer sitting on the doomed post. Nulling
+    it reads as "nothing read in this channel" — and since the post a
+    caught-up reader points at is precisely the newest one, deleting the
+    newest message used to relight the whole history (and the app badge)
+    for every member. The pointer must land on the newest survivor
+    instead."""
+    author = _register_human(test_client, "del-unread-a@test.com", display_name="Ann")
+    reader = _register_human(test_client, "del-unread-b@test.com", display_name="Bea")
+    ch_id = _create_channel(test_client, author["access_token"], "del-unread")["channel_id"]
+    test_client.post(
+        f"/api/human/mm/channels/{ch_id}/members",
+        json={"member_id": str(reader["user"]["id"]), "member_type": "human"},
+        headers=_human_auth(author["access_token"]),
+    )
+
+    posts = [
+        test_client.post(
+            f"/api/human/mm/channels/{ch_id}/posts",
+            json={"message": f"message {i}"},
+            headers=_human_auth(author["access_token"]),
+        ).json()
+        for i in range(4)
+    ]
+
+    def _reader_channel() -> dict:
+        resp = test_client.get(
+            "/api/human/mm/channels", headers=_human_auth(reader["access_token"])
+        )
+        assert resp.status_code == 200, resp.text
+        return next(c for c in resp.json()["channels"] if c["channel_id"] == ch_id)
+
+    assert _reader_channel()["unread_count"] == 4
+
+    # The reader catches up — their pointer now sits on the newest post,
+    # which is the one about to be deleted.
+    r = test_client.post(
+        f"/api/human/mm/channels/{ch_id}/read",
+        json={"post_id": posts[-1]["post_id"]},
+        headers=_human_auth(reader["access_token"]),
+    )
+    assert r.status_code == 200, r.text
+    assert _reader_channel()["unread_count"] == 0
+
+    r = test_client.delete(
+        f"/api/human/mm/posts/{posts[-1]['post_id']}",
+        headers=_human_auth(author["access_token"]),
+    )
+    assert r.status_code == 204, r.text
+
+    assert _reader_channel()["unread_count"] == 0, (
+        "deleting a read post must not resurrect unreads"
+    )
+    # The pointer itself isn't on the channel payload (it rides the members
+    # response), so assert it at the source: it should have slid back exactly
+    # one post rather than gone null.
+    assert _read_pointer(test_client, ch_id, reader["user"]["id"]) == posts[-2]["post_id"]
+
+    # A post arriving after the delete still counts as exactly one unread —
+    # the repointed cursor is a working cursor, not just a cosmetic zero.
+    test_client.post(
+        f"/api/human/mm/channels/{ch_id}/posts",
+        json={"message": "after the delete"},
+        headers=_human_auth(author["access_token"]),
+    )
+    assert _reader_channel()["unread_count"] == 1
+
+
+def test_human_delete_only_post_clears_read_pointer(test_client):
+    """With nothing older to point at, the pointer honestly goes back to
+    NULL — and the channel reads as empty rather than unread."""
+    author = _register_human(test_client, "del-only-a@test.com", display_name="Cal")
+    reader = _register_human(test_client, "del-only-b@test.com", display_name="Dee")
+    ch_id = _create_channel(test_client, author["access_token"], "del-only")["channel_id"]
+    test_client.post(
+        f"/api/human/mm/channels/{ch_id}/members",
+        json={"member_id": str(reader["user"]["id"]), "member_type": "human"},
+        headers=_human_auth(author["access_token"]),
+    )
+    post = test_client.post(
+        f"/api/human/mm/channels/{ch_id}/posts",
+        json={"message": "the only one"},
+        headers=_human_auth(author["access_token"]),
+    ).json()
+    test_client.post(
+        f"/api/human/mm/channels/{ch_id}/read",
+        json={"post_id": post["post_id"]},
+        headers=_human_auth(reader["access_token"]),
+    )
+
+    r = test_client.delete(
+        f"/api/human/mm/posts/{post['post_id']}",
+        headers=_human_auth(author["access_token"]),
+    )
+    assert r.status_code == 204, r.text
+
+    resp = test_client.get(
+        "/api/human/mm/channels", headers=_human_auth(reader["access_token"])
+    ).json()
+    ch = next(c for c in resp["channels"] if c["channel_id"] == ch_id)
+    assert ch["unread_count"] == 0
+    assert _read_pointer(test_client, ch_id, reader["user"]["id"]) is None
 
 
 def test_human_edit_refreshes_channel_preview(test_client):

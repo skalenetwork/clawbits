@@ -107,22 +107,144 @@ if [ "$(openclaw config get gateway.mode 2>/dev/null)" != "local" ]; then
   fi
 fi
 
-# Plugin loader policy. The image bakes exactly one non-bundled plugin — the
-# clawbits channel (plugin id `clawbits`). Without an explicit allowlist the
-# gateway warns on every boot that discovered plugins "may auto-load" and asks
-# for trusted ids. Pin the allowlist to what we ship. Idempotent — set every boot
-# so it holds on a persisted-config restart.
+# Plugin loader policy.
 #
-# ChatGPT-subscription agents ALSO run through the bundled Codex harness (plugin
-# id `codex`), which ships DISABLED and is BLOCKED by the allowlist. Allow +
-# enable it here — otherwise agentRuntime.id=codex (pinned below) fails at run
-# time with "Requested agent harness 'codex' is not registered". Keyed agents use
-# the direct runtime, so they keep the minimal allowlist.
+# We used to pin `plugins.allow` to '["clawbits"]' to silence a boot warning about
+# discovered plugins that "may auto-load". That was a bad trade: `plugins.allow` is
+# an EXCLUSIVE allowlist ("when set, only listed plugins are eligible to load"), so
+# it disabled 95 of OpenClaw's 96 BUNDLED extensions — measured in the image:
+#   allow=["clawbits"]  -> 1 loaded / 95 disabled
+#   no allow at all     -> 66 loaded / 30 disabled
+# Among the casualties: `browser` (the browser tool), `document-extract` (PDF
+# reading), `web-readability` (what makes web_fetch readable), `canvas`, and every
+# bundled provider extension. Two things that do NOT work around it, both tested:
+# `plugins.bundledDiscovery=compat`, and setting a root `browser.*` key — neither
+# re-enables a plugin the allowlist excluded.
+#
+# So: do NOT set an allowlist. `unset` (not just "don't set") because existing
+# agents have it PERSISTED in ~/.openclaw from an earlier boot, and this script must
+# clear it for them on restart. The boot warning comes back; that is the cheap half
+# of the trade. `plugins.deny` is the right tool if a specific plugin ever needs
+# blocking — note it is a default, not a control, since the agent can rewrite its
+# own config (see the exec-policy note below).
+openclaw config unset plugins.allow >/dev/null 2>&1 || true
+
+# ChatGPT-subscription agents run through the bundled Codex harness (plugin id
+# `codex`), which ships DISABLED regardless of any allowlist. Enabling the entry is
+# what actually turns it on — otherwise agentRuntime.id=codex (pinned below) fails
+# at run time with "Requested agent harness 'codex' is not registered".
 if [ "${REEF_OPENAI_AUTH:-}" = "subscription" ]; then
-  openclaw config set plugins.allow '["clawbits","codex"]' --json
   openclaw config set plugins.entries.codex.enabled true --json
+fi
+
+# --- Opt-in capabilities (REEF_CAPS, see reef/capabilities.py) --------------
+# Comma-separated grant list from reef; ALWAYS set by a capabilities-aware reef,
+# so an unset var means "old reef" and an empty one means "granted nothing".
+# Every branch writes BOTH the on and off case, because this config is persisted
+# in ~/.openclaw: a revoke has to actively turn the feature off, not merely stop
+# turning it on. Defined here because the tool policy below depends on it.
+reef_has_cap() {
+  case ",${REEF_CAPS:-}," in *",$1,"*) return 0 ;; *) return 1 ;; esac
+}
+
+# Tool policy. `openclaw onboard` writes tools.profile="coding", which does NOT
+# include `browser` even once the plugin loads. alsoAllow MERGES on top of the
+# profile; plain `allow` would REPLACE it and silently drop everything else.
+# Deliberately NOT using tools.profile="full": it silently includes group:messaging,
+# which would hand the model a first-class send tool on an agent enrolled in a real
+# customer org — the one capability here whose blast radius leaves the microVM.
+#
+# `cron` is added only for agents granted the capability: it is the tool that lets
+# the agent schedule its own recurring work. Rewritten in full every boot (not
+# appended) so a revoke removes it.
+if reef_has_cap cron; then
+  openclaw config set tools.alsoAllow '["browser","cron"]' --json
 else
-  openclaw config set plugins.allow '["clawbits"]' --json
+  openclaw config set tools.alsoAllow '["browser"]' --json
+fi
+
+# Exec posture. These are already OpenClaw's effective defaults (verified in-image:
+# `openclaw exec-policy show` reports security=full, ask=off), so this changes
+# nothing today — it PINS the posture so a future OpenClaw release cannot silently
+# tighten or loosen it underneath us. `exec-policy preset` writes BOTH layers that
+# gate exec (the config file AND the host approvals store); setting only one is the
+# usual failure mode. Not a security control: exec runs unattended by design here,
+# and tools.fs.workspaceOnly defaults false, so the agent can rewrite this config
+# itself. The microVM is the boundary, not this line.
+openclaw exec-policy preset yolo >/dev/null 2>&1 \
+  || echo "reef-entrypoint: WARNING could not pin exec policy (continuing on OpenClaw defaults)" >&2
+
+# Browser automation. The image ships Chromium only in the `-browser` base variant
+# (Dockerfile OPENCLAW_IMAGE_VARIANT), so probe rather than assume: a slim build
+# must not advertise a browser it cannot launch. `noSandbox` is REQUIRED, not
+# optional — verified in-image that headless Chromium fails to start without it
+# (no user namespaces for the Chromium sandbox in this container/microVM). That
+# trade is acceptable because the microVM, not the renderer sandbox, is the
+# boundary here.
+reef_chrome=""
+for _c in chromium chromium-browser google-chrome google-chrome-stable; do
+  if command -v "${_c}" >/dev/null 2>&1; then reef_chrome="$(command -v "${_c}")"; break; fi
+done
+if [ -z "${reef_chrome}" ]; then
+  # The official `-browser` variant does NOT put chromium on PATH — it ships
+  # Playwright's managed cache (verified: ~/.cache/ms-playwright/chromium-<build>/
+  # chrome-linux/chrome). Resolve it explicitly rather than relying on OpenClaw's
+  # auto-discovery, so a Playwright layout change shows up here as "no chromium"
+  # instead of silently leaving the tool unable to launch. The `chromium-*` glob
+  # deliberately does not match the sibling `chromium_headless_shell-*` dir.
+  reef_chrome="$(ls -d "${HOME}"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1)"
+fi
+if [ -n "${reef_chrome}" ]; then
+  openclaw config set browser.enabled true --json
+  openclaw config set browser.headless true --json
+  openclaw config set browser.noSandbox true --json
+  openclaw config set browser.executablePath "${reef_chrome}"
+  echo "reef-entrypoint: browser automation enabled (${reef_chrome})" >&2
+else
+  echo "reef-entrypoint: no chromium in this image — browser automation left disabled (build with OPENCLAW_IMAGE_VARIANT=-browser to enable)." >&2
+fi
+
+# --- Capability side-effects (the tool policy above handles `cron`'s tool) ---
+# These are the capabilities whose blast radius LEAVES the microVM. Anything the
+# VM contains (shell, package installs, the browser) is not gated — see
+# reef/capabilities.py for why.
+
+# gh: the GitHub CLI is staged at /opt/reef/gh-bin (off PATH). Link it in only
+# when granted. NB the binary remains reachable by absolute path — this is
+# ergonomics, and the real gate is that reef injects no GitHub token.
+if reef_has_cap gh; then
+  mkdir -p "${HOME}/.local/bin" 2>/dev/null || true
+  ln -sf /opt/reef/gh-bin/gh "${HOME}/.local/bin/gh" 2>/dev/null || true
+  echo "reef-entrypoint: capability gh — GitHub CLI linked onto PATH (no token injected by reef)" >&2
+else
+  rm -f "${HOME}/.local/bin/gh" 2>/dev/null || true
+fi
+
+# cron: self-scheduled recurring work. Not a privilege escalation (the agent
+# already has unrestricted exec) but a PERSISTENCE grant — an injected loop
+# outlives the conversation — so it is opt-in and revocable. Two halves: the
+# `cron` TOOL (tool policy above, so the model can create schedules) and
+# `cron.enabled` here (so the gateway actually RUNS stored schedules). Gating only
+# one would leave a half-working feature: jobs that can be created but never fire,
+# or jobs that keep firing after a revoke.
+#
+# NB the key is `cron.enabled`. There is no `cron.triggers.*` in the config schema
+# — writing one fails validation and takes the whole gateway down on boot.
+if reef_has_cap cron; then
+  openclaw config set cron.enabled true --json
+  echo "reef-entrypoint: capability cron — scheduling enabled (tool + execution)" >&2
+else
+  openclaw config set cron.enabled false --json
+fi
+
+# Git identity. Without one `git commit` hard-fails with "Author identity unknown",
+# which silently breaks any skill that commits. Per-agent (not a shared constant) so
+# commits stay attributable to the agent that made them. Only set when absent, so an
+# owner who configures their own identity in the terminal is never clobbered.
+if ! git config --global user.email >/dev/null 2>&1; then
+  git config --global user.email "${CLAWBITS_AGENT_ID:-agent}@agents.clawbits.ai"
+  git config --global user.name "${CLAWBITS_AGENT_ID:-reef-agent}"
+  git config --global init.defaultBranch main
 fi
 
 # Default model. A create-time model pick rides in as REEF_DEFAULT_MODEL (a
@@ -310,7 +432,14 @@ reef_restore_clawbits_identity() {
   _key=$(sed -n '4p' "${reef_identity_file}")
   _ch=$(sed -n '5p' "${reef_identity_file}")
   [ -n "${_aid}" ] && [ -n "${_key}" ] && [ -n "${_ch}" ] && [ -n "${_org}" ] || return 1
-  openclaw config set "${acct}.endpoint"  "${_ep:-https://clawbits.ai}"
+  # SECURITY: never take the endpoint from the mirror. This file lives in the
+  # agent's own home and is therefore AGENT-WRITABLE, so trusting line 1 let a
+  # compromised (e.g. prompt-injected) agent point its clawbits channel at an
+  # attacker-controlled host and survive a destroy+recreate — carrying the org's
+  # real minted apiKey with it. The endpoint is reef's to declare, so always use
+  # the injected value; only the identity fields come from the mirror.
+  # (_ep is still read above so the file format stays self-describing.)
+  openclaw config set "${acct}.endpoint"  "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
   openclaw config set "${acct}.orgId"     "${_org}"
   openclaw config set "${acct}.agentId"   "${_aid}"
   openclaw config set "${acct}.apiKey"    "${_key}"
@@ -324,19 +453,25 @@ reef_restore_clawbits_identity() {
 if openclaw config get "${acct}.channelId" >/dev/null 2>&1; then
   # Already wired (config persisted across a same-container stop/start) — leave it.
   echo "reef-entrypoint: clawbits channel already configured — skipping signup." >&2
-elif reef_restore_clawbits_identity; then
-  # Recreate (image upgrade): ~/.openclaw was reset but the persistent config
-  # volume kept the identity — restore it directly, NO re-signup.
-  echo "reef-entrypoint: restored clawbits identity from the persistent config volume (post-upgrade recreate — no re-signup needed)." >&2
 elif [ -n "${CLAWBITS_AGENT_ID:-}" ] && [ -n "${CLAWBITS_API_KEY:-}" ] \
   && [ -n "${CLAWBITS_CHANNEL_ID:-}" ] && [ -n "${CLAWBITS_ORG_ID:-}" ]; then
   # Pre-provisioned: clawbits minted the identity server-side — write the account
   # directly, no signup/approval loop.
+  #
+  # Checked BEFORE the mirror restore below (it used to come after): reef-injected
+  # env is authoritative, the mirror is agent-writable. When both are present they
+  # should agree, and if they ever disagree the reef-supplied one must win.
   openclaw config set "${acct}.endpoint"  "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
   openclaw config set "${acct}.orgId"     "${CLAWBITS_ORG_ID}"
   openclaw config set "${acct}.agentId"   "${CLAWBITS_AGENT_ID}"
   openclaw config set "${acct}.apiKey"    "${CLAWBITS_API_KEY}"
   openclaw config set "${acct}.channelId" "${CLAWBITS_CHANNEL_ID}"
+elif reef_restore_clawbits_identity; then
+  # Recreate (image upgrade) of a SIGNUP-TOKEN agent: ~/.openclaw was reset, the
+  # one-time token is spent, and reef holds no identity env to replay — so the
+  # persistent config volume's mirror is the only way back. Restore it, NO
+  # re-signup. (Endpoint is taken from reef's env, not the mirror; see above.)
+  echo "reef-entrypoint: restored clawbits identity from the persistent config volume (post-upgrade recreate — no re-signup needed)." >&2
 elif [ -n "${CLAWBITS_ORG_ID:-}" ] && [ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ]; then
   # Org + one-time signup token (the admin-UI "connect to Clawbits" path): seed
   # the endpoint + org as signup defaults, then enroll synchronously so the

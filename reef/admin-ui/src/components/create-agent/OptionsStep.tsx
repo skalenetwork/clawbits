@@ -33,6 +33,23 @@ import type { WizardState } from "./useCreateWizard"
 /** The AI-model section's tile wash (shared by the compact row + full section). */
 const MODEL_TILE = "linear-gradient(180deg, #f778387d, #1cb8d985)"
 
+/** Opt-in capabilities, mirroring reef/capabilities.py. Keep the ids in sync -
+ *  the API rejects an unknown one with a 422 rather than dropping it. */
+const CAPABILITY_OPTIONS: { id: string; label: string; blurb: string }[] = [
+  {
+    id: "gh",
+    label: "GitHub CLI",
+    blurb:
+      "Puts `gh` on the agent's PATH. Inert until you give it a token - reef supplies none.",
+  },
+  {
+    id: "cron",
+    label: "Scheduling",
+    blurb:
+      "Lets the agent schedule its own recurring work. Persists beyond a conversation.",
+  },
+]
+
 /** The "let the runtime decide" option - a plain row, no tier or meters. */
 const RUNTIME_DEFAULT: CuratedModel = {
   id: "",
@@ -49,6 +66,8 @@ export function OptionsStep({
   onContinue,
   continueEnabled,
   pending,
+  supportsCapabilities,
+  onToggleCapability,
 }: {
   state: WizardState
   providers: ProviderInfo[] | null
@@ -58,6 +77,10 @@ export function OptionsStep({
   onContinue: () => void
   continueEnabled: boolean
   pending: boolean
+  /** This reef advertises the create-API `capabilities` field. Older reefs drop
+   *  unknown fields silently, so the section is hidden rather than lying. */
+  supportsCapabilities: boolean
+  onToggleCapability: (id: string) => void
 }) {
   const picked = providers?.find((p) => p.id === state.providerId) ?? null
   const brand = picked ? providerBrand(picked.id) : null
@@ -250,6 +273,32 @@ export function OptionsStep({
             </div>
           </Section>
         ))}
+
+      {supportsCapabilities && (
+        <Section
+          tile="linear-gradient(180deg, #f59e0b7d, #b4530985)"
+          icon={<Icon icon={SourceCodeIcon} />}
+          title="Capabilities"
+        >
+          <div className="flex flex-col gap-2.5">
+            <p className="px-1 text-xs text-muted-foreground">
+              Off by default. These reach outside the agent's VM - everything
+              inside it (shell, packages, browser) is always available.
+            </p>
+            {CAPABILITY_OPTIONS.map((cap) => (
+              <CapabilityRow
+                key={cap.id}
+                cap={cap}
+                checked={state.capabilities.includes(cap.id)}
+                disabled={pending}
+                onToggle={() => {
+                  onToggleCapability(cap.id)
+                }}
+              />
+            ))}
+          </div>
+        </Section>
+      )}
 
       <Section
         tile="linear-gradient(180deg, #10b9817d, #0e749085)"
@@ -515,5 +564,39 @@ function BigInput({
         {...props}
       />
     </div>
+  )
+}
+
+/** One capability toggle. Deliberately plain: a checkbox and an honest sentence,
+ *  not a persuasive card - every row here widens what the agent can touch
+ *  outside its VM, so the copy should read as a caution, not a feature pitch. */
+function CapabilityRow({
+  cap,
+  checked,
+  disabled,
+  onToggle,
+}: {
+  cap: { id: string; label: string; blurb: string }
+  checked: boolean
+  disabled: boolean
+  onToggle: () => void
+}) {
+  return (
+    <label
+      className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border/50 px-3 py-2.5 transition-colors hover:bg-foreground/[0.02]"
+      data-testid={`capability-${cap.id}`}
+    >
+      <input
+        type="checkbox"
+        className="mt-0.5 size-4 shrink-0 accent-foreground"
+        checked={checked}
+        disabled={disabled}
+        onChange={onToggle}
+      />
+      <span className="flex flex-col gap-0.5">
+        <span className="text-sm">{cap.label}</span>
+        <span className="text-xs text-muted-foreground">{cap.blurb}</span>
+      </span>
+    </label>
   )
 }

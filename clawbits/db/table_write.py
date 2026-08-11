@@ -2725,16 +2725,29 @@ class TableWrite:
         # ``human_channel_state.last_read_post_id`` has no ON DELETE cascade
         # configured — Postgres would block the row delete with an FK
         # violation if any human had this exact post as their read pointer.
-        # Clearing the pointer is acceptable: the row will be rewritten on
-        # the next read-ack, and the rare "unread blip" is preferable to
-        # adding a migration here.
+        #
+        # Repoint rather than clear. ``NULL`` doesn't mean "unknown" to the
+        # unread query, it means "nothing read in this channel" (it reads as
+        # ``coalesce(last_read_post_id, 0)``), so nulling re-marks the entire
+        # history unread. That isn't a rare blip: deleting your own newest
+        # message is the common case, and the newest post is exactly the one
+        # every caught-up reader's pointer sits on — one delete relights the
+        # whole channel and the app badge for all of them. The newest
+        # surviving post older than this one preserves what those readers
+        # had actually seen. ``None`` only when nothing older exists, which
+        # is the honest answer there.
+        predecessor_id = session.exec(
+            select(func.max(MmPost.post_id))
+            .where(MmPost.channel_id == post.channel_id)
+            .where(MmPost.post_id < post_id)
+        ).first()
         stale_states = session.exec(
             select(HumanChannelState).where(
                 HumanChannelState.last_read_post_id == post_id
             )
         ).all()
         for state in stale_states:
-            state.last_read_post_id = None
+            state.last_read_post_id = predecessor_id
             session.add(state)
 
         session.delete(post)

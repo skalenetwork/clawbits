@@ -136,7 +136,7 @@ def test_sqlite_reopen_migration_is_idempotent(tmp_path):
     reopened = SqliteSandboxStore(db)
     assert asyncio.run(reopened.get("oc-1")) is not None
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 # The v1 schema (pre-``color``) — used to assert the in-place v1→v2 migration.
@@ -150,10 +150,10 @@ CREATE TABLE sandboxes (
 """
 
 
-def test_sqlite_migrates_v1_db_to_v4_adding_columns(tmp_path):
+def test_sqlite_migrates_v1_db_to_v5_adding_columns(tmp_path):
     """An existing v1 DB gains every later column (color + self-healing +
-    created_image_id) without losing rows, and the self-healing fields backfill
-    sensibly."""
+    created_image_id + capabilities) without losing rows, and the self-healing
+    fields backfill sensibly."""
     db = str(tmp_path / "reef.db")
     with sqlite3.connect(db) as conn:
         conn.execute(_V1_CREATE)
@@ -169,15 +169,25 @@ def test_sqlite_migrates_v1_db_to_v4_adding_columns(tmp_path):
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
 
-    # Opening the store runs the v1→v4 migration in place.
+    # Opening the store runs the v1→v5 migration in place.
     store = SqliteSandboxStore(db)
     run, stop = asyncio.run(store.get("run-1")), asyncio.run(store.get("stop-1"))
     assert run is not None and run.color is None  # rows preserved, color defaults null
     assert run.created_image_id is None  # legacy row has no recorded image id
+    # A pre-capabilities row must read back as the SAFE baseline, never as a grant:
+    # an upgrade must not silently hand an existing agent gh/cron.
+    assert run.capabilities == ()
     with sqlite3.connect(db) as conn:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(sandboxes)")]
-        assert {"color", "created_image_id", "desired_state", "restart_policy", "restart_count"} <= set(cols)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert {
+            "color",
+            "created_image_id",
+            "desired_state",
+            "restart_policy",
+            "restart_count",
+            "capabilities",
+        } <= set(cols)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
 
     # Backfill: a running agent should stay up, a stopped one stays stopped; policy defaults.
     assert run.desired_state is DesiredState.RUNNING
