@@ -381,7 +381,9 @@ def test_build_env_optional_clawbits_creds():
     # without a signup token, so no token / minted keys are injected
     org_only = p.build_env({"org_id": "o"})
     assert org_only == {
-        "CLAWBITS_ENDPOINT": "https://clawbits.ai",
+        # The APP, not the apex: clawbits.ai now serves the marketing site, so an
+        # agent pointed at the bare domain would enroll against a static page.
+        "CLAWBITS_ENDPOINT": "https://app.clawbits.ai",
         "CLAWBITS_ORG_ID": "o",
         "REEF_CAPS": "",
     }

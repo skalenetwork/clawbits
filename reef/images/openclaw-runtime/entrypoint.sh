@@ -389,7 +389,12 @@ fi
 # startup, so a background signup races and can leave the agent idle as
 # "not fully configured" until a manual restart.
 reef_clawbits_autosignup() {
-  _ep="${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  # app.clawbits.ai, NOT the apex: clawbits.ai now serves the marketing site, so
+  # the old fallback would enroll the agent against a static page (an HTML 200,
+  # not a clean connection error — the worst shape of failure). Reef itself
+  # always injects CLAWBITS_ENDPOINT (profiles.py), so this fires only for a
+  # hand-rolled container; keep every fallback in this file on the same host.
+  _ep="${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
   echo "reef-clawbits: enrolling in org '${CLAWBITS_ORG_ID}' at ${_ep} with one-time signup token…" >&2
   # This runs synchronously before the gateway boots, so a slow or unreachable
   # endpoint must not hang startup forever. Cap it with `timeout`
@@ -488,7 +493,7 @@ reef_restore_clawbits_identity() {
   # real minted apiKey with it. The endpoint is reef's to declare, so always use
   # the injected value; only the identity fields come from the mirror.
   # (_ep is still read above so the file format stays self-describing.)
-  openclaw config set "${acct}.endpoint"  "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  openclaw config set "${acct}.endpoint"  "${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
   openclaw config set "${acct}.orgId"     "${_org}"
   openclaw config set "${acct}.agentId"   "${_aid}"
   openclaw config set "${acct}.apiKey"    "${_key}"
@@ -510,7 +515,7 @@ elif [ -n "${CLAWBITS_AGENT_ID:-}" ] && [ -n "${CLAWBITS_API_KEY:-}" ] \
   # Checked BEFORE the mirror restore below (it used to come after): reef-injected
   # env is authoritative, the mirror is agent-writable. When both are present they
   # should agree, and if they ever disagree the reef-supplied one must win.
-  openclaw config set "${acct}.endpoint"  "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  openclaw config set "${acct}.endpoint"  "${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
   openclaw config set "${acct}.orgId"     "${CLAWBITS_ORG_ID}"
   openclaw config set "${acct}.agentId"   "${CLAWBITS_AGENT_ID}"
   openclaw config set "${acct}.apiKey"    "${CLAWBITS_API_KEY}"
@@ -525,14 +530,14 @@ elif [ -n "${CLAWBITS_ORG_ID:-}" ] && [ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ]; then
   # Org + one-time signup token (the admin-UI "connect to Clawbits" path): seed
   # the endpoint + org as signup defaults, then enroll synchronously so the
   # gateway sees a fully configured channel on its first plugin load.
-  openclaw config set channels.clawbits.endpoint "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  openclaw config set channels.clawbits.endpoint "${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
   openclaw config set channels.clawbits.orgId    "${CLAWBITS_ORG_ID}"
   reef_clawbits_autosignup
 elif [ -n "${CLAWBITS_ORG_ID:-}" ]; then
   # Org set but no signup token: seed the defaults, but we can't enroll — signup
   # now requires a one-time token. Bring the gateway up without a channel and
   # tell the operator to recreate the agent with a CLAWBITS_SIGNUP_TOKEN.
-  openclaw config set channels.clawbits.endpoint "${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+  openclaw config set channels.clawbits.endpoint "${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
   openclaw config set channels.clawbits.orgId    "${CLAWBITS_ORG_ID}"
   echo "reef-entrypoint: CLAWBITS_ORG_ID set but no CLAWBITS_SIGNUP_TOKEN — skipping signup (it now requires a one-time token from the Clawbits 'Add agent' prompt). Recreate the agent with a signup token to enroll it." >&2
 else
