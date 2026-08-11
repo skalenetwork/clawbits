@@ -43,13 +43,12 @@ export function NearAiIcon({className}: {className?: string}) {
     );
 }
 
-/** OpenRouter mark: a route-crossover (drawn from the classic shuffle
- *  geometry, not traced from official assets — OpenRouter's own logomark is a
- *  similar monochrome route interchange). `currentColor`. */
+/** OpenRouter logomark (the official vector, verbatim). `currentColor`;
+ *  `evenodd` is load-bearing — it carves the ring's hole. */
 export function OpenRouterIcon({className}: {className?: string}) {
     return (
         <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-            <path d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/>
+            <path fillRule="evenodd" d="M18.654 3.87a5.087 5.087 0 110 10.174L23.7 19.09c.64.641.187 1.737-.72 1.737H8.48a8.479 8.479 0 010-16.958h10.175zM8.479 7.26a5.087 5.087 0 100 10.176 5.087 5.087 0 000-10.175z"/>
         </svg>
     );
 }

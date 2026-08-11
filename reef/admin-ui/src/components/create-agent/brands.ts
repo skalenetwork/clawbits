@@ -58,11 +58,11 @@ export const PROVIDER_BRANDS: Record<string, ProviderBrand> = {
     line: "GLM, DeepSeek & open models",
   },
   // OpenRouter (openrouter.ai): one key across every hosted model, ids as
-  // vendor/model slugs. The brand is monochrome; a dark slate wash keeps it
-  // apart from NEAR's black and the neutral ollama tile.
+  // vendor/model slugs. Brand violet from the official mark, white logomark
+  // on top (glyph traced from the mark Mr L supplied).
   openrouter: {
     Glyph: OpenRouterIcon,
-    tile: "linear-gradient(180deg, #333a4d, #171b26)",
+    tile: "linear-gradient(180deg, #7C5CF6, #5C3ED6)",
     line: "One key, many models",
   },
   ollama: {
