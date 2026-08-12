@@ -5,15 +5,15 @@ const SEEN_KEY = "fc_release_notes_seen_version";
 const FORCE_KEY = "fc_release_notes_force";
 
 /** Production web only. Same signal as the backend's IS_PRODUCTION (domain.py).
- *  The staging build serves the identical bundle on freeclaws.ai, so
+ *  The staging build serves the identical bundle on app.freeclaws.ai, so
  *  import.meta.env.PROD can't tell them apart — the host can. (Desktop/Tauri
  *  runs on tauri://localhost and is out of scope for v1.)
  *
- *  Both the apex and app.* are listed: the app is moving to app.clawbits.ai
- *  (apex cutover) and this must not go dark on either side of the flip. A
- *  union rather than a swap, so the gate is correct before, during and after —
- *  drop "clawbits.ai" only once the apex serves the marketing site for good. */
-const PRODUCTION_WEB_HOSTS = ["app.clawbits.ai", "clawbits.ai"];
+ *  The apex was listed alongside app.* across the cutover so the gate could not
+ *  go dark on either side of the flip. That condition is met — clawbits.ai has
+ *  served the marketing site since 2026-08-12 — so the union collapses back to
+ *  the one host this bundle is actually served from. */
+const PRODUCTION_WEB_HOSTS = ["app.clawbits.ai"];
 
 function isProductionWeb(): boolean {
   if (typeof window === "undefined") return false;
@@ -49,7 +49,7 @@ function computeInitial(): { open: boolean; releases: Release[] } {
   if (!LATEST_RELEASE) return none;
 
   // Shown in production (clawbits.ai) and on the local Vite dev server (so
-  // developers can see it), but NOT on the built staging site (freeclaws.ai) —
+  // developers can see it), but NOT on the built staging site (app.freeclaws.ai) —
   // ``import.meta.env.DEV`` is true only for ``vite dev``, false for any build.
   // ``?releaseNotes=force`` overrides everywhere.
   const forced = isForced();

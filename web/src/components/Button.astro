@@ -18,6 +18,13 @@ interface Props {
   size?: "sm" | "md";
   external?: boolean;
   class?: string;
+  /**
+   * Anything else lands on the <a> verbatim. This exists for
+   * `data-umami-event`, which the tracker reads off the clicked element - a
+   * button that swallowed it would be a CTA that silently goes uncounted, and
+   * the CTAs are the only conversions this site has.
+   */
+  [key: string]: unknown;
 }
 
 const {
@@ -26,13 +33,14 @@ const {
   size = "md",
   external = false,
   class: className = "",
+  ...rest
 } = Astro.props;
 
 const rel = external ? "noopener noreferrer" : undefined;
 const target = external ? "_blank" : undefined;
 ---
 
-<a href={href} rel={rel} target={target} class:list={["btn", variant, size, className]}>
+<a href={href} rel={rel} target={target} class:list={["btn", variant, size, className]} {...rest}>
   <slot />
 </a>
 

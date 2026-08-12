@@ -63,7 +63,7 @@
   },
   "scripts": {
     "start": "expo start",
-    "start:staging": "EXPO_PUBLIC_CLAWBITS_API_URL=https://freeclaws.ai expo start",
+    "start:staging": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.freeclaws.ai expo start",
     "start:prod": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.clawbits.ai expo start",
     "dev-client": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.clawbits.ai expo start --dev-client",
     "dev-client:tunnel": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.clawbits.ai expo start --dev-client --tunnel",

@@ -191,9 +191,20 @@ export default defineConfig({
         "default-src 'self'",
         "img-src 'self' data:",
         "font-src 'self'",
-        // cloud.umami.is: the tracker POSTs pageviews to its /api/send. Without
-        // it the script loads and every event is silently refused.
-        "connect-src 'self' https://cloud.umami.is",
+        // TWO Umami hosts, and both are load-bearing.
+        //
+        // cloud.umami.is is where the tag is FETCHED from. gateway.umami.is is
+        // where the tracker POSTs its events - the cloud script hardcodes
+        // `https://gateway.umami.is/api/send` as its default collector and does
+        // NOT send to the host it was served from, whatever the tracker docs
+        // say. Listing only the script host is not a partial setup, it is a
+        // silent zero: the tag loads, the console fills with "Refused to
+        // connect", and the dashboard shows no traffic at all. That is exactly
+        // what this site shipped with from the apex cutover until 2026-08-12.
+        //
+        // scripts/verify-analytics.mjs reads the live tracker and fails the
+        // build if it ever picks a collector host that is not listed here.
+        "connect-src 'self' https://cloud.umami.is https://gateway.umami.is",
         "frame-ancestors 'none'",
         "base-uri 'self'",
         "form-action 'self'",

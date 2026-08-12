@@ -49,7 +49,7 @@ wrong ships a site that lies about where it lives:
 To deploy by hand (rarely needed - CI is the normal path):
 
 ```bash
-cd web && SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://freeclaws.ai bun run build && bunx wrangler deploy --env staging
+cd web && SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://app.freeclaws.ai bun run build && bunx wrangler deploy --env staging
 ```
 
 `--env` is **mandatory**. Without it wrangler deploys the unnamed top-level

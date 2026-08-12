@@ -112,7 +112,12 @@ class CloudflareR2Provisioner:
         from the user's origin, so the bucket must allow preflight from
         that origin. Origin is derived from ``CLAWBITS_BASE_URL`` so each
         env's bucket is locked to its own front-end (dev: localhost:5173;
-        staging: freeclaws.ai; prod: clawbits.ai).
+        staging: app.freeclaws.ai; prod: app.clawbits.ai). Re-applied on every
+        boot by ``provision_r2_on_startup``, so moving CLAWBITS_BASE_URL (the
+        apex cutover) heals the bucket on the next deploy WITHOUT a manual step
+        - except where ``CLAWBITS_SKIP_R2_PROVISION=1`` is set (dev), which then
+        needs an explicit re-provision or the browser's direct PUT/GET to R2
+        preflights from an origin the bucket has never heard of.
         """
         return await self._put_cors_for_bucket(self.bucket_name)
 
