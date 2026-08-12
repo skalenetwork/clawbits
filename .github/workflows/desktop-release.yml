@@ -1,7 +1,7 @@
 name: Desktop release
 
 # Triggers:
-#   - push to `main`      → STAGING build, freeclaws.ai API, pre-release
+#   - push to `main`      → STAGING build, app.freeclaws.ai API, pre-release
 #   - push to `prod`      → PROD build, app.clawbits.ai API, normal release,
 #                           updater `latest.json` updated
 #   - tag `desktop-v*`    → same as prod, explicit version named after the tag
@@ -23,7 +23,7 @@ on:
         required: false
         type: string
       channel:
-        description: 'Channel — staging uses freeclaws.ai, prod uses app.clawbits.ai'
+        description: 'Channel — staging uses app.freeclaws.ai, prod uses app.clawbits.ai'
         required: false
         type: choice
         default: prod
@@ -81,11 +81,13 @@ jobs:
             VERSION="$BASE_VERSION"
           fi
 
+          # app.* on BOTH channels - each apex now serves the marketing site
+          # and answers /api/* with the site's own HTML 404, so a build pointed
+          # at one fails as "logged out" rather than as a bad host.
           if [[ "$CHANNEL" == staging ]]; then
-            API_URL="https://freeclaws.ai"
+            API_URL="https://app.freeclaws.ai"
             IS_PRE=true
           else
-            # app.* — clawbits.ai is the marketing site, not the API.
             API_URL="https://app.clawbits.ai"
             IS_PRE=false
           fi

@@ -2,14 +2,10 @@
  * Single source of truth for every outbound URL and brand string.
  *
  * The apex cutover (Phase 6 of the landing site plan, which lives in the
- * private clawbits-internal repo) moves the app to app.<domain>. Keeping every
- * app link behind APP_URL means that migration is a one-line change here rather
- * than a grep across the site.
- *
- * APP_URL is deliberately already pointing at app.* - the marketing site is
- * built and shipped BEFORE the app moves, and the links have to be correct on
- * the day the DNS flips, not after a follow-up deploy. Until then these 404,
- * which is why the site ships to preview.clawbits.ai first and not the apex.
+ * private clawbits-internal repo) COMPLETED on 2026-08-12: this site is now
+ * served from https://clawbits.ai and the app from https://app.clawbits.ai.
+ * Keeping every app link behind APP_URL is what made that migration a one-line
+ * change here rather than a grep across the site.
  */
 
 /**
@@ -61,16 +57,22 @@ export const APP_URL = APP_URL_ENV ?? "https://app.clawbits.ai";
  *
  * A separate website per property was the obvious split and the wrong one: the
  * question this analytics exists to answer is "how many people who read the
- * landing page went on to sign up", and Umami can only join those two pageviews
- * into a funnel when they share a website ID. Split across two IDs, the app
- * shows up as a referral that leads nowhere and the landing page as traffic that
- * goes nowhere. Umami records the hostname on every event, so the marketing
- * numbers are still one filter away when you want them alone.
+ * landing page went on to sign up", and answering it across two dashboards
+ * means the app shows up as a referral that leads nowhere and the landing page
+ * as traffic that goes nowhere. One ID gives one dashboard, one referrer
+ * report, and `hostname` as a filter on every event - so the marketing numbers
+ * are still one click away when you want them alone.
  *
- * `clawbits.ai` is the marketing site only AFTER the Phase 6 apex cutover
- * (landing site plan, Phase 6). Until then it is the app, which reports to this
- * same website ID from frontend/src/components/Analytics.tsx - so the funnel exists
- * from the day the DNS flips, with no third deploy to remember.
+ * WHAT ONE WEBSITE ID DOES NOT BUY IS ONE SESSION. Umami derives its session id
+ * from `uuid(websiteId, hostname, ip, userAgent)` - hostname is IN the hash -
+ * so a visit here and the app visit that follows it are two different sessions
+ * however the tag is configured. There is no setting that changes this and no
+ * cookie to share (the whole point of section 9 of /privacy).
+ *
+ * The hop is therefore measured EXPLICITLY rather than inferred: the CTAs carry
+ * a utm campaign (see `appLink` below) and the app fires the conversion event.
+ * Expect `clawbits.ai` at the top of the app's referrer list - that is this
+ * site doing its job, not a stray source to filter out.
  */
 const ANALYTICS_HOSTS: readonly string[] = ["clawbits.ai", "app.clawbits.ai"];
 
@@ -96,7 +98,16 @@ const ANALYTICS_HOSTS: readonly string[] = ["clawbits.ai", "app.clawbits.ai"];
  * localhost out of the numbers even when the tag reaches them.
  */
 export const ANALYTICS = {
-  /** Also has to be in astro.config.mjs's `scriptDirective` + `connect-src`. */
+  /**
+   * Where the TAG IS FETCHED FROM. Also has to be in astro.config.mjs's
+   * `scriptDirective`.
+   *
+   * It is NOT where events go: the cloud tracker hardcodes
+   * `https://gateway.umami.is/api/send` and ignores the host it was served
+   * from. `connect-src` must list BOTH or the tag loads and every event is
+   * refused - see the connect-src note in astro.config.mjs, and
+   * scripts/verify-analytics.mjs, which fails the build if they drift.
+   */
   scriptUrl: "https://cloud.umami.is/script.js",
   websiteId: "3b3f10a0-3d8a-4196-b692-1442deded2d9",
   hosts: ANALYTICS_HOSTS,
@@ -126,9 +137,28 @@ const GITHUB = "https://github.com/skalenetwork/clawbits";
  * itself calls canonical, which spends crawl budget and splits internal link
  * equity across two forms of the same page.
  */
+/**
+ * A link from this site into the app, campaign-tagged.
+ *
+ * Every landing -> app link goes through here, because the hop is the one thing
+ * the analytics cannot see for itself: the session id is hostname-scoped (see
+ * ANALYTICS_HOSTS above), so without these parameters an arriving visitor is
+ * indistinguishable from someone who typed the app URL. Umami parses `utm_*`
+ * server-side into its Campaigns report, so this needs no code on the far end -
+ * only that the app not strip the query string before the tracker reads it.
+ * frontend/src/components/Analytics.tsx keeps `utm_*` for exactly that reason
+ * while dropping every other parameter.
+ *
+ * Placement (nav vs hero vs footer) is deliberately NOT encoded here. It is a
+ * `data-umami-event` on the button instead - one campaign, many buttons, rather
+ * than a dozen near-identical URLs cluttering the report.
+ */
+export const appLink = (path: string) =>
+  `${APP_URL}${path}?utm_source=clawbits.ai&utm_medium=referral&utm_campaign=landing`;
+
 export const LINKS = {
-  signup: `${APP_URL}/login`,
-  signin: `${APP_URL}/login`,
+  signup: appLink("/login"),
+  signin: appLink("/login"),
   docs: "/docs/", // Phase 4 landed 2026-08-03
   changelog: "/changelog/", // Phase 5 landed 2026-08-06
   download: "/download/", // real page landed 2026-08-06
