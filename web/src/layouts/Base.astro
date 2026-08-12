@@ -56,16 +56,15 @@ const ogImageUrl = new URL(ogImage, Astro.site).href;
  *
  * Keyed off `Astro.site`, i.e. the SITE_URL the deploy was built with, because
  * unlike the app this site ships a separate build per environment and therefore
- * knows its own origin at build time. The consequence worth stating out loud:
- * the production target is still SITE_URL=https://preview.clawbits.ai, so this
- * emits NOTHING today and turns itself on at the Phase 6 apex cutover, when
- * that variable becomes https://clawbits.ai. That is the intent - counting a
- * noindex pre-launch preview in the same website as production would put
- * rehearsal traffic in the launch numbers permanently.
+ * knows its own origin at build time. Since the apex cutover on 2026-08-12 the
+ * production target is SITE_URL=https://clawbits.ai, so this is ON in
+ * production and OFF everywhere else - staging (preview.freeclaws.ai) and the
+ * still-attached preview.clawbits.ai emit no tag at all. That is the intent:
+ * counting rehearsal traffic in the same website as production would put it in
+ * the launch numbers permanently.
  *
- * To smoke-test the wiring before then, add the preview host to
- * ANALYTICS_HOSTS in config.ts, deploy, confirm the hit lands in Umami, and
- * take it back out.
+ * To smoke-test the wiring from a preview host, add it to ANALYTICS_HOSTS in
+ * config.ts, deploy, confirm the hit lands in Umami, and take it back out.
  *
  * import.meta.env.PROD keeps `astro dev` clean: SITE_URL is unset there, so
  * Astro.site falls back to the apex and would otherwise match.
@@ -236,9 +235,12 @@ const jsonLd = {
         this as a script to process and the data-* attributes the tracker reads
         its own configuration from are not guaranteed to survive.
 
-        `defer` rather than `async`: nothing on the page calls `umami.track()`,
-        so there is no reason to let this compete with the hero for main-thread
-        time during load. */}
+        `defer` rather than `async`: the CTAs are tagged declaratively with
+        data-umami-event, which the tracker binds via one delegated listener on
+        document once it loads, so nothing needs it to be ready early - and
+        there is no reason to let it compete with the hero for main-thread time
+        during load. A click that somehow lands before the script does simply
+        navigates, uncounted, which is the right way to lose that race. */}
     {
       trackAnalytics && (
         <script

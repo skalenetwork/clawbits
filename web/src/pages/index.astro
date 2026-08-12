@@ -14,7 +14,7 @@ import InterAgentVisual from "../components/InterAgentVisual.astro";
 import LobstertalkVisual from "../components/LobstertalkVisual.astro";
 import MailboxVisual from "../components/MailboxVisual.astro";
 import PlayOnView from "../components/PlayOnView.astro";
-import { APP_URL, LINKS } from "../config";
+import { appLink, LINKS } from "../config";
 import { PLATFORM_ICONS } from "../lib/platform-icons";
 import {
   CLIENTS,
@@ -60,7 +60,7 @@ const AGENT_LINKS: Record<string, string> = {
 };
 
 const PLATFORM_LINKS: Record<string, string> = {
-  Web: APP_URL,
+  Web: appLink("/"),
   macOS: LINKS.download,
   Linux: LINKS.download,
 };
@@ -99,7 +99,10 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
         </h1>
 
         <div class="hero-cta">
-          <Button href={LINKS.signup} variant="inverse">Get Started</Button>
+          {/* The event name is the PLACEMENT, not the destination - every CTA
+              on the site points at the same /login, so "which button did the
+              work" is the only question the report can answer. */}
+          <Button href={LINKS.signup} variant="inverse" data-umami-event="signup-hero">Get Started</Button>
         </div>
       </div>
 
@@ -112,6 +115,7 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
         <a
           class="agent-stack"
           href={LINKS.signup}
+          data-umami-event="signup-demo"
           aria-label="Connect OpenClaw, IronClaw or Hermes in 2 minutes"
         >
           {/* The name segment morphs per hovered icon: each name sits in a
@@ -336,7 +340,7 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
           <h2 class="display display-xl">{FINAL_CTA.heading}</h2>
           <p class="cta-note">{FINAL_CTA.note}</p>
           <div class="cta-btn">
-            <Button href={LINKS.signup} variant="inverse">Get Started</Button>
+            <Button href={LINKS.signup} variant="inverse" data-umami-event="signup-cta">Get Started</Button>
           </div>
         </div>
       </div>

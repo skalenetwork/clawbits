@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { Analytics } from "./Analytics";
+import { BEFORE_SEND, beforeSendPayload } from "../lib/analytics";
 
 const SCRIPT_SELECTOR = "script[data-clawbits-analytics]";
 
@@ -12,28 +13,35 @@ function renderOn(hostname: string) {
 afterEach(() => {
   vi.unstubAllGlobals();
   document.querySelector(SCRIPT_SELECTOR)?.remove();
+  window[BEFORE_SEND] = undefined;
 });
 
 describe("Analytics", () => {
   it("injects the Umami script on the production host", () => {
-    renderOn("clawbits.ai");
+    renderOn("app.clawbits.ai");
     const script = document.querySelector<HTMLScriptElement>(SCRIPT_SELECTOR);
     expect(script).not.toBeNull();
     expect(script?.src).toBe("https://cloud.umami.is/script.js");
     expect(script?.dataset.websiteId).toBe("3b3f10a0-3d8a-4196-b692-1442deded2d9");
-    expect(script?.dataset.domains).toBe("clawbits.ai,app.clawbits.ai");
+    expect(script?.dataset.domains).toBe("app.clawbits.ai");
   });
 
-  // Where the app lives after the Phase 6 apex cutover. Tracked from the same
-  // website ID as the marketing site so landing -> signup is one funnel; this
-  // asserts the app half of that pair does not go dark when the host changes.
-  it("injects on the post-cutover app host", () => {
+  // The tracker looks the hook up by NAME on window at send time. Wiring one
+  // without the other is the silent failure: events still flow, unsanitized.
+  it("installs the payload sanitizer before the script", () => {
     renderOn("app.clawbits.ai");
-    expect(document.querySelector(SCRIPT_SELECTOR)).not.toBeNull();
+    const script = document.querySelector<HTMLScriptElement>(SCRIPT_SELECTOR);
+    expect(script?.dataset.beforeSend).toBe(BEFORE_SEND);
+    expect(window[BEFORE_SEND]).toBe(beforeSendPayload);
   });
 
-  // The marketing site carries its own tag (web/src/layouts/Base.astro). If the
-  // SPA ever gets served from a preview host it must not double-count.
+  // The apex is the marketing site since the 2026-08-12 cutover and carries its
+  // own tag (web/src/layouts/Base.astro) - the app must not double-count it.
+  it("does not inject on the marketing apex", () => {
+    renderOn("clawbits.ai");
+    expect(document.querySelector(SCRIPT_SELECTOR)).toBeNull();
+  });
+
   it("does not inject on a preview host", () => {
     renderOn("preview.clawbits.ai");
     expect(document.querySelector(SCRIPT_SELECTOR)).toBeNull();
@@ -50,7 +58,7 @@ describe("Analytics", () => {
   });
 
   it("injects at most once across remounts", () => {
-    vi.stubGlobal("location", { hostname: "clawbits.ai" });
+    vi.stubGlobal("location", { hostname: "app.clawbits.ai" });
     render(<Analytics />);
     render(<Analytics />);
     expect(document.querySelectorAll(SCRIPT_SELECTOR)).toHaveLength(1);
