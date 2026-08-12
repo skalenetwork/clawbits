@@ -32,7 +32,7 @@ EOF
   exit "${1:-0}"
 }
 
-ENDPOINT="${CLAWBITS_ENDPOINT:-https://clawbits.ai}"
+ENDPOINT="${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
 ORG_ID="${CLAWBITS_ORG_ID:-}"
 SIGNUP_TOKEN="${CLAWBITS_SIGNUP_TOKEN:-}"
 AS_JSON=0

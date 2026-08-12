@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
+from clawbits.datastructures.mm_models import ACTIVITY_LABEL_MAX_CHARS
 from clawbits.db.models import Agent
 from clawbits.fastapi.clawbits_server import ClawBitsServer
 from tests.fastapi.test_mattermost import _auth, _create_owned_agent, _write_headers
@@ -217,7 +218,10 @@ def test_status_activity_fanout(test_client: TestClient, fake_bus: FakeBus):
     fake_bus.published.clear()
     fake_bus.presence.clear()
 
-    long_label = "x" * 500
+    # Must exceed the clamp so the clamp is actually exercised - the plugin
+    # caps its own output well below this, so anything reaching the limit here
+    # is a malformed or hostile payload.
+    long_label = "x" * (ACTIVITY_LABEL_MAX_CHARS * 2)
     r = test_client.post(
         f"/api/agentic/mm/channels/{channel_id}/status",
         json={
@@ -239,13 +243,13 @@ def test_status_activity_fanout(test_client: TestClient, fake_bus: FakeBus):
     assert activity is not None
     assert activity["kind"] == "tool"
     assert activity["tool"] == "web_search"
-    assert activity["label"] == "x" * 160  # server-side clamp
+    assert activity["label"] == "x" * ACTIVITY_LABEL_MAX_CHARS  # server-side clamp
     assert "some_future_field" not in activity  # extra=ignore
 
     # member.status event includes the same activity object.
     evt = _member_status_events(fake_bus)[-1]
     assert evt["data"]["status"] == "generating"
-    assert evt["data"]["activity"]["label"] == "x" * 160
+    assert evt["data"]["activity"]["label"] == "x" * ACTIVITY_LABEL_MAX_CHARS
 
     # Plain status (no activity): payload has NO activity key (byte-stable
     # for old clients) and presence took the legacy plain-string form.

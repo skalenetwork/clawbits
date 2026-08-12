@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  THINKING_TAIL_MAX_CHARS,
+  TOOL_SUMMARY_MAX_CHARS,
   sanitizeThinkingTail,
   sanitizeToolSummary,
 } from "../src/activity/sanitize.js";
@@ -54,13 +56,25 @@ describe("sanitizeToolSummary", () => {
     assert.equal(out, "deep");
   });
 
-  it("truncates to 80 chars and collapses whitespace", () => {
-    const long = `do  the\nthing ${"x".repeat(200)}`;
+  it("truncates at the cap and collapses whitespace", () => {
+    const long = `do  the\nthing ${"x".repeat(TOOL_SUMMARY_MAX_CHARS * 2)}`;
     const out = sanitizeToolSummary("exec", { command: long });
     const snippet = out.slice("exec: '".length, -1);
-    assert.ok(snippet.length <= 80, `snippet too long: ${snippet.length}`);
+    assert.ok(
+      snippet.length <= TOOL_SUMMARY_MAX_CHARS,
+      `snippet too long: ${snippet.length}`,
+    );
     assert.ok(snippet.startsWith("do the thing x"));
     assert.ok(snippet.endsWith("…"));
+  });
+
+  // The cap exists to bound the ~1/s status lane, but it must be wide enough
+  // that a routine command survives whole - at the old 80 it cut mid-flag.
+  it("keeps a realistic long command intact", () => {
+    const cmd =
+      "find /home/node/.openclaw/workspace/skills/agentpit-reference -maxdepth 2 -type f";
+    assert.ok(cmd.length > 80, "fixture must exceed the OLD cap to be meaningful");
+    assert.equal(sanitizeToolSummary("exec", { command: cmd }), `exec: '${cmd}'`);
   });
 
   it("accepts a bare string arg", () => {
@@ -83,10 +97,13 @@ describe("sanitizeThinkingTail", () => {
     assert.equal(out, "Let me look Done reading");
   });
 
-  it("tails long text to ~140 chars starting at a word boundary", () => {
-    const text = `${"start ".repeat(50)}the interesting recent part`;
+  it("tails long text to the cap starting at a word boundary", () => {
+    const text = `${"start ".repeat(THINKING_TAIL_MAX_CHARS)}the interesting recent part`;
     const out = sanitizeThinkingTail(text);
-    assert.ok(out.length <= 140, `tail too long: ${out.length}`);
+    assert.ok(
+      out.length <= THINKING_TAIL_MAX_CHARS,
+      `tail too long: ${out.length}`,
+    );
     assert.ok(out.startsWith("…"));
     assert.ok(out.endsWith("the interesting recent part"));
   });

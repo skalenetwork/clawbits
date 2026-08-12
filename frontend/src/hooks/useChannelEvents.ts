@@ -81,11 +81,13 @@ export interface ThinkingStep {
 }
 export type ThinkingTimelineMap = Record<string, ThinkingStep[]>;
 
-// Monotonic id source for tool steps (module scope so ids stay unique across
-// remounts within a session; the value itself is opaque).
-let toolStepSeq = 0;
-// Same, for thinking segments.
-let thinkingStepSeq = 0;
+// ONE monotonic id source for BOTH tool steps and reasoning segments (module
+// scope so ids stay unique across remounts within a session). Because the two
+// kinds draw from the same counter, ``id`` is also a true CHRONOLOGICAL key:
+// merging the two timelines and sorting by id reconstructs the turn in the
+// order it actually happened (thought -> ran -> failed -> reconsidered). That
+// ordering is what TurnTrace renders; keep this single counter.
+let traceSeq = 0;
 
 // Client-side TTL for ephemeral statuses, mirroring STATUS_TTL_SECONDS in
 // clawbits/realtime/bus.py. Redis HEXPIRE silently drops the field after
@@ -330,7 +332,7 @@ export function useChannelEvents(
               next[next.length - 1] = { ...last, text: stitched };
               return { ...prev, [key]: next };
             }
-            const step: ThinkingStep = { id: (thinkingStepSeq += 1), text, status: "running" };
+            const step: ThinkingStep = { id: (traceSeq += 1), text, status: "running" };
             return { ...prev, [key]: [...cur, step] };
           });
         }
@@ -366,7 +368,7 @@ export function useChannelEvents(
               return { ...prev, [key]: next };
             }
             const step: ToolStep = {
-              id: (toolStepSeq += 1),
+              id: (traceSeq += 1),
               tool: toolName,
               label: act.label,
               status: "running",

@@ -36,6 +36,23 @@ CAP_CRON = "cron"
 
 CAPABILITIES: tuple[str, ...] = (CAP_GH, CAP_CRON)
 
+# Granted when a caller omits the field entirely. NOT "the safe baseline is
+# everything" - the two capabilities are defaulted differently on purpose:
+#
+# * ``gh`` is ON. It is the one capability with a SECOND, harder gate underneath
+#   it: reef injects no GitHub token, so an ungranted `gh` and a granted one are
+#   equally powerless until a human supplies a credential. Leaving it off by
+#   default therefore bought no containment - it only produced `gh: command not
+#   found` on an agent the operator had already pointed at a repo, which reads as
+#   a broken image rather than a policy decision.
+# * ``cron`` stays OFF. Nothing gates it a second time: the moment it is granted
+#   the agent can schedule work that outlives the conversation, so the grant has
+#   to be a deliberate act.
+#
+# An explicit ``[]`` still means "nothing" - the default applies to OMISSION only,
+# so a caller that wants a bare agent can always say so (see FleetService.create).
+DEFAULT_CAPABILITIES: tuple[str, ...] = (CAP_GH,)
+
 # Guest env var carrying the granted set (comma-separated, stable order) for the
 # entrypoint to act on. Under the ``REEF_`` prefix, so it is reserved from
 # caller-supplied env (see fleet._validate_user_env) and cannot be self-granted

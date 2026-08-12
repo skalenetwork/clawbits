@@ -74,7 +74,7 @@ sudo systemctl restart reef-api
 ```
 
 Leave the generated token/secret alone. Leave `REEF_CORS_ORIGINS` unset unless
-clawbits runs on a domain other than `clawbits.ai` - setting it **replaces**
+clawbits runs on a domain other than `app.clawbits.ai` - setting it **replaces**
 the default list, so re-add the Tauri origins (`tauri://localhost`,
 `http://tauri.localhost`, `http://localhost:5176`) or the desktop app shows
 Reef as Offline.
@@ -124,7 +124,7 @@ token (`sudo grep REEF_ADMIN_TOKEN /etc/reef/reef.env`). The browser talks to
 Reef directly; the clawbits backend never does.
 
 One trap: when creating agents, `clawbits_url` must be reachable **from inside
-the microVM on this machine** - `https://clawbits.ai` works; the
+the microVM on this machine** - `https://app.clawbits.ai` works; the
 `host.microsandbox.internal` / `host.docker.internal` presets do **not** (those
 are for a Reef on the same machine as clawbits); a dev clawbits on your laptop
 needs the laptop's LAN IP (`http://192.168.x.x:8000`).

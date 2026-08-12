@@ -214,10 +214,14 @@ function RunRow({run}: {run: AutomationRun}) {
     );
 }
 
-export function RunList({runs, isLoading, isError}: {
+export function RunList({runs, isLoading, isError, emptyLabel = "No runs reported yet"}: {
     runs: AutomationRun[];
     isLoading: boolean;
     isError: boolean;
+    /** Empty-state copy. Override where "none yet" would be a lie — a mirror
+     *  never receives run rows at all, so "not reported yet" reads as a delay
+     *  that will resolve, when nothing is coming. */
+    emptyLabel?: string;
 }) {
     if (isLoading) {
         return (
@@ -235,7 +239,7 @@ export function RunList({runs, isLoading, isError}: {
         return (
             <div className="flex flex-col items-center gap-2 py-8 text-center">
                 <Icon icon={Activity} className="size-5 text-muted-foreground"/>
-                <p className="text-sm text-muted-foreground">No runs reported yet</p>
+                <p className="max-w-sm text-balance text-sm text-muted-foreground">{emptyLabel}</p>
             </div>
         );
     }

@@ -64,12 +64,12 @@
   "scripts": {
     "start": "expo start",
     "start:staging": "EXPO_PUBLIC_CLAWBITS_API_URL=https://freeclaws.ai expo start",
-    "start:prod": "EXPO_PUBLIC_CLAWBITS_API_URL=https://clawbits.ai expo start",
-    "dev-client": "EXPO_PUBLIC_CLAWBITS_API_URL=https://clawbits.ai expo start --dev-client",
-    "dev-client:tunnel": "EXPO_PUBLIC_CLAWBITS_API_URL=https://clawbits.ai expo start --dev-client --tunnel",
+    "start:prod": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.clawbits.ai expo start",
+    "dev-client": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.clawbits.ai expo start --dev-client",
+    "dev-client:tunnel": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.clawbits.ai expo start --dev-client --tunnel",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "ios:device": "EXPO_PUBLIC_CLAWBITS_API_URL=https://clawbits.ai expo run:ios --device",
+    "ios:device": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.clawbits.ai expo run:ios --device",
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit"

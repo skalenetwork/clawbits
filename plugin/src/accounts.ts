@@ -8,7 +8,7 @@ import type {
 
 export const CHANNEL_ID = "clawbits" as const;
 export const DEFAULT_ACCOUNT_ID = "default" as const;
-export const DEFAULT_ENDPOINT = "https://clawbits.ai" as const;
+export const DEFAULT_ENDPOINT = "https://app.clawbits.ai" as const;
 
 /** Read `cfg.channels.clawbits` tolerantly; missing/wrong shape => undefined. */
 function readChannelSection(cfg: OpenClawConfig): ClawBitsChannelSection | undefined {

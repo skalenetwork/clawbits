@@ -204,7 +204,16 @@ export function wakeAutomationsReconciler(accountId?: string): void {
   for (const set of [...wakers.values()]) for (const wake of [...set]) wake();
 }
 
-function reportedSpecOf(job: CronJobView): Record<string, unknown> {
+/** The mirrored view of an EXTERNAL cron job — one Clawbits did not author.
+ *
+ *  Unlike a managed row (whose `reported_spec` echoes the operator's own
+ *  `desired_spec`), a mirror has no authored spec to fall back on: whatever is
+ *  omitted here is invisible in the operator UI forever. `delivery` in
+ *  particular is the difference between "this job announces into #ops" and the
+ *  blank "Managed outside Clawbits" — so the routing/alerting surface is
+ *  mirrored too, not just identity. Runtime-owned fields (id/state/timestamps)
+ *  stay out; `state` rides alongside in its own field. */
+export function reportedSpecOf(job: CronJobView): Record<string, unknown> {
   return {
     name: job.name,
     description: job.description,
@@ -213,6 +222,12 @@ function reportedSpecOf(job: CronJobView): Record<string, unknown> {
     wakeMode: job.wakeMode,
     payload: job.payload,
     enabled: job.enabled,
+    // Where the output goes, whether the runtime alerts on failure, and whether
+    // the job disarms itself after firing. All three are authored outside
+    // Clawbits for a mirror, and all three change how the row must be read.
+    delivery: job.delivery,
+    failureAlert: job.failureAlert,
+    deleteAfterRun: job.deleteAfterRun,
   };
 }
 

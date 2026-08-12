@@ -24,8 +24,8 @@ const STANDALONE_TILE = "linear-gradient(160deg, #6366f1, #8b5cf6)"
 /** One-click fills for the Clawbits URL field: prod, staging, and the two local
  *  guest->host aliases (localhost inside the guest is the guest itself). */
 export const CLAWBITS_URL_PRESETS = [
-  { label: "clawbits.ai", url: "https://clawbits.ai" },
-  { label: "freeclaws.ai", url: "https://freeclaws.ai" },
+  { label: "app.clawbits.ai", url: "https://app.clawbits.ai" },
+  { label: "app.freeclaws.ai", url: "https://app.freeclaws.ai" },
   { label: "msb host:8000", url: "http://host.microsandbox.internal:8000" },
   { label: "docker host:8000", url: "http://host.docker.internal:8000" },
 ] as const
