@@ -106,7 +106,7 @@ jobs:
           if [ "${{ github.ref_name }}" = "prod" ]; then
             {
               echo "env=production"
-              echo "site=https://preview.clawbits.ai"
+              echo "site=https://clawbits.ai"
               echo "app=https://app.clawbits.ai"
             } >> "$GITHUB_OUTPUT"
           else
