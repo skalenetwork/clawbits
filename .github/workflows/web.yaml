@@ -100,8 +100,8 @@ jobs:
         #
         # PUBLIC_APP_URL is the staging APP's URL, not the staging SITE's: the
         # marketing site on preview.freeclaws.ai must link to the freeclaws
-        # deployment of the app. It is the apex today and becomes
-        # app.freeclaws.ai at the Phase 6 cutover - flip this line then.
+        # deployment of the app. Both targets now point at app.* - the app moved
+        # off the apex, and the apex is becoming the marketing site.
         run: |
           if [ "${{ github.ref_name }}" = "prod" ]; then
             {
@@ -113,7 +113,7 @@ jobs:
             {
               echo "env=staging"
               echo "site=https://preview.freeclaws.ai"
-              echo "app=https://freeclaws.ai"
+              echo "app=https://app.freeclaws.ai"
             } >> "$GITHUB_OUTPUT"
           fi
 
