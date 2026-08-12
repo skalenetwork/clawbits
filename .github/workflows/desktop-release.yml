@@ -2,7 +2,7 @@ name: Desktop release
 
 # Triggers:
 #   - push to `main`      → STAGING build, freeclaws.ai API, pre-release
-#   - push to `prod`      → PROD build, clawbits.ai API, normal release,
+#   - push to `prod`      → PROD build, app.clawbits.ai API, normal release,
 #                           updater `latest.json` updated
 #   - tag `desktop-v*`    → same as prod, explicit version named after the tag
 #   - workflow_dispatch   → manual override (version + channel via inputs)
@@ -23,7 +23,7 @@ on:
         required: false
         type: string
       channel:
-        description: 'Channel — staging uses freeclaws.ai, prod uses clawbits.ai'
+        description: 'Channel — staging uses freeclaws.ai, prod uses app.clawbits.ai'
         required: false
         type: choice
         default: prod
@@ -85,7 +85,8 @@ jobs:
             API_URL="https://freeclaws.ai"
             IS_PRE=true
           else
-            API_URL="https://clawbits.ai"
+            # app.* — clawbits.ai is the marketing site, not the API.
+            API_URL="https://app.clawbits.ai"
             IS_PRE=false
           fi
 

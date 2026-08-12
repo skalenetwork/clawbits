@@ -217,9 +217,44 @@ jobs:
       - name: Publish package to ClawHub
         if: steps.guard.outputs.publish == 'true'
         working-directory: ${{ github.workspace }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        # The publish is made idempotent HERE, not in the pre-flight guard,
+        # because the collision this recovers from happens INSIDE the publish
+        # command. Observed on run 31523895558: the guard correctly saw no
+        # 0.15.9 at 18:40:36, the registry gained 0.15.9 at 18:42:39, and the
+        # same command then exited 1 with "already exists" at 18:44:32 - two
+        # ~2-minute gaps, i.e. a client-side timeout and a silent retry racing
+        # its own successful first attempt. The package was live and tagged
+        # `latest`; only the job was red.
+        #
+        # So: on failure, ask the registry whether OUR version is now present.
+        # If it is, the desired end state was reached and the run is green. Any
+        # other failure still fails. This cannot mask a genuine error - it only
+        # passes when the exact version we set out to publish exists.
         run: |
-          bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
-            --family code-plugin \
-            --source-repo "${{ github.repository }}" \
-            --source-commit "${{ github.sha }}" \
-            --source-ref "${{ github.ref }}"
+          set -uo pipefail
+          if bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
+              --family code-plugin \
+              --source-repo "${{ github.repository }}" \
+              --source-commit "${{ github.sha }}" \
+              --source-ref "${{ github.ref }}"; then
+            echo "Published $VERSION"
+            exit 0
+          fi
+          echo "::warning::publish exited non-zero; checking whether $VERSION landed anyway"
+          versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-plugin/versions" || true)"
+          if [ -z "$versions_json" ]; then
+            echo "::error::publish failed and the registry could not be reached to confirm"
+            exit 1
+          fi
+          landed="$(node -e "
+            const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+            console.log((data.items || []).map(x => x.version).includes(process.argv[1]) ? 'true' : 'false');
+          " "$VERSION" <<<"$versions_json")"
+          if [ "$landed" = "true" ]; then
+            echo "::notice::$VERSION is on the registry despite the non-zero exit (retry raced itself); treating as success."
+            exit 0
+          fi
+          echo "::error::publish failed and $VERSION is NOT on the registry"
+          exit 1

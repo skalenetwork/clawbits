@@ -23,6 +23,58 @@ def test_openai_api_key_default_uses_direct_runtime():
     assert '"agents.defaults.models[\\"${reef_model}\\"].agentRuntime.id"' in text
 
 
+def test_chatgpt_subscription_gets_a_default_model_without_an_api_key():
+    """A ChatGPT-subscription agent must reach the model-pin block.
+
+    Regression: the auto-default was gated on OPENAI_API_KEY alone, but the
+    subscription path injects no key by design (providers.py KIND_OAUTH), and
+    the create wizard offers no model on that path — so REEF_DEFAULT_MODEL and
+    OPENAI_API_KEY were both empty, reef_model stayed empty, and the whole
+    ``if [ -n "${reef_model}" ]`` block was skipped. That block is ALSO where
+    agentRuntime.id=codex is pinned, so the agent booted with no default model
+    and no Codex harness and generated no replies at all.
+    """
+    text = ENTRYPOINT.read_text()
+    auto_default_start = text.index('if [ -z "${reef_model}" ]')
+    model_apply_start = text.index('if [ -n "${reef_model}" ]', auto_default_start)
+    auto_default = text[auto_default_start:model_apply_start]
+
+    # The subscription marker must satisfy the "is this an OpenAI agent" gate.
+    assert '"${REEF_OPENAI_AUTH:-}" = "subscription"' in auto_default
+    # ...and it must be OR'd with the key, not AND'd (a subscription agent has
+    # no key, so an AND would keep the branch unreachable).
+    assert '|| [ "${REEF_OPENAI_AUTH:-}" = "subscription" ]' in auto_default
+    # Still exclusive with the other providers.
+    for other in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OLLAMA_HOST"):
+        assert f'[ -z "${{{other}:-}}" ]' in auto_default
+
+
+def test_post_boot_login_command_never_applies_the_broken_default():
+    """The documented device-code command must NOT carry --set-default.
+
+    ``--set-default`` applies the provider's own recommendation, which is
+    openai/gpt-5.5 — the model whose session-mirror hook crashes the pinned
+    OpenClaw codex runtime and breaks every message after the first. That is
+    why the pickers omit it; the login command must not reintroduce it behind
+    the user's back.
+    """
+    roots = [Path(__file__).resolve().parents[2]]
+    hits = []
+    for root in roots:
+        for rel in (
+            "frontend/src/components/new-agent/NewAgentDialog.tsx",
+            "reef/admin-ui/src/components/create-agent/CreateAgentDialog.tsx",
+        ):
+            p = root / rel
+            if p.exists():
+                hits.append(p.read_text())
+    assert hits, "expected to find the create wizards"
+    for text in hits:
+        for line in text.splitlines():
+            if "models auth login" in line:
+                assert "--set-default" not in line, line.strip()
+
+
 def test_build_smart_cache_key_derivation():
     text = BUILD_SCRIPT.read_text()
     # Pinned plugin ⇒ deterministic key; force-fresh ⇒ nocache; else a timestamp

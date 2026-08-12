@@ -254,7 +254,7 @@ def test_create_openclaw_with_org_via_api():
             "type": "openclaw",
             "name": "oc-cb",
             "org_id": "acme",
-            "clawbits_url": "https://clawbits.ai",
+            "clawbits_url": "https://app.clawbits.ai",
             "signup_token": "human-abc",
         },
     )

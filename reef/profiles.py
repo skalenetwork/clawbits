@@ -116,7 +116,7 @@ class OpenClawProfile:
         — clawbits minted the identity server-side; the entrypoint writes the
         account directly, no signup/approval loop.
       • **detached** (none) — the gateway starts with no clawbits channel.
-    Optional everywhere: ``endpoint`` (default https://clawbits.ai),
+    Optional everywhere: ``endpoint`` (default https://app.clawbits.ai),
     ``anthropic_api_key``, ``openai_api_key``, ``gateway_token``.
 
     The image entrypoint bridges any ``CLAWBITS_*`` values into OpenClaw's config
@@ -158,7 +158,7 @@ class OpenClawProfile:
         # without a channel.
         org = creds.get("org_id")
         if org:
-            env["CLAWBITS_ENDPOINT"] = creds.get("endpoint", "https://clawbits.ai")
+            env["CLAWBITS_ENDPOINT"] = creds.get("endpoint", "https://app.clawbits.ai")
             env["CLAWBITS_ORG_ID"] = org
             # One-time enrollment token (``human-…``). The entrypoint passes it to
             # ``openclaw clawbits signup --signup-token``. Masked in fleet detail
@@ -266,7 +266,7 @@ class IronClawProfile:
         this image currently boots detached and logs a pointer to the
         fully-provisioned path. ``build_env`` already forwards the token so the
         entrypoint seam is ready.
-    Optional everywhere: ``endpoint`` (default https://clawbits.ai),
+    Optional everywhere: ``endpoint`` (default https://app.clawbits.ai),
     ``anthropic_api_key``, ``openai_api_key``, ``gateway_token``,
     ``secrets_master_key``.
 
@@ -311,7 +311,7 @@ class IronClawProfile:
         # the account directly. A detached VM passes neither.
         org = creds.get("org_id")
         if org:
-            env["CLAWBITS_ENDPOINT"] = creds.get("endpoint", "https://clawbits.ai")
+            env["CLAWBITS_ENDPOINT"] = creds.get("endpoint", "https://app.clawbits.ai")
             env["CLAWBITS_ORG_ID"] = org
             if creds.get("signup_token"):
                 env["CLAWBITS_SIGNUP_TOKEN"] = creds["signup_token"]
@@ -470,7 +470,7 @@ class HermesProfile:
             "HERMES_ACCEPT_HOOKS": "1",
             "GATEWAY_ALLOW_ALL_USERS": "true",
         }
-        endpoint = creds.get("endpoint", "https://clawbits.ai")
+        endpoint = creds.get("endpoint", "https://app.clawbits.ai")
         org = creds.get("org_id")
         signup_token = creds.get("signup_token")
         agent = creds.get("agent_id")

@@ -55,7 +55,7 @@ function keyFormatWarning(providerId: string, value: string, label: string): str
     if (!v || !prefix || v.startsWith(prefix)) return null;
     return `This doesn't look like a ${label} API key (expected to start with "${prefix}"). If you copied an agent's access password or another token, paste your provider key instead.`;
 }
-import type {WizardState} from "./useWizard";
+import {DEFAULT_CAPABILITIES, type WizardState} from "./useWizard";
 
 export interface OllamaProbe {
     models: ReefOllamaModel[] | null; // null = not probed / failed
@@ -156,9 +156,13 @@ export function OptionsStep({
     const showKeyOpen = keyOpen ?? !configured;
     const showModelOpen = modelOpen ?? false;
     const showEnvOpen = envOpen ?? state.envRows.length > 0;
-    // Collapsed unless something is already granted — the safe default should
-    // not look like a checklist the operator is expected to fill in.
-    const capsOpen = capsOpenState ?? state.capabilities.length > 0;
+    // Collapsed while the grant set is still the DEFAULT one (the collapsed
+    // summary already names it) — untouched defaults should not look like a
+    // checklist the owner is expected to fill in. Opens once it diverges.
+    const capsAreDefault =
+        state.capabilities.length === DEFAULT_CAPABILITIES.length &&
+        DEFAULT_CAPABILITIES.every(c => state.capabilities.includes(c));
+    const capsOpen = capsOpenState ?? !capsAreDefault;
     const showOllamaOpen = ollamaOpen ?? true;
     const showOauthOpen = oauthOpen ?? true;
     // OpenRouter pills are validated against the live catalog: hand-curated
@@ -428,9 +432,9 @@ export function OptionsStep({
                     >
                         <div className="flex flex-col gap-2.5">
                             <p className="px-1 text-xs text-muted-foreground">
-                                Off by default. These reach outside the agent&apos;s VM —
-                                everything inside it (shell, packages, browser) is always
-                                available.
+                                These reach outside the agent&apos;s VM — everything inside
+                                it (shell, packages, browser) is always available and not
+                                listed here.
                             </p>
                             {CAPABILITY_OPTIONS.map(cap => (
                                 <label
@@ -445,7 +449,17 @@ export function OptionsStep({
                                         onChange={() => { onToggleCapability(cap.id); }}
                                     />
                                     <span className="flex flex-col gap-0.5">
-                                        <span className="text-sm">{cap.label}</span>
+                                        <span className="flex items-center gap-1.5 text-sm">
+                                            {cap.label}
+                                            {DEFAULT_CAPABILITIES.includes(cap.id) && (
+                                                // The box arrives ticked; say why, so it
+                                                // reads as a default rather than a stray
+                                                // click the owner has to undo.
+                                                <span className="rounded-full bg-foreground/[0.06] px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                                    Default
+                                                </span>
+                                            )}
+                                        </span>
                                         <span className="text-xs text-muted-foreground">
                                             {cap.blurb}
                                         </span>

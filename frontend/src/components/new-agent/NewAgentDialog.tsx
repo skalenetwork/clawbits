@@ -413,7 +413,10 @@ function WizardBody({
                     .filter(([k]) => k.length > 0);
                 if (entries.length > 0) body.env = Object.fromEntries(entries);
             }
-            if (capabilitiesSupported && state.capabilities.length > 0) {
+            // Sent even when EMPTY — omitting it means "apply the server
+            // defaults", so a length check would quietly re-grant what the
+            // operator just unticked.
+            if (capabilitiesSupported) {
                 body.capabilities = state.capabilities;
             }
             const res = await reefCreate(reefUrl, body);

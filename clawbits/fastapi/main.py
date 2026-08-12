@@ -249,7 +249,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 # Tauri webviews use a special URL scheme so the desktop build needs its own
 # entries: tauri://localhost on macOS/Windows, http://tauri.localhost on Linux.
 # `CLAWBITS_CORS_EXTRA` is a comma-separated list of additional origins for
-# staging/prod web hosts (e.g. https://clawbits.ai,https://freeclaws.ai).
+# staging/prod web hosts (e.g. https://app.clawbits.ai,https://freeclaws.ai).
 _default_cors_origins = [
     "http://localhost:5173",  # web dev
     "http://localhost:8000",  # backend self-call

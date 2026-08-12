@@ -4,13 +4,20 @@ import { LATEST_RELEASE, RELEASES, compareVersions, type Release } from "@/lib/r
 const SEEN_KEY = "fc_release_notes_seen_version";
 const FORCE_KEY = "fc_release_notes_force";
 
-/** Production web only. Same signal as the backend's IS_PRODUCTION (domain.py):
- *  the prod host is clawbits.ai. The staging build serves the identical bundle
- *  on freeclaws.ai, so import.meta.env.PROD can't tell them apart — the host
- *  can. (Desktop/Tauri runs on tauri://localhost and is out of scope for v1.) */
+/** Production web only. Same signal as the backend's IS_PRODUCTION (domain.py).
+ *  The staging build serves the identical bundle on freeclaws.ai, so
+ *  import.meta.env.PROD can't tell them apart — the host can. (Desktop/Tauri
+ *  runs on tauri://localhost and is out of scope for v1.)
+ *
+ *  Both the apex and app.* are listed: the app is moving to app.clawbits.ai
+ *  (apex cutover) and this must not go dark on either side of the flip. A
+ *  union rather than a swap, so the gate is correct before, during and after —
+ *  drop "clawbits.ai" only once the apex serves the marketing site for good. */
+const PRODUCTION_WEB_HOSTS = ["app.clawbits.ai", "clawbits.ai"];
+
 function isProductionWeb(): boolean {
   if (typeof window === "undefined") return false;
-  return window.location.hostname === "clawbits.ai";
+  return PRODUCTION_WEB_HOSTS.includes(window.location.hostname);
 }
 
 /** Off-prod preview escape hatch: ``?releaseNotes=force`` or a localStorage

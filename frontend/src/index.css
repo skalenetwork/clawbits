@@ -105,6 +105,37 @@
   --sidebar-accent-foreground: oklch(0.2350 0 0);
   --sidebar-border: oklch(0.8500 0.0200 84.5889);
   --sidebar-ring: oklch(0.3012 0 0);
+  /* ── Agent trace (see components/chat/TurnTrace.tsx) ───────────────────
+   * Everything in the trace is one size and one family, so hierarchy is
+   * carried by three text tiers, the room hues, and spacing.
+   *
+   * --trace-error is a TRUE RED and is deliberately NOT --destructive, which
+   * is a rust orange at H 33.85. It is component-scoped rather than a global
+   * retune so the app-wide fence between --destructive and --signal (the brand
+   * claw red at H 15.6) is left exactly as it was. The honest cost: this red
+   * sits ~12 deg from --signal, closer than --destructive did. It is safe here
+   * because --signal is never referenced in the trace, and the two never share
+   * a surface — --signal is a brand/primary-action fill, this is a status chip
+   * inside a message footer. Do not widen its use without revisiting that. */
+  --trace-quiet: color-mix(in oklch, var(--foreground) 68%, transparent);
+  --trace-faint: color-mix(in oklch, var(--foreground) 50%, transparent);
+  --trace-rail: color-mix(in oklab, var(--foreground) 18%, transparent);
+  --trace-error: oklch(0.545 0.205 27.5);      /* #cd2121, 5.03:1 on --card */
+  --trace-on-error: oklch(0.970 0.008 85);     /* paper, not pure white */
+  --trace-stroke: 2;
+  /* The ROOM palette: hue names what a step could AFFECT, ordered by blast
+   * radius. Ink L is held ~0.59 so every room has equal APCA; chip fill L is
+   * locked at EXACTLY 0.902 with zero variance across rooms, and C is solved
+   * per hue. That zero variance is deliberate and load-bearing: pop-out needs
+   * a homogeneous distractor field as much as a different target, so the
+   * coloured chips are what let the inverted failure chip pop. */
+  --room-find-ink: oklch(0.592 0.110 84);   --room-find-chip: oklch(0.902 0.0530 84);
+  --room-write-ink: oklch(0.578 0.110 144); --room-write-chip: oklch(0.902 0.0496 144);
+  --room-run-ink: oklch(0.576 0.097 204);   --room-run-chip: oklch(0.902 0.0426 204);
+  --room-read-ink: oklch(0.595 0.110 270);  --room-read-chip: oklch(0.902 0.0390 270);
+  --room-reach-ink: oklch(0.605 0.110 330); --room-reach-chip: oklch(0.902 0.0422 330);
+  --room-other-ink: oklch(0.588 0.008 85);  --room-other-chip: oklch(0.902 0.0060 85);
+
   --radius: 0.625rem;
   --shadow-x: 0px;
   --shadow-y: 4px;
@@ -348,6 +379,23 @@ html[data-tauri-platform="linux"] body {
   --mention: oklch(0.72 0.10 254);
   /* Dark-mode unread red — the iOS dark-palette variant of --unread. */
   --unread: #FF453A;
+
+  /* ── Agent trace, dark ────────────────────────────────────────────────── */
+  --trace-quiet: color-mix(in oklch, var(--foreground) 80%, transparent);
+  --trace-faint: color-mix(in oklch, var(--foreground) 57%, transparent);
+  --trace-rail: color-mix(in oklab, var(--foreground) 18%, transparent);
+  --trace-error: oklch(0.665 0.198 25);        /* #f55452, 5.09:1 on --card */
+  --trace-on-error: oklch(0.190 0.040 37);     /* dark tint of the hue; pure
+                                                * black on it reads as a hole */
+  /* Light-on-dark strokes bloom, so dark needs ~12% less weight to measure
+   * the same as light. This is the only geometry that differs per theme. */
+  --trace-stroke: 1.75;
+  --room-find-ink: oklch(0.804 0.120 84);   --room-find-chip: oklch(0.318 0.050 84);
+  --room-write-ink: oklch(0.789 0.120 144); --room-write-chip: oklch(0.318 0.050 144);
+  --room-run-ink: oklch(0.787 0.120 204);   --room-run-chip: oklch(0.318 0.050 204);
+  --room-read-ink: oklch(0.805 0.097 270);  --room-read-chip: oklch(0.318 0.050 270);
+  --room-reach-ink: oklch(0.817 0.120 330); --room-reach-chip: oklch(0.318 0.050 330);
+  --room-other-ink: oklch(0.800 0.008 85);  --room-other-chip: oklch(0.318 0 0);
 }
 
 @theme inline {

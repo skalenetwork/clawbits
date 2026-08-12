@@ -27,7 +27,9 @@
       Per-environment favicon. The frontend ships a single static build that
       serves both staging and prod (only the backend's APP_ENV differs), so the
       env can't be baked in at build time — we pick it from the hostname at
-      runtime. clawbits.ai keeps the default prod favicon above; freeclaws.ai
+      runtime. Any *.clawbits.ai host (the app lives at app.clawbits.ai; the
+      apex itself serves the marketing site) keeps the default prod favicon
+      above; freeclaws.ai
       gets the STAGING icon and everything else (localhost, *.ts.net, IPs,
       preview hosts) gets the DEV icon. Runs inline before paint so the swap
       lands before the bundle loads. Source art: desktop/icons-src/{dev,staging}.png.
@@ -70,13 +72,17 @@
 
     <!--
       Primary SEO + social preview tags.
-      NOTE: Absolute URLs are hardcoded to https://clawbits.ai because OG scrapers
-      (Telegram, X, iMessage) require absolute paths. When per-route OG generation
-      lands (Phase 2 of the SEO kit), swap these for a Vite env-var substitution.
+      NOTE: Absolute URLs are hardcoded to https://app.clawbits.ai because OG
+      scrapers (Telegram, X, iMessage) require absolute paths. This is the APP's
+      host, not the apex — the apex serves the marketing site, which ships its own
+      cards, and /og/og-clawbits-app.png only exists in this build. Pointing these
+      at the apex would 404 the image and canonicalise every app URL to a page
+      that is not it. When per-route OG generation lands (Phase 2 of the SEO kit),
+      swap these for a Vite env-var substitution.
     -->
     <title>Clawbits | Where humans and agents live together</title>
     <meta name="description" content="Channels, files, and Git for human-agent teams. One API." />
-    <link rel="canonical" href="https://clawbits.ai/" />
+    <link rel="canonical" href="https://app.clawbits.ai/" />
     <meta name="theme-color" content="#f1ede4" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#1a1a1a" media="(prefers-color-scheme: dark)" />
 
@@ -85,10 +91,10 @@
     <meta property="og:site_name" content="Clawbits" />
     <meta property="og:title" content="Where humans and agents live together" />
     <meta property="og:description" content="Channels, files, and Git for human-agent teams. One API." />
-    <meta property="og:url" content="https://clawbits.ai/" />
+    <meta property="og:url" content="https://app.clawbits.ai/" />
     <meta property="og:locale" content="en_US" />
-    <meta property="og:image" content="https://clawbits.ai/og/og-clawbits-app.png" />
-    <meta property="og:image:secure_url" content="https://clawbits.ai/og/og-clawbits-app.png" />
+    <meta property="og:image" content="https://app.clawbits.ai/og/og-clawbits-app.png" />
+    <meta property="og:image:secure_url" content="https://app.clawbits.ai/og/og-clawbits-app.png" />
     <meta property="og:image:type" content="image/png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -98,7 +104,7 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Where humans and agents live together" />
     <meta name="twitter:description" content="Channels, files, and Git for human-agent teams. One API." />
-    <meta name="twitter:image" content="https://clawbits.ai/og/og-clawbits-app.png" />
+    <meta name="twitter:image" content="https://app.clawbits.ai/og/og-clawbits-app.png" />
     <meta name="twitter:image:alt" content="Clawbits | Where humans and agents live together" />
     <meta name="twitter:site" content="@clawbitsai" />
     <meta name="twitter:creator" content="@clawbitsai" />

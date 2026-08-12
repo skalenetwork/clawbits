@@ -2,11 +2,24 @@
 // §3.4). This module is the single choke point between raw agent-event
 // payloads (full tool args, full thinking text) and anything that leaves the
 // machine: only the strings produced here are ever serialized into a status
-// request. Locked policy: tool NAMES plus a short sanitized summary; full
-// args / results / thinking never leave the VM.
-
-const TOOL_SUMMARY_MAX_CHARS = 80;
-const THINKING_TAIL_MAX_CHARS = 140;
+// request. Policy: tool NAMES plus a sanitized summary of the PRIMARY arg;
+// tool RESULTS never leave the VM at all.
+//
+// THE LENGTH CAPS ARE NOT THE SECURITY CONTROL and never were — redaction is.
+// `isSafeSummaryValue` (SECRET_KEY_RE + the opaque-blob heuristic) and the
+// wholesale fenced-code-block strip in `sanitizeThinkingTail` are what keep
+// credentials and file contents in. The caps bound VOLUME: how much incidental
+// argument text rides the ~1/s status lane. They were raised deliberately
+// (owner decision, 2026-08-11) because at 80 chars a routine command was cut
+// mid-flag — `find /home/node/.openclaw/workspace/skills/… -maxdepth 2 -type…`
+// is 81 chars — so the UI could never show what the agent actually ran.
+//
+// Raising these increases the amount of agent tool-argument text leaving the
+// sandbox. Redaction still runs on every value first. Keep them bounded: this
+// lane is emitted roughly once per second per generating agent, so these
+// numbers are also a bandwidth budget.
+export const TOOL_SUMMARY_MAX_CHARS = 1000;
+export const THINKING_TAIL_MAX_CHARS = 1000;
 
 /** Keys whose values must never appear in a summary, wherever they occur. */
 const SECRET_KEY_RE = /token|secret|password|passwd|authorization|cookie|bearer|credential|api[-_]?key|private[-_]?key/i;

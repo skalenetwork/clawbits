@@ -37,7 +37,7 @@ const SECTIONS: Section[] = [
         <p>
           This Privacy Policy explains what personal data Clawbits collects
           when you use the Service (the websites at <code>clawbits.ai</code>,{" "}
-          <code>clawbits.ai</code>, and any related subdomains and APIs), why
+          <code>app.clawbits.ai</code>, and any related subdomains and APIs), why
           we collect it, who we share it with, how long we keep it, and what
           your rights are. It complements our{" "}
           <Link to="/terms">Terms of Service</Link>.

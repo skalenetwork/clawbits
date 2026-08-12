@@ -132,12 +132,17 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
     // --- Derived shelves. Plain computation — the React Compiler memoizes. --
     const managed = automations.filter(a => a.managed_by !== "external");
     const external = automations.filter(a => a.managed_by === "external");
-    const attention = managed.filter(a =>
+    // Attention is computed over EVERY automation, mirrors included: a job
+    // Clawbits doesn't manage can still be failing every run, and the recessed
+    // "Managed elsewhere" shelf is exactly where that goes unseen. The row is
+    // read-only when it opens; being unfixable here is not a reason to be quiet.
+    const attention = automations.filter(a =>
         automationVisualState(a, livenessFor(a.agent_id), nameFor(a.agent_id), now)
             .needsAttention,
     );
     const attentionIds = new Set(attention.map(a => a.automation_id));
     const gallery = managed.filter(a => !attentionIds.has(a.automation_id));
+    const externalRest = external.filter(a => !attentionIds.has(a.automation_id));
 
     // Group the gallery by agent (org view); scoped view is a single group.
     const byAgent = new Map<string, AutomationType[]>();
@@ -269,11 +274,11 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
             )}
 
             {/* External mirrors — visible, recessed, read-only by construction. */}
-            {!isLoading && !isError && external.length > 0 && (
+            {!isLoading && !isError && externalRest.length > 0 && (
                 <Stagger delay={180} className="space-y-3">
                     <SectionHeader icon={External}>Managed elsewhere</SectionHeader>
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        {external.map(a => (
+                        {externalRest.map(a => (
                             <AutomationCard
                                 key={a.automation_id}
                                 automation={a}

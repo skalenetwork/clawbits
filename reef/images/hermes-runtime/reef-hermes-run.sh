@@ -215,7 +215,7 @@ reef_clawbits_signup() {
     fi
     return 0
   fi
-  endpoint="${CLAWBITS_BASE_URL:-https://clawbits.ai}"
+  endpoint="${CLAWBITS_BASE_URL:-https://app.clawbits.ai}"
   args=(clawbits signup --endpoint "$endpoint" --signup-token "$CLAWBITS_SIGNUP_TOKEN" --agent-cli "$AGENT_CLI")
   [ -n "${CLAWBITS_ORG_ID:-}" ] && args+=(--org-id "$CLAWBITS_ORG_ID")
   echo "reef-hermes: enrolling with one-time signup token at $endpoint …" >&2

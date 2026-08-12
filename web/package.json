@@ -13,8 +13,8 @@
     "preview": "astro preview",
     "check": "astro check",
     "verify:legal": "node scripts/verify-legal-parity.mjs",
-    "deploy:staging": "SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://freeclaws.ai bun run build && wrangler deploy --env staging",
-    "deploy:production": "SITE_URL=https://preview.clawbits.ai PUBLIC_APP_URL=https://app.clawbits.ai bun run build && wrangler deploy --env production",
+    "deploy:staging": "SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://app.freeclaws.ai bun run build && wrangler deploy --env staging",
+    "deploy:production": "SITE_URL=https://clawbits.ai PUBLIC_APP_URL=https://app.clawbits.ai bun run build && wrangler deploy --env production",
     "verify:links": "node scripts/verify-links.mjs",
     "verify:no-inline-styles": "node scripts/verify-no-inline-styles.mjs",
     "verify": "bun run check && bun run verify:legal && bun run verify:links && bun run verify:no-inline-styles"

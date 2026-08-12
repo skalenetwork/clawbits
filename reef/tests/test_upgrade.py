@@ -189,7 +189,7 @@ def test_upgrade_recomputes_net_allow_union_for_ollama(monkeypatch):
             "config": {
                 "env": [
                     ["OPENCLAW_GATEWAY_TOKEN", "tok"],
-                    ["CLAWBITS_ENDPOINT", "https://clawbits.ai"],  # public — no rule alone
+                    ["CLAWBITS_ENDPOINT", "https://app.clawbits.ai"],  # public — no rule alone
                     ["OLLAMA_HOST", "http://host.microsandbox.internal:11434"],
                 ],
             }

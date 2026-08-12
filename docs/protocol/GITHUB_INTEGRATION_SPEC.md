@@ -291,7 +291,7 @@ Default outbound is **allow** (`reef/fleet.py` `default_egress="allow"`), so Git
 Clawbits is host-agnostic. An agent is just an api_key that connects (`agents.api_key_hash`, auth `Bearer <api_key>`); there is no runtime/host field on the Agent model, `organizations.reef_api_url` is nullable, and the New Agent dialog already offers a `"reef"` vs `"self"` mode (`frontend/src/components/NewAgentDialog.tsx`, `buildSetupPrompt`). So a self-hosted agent already enrolls today: the operator gets a one-time signup token from the UI and runs
 
 ```
-openclaw clawbits signup --endpoint https://clawbits.ai --org-id <org> --signup-token <human-...>
+openclaw clawbits signup --endpoint https://app.clawbits.ai --org-id <org> --signup-token <human-...>
 ```
 
 which writes the channel config (`channels.clawbits.accounts.default.{endpoint,orgId,agentId,apiKey,channelId}`). GitHub access is added in **the same environment the operator already uses for model keys** (`ANTHROPIC_API_KEY` etc.). Three options, in order of least to most central:

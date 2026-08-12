@@ -348,9 +348,24 @@ export interface AutomationVisualState {
   drifted: boolean;
   /** Consecutive failing runs (0 when the last run was fine). */
   failStreak: number;
+  /** Why the last run failed, as the runtime reported it — the mirror already
+   *  carries it, so a failing automation can say WHAT broke instead of only
+   *  counting. Null unless the last run actually failed (the gateway keeps a
+   *  stale `lastError` around after a recovery). */
+  lastError: string | null;
+  /** The failure streak crossed the attention threshold. */
+  failing: boolean;
   /** Belongs on the needs-attention shelf. */
   needsAttention: boolean;
 }
+
+/** Consecutive failing runs before an automation lands on the attention shelf.
+ *  One bad run is noise (a flaky fetch, a rate limit); two in a row is a
+ *  pattern. Mirrors count too: Clawbits can't fix a job it doesn't manage, but
+ *  a job that has failed dozens of times in a row is exactly what an operator
+ *  needs told — leaving it in the recessed "Managed elsewhere" shelf is how it
+ *  goes unnoticed for weeks. */
+const FAIL_STREAK_ATTENTION = 2;
 
 /** How long after a reported `runningAtMs` we still trust "running now" —
  *  reports arrive once per reconcile cycle, so an old marker is stale, not
@@ -372,7 +387,14 @@ export function automationVisualState(
   const drifted = a.missing_since != null;
   const lastRunFailed = isErrorRunStatus(state?.lastRunStatus);
   const failStreak = lastRunFailed ? Math.max(1, state?.consecutiveErrors ?? 1) : 0;
-  const common = { drifted, failStreak };
+  const reportedError = typeof state?.lastError === "string" ? state.lastError.trim() : "";
+  const failing = failStreak >= FAIL_STREAK_ATTENTION;
+  const common = {
+    drifted,
+    failStreak,
+    lastError: lastRunFailed && reportedError ? reportedError : null,
+    failing,
+  };
 
   if (a.managed_by === "external") {
     return {
@@ -383,7 +405,9 @@ export function automationVisualState(
       label: "Mirror",
       detail: "Managed outside Clawbits",
       ...common,
-      needsAttention: false,
+      // Read-only does not mean unwatched. Clawbits can't repair a mirror, but
+      // it can refuse to hide one that keeps failing.
+      needsAttention: failing,
     };
   }
   if (a.sync_status === "removing") {
@@ -436,8 +460,10 @@ export function automationVisualState(
       detail: "Keeps its configuration",
       ...common,
       // Drift is drift even while sleeping — the live job disagrees with the
-      // stored intent, so the shelf should still surface it.
-      needsAttention: drifted,
+      // stored intent, so the shelf should still surface it. A paused
+      // automation that was failing when it stopped keeps that flag too: the
+      // breakage is still there when it resumes.
+      needsAttention: drifted || failing,
     };
   }
   const runningAt = state?.runningAtMs;
@@ -455,7 +481,7 @@ export function automationVisualState(
       label: "Running now",
       detail: null,
       ...common,
-      needsAttention: drifted,
+      needsAttention: drifted || failing,
     };
   }
   return {
@@ -466,7 +492,9 @@ export function automationVisualState(
     label: "Active",
     detail: null,
     ...common,
-    needsAttention: drifted,
+    // "Active" only means the schedule is live and in sync — a job can be
+    // perfectly synced and fail every single run. That is still attention.
+    needsAttention: drifted || failing,
   };
 }
 

@@ -85,7 +85,7 @@ This paradigm is uniquely suited for Clawbots, enabling a new class of infrastru
 ## API SPECIFICATION
 
 ### Base URL
-`https://api.clawbits.ai` (production)
+`https://app.clawbits.ai` (production)
 `http://localhost:8000` (default local)
 
 ### Common Headers

@@ -52,7 +52,7 @@ needs it at signup time), but no Rust sources or toolchain. A host only needs
 ./build.sh && ./package.sh
 tar xzf dist/clawbits-ironclaw-<version>.tar.gz
 cd clawbits-ironclaw-<version>
-./clawbits-ironclaw install --endpoint https://clawbits.ai --api-key ck_…
+./clawbits-ironclaw install --endpoint https://app.clawbits.ai --api-key ck_…
 ```
 
 CI publishes that tarball as a GitHub Release asset on the sibling
@@ -69,7 +69,7 @@ manifest by hand only for a deliberate semantic jump.
 Use the channel CLI:
 
 ```bash
-./clawbits-ironclaw install --endpoint https://clawbits.ai --api-key ck_…
+./clawbits-ironclaw install --endpoint https://app.clawbits.ai --api-key ck_…
 ironclaw run
 ```
 
@@ -77,7 +77,7 @@ Or with a one-time signup token from the Clawbits web "Add agent" flow:
 
 ```bash
 ./clawbits-ironclaw install \
-  --endpoint https://clawbits.ai \
+  --endpoint https://app.clawbits.ai \
   --org-id org_… \
   --signup-token human-…
 ironclaw run
@@ -109,7 +109,7 @@ background. The boot screen should show `channels  clawbits`.
 
 # switch to a new Clawbits agent/key, clear local greeting state
 ./clawbits-ironclaw reinstall --new-agent \
-  --endpoint https://clawbits.ai \
+  --endpoint https://app.clawbits.ai \
   --org-id org_… \
   --signup-token human-…
 
@@ -134,7 +134,7 @@ optional — edit the `config` block in the installed
 
 | Field | Description | Default |
 | --- | --- | --- |
-| `endpoint` | Clawbits API base URL | `https://clawbits.ai` |
+| `endpoint` | Clawbits API base URL | `https://app.clawbits.ai` |
 | `channel_id` | Watch a single channel; else poll all | all |
 | `allow_from` | Inbound sender allowlist, e.g. `["human:123"]` | accept all |
 | `poll_interval_ms` | Poll interval (min 30000) | `30000` |

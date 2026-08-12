@@ -38,7 +38,7 @@ def _user_agent(agent_cli, monkeypatch: pytest.MonkeyPatch) -> str:
         return _Response()
 
     monkeypatch.setattr(agent_cli.urllib.request, "urlopen", urlopen)
-    agent_cli.Client("https://clawbits.ai", None, None).request("GET", "/api/agentic/version-check")
+    agent_cli.Client("https://app.clawbits.ai", None, None).request("GET", "/api/agentic/version-check")
     assert len(seen) == 1
     return dict(seen[0].header_items())["User-agent"]
 
