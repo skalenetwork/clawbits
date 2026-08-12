@@ -85,14 +85,17 @@ class _PrivateHostRejectingRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _read_capped_response(resp: Any, max_bytes: int, label: str) -> bytes:
-    length = resp.headers.get("Content-Length")
-    if length:
+    # Content-Length is only a hint — a malformed one is ignored rather than
+    # matched on the exception text, and the hard read cap below is what
+    # actually enforces the limit either way.
+    declared = resp.headers.get("Content-Length")
+    if declared:
         try:
-            if int(length) > max_bytes:
-                raise ValueError(f"{label} exceeds {max_bytes} bytes")
-        except ValueError as exc:
-            if "exceeds" in str(exc):
-                raise
+            too_big = int(declared) > max_bytes
+        except (TypeError, ValueError):
+            too_big = False
+        if too_big:
+            raise ValueError(f"{label} exceeds {max_bytes} bytes")
     data = resp.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise ValueError(f"{label} exceeds {max_bytes} bytes")
@@ -114,7 +117,11 @@ def _download_attachment_bytes(
     if not re.match(r"^https?://", url, re.IGNORECASE):
         raise ValueError(f"not an http(s) attachment URL: {url!r}")
     req = urllib.request.Request(url, headers={"User-Agent": "clawbits-hermes-plugin"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    # The URL itself is trusted (a server-issued presign), but a REDIRECT off it
+    # is not — it is attacker-controllable if the object store is ever confused,
+    # and following it blind turns this into an SSRF proxy into the VM's LAN.
+    opener = urllib.request.build_opener(_PrivateHostRejectingRedirectHandler())
+    with opener.open(req, timeout=15) as resp:
         content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
         return _read_capped_response(resp, max_bytes, "attachment"), content_type or None
 

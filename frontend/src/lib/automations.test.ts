@@ -120,3 +120,27 @@ describe("automationVisualState needsAttention", () => {
     expect(state(automation()).needsAttention).toBe(false);
   });
 });
+
+describe("hermes plugin version floor", () => {
+  it("gates a hermes agent below the reconciler version", () => {
+    expect(supportsAutomations("hermes", "0.6.3")).toBe(false);
+    expect(automationsUnsupportedReason("hermes", "0.6.3")).toContain("0.7.0");
+  });
+
+  it("allows 0.7.0 and newer", () => {
+    expect(supportsAutomations("hermes", "0.7.0")).toBe(true);
+    expect(supportsAutomations("hermes", "0.8.1")).toBe(true);
+    expect(supportsAutomations("hermes", "1.0.0")).toBe(true);
+  });
+
+  it("passes an unreported or unparseable version, like the server", () => {
+    expect(supportsAutomations("hermes", null)).toBe(true);
+    expect(supportsAutomations("hermes", undefined)).toBe(true);
+    expect(supportsAutomations("hermes", "dev")).toBe(true);
+  });
+
+  it("does not apply the floor to other runtimes", () => {
+    expect(supportsAutomations("openclaw", "0.1.0")).toBe(true);
+    expect(supportsAutomations("ironclaw", "9.9.9")).toBe(false);
+  });
+});

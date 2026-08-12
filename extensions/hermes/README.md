@@ -87,11 +87,22 @@ Optional controls:
 ```bash
 export CLAWBITS_EMAIL_ENABLED=false       # default true
 export CLAWBITS_EMAIL_POLL_INTERVAL=60    # seconds; minimum 30
-export CLAWBITS_STREAMING_ENABLED=0       # Reef image default is enabled
+export CLAWBITS_STREAMING_ENABLED=0       # read by the Reef entrypoint, not the plugin
 ```
 
-Automations use Hermes's internal `cron.jobs` API. Re-test reconciliation when
+`CLAWBITS_STREAMING_ENABLED` is consumed by `reef-hermes-run.sh`, which
+translates it into `hermes config set streaming.*`; the plugin itself never
+reads it.
+
+Automations use Hermes's internal `cron.jobs` API and the reconciler depends on
+two properties of it: `update_job` persists unknown keys (the `clawbits_*`
+sentinels), and there is no execution-history API, so run rows are synthesised
+from `last_run_at`/`last_status` on the job record. Re-test reconciliation when
 upgrading Hermes.
+
+Automations also require server-side support: Clawbits gates them on plugin
+`0.7.0` or newer, so an agent on an older plugin is rejected with an upgrade
+hint rather than left showing a permanent "Applying…".
 
 ## Reef image
 

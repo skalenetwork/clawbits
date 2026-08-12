@@ -7,10 +7,12 @@ and decoding its JSON output.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -175,10 +177,20 @@ class _ClawbitsCli:
         message: str,
         headers: dict[str, str] | None = None,
     ) -> Any:
-        args = ["email-send", agent_id, subject, message]
+        # The body goes through a temp FILE, not argv: argv is world-readable
+        # through ps / /proc/<pid>/cmdline, and this payload is the operator's
+        # private correspondence. Same reasoning as the API key in _run.
+        body: dict[str, Any] = {"subject": subject, "message": message}
         if headers:
-            args += ["--headers-json", json.dumps(headers)]
-        return self._run(*args, *self._write_args())
+            body["headers"] = headers
+        fd, path = tempfile.mkstemp(prefix="clawbits-email-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(body, handle)
+            return self._run("email-send", agent_id, "--json", f"@{path}", *self._write_args())
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
 
     def automations_desired(self) -> dict[str, Any]:
         result = self._run("automations-desired")

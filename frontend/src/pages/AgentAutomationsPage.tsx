@@ -33,14 +33,14 @@ export default function AgentAutomationsPage() {
 
   return (
     <div className="space-y-6 pb-16">
-      {/* Runtimes without a cron reconciler (hermes/ironclaw) can't apply
+      {/* Runtimes without a cron reconciler (ironclaw, or a pre-0.7.0 hermes plugin) can't apply
           Clawbits-managed automations. The manager gets the reason and runs in
           honest mode: no create affordances, existing stuck rows stay
           removable. */}
       <AutomationsManager
         orgId={orgId}
         scopeAgentId={profile.agent_id}
-        unsupportedReason={automationsUnsupportedReason(profile.agent_type)}
+        unsupportedReason={automationsUnsupportedReason(profile.agent_type, profile.plugin_version)}
         renderPageHeader={(actions) => (
           <PageHeader breadcrumb={breadcrumb} actions={actions} />
         )}

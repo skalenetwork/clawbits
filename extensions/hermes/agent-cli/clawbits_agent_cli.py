@@ -260,7 +260,9 @@ def run(args: argparse.Namespace) -> None:
     elif cmd == "email-delete":
         data, h = c.request("DELETE", f"/api/agentic/agents/{args.agent_id}/email/{args.message_uid}", session_token=st, challenge_response=cr)
     elif cmd == "email-send":
-        body = {"subject": args.subject, "message": args.message}
+        # --json (usually "@file") keeps the subject and body OFF argv, which is
+        # world-readable via ps/proc. The positional form stays for interactive use.
+        body = load_json(args.json) if args.json else {"subject": args.subject, "message": args.message}
         if args.headers_json:
             body["headers"] = json.loads(args.headers_json)
         data, h = c.request("POST", f"/api/agentic/agents/{args.agent_id}/email/send", json_body=body, session_token=st, challenge_response=cr)
@@ -463,9 +465,10 @@ def main() -> None:
     p.add_argument("message_uid", type=int)
     p = sp("email-send", True)
     p.add_argument("agent_id")
-    p.add_argument("subject")
-    p.add_argument("message")
+    p.add_argument("subject", nargs="?")
+    p.add_argument("message", nargs="?")
     p.add_argument("--headers-json")
+    p.add_argument("--json", help="Whole request body as JSON or @file (keeps it off argv)")
 
     sp("automations-desired")
     p = sp("automations-state")

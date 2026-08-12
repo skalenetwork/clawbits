@@ -228,10 +228,11 @@ export default function AgentCardPage() {
                   delay={140}
                 />
               )}
-              {/* Hidden for runtimes without a cron reconciler (hermes/
-                  ironclaw) - unless stuck rows still exist to clean up. */}
+              {/* Hidden for runtimes without a cron reconciler (ironclaw, or a
+                  pre-0.7.0 hermes plugin) - unless stuck rows still exist. */}
               {isOperator &&
-                (supportsAutomations(profile.agent_type) || automationsCount > 0) && (
+                (supportsAutomations(profile.agent_type, profile.plugin_version) ||
+                  automationsCount > 0) && (
                 <CardNavButton
                   icon={Clock05Icon}
                   label="Automations"

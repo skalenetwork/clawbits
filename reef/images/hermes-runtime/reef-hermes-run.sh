@@ -163,11 +163,15 @@ reef_configure_clawbits_display() {
       hermes config set display.platforms.clawbits.streaming true >/dev/null 2>&1 || true
       ;;
   esac
-  # Tool calls/thinking ride Clawbits's TTL'd activity lane, not permanent
-  # progress bubbles in the conversation.
+  # Tool calls ride Clawbits's TTL'd activity lane, not permanent progress
+  # bubbles in the conversation. Only keys that exist in Hermes's
+  # display_config are set here — an unknown key is silently swallowed by the
+  # `|| true` and would read as configured when it is not.
   hermes config set display.platforms.clawbits.tool_progress off >/dev/null 2>&1 || true
-  hermes config set display.platforms.clawbits.thinking_progress true >/dev/null 2>&1 || true
   hermes config set display.platforms.clawbits.live_status full >/dev/null 2>&1 || true
+  # `show_reasoning`, not `thinking_progress` — the latter is not a key Hermes
+  # knows, so it was silently swallowed by the `|| true` and never took effect.
+  hermes config set display.platforms.clawbits.show_reasoning true >/dev/null 2>&1 || true
 }
 
 reef_start_terminal() {

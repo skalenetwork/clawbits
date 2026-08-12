@@ -38,21 +38,51 @@ const RUNTIME_LABELS: Record<string, string> = {
   ironclaw: "IronClaw",
 };
 
+/** The Hermes plugin version that first shipped the reconciler. Mirrors the
+ *  server's `_HERMES_AUTOMATIONS_MIN_VERSION`, which 422s as the hard boundary —
+ *  this just keeps the UI from offering a control the server will reject. */
+const HERMES_AUTOMATIONS_MIN_VERSION = [0, 7, 0];
+
+/** Compare a reported plugin version against a floor. Unparseable ⇒ null, which
+ *  every caller treats as "pass" (same back-compat posture as the server). */
+function isBelowVersion(
+  reported: string | null | undefined,
+  floor: number[],
+): boolean | null {
+  const match = (reported ?? "").trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  const parts = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let i = 0; i < floor.length; i++) {
+    if (parts[i] !== floor[i]) return parts[i] < floor[i];
+  }
+  return false;
+}
+
 /** Whether Clawbits-managed automations can actually apply on this agent's
- *  runtime. Null/unknown passes: `agent_type` is self-reported on the first
- *  alive ping and the back-compat default is openclaw. */
+ *  runtime. Null/unknown passes: `agent_type` and `plugin_version` are
+ *  self-reported on the first alive ping and the back-compat default is
+ *  openclaw. */
 export function supportsAutomations(
   agentType: string | null | undefined,
+  pluginVersion?: string | null,
 ): boolean {
-  return !AUTOMATION_INCAPABLE_RUNTIMES.has(agentType ?? "");
+  if (AUTOMATION_INCAPABLE_RUNTIMES.has(agentType ?? "")) return false;
+  if (agentType === "hermes") {
+    return isBelowVersion(pluginVersion, HERMES_AUTOMATIONS_MIN_VERSION) !== true;
+  }
+  return true;
 }
 
 /** The honest empty-state copy for an automation-incapable runtime, or null
  *  when the runtime is fine. */
 export function automationsUnsupportedReason(
   agentType: string | null | undefined,
+  pluginVersion?: string | null,
 ): string | null {
-  if (supportsAutomations(agentType)) return null;
+  if (supportsAutomations(agentType, pluginVersion)) return null;
+  if (agentType === "hermes") {
+    return `Automations need the Clawbits Hermes plugin ${HERMES_AUTOMATIONS_MIN_VERSION.join(".")} or newer; this agent reports ${pluginVersion}. Redeploy the agent to upgrade its plugin.`;
+  }
   const label = RUNTIME_LABELS[agentType ?? ""] ?? "this runtime's";
   return `Automations aren't available for ${label} agents yet.`;
 }

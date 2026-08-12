@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from imapclient.exceptions import LoginError
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session
 
@@ -1250,6 +1251,14 @@ def _require_automation_operator(db, agent_id: str, user: dict) -> None:
 # desired set. None/unknown passes for backward compatibility.
 _AUTOMATION_INCAPABLE_RUNTIMES = frozenset({"ironclaw"})
 
+# The Hermes plugin version that first shipped the reconciler. An older Hermes
+# agent stores the row and leaves it on "requested" forever — the UI renders that
+# as a pulsing "Applying…" with needsAttention:false, so it is invisible. Reject
+# up front instead of pretending. Deliberately a fixed floor rather than
+# ``min_plugin_version()``: that one tracks plugin.yaml and would tighten itself
+# on every unrelated version bump.
+_HERMES_AUTOMATIONS_MIN_VERSION = Version("0.7.0")
+
 
 def _require_automation_capable_runtime(db, agent_id: str) -> None:
     """422 when the agent's runtime can't apply Clawbits-managed automations.
@@ -1268,6 +1277,26 @@ def _require_automation_capable_runtime(db, agent_id: str) -> None:
                 f"this agent runs {agent_type}"
             ),
         )
+    if agent_type == "hermes":
+        raw_version = row.plugin_version if row is not None else None
+        try:
+            reported = Version(raw_version) if raw_version else None
+        except InvalidVersion:
+            reported = None
+        # Missing/unparseable passes, matching the back-compat posture of the
+        # runtime gate above: agents that have never pinged shouldn't be locked
+        # out of a feature their plugin may well support.
+        if reported is not None and reported < _HERMES_AUTOMATIONS_MIN_VERSION:
+            # The hint rides in `detail` — the global HTTPException handler drops
+            # `exc.headers`.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Automations need Clawbits Hermes plugin "
+                    f"{_HERMES_AUTOMATIONS_MIN_VERSION} or newer; this agent reports "
+                    f"{raw_version}. Redeploy the agent to upgrade its plugin."
+                ),
+            )
 
 
 def _authorize_automation_operator(

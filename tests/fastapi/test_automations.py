@@ -366,11 +366,14 @@ def test_delete_agent_with_automations(test_client: TestClient, _test_engine):
         )
 
 
-def _set_agent_type(engine, agent_id: str, agent_type: str | None) -> None:
+def _set_agent_type(
+    engine, agent_id: str, agent_type: str | None, plugin_version: str | None = "0.7.0"
+) -> None:
     """Simulate the runtime self-report that normally lands on the alive ping."""
     with Session(engine) as db:
         agent = db.get(Agent, agent_id)
         agent.agent_type = agent_type
+        agent.plugin_version = plugin_version
         db.add(agent)
         db.commit()
 
@@ -421,6 +424,24 @@ def test_automations_gated_for_runtimes_without_reconciler(
     r = test_client.delete(f"{base}/{aid}", headers=auth_headers(token))
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "removing"
+
+    # A hermes agent still running the pre-reconciler plugin is gated too: its
+    # rows would sit on "requested" forever, which the UI renders as a silent
+    # "Applying...".
+    _set_agent_type(_test_engine, agent_id, "hermes", plugin_version="0.6.3")
+    r = test_client.post(
+        base, headers=auth_headers(token), json={"desired_spec": GOOD_SPEC}
+    )
+    assert r.status_code == 422, r.text
+    assert "0.7.0" in r.json()["detail"]
+    assert "0.6.3" in r.json()["detail"]
+
+    # An unreported plugin version passes, matching the runtime gate's posture.
+    _set_agent_type(_test_engine, agent_id, "hermes", plugin_version=None)
+    r = test_client.post(
+        base, headers=auth_headers(token), json={"desired_spec": GOOD_SPEC}
+    )
+    assert r.status_code == 200, r.text
 
     # OpenClaw remains supported.
     _set_agent_type(_test_engine, agent_id, "openclaw")
