@@ -1245,13 +1245,10 @@ def _require_automation_operator(db, agent_id: str, user: dict) -> None:
         )
 
 
-# Runtimes whose in-VM plugin has NO Clawbits cron reconciler. Only the
-# OpenClaw plugin reconciles desired-state automations today — a Hermes or
-# IronClaw agent would store the row and leave it stuck on "requested"
-# forever, so mutating calls are rejected up front instead of pretending.
-# None/unknown passes: ``agent_type`` is self-reported on the first alive
-# ping and the back-compat default is openclaw.
-_AUTOMATION_INCAPABLE_RUNTIMES = frozenset({"hermes", "ironclaw"})
+# Runtimes whose in-VM plugin has no Clawbits cron reconciler. Hermes ships
+# one in extensions/hermes/automations.py; IronClaw still cannot converge the
+# desired set. None/unknown passes for backward compatibility.
+_AUTOMATION_INCAPABLE_RUNTIMES = frozenset({"ironclaw"})
 
 
 def _require_automation_capable_runtime(db, agent_id: str) -> None:
@@ -1267,7 +1264,7 @@ def _require_automation_capable_runtime(db, agent_id: str) -> None:
         raise HTTPException(
             status_code=422,
             detail=(
-                "Automations require an OpenClaw runtime; "
+                "Automations are not supported by this agent runtime; "
                 f"this agent runs {agent_type}"
             ),
         )

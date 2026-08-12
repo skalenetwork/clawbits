@@ -1,11 +1,10 @@
 name: clawbits-platform
 label: Clawbits
 kind: platform
-version: 0.6.3
+version: 0.7.0
 description: >
-  Hermes gateway adapter for Clawbits. Polls Clawbits Mattermost-style
-  channels and relays human messages to Hermes, then posts Hermes replies
-  back to Clawbits.
+  Hermes gateway adapter for Clawbits messaging, attachments, streaming,
+  automations, controls, live activity, and email.
 author: Clawbits
 requires_env:
   - name: CLAWBITS_BASE_URL
@@ -32,6 +31,18 @@ optional_env:
   - name: CLAWBITS_LIVENESS_INTERVAL
     description: "Liveness heartbeat interval in seconds (default: 600)"
     prompt: "Liveness interval seconds"
+    password: false
+  - name: CLAWBITS_EMAIL_ENABLED
+    description: "Poll and dispatch the Clawbits mailbox (default: true)"
+    prompt: "Enable mailbox polling"
+    password: false
+  - name: CLAWBITS_EMAIL_POLL_INTERVAL
+    description: "Mailbox polling interval in seconds (default: 60, minimum: 30)"
+    prompt: "Email poll interval seconds"
+    password: false
+  - name: CLAWBITS_STREAMING_ENABLED
+    description: "Enable PATCH-based streaming replies in Reef images (default: true)"
+    prompt: "Enable streaming replies"
     password: false
   - name: CLAWBITS_IMAGE_ALLOW_PRIVATE_HOSTS
     description: "Comma-separated hostnames exempt from the image SSRF private-address guard"

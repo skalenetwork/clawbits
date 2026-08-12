@@ -1,10 +1,4 @@
-"""Image download with SSRF guarding, for native image delivery.
-
-The adapter's ``send_image`` pulls agent-influenced URLs onto disk before
-uploading them as native attachments; everything security-relevant about that
-fetch lives here: the private-address guard, its redirect re-check, and the
-size-capped download itself.
-"""
+"""Size-capped media downloads used by the Clawbits adapter."""
 
 from __future__ import annotations
 
@@ -16,11 +10,13 @@ import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 # Cap for image downloads in send_image (URL → temp file → native upload).
 # Matches the server's MM_FILES_MAX_BYTES default so anything we pull down
 # is also acceptable to the upload route.
 _IMAGE_DOWNLOAD_MAX_BYTES = 15 * 1024 * 1024
+_ATTACHMENT_DOWNLOAD_MAX_BYTES = _IMAGE_DOWNLOAD_MAX_BYTES
 
 # Hosts exempt from the private-address guard below, for self-hosted image
 # providers that serve from localhost/LAN (a local ComfyUI, a dev MinIO).
@@ -88,6 +84,41 @@ class _PrivateHostRejectingRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _read_capped_response(resp: Any, max_bytes: int, label: str) -> bytes:
+    length = resp.headers.get("Content-Length")
+    if length:
+        try:
+            if int(length) > max_bytes:
+                raise ValueError(f"{label} exceeds {max_bytes} bytes")
+        except ValueError as exc:
+            if "exceeds" in str(exc):
+                raise
+    data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"{label} exceeds {max_bytes} bytes")
+    return data
+
+
+def _download_attachment_bytes(
+    url: str,
+    *,
+    max_bytes: int = _ATTACHMENT_DOWNLOAD_MAX_BYTES,
+) -> tuple[bytes, str | None]:
+    """Download a server-issued attachment URL with a strict byte cap.
+
+    These URLs come from Clawbits's authenticated file-metadata endpoint and
+    are normally short-lived object-store presigns. Private hosts are allowed
+    here so self-hosted Clawbits/MinIO works; unlike outbound model-authored
+    image URLs, this is a trusted server response, not an SSRF input.
+    """
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        raise ValueError(f"not an http(s) attachment URL: {url!r}")
+    req = urllib.request.Request(url, headers={"User-Agent": "clawbits-hermes-plugin"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+        return _read_capped_response(resp, max_bytes, "attachment"), content_type or None
+
+
 def _download_to_tempfile(image_url: str) -> tuple[str, str | None]:
     """Fetch ``image_url`` into a temp file (size-capped).
 
@@ -108,11 +139,7 @@ def _download_to_tempfile(image_url: str) -> tuple[str, str | None]:
         suffix = Path(image_url.split("?", 1)[0]).suffix
         if not suffix and content_type:
             suffix = mimetypes.guess_extension(content_type) or ""
-        data = resp.read(_IMAGE_DOWNLOAD_MAX_BYTES + 1)
-        if len(data) > _IMAGE_DOWNLOAD_MAX_BYTES:
-            raise ValueError(
-                f"image exceeds {_IMAGE_DOWNLOAD_MAX_BYTES} bytes: {image_url!r}"
-            )
+        data = _read_capped_response(resp, _IMAGE_DOWNLOAD_MAX_BYTES, "image")
     fd, path = tempfile.mkstemp(prefix="clawbits-img-", suffix=suffix or ".bin")
     try:
         with os.fdopen(fd, "wb") as f:

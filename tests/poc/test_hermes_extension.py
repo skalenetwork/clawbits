@@ -5,7 +5,7 @@ import hashlib
 import importlib.util
 import sys
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,10 @@ class _FakeBasePlatformAdapter:
 
 class _FakeMessageType:
     TEXT = "text"
+    PHOTO = "photo"
+    VIDEO = "video"
+    AUDIO = "audio"
+    DOCUMENT = "document"
 
 
 @dataclass
@@ -52,6 +56,8 @@ class _FakeMessageEvent:
     source: Any
     raw_message: Any
     message_id: str
+    media_urls: list[str] = field(default_factory=list)
+    media_types: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -779,3 +785,181 @@ def test_dispatched_post_is_remembered_so_a_nudge_cannot_double_fire() -> None:
 
     asyncio.run(scenario())
     assert len(adapter.events) == 1, "nudge for an already-dispatched post is deduped"
+
+
+def test_streaming_reply_creates_patches_and_finalizes() -> None:
+    mod = _load_hermes_module()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.posts: list[tuple[Any, ...]] = []
+            self.patches: list[tuple[str, str, dict[str, Any]]] = []
+
+        def post_message(self, *args: Any) -> dict[str, Any]:
+            self.posts.append(args)
+            return {"post_id": 91}
+
+        def patch_message(self, channel_id: str, post_id: str, **body: Any) -> dict[str, Any]:
+            self.patches.append((channel_id, post_id, body))
+            return {"post_id": int(post_id)}
+
+        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+
+    result = asyncio.run(
+        adapter.send("chan", "first tokens", reply_to="12", metadata={"expect_edits": True})
+    )
+    assert result.success and result.message_id == "91"
+    assert adapter.client.posts[0][-1] == "streaming"
+    assert adapter.client.patches[0] == ("chan", "91", {"replace": "first tokens"})
+
+    result = asyncio.run(adapter.edit_message("chan", "91", "complete", finalize=True))
+    assert result.success
+    assert adapter.client.patches[-1] == (
+        "chan",
+        "91",
+        {"replace": "complete", "done": True},
+    )
+
+
+def test_attachment_only_post_reaches_hermes_media(monkeypatch) -> None:
+    mod = _load_hermes_module()
+    monkeypatch.setattr(
+        sys.modules["hermes_clawbits_test.adapter"],
+        "cache_post_attachments",
+        lambda client, post: (["/cache/report.pdf"], ["application/pdf"], ["[document saved]"]),
+    )
+
+    class FakeClient:
+        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+    adapter._cursors["chan"] = (0, 0, "")
+    post = {
+        "post_id": 7,
+        "created_at": "2026-06-04 12:00:01",
+        "message": "",
+        "human_id": 1,
+        "files": [
+            {
+                "file_id": "f1",
+                "filename": "report.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 10,
+            }
+        ],
+    }
+
+    async def scenario() -> None:
+        await adapter._maybe_dispatch(mod._Channel("chan", "direct", "DM"), post)
+        await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert len(adapter.events) == 1
+    assert adapter.events[0].media_urls == ["/cache/report.pdf"]
+    assert adapter.events[0].media_types == ["application/pdf"]
+    assert adapter.events[0].message_type == "document"
+
+
+def test_snooze_and_inter_agent_limit_are_enforced() -> None:
+    mod = _load_hermes_module()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.posts: list[str] = []
+
+        def post_message(self, channel_id: str, message: str, *args: Any) -> dict[str, Any]:
+            self.posts.append(message)
+            return {"post_id": 99}
+
+        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "me"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+    channel = mod._Channel("chan", "public", "Room")
+    adapter._cursors["chan"] = (0, 0, "")
+
+    async def scenario() -> None:
+        adapter._apply_controls({"snoozed": True})
+        await adapter._maybe_dispatch(
+            channel,
+            {"post_id": 1, "created_at": "2026-06-04 12:00:01", "message": "@me hi", "human_id": 1},
+        )
+        adapter._apply_controls(
+            {
+                "snoozed": False,
+                "inter_agent_mode_enabled": True,
+                "inter_agent_message_limit": 1,
+            }
+        )
+        await adapter._maybe_dispatch(
+            channel,
+            {"post_id": 2, "created_at": "2026-06-04 12:00:02", "message": "@me first", "agent_id": "peer"},
+        )
+        await adapter._maybe_dispatch(
+            channel,
+            {"post_id": 3, "created_at": "2026-06-04 12:00:03", "message": "@me second", "agent_id": "peer"},
+        )
+        await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert len(adapter.events) == 1
+    assert adapter.events[0].message_id == "2"
+    assert adapter._reply_prefixes["2"] == "@peer"
+    assert adapter.client.posts == ["@peer Nice, but need human guidance to proceed."]
+
+
+def test_email_reply_context_preserves_threading_headers() -> None:
+    mod = _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    context = email_mod.email_reply_context(
+        {"uid": 42, "subject": "Question", "headers": {"Message-ID": "<abc@example>"}}
+    )
+
+    class FakeClient:
+        def email_send(
+            self,
+            agent_id: str,
+            subject: str,
+            message: str,
+            headers: dict[str, str],
+        ) -> dict[str, str]:
+            self.call = (agent_id, subject, message, headers)
+            return {"status": "sent"}
+
+    client = FakeClient()
+    email_mod.send_email_reply(client, "agent", context, "answer")
+    assert client.call == (
+        "agent",
+        "Re: Question",
+        "answer",
+        {"In-Reply-To": "<abc@example>", "References": "<abc@example>"},
+    )
+    assert mod.PLUGIN_VERSION == "0.7.0"
+
+
+def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> None:
+    _load_hermes_module()
+    automation_mod = sys.modules["hermes_clawbits_test.automations"]
+    monkeypatch.setattr(automation_mod.time, "time", lambda: 1_000.0)
+    schedule = {"kind": "every", "everyMs": 60_000, "anchorMs": 900_000}
+    next_ms, anchor_ms = automation_mod._next_schedule_ms(schedule, None)
+    assert (next_ms, anchor_ms) == (1_020_000, 900_000)
+
+    existing = {
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": "1970-01-01T00:18:00+00:00",
+        "clawbits_desired_schedule": schedule,
+        "clawbits_anchor_ms": anchor_ms,
+    }
+    assert automation_mod._next_schedule_ms(schedule, existing) == (1_080_000, 900_000)

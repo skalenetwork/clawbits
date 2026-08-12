@@ -21,12 +21,29 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
 
+from .attachments import cache_post_attachments
+from .automations import run_automations_reconciler
 from .cli_client import _ClawbitsCli, _default_cli_path
+from .email_integration import (
+    DEFAULT_EMAIL_POLL_INTERVAL_SECONDS,
+    MIN_EMAIL_POLL_INTERVAL_SECONDS,
+    _email_uids,
+    _EmailReplyContext,
+    _is_self_addressed,
+    email_reply_context,
+    load_email_watermark,
+    prepare_email_event,
+    save_email_watermark,
+    send_email_reply,
+)
 from .manifest import PLUGIN_VERSION
 from .media import _download_to_tempfile
 from .messages import (
     _build_agent_body,
     _Channel,
+    _extract_channels,
+    _extract_control_settings,
+    _extract_files,
     _is_user_post,
     _message_id_from_response,
     _parent_post_id_from_metadata,
@@ -72,6 +89,27 @@ _ATTENTION_PREAMBLE = (
 # from growing without bound on a long-lived agent that has processed hundreds
 # of thousands of posts.
 _SEEN_CAP = 20_000
+_REPLY_CONTEXT_CAP = 2_000
+_DEFAULT_INTER_AGENT_MESSAGE_LIMIT = 10
+_MAX_INTER_AGENT_MESSAGE_LIMIT = 50
+_HUMAN_GUIDANCE_MESSAGE = "Nice, but need human guidance to proceed."
+
+
+def _truthy_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sanitize_activity(text: str) -> str:
+    clean = re.sub(r"[\x00-\x1f\x7f]+", " ", str(text or ""))
+    clean = re.sub(
+        r"(?i)(api[_ -]?key|token|password|secret)\s*[:=]\s*\S+",
+        r"\1=[redacted]",
+        clean,
+    )
+    return re.sub(r"\s+", " ", clean).strip()[:160]
 
 
 def _env_float(raw: Any, default: float, label: str) -> float:
@@ -116,6 +154,10 @@ def _ws_header_kwarg(websockets_module: Any) -> str:
 
 
 class ClawbitsAdapter(BasePlatformAdapter):
+    supports_status_text = True
+    splits_long_messages = True
+    REQUIRES_EDIT_FINALIZE = True
+
     def __init__(self, config: PlatformConfig) -> None:
         super().__init__(config, Platform("clawbits"))
         extra = config.extra or {}
@@ -139,6 +181,14 @@ class ClawbitsAdapter(BasePlatformAdapter):
             DEFAULT_LIVENESS_INTERVAL_SECONDS,
             "CLAWBITS_LIVENESS_INTERVAL",
         )
+        self.email_poll_interval = max(
+            MIN_EMAIL_POLL_INTERVAL_SECONDS,
+            _env_float(
+                extra.get("email_poll_interval") or os.getenv("CLAWBITS_EMAIL_POLL_INTERVAL"),
+                DEFAULT_EMAIL_POLL_INTERVAL_SECONDS,
+                "CLAWBITS_EMAIL_POLL_INTERVAL",
+            ),
+        )
         self.cli_path = str(extra.get("agent_cli") or _default_cli_path())
         self.answer = str(extra.get("answer") or os.getenv("CLAWBITS_CHALLENGE_ANSWER") or "") or None
         self.client = _ClawbitsCli(
@@ -151,6 +201,10 @@ class ClawbitsAdapter(BasePlatformAdapter):
         self._task: asyncio.Task[None] | None = None
         self._liveness_task: asyncio.Task[None] | None = None
         self._ws_task: asyncio.Task[None] | None = None
+        self._email_task: asyncio.Task[None] | None = None
+        self._automations_task: asyncio.Task[None] | None = None
+        self._automations_wake = asyncio.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
         # In-flight turn tasks (see _spawn_turn) — held so disconnect can cancel
         # them and so the set keeps a strong reference (asyncio only weakly
         # references running tasks; an unreferenced one can be GC'd mid-turn).
@@ -159,6 +213,21 @@ class ClawbitsAdapter(BasePlatformAdapter):
         # _SEEN_CAP so it can't grow forever; _remember() evicts oldest-first.
         self._seen: dict[str, None] = {}
         self._cursors: dict[str, tuple[int, int, str]] = {}
+        self._channels: dict[str, _Channel] = {}
+        self._snoozed = False
+        self._inter_agent_mode = False
+        self._inter_agent_message_limit = _DEFAULT_INTER_AGENT_MESSAGE_LIMIT
+        self._consecutive_agent_turns = 0
+        self._awaiting_human_guidance = False
+        self._guidance_notice_sent = False
+        self._reply_prefixes: dict[str, str] = {}
+        self._stream_reply_prefixes: dict[str, str] = {}
+        self._email_reply_contexts: dict[str, _EmailReplyContext] = {}
+        self._stream_email_contexts: dict[str, _EmailReplyContext] = {}
+        self._email_watermark = load_email_watermark()
+        self._email_mailbox: str | None = None
+        self._activity_supported = True
+        self._activities: dict[str, dict[str, Any]] = {}
         # Word-boundary @mention matcher, compiled once. A naive
         # ``f"@{agent_id}" in text`` false-positives when this agent's id is a
         # prefix of another (``@agent_1`` inside ``@agent_12``) and never lets
@@ -183,15 +252,33 @@ class ClawbitsAdapter(BasePlatformAdapter):
             logger.error("Clawbits agent CLI not found: %s", self.cli_path)
             return False
         self._running = True
+        self._loop = asyncio.get_running_loop()
         self._task = asyncio.create_task(self._poll_loop())
         self._liveness_task = asyncio.create_task(self._liveness_loop())
         self._ws_task = asyncio.create_task(self._lobstertalk_ws_loop())
+        if _truthy_env("CLAWBITS_EMAIL_ENABLED", True):
+            self._email_task = asyncio.create_task(self._email_loop())
+        self._automations_task = asyncio.create_task(
+            run_automations_reconciler(
+                self.client,
+                self.agent_id,
+                self.fallback_channel_id,
+                self._automations_wake,
+                lambda: self._running,
+            )
+        )
         logger.info("Clawbits adapter connected to %s", self.base_url)
         return True
 
     async def disconnect(self) -> None:
         self._running = False
-        for attr in ("_task", "_liveness_task", "_ws_task"):
+        for attr in (
+            "_task",
+            "_liveness_task",
+            "_ws_task",
+            "_email_task",
+            "_automations_task",
+        ):
             task = getattr(self, attr, None)
             if task is None:
                 continue
@@ -208,6 +295,85 @@ class ClawbitsAdapter(BasePlatformAdapter):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._turn_tasks.clear()
+        self._loop = None
+
+    def set_status_text(self, chat_id: str, text: str | None) -> None:
+        """Map Hermes's live tool phrase onto Clawbits's ephemeral activity lane."""
+        super().set_status_text(chat_id, text)
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+        label = _sanitize_activity(text or "")
+        words = label.split()
+        activity = (
+            {
+                "kind": "tool",
+                "label": label,
+                "tool": words[1][:64] if len(words) > 1 else None,
+            }
+            if label
+            else {"kind": "generating", "label": ""}
+        )
+        update = self._set_activity_best_effort(chat_id, activity)
+        try:
+            asyncio.run_coroutine_threadsafe(update, loop)
+        except RuntimeError:
+            update.close()
+
+    async def _set_activity_best_effort(
+        self, chat_id: str, activity: dict[str, Any] | None
+    ) -> None:
+        if activity:
+            self._activities[chat_id] = activity
+        else:
+            self._activities.pop(chat_id, None)
+        try:
+            await asyncio.to_thread(
+                self.client.set_status,
+                chat_id,
+                "generating",
+                activity if self._activity_supported else None,
+            )
+        except Exception as exc:
+            if self._activity_supported and activity and "HTTP 422" in str(exc):
+                self._activity_supported = False
+                logger.info("clawbits: server rejected live activity; using plain presence")
+                try:
+                    await asyncio.to_thread(self.client.set_status, chat_id, "generating")
+                    return
+                except Exception:
+                    pass
+            logger.debug("Clawbits activity update failed", exc_info=True)
+
+    def _prefix_for_reply(self, reply_to: str | None) -> str:
+        return self._reply_prefixes.get(str(reply_to or ""), "")
+
+    @staticmethod
+    def _with_prefix(content: str, prefix: str) -> str:
+        if not prefix or content.lstrip().startswith(prefix):
+            return content
+        return f"{prefix} {content}".strip()
+
+    async def _send_email_response(
+        self,
+        chat_id: str,
+        context: _EmailReplyContext,
+        content: str,
+    ) -> SendResult:
+        """Email the owner, then mirror the sent response into their DM."""
+        raw = await asyncio.to_thread(
+            send_email_reply, self.client, self.agent_id, context, content
+        )
+        mirror: Any = None
+        try:
+            mirror = await asyncio.to_thread(self.client.post_message, chat_id, content)
+        except Exception:
+            logger.warning("clawbits: email sent but DM mirror failed", exc_info=True)
+        return SendResult(
+            success=True,
+            message_id=_message_id_from_response(mirror) or f"email:{context.uid}",
+            raw_response=raw,
+        )
 
     async def send(
         self,
@@ -217,27 +383,71 @@ class ClawbitsAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         metadata = metadata or {}
+        reply_key = str(reply_to or "")
+
+        # Hermes exposes scratch-thinking through thinking_progress. Keep it
+        # ephemeral: convert the bubble into activity and report no chat post.
+        if (
+            content.startswith("💬 ")
+            and metadata.get("notify") is not True
+            and metadata.get("expect_edits") is not True
+        ):
+            await self._set_activity_best_effort(
+                chat_id,
+                {"kind": "thinking", "label": _sanitize_activity(content[2:])},
+            )
+            return SendResult(success=True)
+
+        email_context = self._email_reply_contexts.get(reply_key)
+        expect_edits = metadata.get("expect_edits") is True
+        if email_context and not expect_edits:
+            try:
+                return await self._send_email_response(chat_id, email_context, content)
+            except Exception as exc:
+                logger.exception("Clawbits email reply failed")
+                return SendResult(success=False, error=str(exc), retryable=False)
+
         parent_post_id = _parent_post_id_from_metadata(metadata, reply_to)
         trace_id = _trace_id_from_metadata(metadata)
-        # Retry safety. The server has NO post idempotency, so a gateway retry
-        # after an AMBIGUOUS failure (the request left the process, then the
-        # connection/timeout blew up — the post may well have landed) would
-        # DOUBLE-post. Only failures that provably happened BEFORE any request
-        # was issued are safe to retry. `dispatched` flips the instant we begin
-        # posting; after that a failure is non-retryable — a dropped reply is a
-        # lesser evil than a duplicated one.
+        prefix = self._prefix_for_reply(reply_to)
+        visible_content = self._with_prefix(content, prefix)
         dispatched = False
         try:
             await self._set_status_best_effort(chat_id, "generating")
-            # A missing CLI means no request could have been issued, so it stays
-            # retryable — flag it up front, before `dispatched` is set, even
-            # though it would otherwise surface from inside post_message.
             if not Path(self.cli_path).exists():
                 raise FileNotFoundError(f"Clawbits agent CLI not found: {self.cli_path}")
-            # Server caps a post body at 4000 chars — split long replies
-            # instead of letting the whole send 422.
+
+            if expect_edits:
+                # Create empty: create-post is capped at 4k, while PATCH replace
+                # accepts the larger streamed reply body.
+                dispatched = True
+                raw = await asyncio.to_thread(
+                    self.client.post_message,
+                    chat_id,
+                    "",
+                    parent_post_id,
+                    trace_id,
+                    None,
+                    "streaming",
+                )
+                message_id = _message_id_from_response(raw)
+                if not message_id:
+                    raise RuntimeError(f"streaming post returned no id: {raw!r}")
+                if visible_content:
+                    await asyncio.to_thread(
+                        self.client.patch_message,
+                        chat_id,
+                        message_id,
+                        replace=visible_content,
+                    )
+                if prefix:
+                    self._stream_reply_prefixes[message_id] = prefix
+                if email_context:
+                    self._stream_email_contexts[message_id] = email_context
+                return SendResult(success=True, message_id=message_id, raw_response=raw)
+
             raw: Any = None
-            for chunk in _split_message_chunks(content) or [""]:
+            for chunk in _split_message_chunks(visible_content) or [""]:
                 dispatched = True
                 raw = await asyncio.to_thread(
                     self.client.post_message, chat_id, chunk, parent_post_id, trace_id
@@ -247,7 +457,65 @@ class ClawbitsAdapter(BasePlatformAdapter):
             logger.exception("Clawbits send failed")
             return SendResult(success=False, error=str(exc), retryable=not dispatched)
         finally:
-            await self._set_status_best_effort(chat_id, "online")
+            # A stream remains generating until _run_turn finishes.
+            await self._set_status_best_effort(
+                chat_id, "generating" if expect_edits else "online"
+            )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        **kwargs: Any,
+    ) -> SendResult:
+        prefix = self._stream_reply_prefixes.get(str(message_id), "")
+        visible_content = self._with_prefix(content, prefix)
+        email_context = self._stream_email_contexts.get(str(message_id))
+        email_sent = False
+        try:
+            if finalize and email_context:
+                await asyncio.to_thread(
+                    send_email_reply,
+                    self.client,
+                    self.agent_id,
+                    email_context,
+                    content,
+                )
+                email_sent = True
+            raw = await asyncio.to_thread(
+                self.client.patch_message,
+                chat_id,
+                message_id,
+                replace=visible_content,
+                done=finalize,
+            )
+            if finalize:
+                self._stream_reply_prefixes.pop(str(message_id), None)
+                self._stream_email_contexts.pop(str(message_id), None)
+            return SendResult(success=True, message_id=str(message_id), raw_response=raw)
+        except Exception as exc:
+            logger.warning("clawbits: streaming post edit failed", exc_info=True)
+            # Email is the primary delivery for an email-triggered turn. Avoid a
+            # gateway fallback that would send the same email twice merely
+            # because its cosmetic DM mirror failed to finalize.
+            if email_sent:
+                return SendResult(success=True, message_id=str(message_id))
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        try:
+            await asyncio.to_thread(
+                self.client.patch_message, chat_id, message_id, cancel=True
+            )
+            self._stream_reply_prefixes.pop(str(message_id), None)
+            self._stream_email_contexts.pop(str(message_id), None)
+            return True
+        except Exception:
+            logger.debug("clawbits: streaming post cancel failed", exc_info=True)
+            return False
 
     async def _upload_and_post_image(
         self,
@@ -422,8 +690,28 @@ class ClawbitsAdapter(BasePlatformAdapter):
             await asyncio.sleep(self.liveness_interval)
 
     async def _set_status_best_effort(self, chat_id: str, status: str) -> None:
+        if status != "generating":
+            self._activities.pop(chat_id, None)
+        activity = self._activities.get(chat_id) if status == "generating" else None
         try:
-            await asyncio.to_thread(self.client.set_status, chat_id, status)
+            await asyncio.to_thread(
+                self.client.set_status,
+                chat_id,
+                status,
+                activity if self._activity_supported else None,
+            )
+        except TypeError:
+            # Test doubles and older client wrappers expose the historical
+            # two-argument signature.
+            try:
+                await asyncio.to_thread(self.client.set_status, chat_id, status)
+            except Exception:
+                logger.debug(
+                    "Clawbits status update failed: %s -> %s",
+                    chat_id,
+                    status,
+                    exc_info=True,
+                )
         except Exception:
             logger.debug("Clawbits status update failed: %s -> %s", chat_id, status, exc_info=True)
 
@@ -439,6 +727,38 @@ class ClawbitsAdapter(BasePlatformAdapter):
                 await self._set_status_best_effort(chat_id, "generating")
         except asyncio.CancelledError:
             raise
+
+    def _apply_controls(self, raw: Any) -> None:
+        settings = _extract_control_settings(raw)
+        prior_inter_agent = self._inter_agent_mode
+        snoozed = settings.get("snoozed")
+        if isinstance(snoozed, bool):
+            self._snoozed = snoozed
+        inter_agent = settings.get("inter_agent_mode_enabled")
+        if isinstance(inter_agent, bool):
+            self._inter_agent_mode = inter_agent
+        limit = settings.get("inter_agent_message_limit")
+        if isinstance(limit, (int, float)):
+            self._inter_agent_message_limit = max(
+                1, min(_MAX_INTER_AGENT_MESSAGE_LIMIT, int(limit))
+            )
+        channels = _extract_channels(raw)
+        if channels:
+            self._channels = {channel.id: channel for channel in channels}
+        if prior_inter_agent and not self._inter_agent_mode:
+            self._consecutive_agent_turns = 0
+            self._awaiting_human_guidance = False
+            self._guidance_notice_sent = False
+
+    async def _dispatch_realtime_post(self, event: dict[str, Any]) -> None:
+        post = event.get("data")
+        if not isinstance(post, dict):
+            return
+        channel_id = str(event.get("channel_id") or post.get("channel_id") or "")
+        if not channel_id:
+            return
+        channel = self._channels.get(channel_id) or _Channel(channel_id, None, channel_id)
+        await self._maybe_dispatch(channel, post)
 
     def _events_ws_url(self) -> str:
         # No ``?api_key=`` query param: a secret in the URL lands in server and
@@ -500,10 +820,16 @@ class ClawbitsAdapter(BasePlatformAdapter):
                         # "mutualist.consider" is the pre-rename name for the same
                         # event; accepted so this adapter still gets nudges from a
                         # server that hasn't been redeployed yet.
-                        if isinstance(event, dict) and event.get("type") in (
-                            "lobstertalk.consider",
-                            "mutualist.consider",
-                        ):
+                        if not isinstance(event, dict):
+                            continue
+                        event_type = event.get("type")
+                        if event_type == "snapshot":
+                            self._apply_controls(event.get("data"))
+                        elif event_type == "post.created":
+                            await self._dispatch_realtime_post(event)
+                        elif event_type == "automation.sync":
+                            self._automations_wake.set()
+                        elif event_type in ("lobstertalk.consider", "mutualist.consider"):
                             await self._dispatch_attention(event)
             except asyncio.CancelledError:
                 raise
@@ -532,12 +858,28 @@ class ClawbitsAdapter(BasePlatformAdapter):
         channel_id = str(event.get("channel_id") or post.get("channel_id") or "") or self.fallback_channel_id
         post_id = _post_id(post)
         text = str(post.get("message") or "").strip()
-        if not channel_id or not post_id or not text:
+        if not channel_id or not post_id or not text or self._snoozed:
             return
         if post_id in self._seen:
             return
-        if str(post.get("agent_id") or "") == self.agent_id:
+        post_agent_id = str(post.get("agent_id") or "")
+        if post_agent_id == self.agent_id:
             return  # own post — server skips these already; stay safe
+        if post_agent_id and not self._inter_agent_mode:
+            return
+        if post_agent_id:
+            if (
+                self._awaiting_human_guidance
+                or self._consecutive_agent_turns >= self._inter_agent_message_limit
+            ):
+                self._awaiting_human_guidance = True
+                self._remember(post_id)
+                if not self._guidance_notice_sent:
+                    self._guidance_notice_sent = True
+                    await self._post_guidance_notice(channel_id, post)
+                return
+            self._consecutive_agent_turns += 1
+            self._remember_reply_prefix(post_id, f"@{post_agent_id}")
         self._remember(post_id)
         sender_id = str(post.get("agent_id") or post.get("user_id") or post.get("human_id") or "")
         source = SessionSource(
@@ -553,6 +895,11 @@ class ClawbitsAdapter(BasePlatformAdapter):
         )
         # Same non-blocking dispatch as the poll loop: an attention turn that
         # blocks (clarify, long tools) must not freeze the events WebSocket.
+        paths, media_types, notes = await asyncio.to_thread(
+            cache_post_attachments, self.client, post
+        )
+        if notes:
+            text = f"{text}\n\n" + "\n".join(notes)
         self._spawn_turn(
             channel_id,
             MessageEvent(
@@ -562,16 +909,24 @@ class ClawbitsAdapter(BasePlatformAdapter):
                     agent_id=self.agent_id or None,
                     attention_preamble=_ATTENTION_PREAMBLE,
                 ),
-                message_type=MessageType.TEXT,
+                message_type=self._message_type_for_media(media_types),
                 source=source,
                 raw_message=post,
                 message_id=post_id,
+                media_urls=paths,
+                media_types=media_types,
             ),
         )
 
     async def _poll_once(self) -> None:
         try:
-            channels = await asyncio.to_thread(self.client.list_channels)
+            control_snapshot = getattr(self.client, "control_snapshot", None)
+            if callable(control_snapshot):
+                raw_snapshot = await asyncio.to_thread(control_snapshot)
+                self._apply_controls(raw_snapshot)
+                channels = _extract_channels(raw_snapshot)
+            else:
+                channels = await asyncio.to_thread(self.client.list_channels)
         except Exception:
             if not self.fallback_channel_id:
                 raise
@@ -579,6 +934,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
             channels = [_Channel(self.fallback_channel_id, None, "Clawbits")]
         if not channels and self.fallback_channel_id:
             channels = [_Channel(self.fallback_channel_id, None, "Clawbits")]
+        self._channels = {channel.id: channel for channel in channels}
         for channel in channels:
             posts = await asyncio.to_thread(self.client.get_posts, channel.id)
             if channel.id not in self._cursors:
@@ -596,6 +952,94 @@ class ClawbitsAdapter(BasePlatformAdapter):
             # greeting already in the channel when the wizard says "available".
             await self._greet_once()
             self._ready.set()
+
+    async def _email_loop(self) -> None:
+        while self._running:
+            try:
+                await self._poll_email_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                detail = str(exc).lower()
+                if "not configured" in detail or "503" in detail:
+                    logger.info("clawbits: email is not configured; email poller stopped")
+                    return
+                logger.warning("clawbits: email poll failed", exc_info=True)
+            await asyncio.sleep(self.email_poll_interval)
+
+    async def _poll_email_once(self) -> None:
+        counts = await asyncio.to_thread(self.client.email_count, self.agent_id)
+        mailbox = counts.get("email_address")
+        if isinstance(mailbox, str) and mailbox:
+            self._email_mailbox = mailbox
+
+        watermark = self._email_watermark
+        offset = 0
+        page_size = 50
+        uids: set[int] = set()
+        while offset < page_size * 20:
+            listing = await asyncio.to_thread(
+                self.client.email_inbox, self.agent_id, page_size, offset
+            )
+            page = _email_uids(listing)
+            uids.update(page)
+            if len(page) < page_size or (watermark is not None and page and min(page) <= watermark):
+                break
+            offset += page_size
+
+        ordered = sorted(uids)
+        if watermark is None:
+            seed = ordered[-1] if ordered else 0
+            save_email_watermark(seed)
+            self._email_watermark = seed
+            logger.info("clawbits: email watermark seeded at uid %s", seed)
+            return
+
+        channel_id = self.fallback_channel_id
+        if not channel_id:
+            channel_id = str(
+                await asyncio.to_thread(self.client.operator_channel, self.agent_id) or ""
+            )
+        if not channel_id:
+            raise RuntimeError("no operator channel available for email dispatch")
+
+        for uid in (value for value in ordered if value > watermark):
+            detail = await asyncio.to_thread(self.client.email_get, self.agent_id, uid)
+            if _is_self_addressed(detail, self.agent_id, self._email_mailbox):
+                save_email_watermark(uid)
+                self._email_watermark = uid
+                continue
+            text, paths, media_types = await asyncio.to_thread(prepare_email_event, detail)
+            message_id = f"email:{uid}"
+            self._email_reply_contexts[message_id] = email_reply_context(detail)
+            while len(self._email_reply_contexts) > _REPLY_CONTEXT_CAP:
+                del self._email_reply_contexts[next(iter(self._email_reply_contexts))]
+            sender = str(detail.get("from_addr") or "owner")
+            source = SessionSource(
+                platform=Platform("clawbits"),
+                chat_id=channel_id,
+                chat_name="Clawbits email",
+                chat_type="dm",
+                user_id=sender,
+                user_name=sender,
+                message_id=message_id,
+            )
+            event = MessageEvent(
+                text=_build_agent_body(
+                    text,
+                    chat_id=channel_id,
+                    agent_id=self.agent_id or None,
+                ),
+                message_type=self._message_type_for_media(media_types),
+                source=source,
+                raw_message={**detail, "_clawbits_email_uid": uid},
+                message_id=message_id,
+                media_urls=paths,
+                media_types=media_types,
+            )
+            self._spawn_turn(channel_id, event)
+            save_email_watermark(uid)
+            self._email_watermark = uid
 
     async def _greet_once(self) -> None:
         """Post OpenClaw's first-contact greeting to the operator channel, once ever.
@@ -651,6 +1095,35 @@ class ClawbitsAdapter(BasePlatformAdapter):
         while len(self._seen) > _SEEN_CAP:
             del self._seen[next(iter(self._seen))]
 
+    @staticmethod
+    def _message_type_for_media(media_types: list[str]) -> Any:
+        if not media_types:
+            return MessageType.TEXT
+        first = media_types[0].lower()
+        if first.startswith("image/"):
+            return MessageType.PHOTO
+        if first.startswith("video/"):
+            return MessageType.VIDEO
+        if first.startswith("audio/"):
+            return MessageType.AUDIO
+        return MessageType.DOCUMENT
+
+    def _remember_reply_prefix(self, post_id: str, prefix: str) -> None:
+        if not prefix:
+            return
+        self._reply_prefixes[post_id] = prefix
+        while len(self._reply_prefixes) > _REPLY_CONTEXT_CAP:
+            del self._reply_prefixes[next(iter(self._reply_prefixes))]
+
+    async def _post_guidance_notice(self, channel_id: str, post: dict[str, Any]) -> None:
+        sender = str(post.get("agent_id") or "")
+        prefix = f"@{sender}" if sender else ""
+        message = f"{prefix} {_HUMAN_GUIDANCE_MESSAGE}".strip()
+        try:
+            await asyncio.to_thread(self.client.post_message, channel_id, message)
+        except Exception:
+            logger.warning("clawbits: failed to post inter-agent guidance notice", exc_info=True)
+
     def _strip_self_mentions(self, text: str) -> str:
         """Remove this agent's @mention token(s) and tidy the leftover space.
 
@@ -675,13 +1148,43 @@ class ClawbitsAdapter(BasePlatformAdapter):
             return
         self._cursors[channel.id] = max(cursor, key)
 
+        if self._snoozed:
+            return
+
         text = str(post.get("message") or "")
+        has_files = bool(_extract_files(post))
         sender_id = str(post.get("agent_id") or post.get("user_id") or post.get("human_id") or "")
         is_self = sender_id == self.agent_id or post.get("agent_id") == self.agent_id
+        is_agent_authored = bool(post.get("agent_id"))
         is_direct = channel.channel_type in {None, "direct"} or channel.id == self.fallback_channel_id
         mentioned = bool(self._mention_re.search(text))
-        if is_self or not _is_user_post(post) or not (is_direct or mentioned):
+
+        if mentioned and not is_agent_authored:
+            self._consecutive_agent_turns = 0
+            self._awaiting_human_guidance = False
+            self._guidance_notice_sent = False
+
+        if (
+            is_self
+            or not _is_user_post(post)
+            or (not text.strip() and not has_files)
+            or not (is_direct or mentioned)
+            or (is_agent_authored and not self._inter_agent_mode)
+        ):
             return
+
+        if is_agent_authored:
+            if (
+                self._awaiting_human_guidance
+                or self._consecutive_agent_turns >= self._inter_agent_message_limit
+            ):
+                self._awaiting_human_guidance = True
+                self._remember(post_id)
+                if not self._guidance_notice_sent:
+                    self._guidance_notice_sent = True
+                    await self._post_guidance_notice(channel.id, post)
+                return
+            self._consecutive_agent_turns += 1
 
         # Only DISPATCHED posts go in the dedupe set, and only here — past every
         # skip above. ``self._seen`` exists to stop the poll loop and the
@@ -707,6 +1210,18 @@ class ClawbitsAdapter(BasePlatformAdapter):
         # still see the original. Only strip when actually mentioned — a plain DM
         # carries no mention token and its whitespace must be left alone.
         event_text = self._strip_self_mentions(text) if mentioned else text
+        paths, media_types, notes = await asyncio.to_thread(
+            cache_post_attachments, self.client, post
+        )
+        if notes:
+            event_text = (event_text.rstrip() + "\n\n" + "\n".join(notes)).strip()
+
+        if self._inter_agent_mode and not is_direct:
+            if post.get("agent_id"):
+                self._remember_reply_prefix(post_id, f"@{post['agent_id']}")
+            elif post.get("poster_display_name"):
+                handle = re.sub(r"[^A-Za-z0-9_.-]", "-", str(post["poster_display_name"]).strip())
+                self._remember_reply_prefix(post_id, f"@{handle.strip('-')}")
 
         source = SessionSource(
             platform=Platform("clawbits"),
@@ -726,10 +1241,12 @@ class ClawbitsAdapter(BasePlatformAdapter):
                 chat_id=channel.id,
                 agent_id=self.agent_id or None,
             ),
-            message_type=MessageType.TEXT,
+            message_type=self._message_type_for_media(media_types),
             source=source,
             raw_message=post,
             message_id=post_id,
+            media_urls=paths,
+            media_types=media_types,
         )
         # Dispatch the turn as a BACKGROUND task — never await it here. The
         # gateway resolves mid-turn interactions (clarify answers, messages

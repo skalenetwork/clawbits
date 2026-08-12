@@ -54,6 +54,63 @@ class _Channel:
     name: str | None = None
 
 
+@dataclass(frozen=True)
+class _InboundFile:
+    file_id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    download_url: str | None = None
+
+
+def _extract_files(post: dict[str, Any]) -> list[_InboundFile]:
+    files: list[_InboundFile] = []
+    raw_files = post.get("files")
+    if not isinstance(raw_files, list):
+        return files
+    for raw in raw_files:
+        if not isinstance(raw, dict):
+            continue
+        file_id = raw.get("file_id") or raw.get("id")
+        if not file_id:
+            continue
+        filename = str(raw.get("filename") or file_id)
+        content_type = str(raw.get("content_type") or "application/octet-stream")
+        try:
+            size_bytes = max(0, int(raw.get("size_bytes") or 0))
+        except (TypeError, ValueError):
+            size_bytes = 0
+        download_url = raw.get("download_url")
+        files.append(
+            _InboundFile(
+                file_id=str(file_id),
+                filename=filename,
+                content_type=content_type,
+                size_bytes=size_bytes,
+                download_url=(download_url if isinstance(download_url, str) and download_url else None),
+            )
+        )
+    return files
+
+
+def _extract_control_settings(raw: Any) -> dict[str, Any]:
+    """Normalize settings carried by the channels snapshot/WS snapshot."""
+    if not isinstance(raw, dict):
+        return {}
+    source = raw.get("settings") if isinstance(raw.get("settings"), dict) else raw
+    result: dict[str, Any] = {}
+    for output, keys in {
+        "snoozed": ("snoozed", "agent_snoozed"),
+        "inter_agent_mode_enabled": ("inter_agent_mode_enabled", "interAgentMode"),
+        "inter_agent_message_limit": ("inter_agent_message_limit", "interAgentMessageLimit"),
+    }.items():
+        for key in keys:
+            if key in source:
+                result[output] = source[key]
+                break
+    return result
+
+
 def _timestamp_ms(post: dict[str, Any]) -> int:
     value = post.get("create_at") or post.get("created_at") or post.get("created_at_raw") or 0
     if isinstance(value, (int, float)):

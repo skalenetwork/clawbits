@@ -56,7 +56,8 @@ reef_persist_injected_env() {
   fi
   for key in \
     CLAWBITS_BASE_URL CLAWBITS_API_KEY CLAWBITS_AGENT_ID CLAWBITS_CHANNEL_ID \
-    CLAWBITS_CHALLENGE_ANSWER CLAWBITS_PLUGIN_VERSION OPENAI_API_KEY ANTHROPIC_API_KEY \
+    CLAWBITS_CHALLENGE_ANSWER CLAWBITS_PLUGIN_VERSION CLAWBITS_EMAIL_ENABLED \
+    CLAWBITS_EMAIL_POLL_INTERVAL CLAWBITS_STREAMING_ENABLED OPENAI_API_KEY ANTHROPIC_API_KEY \
     GEMINI_API_KEY OPENROUTER_API_KEY GATEWAY_ALLOW_ALL_USERS REEF_DEFAULT_MODEL \
     REEF_OPENAI_AUTH
   do
@@ -146,6 +147,27 @@ reef_configure_model() {
     echo "reef-hermes:     hermes login --provider openai-codex --no-browser" >&2
   fi
   return 0
+}
+
+reef_configure_clawbits_display() {
+  # Clawbits supports PATCH-based drafts and ephemeral activity. Enable those
+  # Hermes presentation lanes in Reef images; operators can disable streaming
+  # with CLAWBITS_STREAMING_ENABLED=0.
+  case "${CLAWBITS_STREAMING_ENABLED:-1}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      hermes config set display.platforms.clawbits.streaming false >/dev/null 2>&1 || true
+      ;;
+    *)
+      hermes config set streaming.enabled true >/dev/null 2>&1 || true
+      hermes config set streaming.transport edit >/dev/null 2>&1 || true
+      hermes config set display.platforms.clawbits.streaming true >/dev/null 2>&1 || true
+      ;;
+  esac
+  # Tool calls/thinking ride Clawbits's TTL'd activity lane, not permanent
+  # progress bubbles in the conversation.
+  hermes config set display.platforms.clawbits.tool_progress off >/dev/null 2>&1 || true
+  hermes config set display.platforms.clawbits.thinking_progress true >/dev/null 2>&1 || true
+  hermes config set display.platforms.clawbits.live_status full >/dev/null 2>&1 || true
 }
 
 reef_start_terminal() {
@@ -395,6 +417,7 @@ CONF
 reef_install_plugin
 reef_persist_injected_env
 reef_configure_model
+reef_configure_clawbits_display
 reef_clawbits_signup
 reef_start_dashboard
 reef_start_auth_proxy

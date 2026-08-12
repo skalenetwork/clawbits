@@ -29,12 +29,9 @@ import {
 
 export type AutomationAccent = "blue" | "violet" | "teal";
 
-/** Runtimes with NO Clawbits cron reconciler in their in-VM plugin. Only the
- *  OpenClaw plugin reconciles desired-state automations today; a hermes or
- *  ironclaw agent would store rows that sit on "requested" forever. Mirrors
- *  the server's `_AUTOMATION_INCAPABLE_RUNTIMES` gate (which 422s as the hard
- *  boundary — this just keeps the UI honest). */
-const AUTOMATION_INCAPABLE_RUNTIMES = new Set(["hermes", "ironclaw"]);
+/** Runtimes with no Clawbits cron reconciler in their in-VM plugin. Mirrors
+ *  the server's `_AUTOMATION_INCAPABLE_RUNTIMES` gate. */
+const AUTOMATION_INCAPABLE_RUNTIMES = new Set(["ironclaw"]);
 
 const RUNTIME_LABELS: Record<string, string> = {
   hermes: "Hermes",
@@ -57,7 +54,7 @@ export function automationsUnsupportedReason(
 ): string | null {
   if (supportsAutomations(agentType)) return null;
   const label = RUNTIME_LABELS[agentType ?? ""] ?? "this runtime's";
-  return `Automations aren't available for ${label} agents yet. Only OpenClaw agents can run them.`;
+  return `Automations aren't available for ${label} agents yet.`;
 }
 
 export interface ScheduleUnit {
