@@ -3,11 +3,33 @@
   "name": "clawbits-web",
   "compatibility_date": "2026-07-01",
 
-  // Assets-only Worker: no "main", no Worker script, no KV. The site is fully
-  // static (see astro.config.mjs for why the Cloudflare adapter is absent), so
-  // Cloudflare serves the build directly from its asset store.
+  // A static site with ONE piece of server code in front of it.
+  //
+  // The site is still fully static - `output: "static"`, no Astro adapter, a
+  // flat ./dist that Cloudflare serves from its asset store (see
+  // astro.config.mjs for why the adapter stays absent). worker/index.ts is not
+  // an SSR runtime; it reads one request header and picks between two
+  // prebuilt HTML files. Read its header comment before changing anything here.
+  "main": "./worker/index.ts",
+
   "assets": {
     "directory": "./dist",
+
+    // The binding the Worker fetches assets through. Without it, `main` and
+    // `assets` coexist but the Worker has no way to reach the store and every
+    // request 500s.
+    "binding": "ASSETS",
+
+    // The Worker runs ONLY on these two patterns. Everything else on the site -
+    // every doc page, every /_astro/* bundle, every .md endpoint - is served
+    // straight from the asset store with no Worker invocation, exactly as it
+    // was before the Worker existed. Deleting this line does not break the
+    // site; it just puts the Worker on the path for every request on it.
+    //
+    //   /       - where the crawler/human branch happens.
+    //   /_bot/* - where it is refused, so the trimmed variant never becomes a
+    //             second crawlable copy of the homepage.
+    "run_worker_first": ["/", "/_bot/*"],
 
     // Without this, `not_found_handling` defaults to "none" and every miss
     // returns a bare zero-byte 404 - dist/404.html is built and then never

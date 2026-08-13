@@ -17,6 +17,9 @@
  * for an MIT-licensed app reads as provenance, not friction.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { LINKS } from "../config";
 
 const REPO = new URL(LINKS.github).pathname.replace(/^\/|\/$/g, "");
@@ -38,8 +41,16 @@ export interface Build {
 }
 
 export interface DesktopRelease {
-  /** Bare semver, tag `desktop-v0.17.0` -> "0.17.0". */
+  /** Bare semver, tag `desktop-v0.20.0` -> "0.20.0". */
   version: string;
+  /** The git tag verbatim, e.g. "desktop-v0.20.0". */
+  tag: string;
+  /** The release's own name, e.g. "Clawbits desktop-v0.20.0". */
+  title: string;
+  /** Short commit the release was built from, e.g. "75c9716". */
+  sha: string;
+  /** Release channel, from the body's "on channel <x>." - "prod" or "staging". */
+  channel: string;
   /** ISO date of publication. */
   date: string;
   /** GitHub page for this specific release. */
@@ -54,6 +65,9 @@ interface GhAsset {
 }
 interface GhRelease {
   tag_name: string;
+  name?: string | null;
+  body?: string | null;
+  target_commitish?: string;
   published_at: string;
   html_url: string;
   draft: boolean;
@@ -117,6 +131,31 @@ function toBuild(asset: GhAsset): Build | null {
   return null;
 }
 
+/**
+ * Where a release came from, read out of its own body.
+ *
+ * The desktop pipeline writes exactly one line:
+ *
+ *   Built from skalenetwork/clawbits@<40-hex> on channel prod.
+ *
+ * so both facts are parseable rather than guessed. `target_commitish` is the
+ * fallback for the sha because GitHub sets it to the full commit for a release
+ * cut from a tag - but it is a BRANCH NAME for releases cut from a branch, so
+ * it is only trusted when it looks like a sha. `channel` falls back to "prod":
+ * this function only ever sees non-prerelease releases.
+ */
+function provenance(rel: GhRelease): { sha: string; channel: string } {
+  const body = rel.body ?? "";
+  const fromBody = body.match(/@([0-9a-f]{7,40})\b/)?.[1];
+  const fromTarget = /^[0-9a-f]{7,40}$/.test(rel.target_commitish ?? "")
+    ? rel.target_commitish
+    : undefined;
+  return {
+    sha: (fromBody ?? fromTarget ?? "").slice(0, 7),
+    channel: body.match(/on channel ([a-z0-9-]+)/i)?.[1] ?? "prod",
+  };
+}
+
 let cached: Promise<DesktopRelease | null> | undefined;
 
 export function getDesktopRelease(): Promise<DesktopRelease | null> {
@@ -155,6 +194,9 @@ export function getDesktopRelease(): Promise<DesktopRelease | null> {
 
         return {
           version: rel.tag_name.replace(/^desktop-v?/, "").replace(/^v/, ""),
+          tag: rel.tag_name,
+          title: rel.name?.trim() || `Clawbits ${rel.tag_name}`,
+          ...provenance(rel),
           date: rel.published_at,
           url: rel.html_url,
           builds,
@@ -166,4 +208,68 @@ export function getDesktopRelease(): Promise<DesktopRelease | null> {
     }
   })();
   return cached;
+}
+
+/* ── The version the demos print ──────────────────────────────────────────
+ *
+ * The hero's chat transcript talks about a desktop release by number, and the
+ * message carries the GitHub link preview for that exact release. Both were
+ * literals ("v0.17.0", "d867eb5") and went stale three releases later, while
+ * /download - which reads GitHub - kept saying something else on the same page.
+ *
+ * One build-time source now feeds all of it. getDesktopRelease() is already
+ * module-cached, so this costs no extra request however many components ask.
+ */
+
+/** What the demos need, with every field guaranteed present. */
+export interface DesktopFacts {
+  version: string;
+  tag: string;
+  title: string;
+  sha: string;
+  channel: string;
+  /** The release page, or the releases index when the fetch failed. */
+  url: string;
+  /** False when GitHub could not be reached and this is the local fallback. */
+  live: boolean;
+}
+
+/**
+ * The fallback version: the one this working tree is ON.
+ *
+ * Read from desktop/package.json rather than written here as a literal, so the
+ * value cannot rot - scripts/bump_version.py already keeps that file current,
+ * and it is the same number the pipeline will tag. Only ever reached when the
+ * build cannot talk to api.github.com (offline, or rate-limited CI).
+ *
+ * node:fs, not a JSON import: the file lives outside the Astro root, and an
+ * import would need it added to vite.server.fs.allow to survive `astro dev`.
+ */
+function localDesktopVersion(): string {
+  try {
+    const pkg = fileURLToPath(new URL("../../../desktop/package.json", import.meta.url));
+    const version = JSON.parse(readFileSync(pkg, "utf8")).version;
+    return typeof version === "string" ? version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+export async function getDesktopFacts(): Promise<DesktopFacts> {
+  const rel = await getDesktopRelease();
+  if (rel) return { ...rel, live: true };
+  const version = localDesktopVersion();
+  return {
+    version,
+    tag: `desktop-v${version}`,
+    // The same composition the pipeline uses for the release name, so the
+    // fallback lockup reads exactly like the live one.
+    title: `Clawbits desktop-v${version}`,
+    // No sha to show without the release. The lockup drops the line rather
+    // than inventing one - see AppDemo's link preview.
+    sha: "",
+    channel: "prod",
+    url: `${LINKS.github}/releases/latest`,
+    live: false,
+  };
 }

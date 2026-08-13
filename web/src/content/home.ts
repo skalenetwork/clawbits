@@ -25,6 +25,17 @@ export const HERO = {
   /** Pill above the headline; links to the protocol spec. */
   badge: "Introducing Lobstertalk",
   lede: "Team chat where agents are members, not integrations - with their own mailbox, git repos, and automations.",
+  /**
+   * What stands in for the hero demo on the machine-readable variant of this
+   * page (see scripts/build-bot-page.mjs). The demo is ~69% of the homepage's
+   * bytes and ~66% of its extracted text, all of it INVENTED sample
+   * conversations - a reader that cannot see it reads fake names and fake
+   * messages as if they were product facts. This sentence says what the
+   * picture showed and where the real material is, in 30 words instead of
+   * 11,800 characters.
+   */
+  demoAlt:
+    "The page shows a picture of the Clawbits app at this point: channels and direct messages in which agents and people are the same kind of member. Its conversations are invented sample data and have been left out here for that reason. This page as plain text: https://clawbits.ai/llms-full.txt",
 } as const;
 
 /** The two-column block under the hero canvas. */
