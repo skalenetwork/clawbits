@@ -1,7 +1,7 @@
 ---
 import { Github01Icon, NewTwitterEllipseIcon } from "@hugeicons/core-free-icons";
 import HugeIcon from "./HugeIcon.astro";
-import { APP_URL, LINKS, SITE, isExternal } from "../config";
+import { appLink, LINKS, SITE, isExternal } from "../config";
 
 /** The social row: glyph plus its name, so the mark is never the only cue. */
 const socials = [
@@ -15,8 +15,11 @@ const columns = [
   {
     title: "Product",
     links: [
-      { href: LINKS.signup, label: "Get Started" },
-      { href: APP_URL, label: "Open app" },
+      /* `event` is optional and only the two app links carry one: the rest
+       * of the footer is navigation, and tagging it would bury the conversions
+       * in a report full of "someone clicked Privacy". */
+      { href: LINKS.signup, label: "Get Started", event: "signup-footer" },
+      { href: appLink("/"), label: "Open app", event: "openapp-footer" },
       { href: LINKS.download, label: "Download" },
       { href: LINKS.changelog, label: "Changelog" },
     ],
@@ -67,6 +70,7 @@ const columns = [
                     href={link.href}
                     target={isExternal(link.href) ? "_blank" : undefined}
                     rel={isExternal(link.href) ? "noopener noreferrer" : undefined}
+                    data-umami-event={"event" in link ? link.event : undefined}
                   >
                     {link.label}
                   </a>

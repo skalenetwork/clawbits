@@ -49,7 +49,7 @@ wrong ships a site that lies about where it lives:
 To deploy by hand (rarely needed - CI is the normal path):
 
 ```bash
-cd web && SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://freeclaws.ai bun run build && bunx wrangler deploy --env staging
+cd web && SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://app.freeclaws.ai bun run build && bunx wrangler deploy --env staging
 ```
 
 `--env` is **mandatory**. Without it wrangler deploys the unnamed top-level
@@ -78,7 +78,8 @@ src/
     Legal.astro          frame for /privacy and /terms
   components/
     Section.astro        the ONE layout primitive
-    AppDemo.astro        the hero's zero-JS recreation of the real app
+    AppDemo.astro        the hero's zero-JS recreation of the real app;
+                         bracketed by the bot:demo markers in index.astro
     ShaderBackdrop.tsx   the only React island (GrainGradient, client:only)
     *Visual.astro        one per feature section
     LegalSection.astro   one numbered section; index and body share one object
@@ -87,8 +88,12 @@ src/
                          docs/, changelog/, robots.txt, llms.txt, llms-full.txt
 scripts/
   build-brand-assets.mjs derives every brand variant from the two masters
+  build-bot-page.mjs     cuts the hero demo out of dist/index.html into
+                         dist/_bot/ for the AI crawlers
   verify-legal-parity.mjs
   verify-links.mjs
+worker/                  the site's ONLY server code: one header read, two
+                         prebuilt files. Own tsconfig - see the note in it
 ```
 
 ## Type and tone
@@ -119,6 +124,20 @@ All generated at build time, no dependencies:
 | `/llms-full.txt` | The whole site as one plain-text document |
 | `/robots.txt` | Explicit per-crawler rules (14 named AI bots, all allowed) |
 | `/sitemap-index.xml` | Via `@astrojs/sitemap` |
+
+The homepage also has a **demo-free variant** served to those same 14 crawlers.
+The hero mockup is 69% of `index.html`'s bytes and 66% of its extracted text,
+and all of that text is invented sample conversation - an assistant reading the
+page has no way to tell "Mara: can you check the deploy?" from a product fact.
+`scripts/build-bot-page.mjs` cuts the marked region out of the built HTML into
+`dist/_bot/index.html` (349 KB -> 108 KB) and `worker/index.ts` serves it at `/`
+when the user agent matches `src/lib/crawlers.ts`.
+
+Two rules that are not negotiable, both written up in `worker/index.ts`:
+**search engines never get the variant** (Googlebot is not on that list and must
+not be added - serving a crawler what a person does not get is cloaking), and
+**`/_bot/` is not a URL** (it 404s, so it cannot become a second crawlable copy
+of the homepage competing with the apex).
 
 **All page copy lives in `src/content/home.ts`, not in the template.** The page
 and the two `.txt` endpoints render from that one module, so a machine-readable
@@ -197,7 +216,20 @@ fine and emits nothing.
 `dist/server`, moves the build to `dist/client`, and injects a `SESSION` KV
 binding you then have to provision. Everything through Phase 5 is static. To add
 it back when a genuinely on-demand route exists, see the note in
-`astro.config.mjs`.
+`astro.config.mjs`. `worker/index.ts` is *not* that - it is a hand-written
+Worker in front of the same flat `dist/`, with no SSR anywhere.
+
+**`@cloudflare/workers-types` must stay out of the site's TS program.** It
+redefines global DOM names (`Response`, `ReadableStream`, and the `append()`
+signatures on them), so a single `/// <reference types>` anywhere it can reach
+makes `AppDemo.astro`'s browser code fail to compile with ten errors about
+`HTMLDivElement` not being a `ReadableStream`. That is why `worker/` has its own
+`tsconfig.json` and the root one excludes it, and why `bun run check` is
+`astro check && tsc -p worker` - two programs, two runtimes.
+
+**A comment about Astro comments cannot contain one.** `{/* ... */}` does not
+nest: writing the literal token inside an explanatory comment closes it early
+and the rest of the block parses as markup. Cost one build.
 
 **`astro dev` goes stale on a wholesale file rewrite.** Rewriting a `.astro`
 file end-to-end (rather than editing it) can leave the dev server serving the

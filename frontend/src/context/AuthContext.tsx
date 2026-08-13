@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { HumanUser } from "../lib/api";
+import { track } from "../lib/analytics";
 import {
   devLogin,
   getMe,
@@ -105,9 +106,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await sendMagicCode(email);
   };
 
-  const installSession = async (u: HumanUser) => {
+  /**
+   * Every successful authentication funnels through here - magic code, social,
+   * and dev sign-in alike - which is why the one conversion event lives here
+   * rather than in LoginPage. Anything per-flow would miss the other flows.
+   *
+   * `first_session` is derived from `created_at` rather than from a dedicated
+   * "is new" flag the API does not have: an account made in the last five
+   * minutes is one that was made by this sign-in. When the field is absent
+   * (legacy session payloads) the property is OMITTED, not guessed - a false
+   * "returning user" is worse than a gap.
+   *
+   * No email, no user id, no org. See lib/analytics.ts.
+   */
+  const trackSignIn = (u: HumanUser, method: string) => {
+    const createdAt = u.created_at ? Date.parse(u.created_at) : NaN;
+    const fresh = Number.isNaN(createdAt) ? undefined : Date.now() - createdAt < 5 * 60_000;
+    track("signin-complete", { method, ...(fresh === undefined ? {} : { first_session: fresh }) });
+  };
+
+  const installSession = async (u: HumanUser, method: string) => {
     queryClient.clear();
     setUser(u);
+    trackSignIn(u, method);
     try {
       const orgId = await getPersonalOrgId();
       setPersonalOrgId(orgId);
@@ -120,17 +141,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const verifyMagic = async (email: string, code: string) => {
     const u = await verifyMagicCode(email, code);
-    await installSession(u);
+    await installSession(u, "magic-code");
   };
 
   const verifySocialEmailCode = async (code: string) => {
     const u = await verifySocialEmail(code);
-    await installSession(u);
+    await installSession(u, "social");
   };
 
   const signInDev = async (email: string, displayName?: string) => {
     const u = await devLogin(email, displayName);
-    await installSession(u);
+    await installSession(u, "dev");
   };
 
   const logout = async () => {

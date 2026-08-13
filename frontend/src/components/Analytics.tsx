@@ -1,5 +1,7 @@
 import { useEffect } from "react";
 
+import { BEFORE_SEND, beforeSendPayload } from "../lib/analytics";
+
 /**
  * Loads the Umami analytics script on mount, exactly once per page load.
  *
@@ -17,30 +19,37 @@ import { useEffect } from "react";
  * (e.g. `www.`), add it here once.
  *
  * ONE Umami website spans the app AND the marketing site (web/src/config.ts
- * ships the same `websiteId`), so that a landing pageview and the signup that
- * follows it belong to the same funnel instead of two dashboards that each show
- * the other as a dead end. Hostname is recorded per event, so the two are still
- * separable after the fact.
+ * ships the same `websiteId`), so both properties report into one dashboard and
+ * `hostname` separates them on demand. What that does NOT buy is a shared
+ * session: Umami hashes the hostname into its session id, so a landing visit
+ * and the app visit after it are two sessions no matter what. The hop is
+ * carried by the utm campaign on the landing CTAs instead, which is why
+ * `beforeSendPayload` preserves `utm_*` while dropping everything else.
  *
- * Both hosts are listed rather than swapping one for the other at the Phase 6
- * apex cutover (LANDING_SITE_PLAN §8, table row 8). The app is on `clawbits.ai`
- * until the flip and on `app.clawbits.ai` after it, and the apex becomes the
- * marketing site the same day - so the union is never true of two live app
- * origins at once, and this file does not have to ship in lockstep with a DNS
- * change to avoid a gap in the numbers.
+ * The list is only `app.clawbits.ai` since the apex cutover on 2026-08-12.
+ * `clawbits.ai` was here so the app kept reporting on the day the DNS flipped
+ * without a lockstep deploy; the apex is the marketing site now, and it carries
+ * its own tag - leaving it here would claim an origin this build never serves.
  */
-const ANALYTICS_HOSTS = ["clawbits.ai", "app.clawbits.ai"];
+const ANALYTICS_HOSTS = ["app.clawbits.ai"];
 const UMAMI_WEBSITE_ID = "3b3f10a0-3d8a-4196-b692-1442deded2d9";
 
 export function Analytics() {
   useEffect(() => {
     if (!ANALYTICS_HOSTS.includes(location.hostname)) return;
     if (document.querySelector("script[data-clawbits-analytics]")) return;
+    /* Installed BEFORE the script is appended. The tracker reads
+     * `window[data-before-send]` at send time and simply skips the hook if the
+     * name resolves to nothing, so losing this race would not throw - it would
+     * quietly ship the raw URLs this exists to strip. */
+    window[BEFORE_SEND] = beforeSendPayload;
+
     const s = document.createElement("script");
     s.defer = true;
     s.src = "https://cloud.umami.is/script.js";
     s.dataset.websiteId = UMAMI_WEBSITE_ID;
     s.dataset.domains = ANALYTICS_HOSTS.join(",");
+    s.dataset.beforeSend = BEFORE_SEND;
     s.dataset.clawbitsAnalytics = "1";
     document.head.appendChild(s);
   }, []);

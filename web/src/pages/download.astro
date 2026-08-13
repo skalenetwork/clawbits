@@ -2,7 +2,7 @@
 import Base from "../layouts/Base.astro";
 import Button from "../components/Button.astro";
 import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
-import { APP_URL, LINKS, canonicalUrl } from "../config";
+import { appLink, LINKS, canonicalUrl } from "../config";
 import { PLATFORM_ICONS } from "../lib/platform-icons";
 import { getDesktopRelease } from "../lib/releases";
 
@@ -95,7 +95,7 @@ const schema = [
                   silently. The wrapper is page markup, so it styles fine. */}
               {mac && (
                 <span class="pick" data-for="mac">
-                  <Button href={mac.url} variant="inverse">
+                  <Button href={mac.url} variant="inverse" data-umami-event="download-macos">
                     <svg class="btn-icon" viewBox={PLATFORM_ICONS.apple.viewBox} aria-hidden="true">
                       <path fill="currentColor" d={PLATFORM_ICONS.apple.d} />
                     </svg>
@@ -106,7 +106,7 @@ const schema = [
 
               {linux[0] && (
                 <span class="pick" data-for="linux">
-                  <Button href={linux[0].url} variant="inverse">
+                  <Button href={linux[0].url} variant="inverse" data-umami-event="download-linux">
                     <svg class="btn-icon" viewBox={PLATFORM_ICONS.linux.viewBox} aria-hidden="true">
                       <path fill="currentColor" d={PLATFORM_ICONS.linux.d} />
                     </svg>
@@ -118,12 +118,28 @@ const schema = [
               {/* Windows and phones are told the truth instead of being shown
                   a button that hands them a desktop installer. There is no
                   Windows build, and no desktop build runs on a handset. */}
+              {/* Separate events for the two platforms that get no
+                  installer: "how many Windows visitors take the web app
+                  instead" is the number that decides whether a Windows build
+                  is worth building. */}
               <span class="pick" data-for="windows">
-                <Button href={APP_URL} variant="inverse">Open the web app</Button>
+                <Button
+                  href={appLink("/")}
+                  variant="inverse"
+                  data-umami-event="openapp-download-windows"
+                >
+                  Open the web app
+                </Button>
               </span>
 
               <span class="pick" data-for="mobile">
-                <Button href={APP_URL} variant="inverse">Open the web app</Button>
+                <Button
+                  href={appLink("/")}
+                  variant="inverse"
+                  data-umami-event="openapp-download-mobile"
+                >
+                  Open the web app
+                </Button>
               </span>
 
               <p class="meta">
@@ -146,7 +162,7 @@ const schema = [
             /* The build could not reach the GitHub API. Never invent a version
                or a file size - send people to the source of truth. */
             <div class="cta">
-              <Button href={LINKS.releases} variant="inverse" external>Get it on GitHub</Button>
+              <Button href={LINKS.releases} variant="inverse" external data-umami-event="download-github">Get it on GitHub</Button>
               <p class="meta">
                 <span class="meta-desktop">Latest builds for macOS and Linux</span>
               </p>
@@ -205,7 +221,7 @@ const schema = [
         <li>
           <span class="way-name">Web</span>
           <span class="way-body">
-            Nothing to install. <a href={APP_URL}>Open Clawbits</a> in any modern
+            Nothing to install. <a href={appLink("/")}>Open Clawbits</a> in any modern
             browser.
           </span>
         </li>

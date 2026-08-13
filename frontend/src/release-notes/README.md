@@ -72,11 +72,10 @@ login-page gradient + pattern.
 
 ## Where it shows
 
-- **Production** (`app.clawbits.ai`, plus the apex until the cutover completes)
-  and the **local dev server** (`vite dev`, via
-  `import.meta.env.DEV`) so developers can see it. The built **staging** site
-  (`freeclaws.ai`) is excluded — same bundle as prod, so the gate is hostname +
-  dev-mode, not just the build mode.
+- **Production** (`app.clawbits.ai`) and the **local dev server** (`vite dev`,
+  via `import.meta.env.DEV`) so developers can see it. The built **staging**
+  site (`app.freeclaws.ai`) is excluded — same bundle as prod, so the gate is
+  hostname + dev-mode, not just the build mode.
 - Once per version, per device (tracked in `localStorage`). New devices / the
   first rollout see only the latest entry, not the whole history.
 

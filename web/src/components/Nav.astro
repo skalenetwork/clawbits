@@ -69,10 +69,20 @@ const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
             </ul>
 
             <div class="actions">
-              <a href={LINKS.signin} class="signin" tabindex={noTab(hidden)}>
+              <a
+                href={LINKS.signin}
+                class="signin"
+                tabindex={noTab(hidden)}
+                data-umami-event="signin-nav"
+              >
                 Sign in
               </a>
-              <a href={LINKS.signup} class="pill" tabindex={noTab(hidden)}>
+              <a
+                href={LINKS.signup}
+                class="pill"
+                tabindex={noTab(hidden)}
+                data-umami-event="signup-nav"
+              >
                 Get Started
               </a>
             </div>
@@ -95,7 +105,10 @@ const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
                   </li>
                 ))}
                 <li>
-                  <a href={LINKS.signin} tabindex={noTab(hidden)}>
+                  {/* Distinct from signin-nav: this one is only reachable
+                      below the nav's collapse breakpoint, so the split is the
+                      cheapest read on how much of the traffic is narrow. */}
+                  <a href={LINKS.signin} tabindex={noTab(hidden)} data-umami-event="signin-menu">
                     Sign in
                   </a>
                 </li>
