@@ -392,7 +392,11 @@ def test_delete_agent_nulls_fks_to_mm_posts(test_client):
         assert surviving_reply is not None
         assert surviving_reply.parent_post_id is None
 
-        # Read-pointer row survives; last_read_post_id was nulled.
+        # Read-pointer row survives. It pointed at the agent's post, which was
+        # the channel's *first*, so there's nothing earlier to rewind to and
+        # the pointer ends up NULL. (When an earlier post does survive the
+        # pointer moves back onto it instead — see
+        # ``test_delete_agent_rewinds_read_pointer_rather_than_clearing_it``.)
         surviving_hcs = s.exec(
             select(HumanChannelState).where(
                 HumanChannelState.human_id == operator_id,
@@ -416,6 +420,89 @@ def test_delete_agent_nulls_fks_to_mm_posts(test_client):
         # subject/actor FKs no longer blocked the delete.
         assert s.get(MmChannelEvent, subject_event_id) is None
         assert s.get(MmChannelEvent, actor_event_id) is None
+
+
+def test_delete_agent_rewinds_read_pointer_rather_than_clearing_it(test_client):
+    """A read pointer parked on one of the deleted agent's posts must rewind
+    to the newest surviving post before it — not go NULL.
+
+    The unread query reads a NULL pointer as ``coalesce(..., 0)`` — "never
+    read anything" — so clearing it re-marks the channel's whole history
+    unread for everyone whose last read happened to be the agent's message.
+    That's an unread badge in every channel the agent talked in, with nothing
+    new in them to explain it.
+    """
+    import uuid
+
+    from sqlmodel import Session, select
+
+    from clawbits.db.models import HumanChannelState, MmChannel, MmPost
+    from clawbits.db.table_write import TableWrite
+
+    data = _create_agent(test_client)
+    agent_id = data["agent_id"]
+    info = _get_info(test_client, agent_id, data["api_key"])
+    operator_id = info["operator_id"]
+    org_id = info["org_id"]
+
+    server = test_client.app
+    with Session(server._engine) as s:
+        channel_id = str(uuid.uuid4())
+        TableWrite.create_mm_channel(
+            s,
+            channel_id=channel_id,
+            name=f"group-{channel_id[:8]}",
+            channel_type="public",
+            org_id=org_id,
+        )
+        TableWrite.add_mm_channel_member(s, channel_id, agent_id)
+        TableWrite.add_mm_channel_member_human(s, channel_id, operator_id)
+
+        human_post = MmPost(
+            channel_id=channel_id,
+            human_id=operator_id,
+            message="human first",
+            status="published",
+        )
+        s.add(human_post)
+        s.flush()
+        human_post_id = human_post.post_id
+
+        agent_post = MmPost(
+            channel_id=channel_id,
+            agent_id=agent_id,
+            message="agent replies last",
+            status="published",
+        )
+        s.add(agent_post)
+        s.flush()
+
+        # Operator has read everything — pointer sits on the agent's message.
+        s.add(
+            HumanChannelState(
+                human_id=operator_id,
+                channel_id=channel_id,
+                last_read_post_id=agent_post.post_id,
+            )
+        )
+        s.commit()
+
+    with Session(server._engine) as s:
+        TableWrite.delete_agent(s, agent_id)
+        s.commit()
+
+    with Session(server._engine) as s:
+        state = s.exec(
+            select(HumanChannelState).where(
+                HumanChannelState.human_id == operator_id,
+                HumanChannelState.channel_id == channel_id,
+            )
+        ).first()
+        assert state is not None
+        # Rewound onto the surviving human post — everything published is
+        # still at or before the pointer, so the channel stays read.
+        assert state.last_read_post_id == human_post_id
+        assert s.get(MmChannel, channel_id) is not None
 
 
 def test_delete_agent_default_tears_down_dm_channels(test_client):

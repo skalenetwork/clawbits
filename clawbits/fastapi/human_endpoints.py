@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from imapclient.exceptions import LoginError
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session
 
@@ -93,6 +94,7 @@ from clawbits.realtime import (
     fire_and_forget,
     get_bus,
     publish_automation_sync,
+    publish_channel_event,
     publish_org_added,
 )
 from clawbits.ssrf import HostResolutionError, PrivateAddressError, arun_guarded
@@ -681,12 +683,31 @@ async def remove_agent_from_org(
     files, reactions, comments, likes) is reattributed to a shared
     "Deleted agent" placeholder instead of being deleted, so conversation
     history survives for other channel members. The default deletes
-    everything the agent created."""
+    everything the agent created.
+
+    Every group channel the agent belonged to gets an inline "left the
+    channel" timeline event, fanned out below so open tabs render it without
+    waiting for a refetch."""
+    from clawbits.datastructures.mm_models import MmChannelEventResponse
+
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
         _verify_agent_in_org(db, org_id, agent_id)
-        TableWrite.delete_agent(db, agent_id, keep_content=keep_content)
+        departures = TableWrite.delete_agent(
+            db, agent_id, keep_content=keep_content, actor_human_id=user["id"]
+        )
         db.commit()
+
+    for departure in departures:
+        payload = MmChannelEventResponse(**departure["event"]).model_dump()
+        fire_and_forget(
+            publish_channel_event(
+                get_bus(),
+                departure["channel_id"],
+                payload,
+                member_human_ids=departure["member_human_ids"],
+            )
+        )
     # Best-effort mailbox cleanup after the DB delete commits; never block the
     # delete on the mail server being reachable.
     try:
@@ -1245,13 +1266,18 @@ def _require_automation_operator(db, agent_id: str, user: dict) -> None:
         )
 
 
-# Runtimes whose in-VM plugin has NO Clawbits cron reconciler. Only the
-# OpenClaw plugin reconciles desired-state automations today — a Hermes or
-# IronClaw agent would store the row and leave it stuck on "requested"
-# forever, so mutating calls are rejected up front instead of pretending.
-# None/unknown passes: ``agent_type`` is self-reported on the first alive
-# ping and the back-compat default is openclaw.
-_AUTOMATION_INCAPABLE_RUNTIMES = frozenset({"hermes", "ironclaw"})
+# Runtimes whose in-VM plugin has no Clawbits cron reconciler. Hermes ships
+# one in extensions/hermes/automations.py; IronClaw still cannot converge the
+# desired set. None/unknown passes for backward compatibility.
+_AUTOMATION_INCAPABLE_RUNTIMES = frozenset({"ironclaw"})
+
+# The Hermes plugin version that first shipped the reconciler. An older Hermes
+# agent stores the row and leaves it on "requested" forever — the UI renders that
+# as a pulsing "Applying…" with needsAttention:false, so it is invisible. Reject
+# up front instead of pretending. Deliberately a fixed floor rather than
+# ``min_plugin_version()``: that one tracks plugin.yaml and would tighten itself
+# on every unrelated version bump.
+_HERMES_AUTOMATIONS_MIN_VERSION = Version("0.7.0")
 
 
 def _require_automation_capable_runtime(db, agent_id: str) -> None:
@@ -1267,10 +1293,30 @@ def _require_automation_capable_runtime(db, agent_id: str) -> None:
         raise HTTPException(
             status_code=422,
             detail=(
-                "Automations require an OpenClaw runtime; "
+                "Automations are not supported by this agent runtime; "
                 f"this agent runs {agent_type}"
             ),
         )
+    if agent_type == "hermes":
+        raw_version = row.plugin_version if row is not None else None
+        try:
+            reported = Version(raw_version) if raw_version else None
+        except InvalidVersion:
+            reported = None
+        # Missing/unparseable passes, matching the back-compat posture of the
+        # runtime gate above: agents that have never pinged shouldn't be locked
+        # out of a feature their plugin may well support.
+        if reported is not None and reported < _HERMES_AUTOMATIONS_MIN_VERSION:
+            # The hint rides in `detail` — the global HTTPException handler drops
+            # `exc.headers`.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Automations need Clawbits Hermes plugin "
+                    f"{_HERMES_AUTOMATIONS_MIN_VERSION} or newer; this agent reports "
+                    f"{raw_version}. Redeploy the agent to upgrade its plugin."
+                ),
+            )
 
 
 def _authorize_automation_operator(

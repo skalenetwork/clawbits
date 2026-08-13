@@ -7,10 +7,12 @@ and decoding its JSON output.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -81,11 +83,12 @@ class _ClawbitsCli:
         parent_post_id: int | None = None,
         trace_id: str | None = None,
         file_ids: list[str] | None = None,
+        status: str = "published",
     ) -> Any:
-        if parent_post_id is not None or trace_id or file_ids:
+        if parent_post_id is not None or trace_id or file_ids or status != "published":
             body: dict[str, Any] = {
                 "message": content,
-                "status": "published",
+                "status": status,
                 "file_ids": file_ids or [],
             }
             if parent_post_id is not None:
@@ -94,6 +97,27 @@ class _ClawbitsCli:
                 body["trace_id"] = trace_id
             return self._run("mm-post", channel_id, "--json", json.dumps(body), *self._write_args())
         return self._run("mm-post", channel_id, "--message", content, *self._write_args())
+
+    def patch_message(
+        self,
+        channel_id: str,
+        post_id: str,
+        *,
+        replace: str | None = None,
+        done: bool = False,
+        cancel: bool = False,
+    ) -> Any:
+        body: dict[str, Any] = {}
+        if replace is not None:
+            body["replace"] = replace
+        if done:
+            body["done"] = True
+        if cancel:
+            body["cancel"] = True
+        return self._run(
+            "mm-post-patch", channel_id, str(post_id), "--json", json.dumps(body),
+            *self._write_args(),
+        )
 
     def upload_file(
         self, channel_id: str, path: str, content_type: str | None = None
@@ -113,8 +137,68 @@ class _ClawbitsCli:
             raise RuntimeError(f"mm-file-send returned no file_id: {result!r}")
         return file_id
 
-    def set_status(self, channel_id: str, status: str) -> None:
-        self._run("mm-status", channel_id, status, *self._write_args())
+    def file_url(self, file_id: str) -> str | None:
+        result = self._run("mm-file-url", file_id)
+        value = result.get("url") if isinstance(result, dict) else None
+        return value if isinstance(value, str) and value else None
+
+    def set_status(
+        self,
+        channel_id: str,
+        status: str,
+        activity: dict[str, Any] | None = None,
+    ) -> None:
+        args = ["mm-status", channel_id, status]
+        if activity:
+            args += ["--activity-json", json.dumps(activity)]
+        self._run(*args, *self._write_args())
+
+    def control_snapshot(self) -> Any:
+        return self._run("mm-channels")
+
+    def email_count(self, agent_id: str) -> dict[str, Any]:
+        result = self._run("email-count", agent_id)
+        return result if isinstance(result, dict) else {}
+
+    def email_inbox(self, agent_id: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        result = self._run(
+            "email-inbox", agent_id, "--limit", str(limit), "--offset", str(offset)
+        )
+        return result if isinstance(result, dict) else {}
+
+    def email_get(self, agent_id: str, uid: int) -> dict[str, Any]:
+        result = self._run("email-get", agent_id, str(uid))
+        return result if isinstance(result, dict) else {}
+
+    def email_send(
+        self,
+        agent_id: str,
+        subject: str,
+        message: str,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        # The body goes through a temp FILE, not argv: argv is world-readable
+        # through ps / /proc/<pid>/cmdline, and this payload is the operator's
+        # private correspondence. Same reasoning as the API key in _run.
+        body: dict[str, Any] = {"subject": subject, "message": message}
+        if headers:
+            body["headers"] = headers
+        fd, path = tempfile.mkstemp(prefix="clawbits-email-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(body, handle)
+            return self._run("email-send", agent_id, "--json", f"@{path}", *self._write_args())
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    def automations_desired(self) -> dict[str, Any]:
+        result = self._run("automations-desired")
+        return result if isinstance(result, dict) else {}
+
+    def automations_state(self, report: dict[str, Any]) -> dict[str, Any]:
+        result = self._run("automations-state", json.dumps(report))
+        return result if isinstance(result, dict) else {}
 
     def agent_info(self, agent_id: str) -> dict[str, Any]:
         result = self._run("agent-info", agent_id)

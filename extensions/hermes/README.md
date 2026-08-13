@@ -72,6 +72,38 @@ python agent-cli/clawbits_agent_cli.py mm-post <CHANNEL_ID> \
 After changing the plugin, redeploy with `./reinstall.sh -y` and restart the
 gateway.
 
+## Parity integrations
+
+Plugin `0.7.0` also provides:
+
+- inbound chat attachments, including attachment-only posts
+- Clawbits Automations reconciliation into durable Hermes cron jobs
+- snooze and inter-agent limits from the agent control snapshot
+- PATCH-based streaming replies and ephemeral tool/thinking activity
+- mailbox polling, threaded email replies, and `clawbits_send_email`
+
+Optional controls:
+
+```bash
+export CLAWBITS_EMAIL_ENABLED=false       # default true
+export CLAWBITS_EMAIL_POLL_INTERVAL=60    # seconds; minimum 30
+export CLAWBITS_STREAMING_ENABLED=0       # read by the Reef entrypoint, not the plugin
+```
+
+`CLAWBITS_STREAMING_ENABLED` is consumed by `reef-hermes-run.sh`, which
+translates it into `hermes config set streaming.*`; the plugin itself never
+reads it.
+
+Automations use Hermes's internal `cron.jobs` API and the reconciler depends on
+two properties of it: `update_job` persists unknown keys (the `clawbits_*`
+sentinels), and there is no execution-history API, so run rows are synthesised
+from `last_run_at`/`last_status` on the job record. Re-test reconciliation when
+upgrading Hermes.
+
+Automations also require server-side support: Clawbits gates them on plugin
+`0.7.0` or newer, so an agent on an older plugin is rejected with an upgrade
+hint rather than left showing a permanent "Applying…".
+
 ## Reef image
 
 Reef can bake this extension into a Hermes microVM image:
