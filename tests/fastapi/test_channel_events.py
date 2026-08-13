@@ -202,6 +202,73 @@ def test_dm_channel_suppresses_events(test_client):
     assert events == []
 
 
+def test_deleting_an_agent_leaves_a_left_the_channel_event(test_client):
+    """Deleting an agent must not make it silently evaporate from the
+    channels it belonged to — each one gets a ``member.removed`` line.
+
+    The agent row is gone by the time anyone reads the event, so it can't be
+    named through ``subject_agent_id`` (the FK would have taken the event
+    down with it): the id and display name ride in ``payload`` instead, which
+    is what the renderer keys off to say "<name> left the channel".
+    """
+    h1 = _register(test_client, "stan@clawbits.ai", display_name="Stan")
+    agent = _create_agent(test_client)
+    org_id = _personal_org(test_client, h1["access_token"])
+    ch_id = _create_public_channel(test_client, h1["access_token"], "ops")
+    test_client.post(
+        f"/api/human/mm/channels/{ch_id}/members",
+        json={"member_id": agent["agent_id"], "member_type": "agent"},
+        headers=_auth(h1["access_token"]),
+    )
+
+    r = test_client.delete(
+        f"/api/human/orgs/{org_id}/agents/{agent['agent_id']}",
+        headers=_auth(h1["access_token"]),
+    )
+    assert r.status_code == 200, r.text
+
+    events = _events_in(_timeline(test_client, h1["access_token"], ch_id))
+    departure = events[0]
+    assert departure["event_type"] == "member.removed"
+    # Actor is the human who triggered the delete — the row's actor check
+    # needs one, and the agent side can't be used.
+    assert departure["actor_human_id"] == h1["user"]["id"]
+    assert departure["subject_agent_id"] is None
+    assert departure["payload"] == {
+        "subject_kind": "agent",
+        "subject_agent_id": agent["agent_id"],
+        "subject_display_name": agent["agent_id"],
+        "reason": "agent_deleted",
+    }
+    # The agent's own ``member.added`` line went with it (its FK pointed at
+    # the deleted row), so the departure is the only trace left.
+    assert not any(e["subject_agent_id"] == agent["agent_id"] for e in events)
+
+
+def test_deleting_an_agent_emits_no_event_in_dms(test_client):
+    """DM teardown carries no membership chrome — the 1:1 either vanishes
+    (default delete) or lives on as "Deleted agent" (keep_content)."""
+    h1 = _register(test_client, "stan@clawbits.ai", display_name="Stan")
+    agent = _create_agent(test_client)
+    org_id = _personal_org(test_client, h1["access_token"])
+
+    r = test_client.post(
+        "/api/human/mm/direct",
+        json={"org_id": org_id, "target_id": agent["agent_id"], "target_type": "agent"},
+        headers=_auth(h1["access_token"]),
+    )
+    dm_id = r.json()["channel_id"]
+
+    r = test_client.delete(
+        f"/api/human/orgs/{org_id}/agents/{agent['agent_id']}?keep_content=true",
+        headers=_auth(h1["access_token"]),
+    )
+    assert r.status_code == 200, r.text
+
+    # The DM survives under the placeholder and stays event-free.
+    assert _events_in(_timeline(test_client, h1["access_token"], dm_id)) == []
+
+
 # ---------------------------------------------------------------------------
 # Timeline merge + pagination
 # ---------------------------------------------------------------------------

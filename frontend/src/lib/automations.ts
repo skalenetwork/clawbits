@@ -41,21 +41,28 @@ const RUNTIME_LABELS: Record<string, string> = {
 /** The Hermes plugin version that first shipped the reconciler. Mirrors the
  *  server's `_HERMES_AUTOMATIONS_MIN_VERSION`, which 422s as the hard boundary —
  *  this just keeps the UI from offering a control the server will reject. */
-const HERMES_AUTOMATIONS_MIN_VERSION = [0, 7, 0];
+type SemVer = readonly [number, number, number];
+
+const HERMES_AUTOMATIONS_MIN_VERSION: SemVer = [0, 7, 0];
 
 /** Compare a reported plugin version against a floor. Unparseable ⇒ null, which
  *  every caller treats as "pass" (same back-compat posture as the server). */
 function isBelowVersion(
   reported: string | null | undefined,
-  floor: number[],
+  floor: SemVer,
 ): boolean | null {
-  const match = (reported ?? "").trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec((reported ?? "").trim());
   if (!match) return null;
-  const parts = [Number(match[1]), Number(match[2]), Number(match[3])];
-  for (let i = 0; i < floor.length; i++) {
-    if (parts[i] !== floor[i]) return parts[i] < floor[i];
-  }
-  return false;
+  const [, rawMajor, rawMinor, rawPatch] = match;
+  const [major, minor, patch] = [rawMajor, rawMinor, rawPatch].map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const [floorMajor, floorMinor, floorPatch] = floor;
+  if (major !== floorMajor) return major < floorMajor;
+  if (minor !== floorMinor) return minor < floorMinor;
+  return patch < floorPatch;
 }
 
 /** Whether Clawbits-managed automations can actually apply on this agent's

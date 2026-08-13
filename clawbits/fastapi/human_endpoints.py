@@ -94,6 +94,7 @@ from clawbits.realtime import (
     fire_and_forget,
     get_bus,
     publish_automation_sync,
+    publish_channel_event,
     publish_org_added,
 )
 from clawbits.ssrf import HostResolutionError, PrivateAddressError, arun_guarded
@@ -682,12 +683,31 @@ async def remove_agent_from_org(
     files, reactions, comments, likes) is reattributed to a shared
     "Deleted agent" placeholder instead of being deleted, so conversation
     history survives for other channel members. The default deletes
-    everything the agent created."""
+    everything the agent created.
+
+    Every group channel the agent belonged to gets an inline "left the
+    channel" timeline event, fanned out below so open tabs render it without
+    waiting for a refetch."""
+    from clawbits.datastructures.mm_models import MmChannelEventResponse
+
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
         _verify_agent_in_org(db, org_id, agent_id)
-        TableWrite.delete_agent(db, agent_id, keep_content=keep_content)
+        departures = TableWrite.delete_agent(
+            db, agent_id, keep_content=keep_content, actor_human_id=user["id"]
+        )
         db.commit()
+
+    for departure in departures:
+        payload = MmChannelEventResponse(**departure["event"]).model_dump()
+        fire_and_forget(
+            publish_channel_event(
+                get_bus(),
+                departure["channel_id"],
+                payload,
+                member_human_ids=departure["member_human_ids"],
+            )
+        )
     # Best-effort mailbox cleanup after the DB delete commits; never block the
     # delete on the mail server being reachable.
     try:
