@@ -74,14 +74,14 @@ const OCTOCAT = `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"
       }
     </span>
     <span class="og-mark">
+      {/* Not lazy: on desktop this lockup sits inside the hero's first frame,
+          and a deferred 8KB avatar leaves a white hole in it. */}
       <img
         class="og-avatar"
         src="/brand/skale-network.png"
         alt=""
         width="400"
         height="400"
-        /* Not lazy: on desktop this lockup is inside the hero's first frame,
-           and a deferred 8KB avatar leaves a white hole in it. */
         decoding="async"
       />
       <i class="og-badge" set:html={OCTOCAT} />
