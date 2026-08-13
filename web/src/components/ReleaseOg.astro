@@ -1,0 +1,269 @@
+---
+/**
+ * GitHub's release Open Graph card, redrawn in markup.
+ *
+ * ── Why not the PNG it replaces ─────────────────────────────────────────────
+ *
+ * /brand/desktop-release.png was a screenshot of the real thing, so it froze
+ * the release it was taken of: the hero's chat still announced v0.17.0 three
+ * releases later, on the same page whose /download button offered v0.20.0.
+ * Redrawn, the lockup takes its version, commit and channel from the same
+ * build-time GitHub read everything else on the site uses (src/lib/releases.ts)
+ * and cannot go stale again.
+ *
+ * ── Transcribed from the real card ──────────────────────────────────────────
+ *
+ * Measured off the live render for desktop-v0.20.0 (pixel-sampled, not eyed),
+ * which is 1200x600. The DESIGN CANVAS here is 1146x600, because that is what
+ * the app actually shows: LinkPreviewCard puts the 2:1 image in a 1.91:1 box
+ * with object-fit: cover, and cover on a wider-than-the-box image crops the
+ * SIDES - 27px off each - not the top and bottom. Laying out at 1146 wide
+ * reproduces that crop exactly, which is why the gutter below reads 53 rather
+ * than GitHub's own 80.
+ *
+ *   ground     #fff; ink #1f2328, muted #59636e (GitHub's light fgColor pair)
+ *   gutter     53 (= 80 - the 27 the crop takes), 77 down from the top
+ *   eyebrow    30/42 muted - "New Release <tag>"
+ *   title      72/76 at 700, cap-top 145, second line at 222 - the column is
+ *              what wraps it after "desktop-", exactly as the real card does
+ *   summary    30/42 muted, centred on y 330, with the short sha at 600 in
+ *              full ink - GitHub's own og:image:alt is this sentence verbatim
+ *   avatar     200 square at radius 30, top 80, with a 76px GitHub badge
+ *              hung 16px off its lower-right corner
+ *   foot       64px contributor mark at y 456, gap 24, count 30/600 over a
+ *              24px label
+ *   bar        24px language strip, y 576; segment stops are the repo's real
+ *              language split, mapped through the same 27px crop
+ *
+ * Sized entirely in --ogu (one design pixel) off a container query, so the
+ * card is resolution-independent: it renders identically in the 318px bubble
+ * and at any width a future layout gives it. Same technique, same reasons, as
+ * --pu in PhoneDemo.astro.
+ */
+
+interface Props {
+  /** Git tag verbatim, e.g. "desktop-v0.20.0". */
+  tag: string;
+  /** Release name, e.g. "Clawbits desktop-v0.20.0". */
+  title: string;
+  /** Short commit, e.g. "75c9716". Empty when the build could not reach
+   *  GitHub - the summary line then drops rather than inventing one. */
+  sha: string;
+  /** "prod" | "staging". */
+  channel: string;
+}
+
+const { tag, title, sha, channel } = Astro.props;
+
+/** The Octocat, Primer's mark-github-16. Two uses: the badge on the org
+ *  avatar and the contributor mark in the footer. */
+const OCTOCAT = `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27s-1.36.09-2 .27c-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>`;
+---
+
+<span class="og" aria-hidden="true">
+  <span class="og-body">
+    <span class="og-copy">
+      <span class="og-eyebrow">New Release {tag}</span>
+      <b class="og-title">{title}</b>
+      {
+        sha && (
+          <span class="og-desc">
+            Built from <b>{sha}</b> on channel {channel}.
+          </span>
+        )
+      }
+    </span>
+    <span class="og-mark">
+      <img
+        class="og-avatar"
+        src="/brand/skale-network.png"
+        alt=""
+        width="400"
+        height="400"
+        /* Not lazy: on desktop this lockup is inside the hero's first frame,
+           and a deferred 8KB avatar leaves a white hole in it. */
+        decoding="async"
+      />
+      <i class="og-badge" set:html={OCTOCAT} />
+    </span>
+  </span>
+
+  <span class="og-foot">
+    <i class="og-cat" set:html={OCTOCAT} />
+    <span class="og-count">
+      <b>1</b>
+      <em>Contributor</em>
+    </span>
+  </span>
+
+  {/* The repo's language strip. Proportions match github.com's own bar for
+      this repo: TypeScript, then Python, then the tail. */}
+  <span class="og-bar"></span>
+</span>
+
+<style>
+  .og {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    /* The link preview's box, which is what does the cropping - see above. */
+    aspect-ratio: 1.91 / 1;
+    width: 100%;
+    overflow: hidden;
+    background: #fff;
+    color: #1f2328;
+    /* GitHub renders these cards in its own stack; the closest thing every
+     * platform here has is the system UI face. NOT the page's Geist: the point
+     * of the lockup is that it looks like something github.com made. */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    letter-spacing: normal;
+    text-align: left;
+    container-type: inline-size;
+  }
+
+  /* ONE design pixel of the 1146-wide cropped canvas. Declared on the
+   * children, never on .og itself: a container unit read from the container
+   * element resolves against that element's OWN container, which is whatever
+   * wraps the card. */
+  .og-body,
+  .og-foot,
+  .og-bar {
+    --ogu: 0.08726cqw;
+  }
+
+  .og-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: calc(40 * var(--ogu));
+    padding: calc(77 * var(--ogu)) calc(53 * var(--ogu)) 0;
+  }
+
+  .og-copy {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .og-eyebrow {
+    font-size: calc(30 * var(--ogu));
+    line-height: calc(42 * var(--ogu));
+    color: #59636e;
+  }
+
+  .og-title {
+    margin-top: calc(8 * var(--ogu));
+    font-size: calc(72 * var(--ogu));
+    line-height: calc(76 * var(--ogu));
+    font-weight: 700;
+    /* The real card lets the title run to two lines and breaks on the hyphen;
+     * it never truncates, because the release name is the one thing the card
+     * exists to say. */
+    overflow-wrap: break-word;
+  }
+
+  .og-desc {
+    margin-top: calc(29 * var(--ogu));
+    font-size: calc(30 * var(--ogu));
+    line-height: calc(42 * var(--ogu));
+    color: #59636e;
+  }
+
+  .og-desc b {
+    font-weight: 600;
+    color: #1f2328;
+  }
+
+  /* ── The org avatar, with GitHub's badge hung off its corner ── */
+
+  .og-mark {
+    position: relative;
+    flex: none;
+    width: calc(200 * var(--ogu));
+  }
+
+  .og-avatar {
+    display: block;
+    width: 100%;
+    height: calc(200 * var(--ogu));
+    border-radius: calc(30 * var(--ogu));
+    object-fit: cover;
+  }
+
+  .og-badge {
+    position: absolute;
+    right: calc(-16 * var(--ogu));
+    bottom: calc(-16 * var(--ogu));
+    width: calc(76 * var(--ogu));
+    height: calc(76 * var(--ogu));
+    display: block;
+    border-radius: 999px;
+    /* The disc is white so the mark reads against the black avatar it
+     * overlaps; the cat itself is Primer's muted fg. */
+    background: #fff;
+    padding: calc(3 * var(--ogu));
+    color: #8b949e;
+  }
+
+  /* ── Footer ── */
+
+  .og-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(24 * var(--ogu));
+    padding: 0 calc(53 * var(--ogu)) calc(80 * var(--ogu));
+  }
+
+  .og-cat {
+    flex: none;
+    display: block;
+    width: calc(64 * var(--ogu));
+    height: calc(64 * var(--ogu));
+  }
+
+  .og-count {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .og-count b {
+    font-size: calc(30 * var(--ogu));
+    font-weight: 600;
+    line-height: calc(36 * var(--ogu));
+  }
+
+  .og-count em {
+    font-size: calc(24 * var(--ogu));
+    font-style: normal;
+    line-height: calc(30 * var(--ogu));
+    color: #59636e;
+  }
+
+  .og-badge :global(svg),
+  .og-cat :global(svg) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* ── Language bar ──
+   * The repo's real split, sampled off the live card. The stops are mapped
+   * through the 27px side crop (x -> (1200x - 27) / 1146), which is why the
+   * tail languages run off the right edge here exactly as they do there. */
+  .og-bar {
+    position: absolute;
+    inset: auto 0 0;
+    height: calc(24 * var(--ogu));
+    background: linear-gradient(
+      to right,
+      /* TypeScript */ #3178c6 0 51.4%,
+      /* Python */ #3572a5 51.4% 88.9%,
+      /* Svelte */ #ff5a03 88.9% 95.9%,
+      /* Shell */ #89e051 95.9% 98%,
+      /* Rust */ #dea584 98% 99.7%,
+      /* CSS */ #663399 99.7% 100%
+    );
+  }
+</style>
