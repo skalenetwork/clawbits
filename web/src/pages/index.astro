@@ -106,6 +106,18 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
         </div>
       </div>
 
+      {/*
+        The two markers below bracket the region that scripts/build-bot-page.mjs
+        cuts out of dist/index.html to produce the machine-readable variant at
+        dist/_bot/ - the copy the named AI crawlers get, without ~240 KB of
+        invented sample conversation. They are real HTML comments rather than
+        Astro expression comments like this one, which the compiler strips: the
+        script has to find them in the build OUTPUT. The build FAILS if either
+        marker stops being emitted, or if what is between them stops being big.
+        Do not reword them, and do not let the region grow to hold anything a
+        reader without a screen still needs.
+      */}
+      <!--bot:demo:start-->
       <div class="stage">
         {/* Agent icon stack: peeks from behind the window's top-right
             corner (painted before AppDemo, so the window overlaps it).
@@ -141,6 +153,7 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
             but markup. */}
         <div class="phone-slot"><PhoneDemo /></div>
       </div>
+      <!--bot:demo:end-->
     </section>
   </div>
 
