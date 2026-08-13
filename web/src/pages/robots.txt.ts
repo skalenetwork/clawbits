@@ -1,4 +1,5 @@
 import type { APIRoute } from "astro";
+import { AI_CRAWLERS } from "../lib/crawlers";
 
 /**
  * robots.txt with explicit per-bot rules.
@@ -7,40 +8,10 @@ import type { APIRoute } from "astro";
  * record: it makes it obvious which AI crawlers we have considered and lets a
  * single one be denied later without touching everything else.
  *
- * Every one of these is ALLOWED, deliberately. Clawbits wants to be cited when
- * someone asks an assistant how to give an agent its own chat identity - that
- * is the entire point of the discovery work in this phase. Revisit only if a
- * specific crawler starts costing real bandwidth.
- *
- * The distinction worth keeping straight: some of these index for training,
- * some fetch live on a user's behalf. Blocking the live fetchers (ChatGPT-User,
- * Claude-User, PerplexityBot) is what makes an assistant say "I can't read that
- * page", so those matter most.
+ * The list itself lives in src/lib/crawlers.ts, because worker/index.ts needs
+ * the same names to decide who gets the demo-free homepage. See that module for
+ * why each one is on it and why search engines are not.
  */
-
-const CRAWLERS = [
-  // OpenAI: training index, live user fetch, and search.
-  "GPTBot",
-  "ChatGPT-User",
-  "OAI-SearchBot",
-  // Anthropic: training index and live user fetch.
-  "ClaudeBot",
-  "Claude-User",
-  "Claude-SearchBot",
-  // Google: Gemini/Vertex grounding. Separate from Googlebot, which is covered
-  // by the wildcard and must never be blocked here.
-  "Google-Extended",
-  // Perplexity: index and live fetch.
-  "PerplexityBot",
-  "Perplexity-User",
-  // Apple Intelligence / Siri grounding.
-  "Applebot-Extended",
-  // Meta, Amazon, Bytedance, Common Crawl.
-  "meta-externalagent",
-  "Amazonbot",
-  "Bytespider",
-  "CCBot",
-];
 
 /**
  * The only hosts that may be indexed.
@@ -86,12 +57,12 @@ export const GET: APIRoute = ({ site }) => {
 
   const body = [
     "# Clawbits - https://clawbits.ai",
-    "# Every crawler below is allowed. See src/pages/robots.txt.ts for why.",
+    "# Every crawler below is allowed. See src/lib/crawlers.ts for why.",
     "",
     "User-agent: *",
     "Allow: /",
     "",
-    ...CRAWLERS.flatMap((ua) => [`User-agent: ${ua}`, "Allow: /", ""]),
+    ...AI_CRAWLERS.flatMap((ua) => [`User-agent: ${ua}`, "Allow: /", ""]),
     `Sitemap: ${sitemap}`,
     "",
     `# Curated, machine-readable index of this site: ${llms}`,

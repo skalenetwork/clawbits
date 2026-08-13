@@ -1,0 +1,23 @@
+{
+  // The Worker is typechecked as a SEPARATE program from the site, on purpose.
+  //
+  // @cloudflare/workers-types redefines global DOM names - Response,
+  // ReadableStream, and the append() signatures on them. Pulled into the Astro
+  // program (a `/// <reference types>` in this folder is enough to do it) it
+  // makes the runtime types of a Worker apply to browser scripts, and
+  // AppDemo.astro's DOM code fails to compile with ten errors about
+  // HTMLDivElement not being a ReadableStream. The two runtimes get two
+  // programs; the root tsconfig excludes this folder to keep it that way.
+  //
+  // Checked by `bun run check`, which runs astro check and then tsc -p worker.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"],
+    "lib": ["ES2022"],
+    "noEmit": true
+  },
+  // src/lib/crawlers.ts is deliberately in both programs: it is plain TypeScript
+  // with no runtime-specific types, and it is the one module the site and the
+  // Worker must agree on.
+  "include": ["**/*.ts", "../src/lib/crawlers.ts"]
+}
