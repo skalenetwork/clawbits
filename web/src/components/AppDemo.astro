@@ -28,8 +28,20 @@ import {
   UserMultiple02Icon,
 } from "@hugeicons/core-free-icons";
 import { ico } from "../lib/appicon";
-import { CHATS, type Chat, type Msg, type Species } from "../content/demo-chats";
+import { demoChats, type Chat, type Msg, type Species } from "../content/demo-chats";
+import { getDesktopFacts } from "../lib/releases";
+import ReleaseOg from "./ReleaseOg.astro";
 import { LINKS } from "../config";
+
+/**
+ * The desktop release the hero's #engineering thread announces is the REAL
+ * latest one, read from GitHub at build time. It reaches three places that
+ * used to carry hardcoded copies of v0.17.0 and a d867eb5 that had long since
+ * been superseded: the message text (via demoChats), this link preview's
+ * title, and the OG lockup it hangs above.
+ */
+const release = await getDesktopFacts();
+const CHATS = demoChats(release.version);
 
 /**
  * The hero's product frame: a faithful, sample-data recreation of the real
@@ -812,23 +824,29 @@ const CARDS: Card[] = [
                           {m.card && (
                             <a
                               class="linkcard"
-                              href="https://github.com/skalenetwork/clawbits/releases/latest"
+                              data-seed-anchor
+                              href={release.url}
                               target="_blank"
                               rel="noopener noreferrer"
                             >
-                              <img
-                                class="lc-og"
-                                src="/brand/desktop-release.png"
-                                alt="Clawbits desktop release on GitHub"
-                                width="1200"
-                                height="600"
+                              {/* og:title, minus the " · owner/repo" the real
+                                  unfurl trims off the end of the line. */}
+                              <ReleaseOg
+                                tag={release.tag}
+                                title={release.title}
+                                sha={release.sha}
+                                channel={release.channel}
                               />
                               <span class="lc-body">
                                 <span class="lc-row">
-                                  <b>Release Clawbits desktop-v0.17.0</b>
+                                  <b>Release {release.title}</b>
                                   <span class="lc-chip">GitHub</span>
                                 </span>
-                                <span class="lc-desc">Built from d867eb5 on channel prod.</span>
+                                {release.sha && (
+                                  <span class="lc-desc">
+                                    Built from {release.sha} on channel {release.channel}.
+                                  </span>
+                                )}
                               </span>
                             </a>
                           )}
@@ -891,10 +909,60 @@ const CARDS: Card[] = [
   // offsets can be set up front.
   const SEED_ABOVE_END = 40;
 
-  for (const feed of document.querySelectorAll<HTMLElement>(".feed")) {
-    const max = feed.scrollHeight - feed.clientHeight;
-    if (max > 0) feed.scrollTop = Math.max(0, max - SEED_ABOVE_END);
+  /**
+   * …except in the thread that carries the release link preview, which opens
+   * ON the card instead.
+   *
+   * That thread is the hero's argument - a human asks about the release, an
+   * agent answers with the unfurled GitHub card - and the card is now a real
+   * lockup carrying the real version, not a screenshot. Landing 40px above the
+   * last message put its top edge exactly at the fold, so the first frame was
+   * a cropped picture with the question that prompted it scrolled away.
+   *
+   * Anchored to the card's BOTTOM rather than to a fixed offset, so the frame
+   * holds at any window height: the card sits whole just above the composer,
+   * and whatever room is left above it fills with the exchange that led to it.
+   */
+  const ANCHOR_ABOVE_COMPOSER = 12;
+  const COMPOSER_CLEARANCE = 106; // .feed's own padding-bottom
+
+  /* What we last set, per feed. A reader who has already scrolled a thread
+   * must not have it yanked back when a late web font re-flows the page. */
+  const seeded = new WeakMap<HTMLElement, number>();
+
+  function seedFeeds() {
+    for (const feed of document.querySelectorAll<HTMLElement>(".feed")) {
+      const last = seeded.get(feed);
+      if (last !== undefined && Math.abs(feed.scrollTop - last) > 1) continue;
+
+      const max = feed.scrollHeight - feed.clientHeight;
+      if (max <= 0) continue;
+
+      const anchor = feed.querySelector<HTMLElement>("[data-seed-anchor]");
+      let target = max - SEED_ABOVE_END;
+
+      if (anchor) {
+        // The anchor's bottom, in content coordinates, minus where in the
+        // viewport we want it to land.
+        const bottom =
+          anchor.getBoundingClientRect().bottom -
+          feed.getBoundingClientRect().top +
+          feed.scrollTop;
+        target = bottom - (feed.clientHeight - COMPOSER_CLEARANCE - ANCHOR_ABOVE_COMPOSER);
+      }
+
+      feed.scrollTop = Math.min(Math.max(0, target), max);
+      seeded.set(feed, feed.scrollTop);
+    }
   }
+
+  /* Three times, because the first is a guess: the module runs before web
+   * fonts have swapped and before the hero's images have decoded, and both
+   * change scrollHeight. Re-seeding is a no-op for any thread the reader has
+   * touched by then. */
+  seedFeeds();
+  window.addEventListener("load", seedFeeds, { once: true });
+  void document.fonts?.ready.then(seedFeeds);
 
   // ── Sending ──────────────────────────────────────────────────────────────
   //
@@ -2684,15 +2752,6 @@ const CARDS: Card[] = [
 
   .linkcard:active {
     transform: scale(0.99);
-  }
-
-  /* The OG image: the app's exact aspect-[1.91/1] object-cover treatment. */
-  .lc-og {
-    aspect-ratio: 1.91 / 1;
-    width: 100%;
-    height: auto;
-    object-fit: cover;
-    display: block;
   }
 
   .lc-body {

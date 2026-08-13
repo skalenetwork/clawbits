@@ -1,5 +1,14 @@
 ---
-import { CHATS, lastAuthor, type Chat, type Msg } from "../content/demo-chats";
+import {
+  attachmentsOf,
+  demoChats,
+  lastAuthor,
+  type About,
+  type Chat,
+  type Msg,
+} from "../content/demo-chats";
+import { getDesktopFacts } from "../lib/releases";
+import ReleaseOg from "./ReleaseOg.astro";
 
 /**
  * The mobile hero's product frame: the NATIVE iOS app (apps/mobile) in an
@@ -61,7 +70,9 @@ import { CHATS, lastAuthor, type Chat, type Msg } from "../content/demo-chats";
  *
  * CSP NOTE: no style attributes anywhere - the production build ships
  * style-src hashes with no 'unsafe-inline', so they are silently dropped.
- * All interactivity is radio groups + labels; there is no script.
+ * Every interaction is radio groups + labels: the view switcher, the scope
+ * tabs, and the details sheet. The ONE script on this component is the status
+ * bar clock, which cannot be CSS - see the note above it.
  *
  * aria-hidden: decorative. The hero states the claim; this illustrates it.
  */
@@ -89,6 +100,16 @@ const SF: Record<string, string> = {
   mic: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="8.8" y="2.4" width="6.4" height="11.4" rx="3.2"/><path d="M5.4 11.2a6.6 6.6 0 0 0 13.2 0M12 17.8v3.8"/></svg>`,
   // The app's own composer robot (components/chat/robot-icon.tsx)
   robot: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.4" y="7.4" width="17.2" height="12.4" rx="4"/><path d="M12 3.2v4.2M1.9 12.4v3.4M22.1 12.4v3.4"/><circle cx="8.7" cy="13.2" r="1.35" fill="currentColor" stroke="none"/><circle cx="15.3" cy="13.2" r="1.35" fill="currentColor" stroke="none"/></svg>`,
+  // bell.slash
+  bellSlash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17.6 14.6V10a5.6 5.6 0 0 0-4.2-5.4V4a1.4 1.4 0 0 0-2.8 0v.6A5.6 5.6 0 0 0 6.4 10v4.6L4.8 17.2h14.4l-1.6-2.6Z"/><path d="M9.8 20.2a2.4 2.4 0 0 0 4.4 0"/><path d="M3.6 3.4 20.6 20.4"/></svg>`,
+  // pin
+  pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14.4 2.9 21.1 9.6l-2.5 1a4 4 0 0 0-2 1.6l-2.3 3.6-6.1-6.1 3.6-2.3a4 4 0 0 0 1.6-2l1-2.5Z"/><path d="M8.2 15.8 3.4 20.6"/></svg>`,
+  // envelope
+  mail: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><rect x="2.6" y="4.8" width="18.8" height="14.4" rx="3.2"/><path d="m3.8 7.6 7.1 4.8a2 2 0 0 0 2.2 0l7.1-4.8"/></svg>`,
+  // person.badge.plus
+  personAdd: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="7.6" r="3.9"/><path d="M3.4 19.8c0-3.4 2.9-5.6 6.6-5.6 1.1 0 2.2.2 3.1.6"/><path d="M18 14.4v5.6M15.2 17.2h5.6"/></svg>`,
+  // doc.text
+  doc: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M13.4 2.8H7.6a2.8 2.8 0 0 0-2.8 2.8v12.8a2.8 2.8 0 0 0 2.8 2.8h8.8a2.8 2.8 0 0 0 2.8-2.8V8.2Z"/><path d="M13.4 2.8v4.2a1.2 1.2 0 0 0 1.2 1.2h4.6"/><path d="M8.8 13.2h6.4M8.8 16.6h4.4" stroke-linecap="round"/></svg>`,
   /* Status bar, iOS 27. Every glyph is a SOLID fill with fully rounded ends -
    * the outlined battery shell and hairline wifi arcs of earlier releases are
    * gone. Traced from the owner-supplied reference crop. */
@@ -109,6 +130,17 @@ const SF: Record<string, string> = {
  */
 const OPENS_ON = "eng";
 
+/**
+ * The REAL latest desktop release, read from GitHub at build time.
+ *
+ * Two things on this screen are about it, and both used to be literals that
+ * went stale three releases later: the #engineering thread announces it by
+ * number, and atlas's message carries its GitHub link preview. Same read, same
+ * values, as the desktop window - see src/lib/releases.ts.
+ */
+const release = await getDesktopFacts();
+const CHATS = demoChats(release.version);
+
 const DMS = CHATS.filter((c) => c.species !== "channel");
 const CHANNELS = CHATS.filter((c) => c.species === "channel");
 
@@ -126,6 +158,59 @@ const PLACEHOLDER = "Message";
 
 /** Rows render the last message's author above the preview (channels only). */
 const rowPreview = (c: Chat) => c.preview;
+
+/* ── The details sheet ──────────────────────────────────────────────────────
+ *
+ * Tapping the header's name pill pushes iOS's contact card: who this is, what
+ * it can do, and everything the conversation has shared. On this page it is
+ * doing a second job - it is where an AGENT stops looking like a contact and
+ * starts looking like software, because the card lists its mailbox, its
+ * runtime and its automations where a person's lists their email and role.
+ *
+ * Defaults per species, overridden per chat where the generic line would be a
+ * wasted line (demo-chats.ts `about`).
+ */
+const aboutOf = (c: Chat): Required<About> => {
+  const handle = c.name.toLowerCase();
+  const base: Required<About> =
+    c.species === "channel"
+      ? {
+          line: `Channel · ${c.members ?? 0} members`,
+          rows: [
+            ["Members", String(c.members ?? 0)],
+            ["Visibility", "Open to the org"],
+            ["Notifications", "All messages"],
+          ],
+        }
+      : c.species === "agent"
+        ? {
+            line: `Agent · @${handle}`,
+            rows: [
+              ["Mailbox", `${handle}@clawbits.ai`],
+              ["Runtime", "OpenClaw on reef"],
+              ["Model", "Claude Opus 5"],
+              ["Notifications", "All messages"],
+            ],
+          }
+        : {
+            line: `Human · @${handle}`,
+            rows: [
+              ["Email", `${handle}@clawbits.ai`],
+              ["Shared channels", "3"],
+              ["Notifications", "All messages"],
+            ],
+          };
+  return { line: c.about?.line ?? base.line, rows: c.about?.rows ?? base.rows };
+};
+
+/** The card's action row. Four, always - iOS lays these out as equal columns
+ *  and three leaves a gap where the fourth should be. */
+const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
+  ["search", "Search"],
+  ["bellSlash", "Mute"],
+  ["pin", "Pin"],
+  c.species === "channel" ? ["personAdd", "Invite"] : ["mail", "Email"],
+];
 ---
 
 <div class="phone" aria-hidden="true">
@@ -145,6 +230,15 @@ const rowPreview = (c: Chat) => c.preview;
   <input type="radio" name="ph-tab" id="ph-dms" class="pr" checked aria-label="Direct messages" />
   <input type="radio" name="ph-tab" id="ph-chs" class="pr" aria-label="Channels" />
 
+  {/* The details sheet is ONE checkbox for the whole phone, not one per chat:
+      the sheet is rendered inside each conversation, so "which card" is
+      already answered by the view radio above. A checkbox also means the same
+      label both presents and dismisses it - the name pill opens, the Done
+      button and the backdrop close - which a radio pair cannot do. */}
+  <input type="checkbox" id="ph-det" class="pr" aria-label="Chat details" />
+  <input type="radio" name="ph-dtab" id="ph-dt-info" class="pr" checked aria-label="Info" />
+  <input type="radio" name="ph-dtab" id="ph-dt-files" class="pr" aria-label="Attachments" />
+
   {/* Cast behind the device rather than as a drop-shadow on the frame: the
       frame's alpha has a hole in it (that is the point), and a drop-shadow
       through a hole lands on the screen. This is the body's own silhouette,
@@ -155,7 +249,10 @@ const rowPreview = (c: Chat) => c.preview;
     {/* ── iOS status bar. Drawn by the OS, not the app - but inside a device
         frame its absence is the loudest thing on the card. ── */}
     <div class="sbar">
-      <span class="stime">9:41</span>
+      {/* 9:41 is Apple's marketing time and the correct server-rendered
+          value: it is what the frame shows before the clock script runs, and
+          what it keeps if the script never does. See the <script> below. */}
+      <span class="stime" data-phone-clock>9:41</span>
       <span class="sright">
         <i class="sglyph scell" set:html={SF.cell} />
         <i class="sglyph swifi" set:html={SF.wifi} />
@@ -218,130 +315,201 @@ const rowPreview = (c: Chat) => c.preview;
       const isChannel = c.species === "channel";
       return (
         <section class:list={["chatview", `cv-${c.id}`]}>
-          <div class="cfeed">
-            <div class="cstack">
-              {c.msgs.map((m, i) => {
-                const prev = c.msgs[i - 1];
-                const next = c.msgs[i + 1];
-                // A day divider breaks the run on both sides, exactly as the
-                // real grouping does.
-                const startsRun = !!m.day || !sameAuthor(prev, m);
-                const endsRun = !!next?.day || !sameAuthor(m, next);
-                return (
-                  <>
-                    {m.day && <div class="cday">{m.day}</div>}
-                    <div
-                      class:list={[
-                        "crow",
-                        m.own ? "own" : "in",
-                        { gut: isChannel && !m.own, tail: endsRun, tight: !startsRun },
-                      ]}
-                    >
-                      {isChannel && !m.own && endsRun && (
-                        m.ava ? (
-                          <img class="cgav" src={m.ava} alt="" width="112" height="112" loading="lazy" />
-                        ) : (
-                          <i class="cgav cgletter">{m.letter}</i>
-                        )
-                      )}
-                      <div class="cbub">
-                        {startsRun && !m.own && isChannel && m.name && (
-                          <span class="csender">{m.name}</span>
+          <div class="cstage">
+            <div class="cfeed">
+              <div class="cstack">
+                {c.msgs.map((m, i) => {
+                  const prev = c.msgs[i - 1];
+                  const next = c.msgs[i + 1];
+                  // A day divider breaks the run on both sides, exactly as the
+                  // real grouping does.
+                  const startsRun = !!m.day || !sameAuthor(prev, m);
+                  const endsRun = !!next?.day || !sameAuthor(m, next);
+                  return (
+                    <>
+                      {m.day && <div class="cday">{m.day}</div>}
+                      <div
+                        class:list={[
+                          "crow",
+                          m.own ? "own" : "in",
+                          { gut: isChannel && !m.own, tail: endsRun, tight: !startsRun },
+                        ]}
+                      >
+                        {isChannel && !m.own && endsRun && (
+                          m.ava ? (
+                            <img class="cgav" src={m.ava} alt="" width="112" height="112" loading="lazy" />
+                          ) : (
+                            <i class="cgav cgletter">{m.letter}</i>
+                          )
                         )}
-                        {m.html && <div class="ctext" set:html={m.html} />}
-                        {m.img && (
-                          <img
-                            class="cimg"
-                            src={m.img.src}
-                            alt=""
-                            width={m.img.w}
-                            height={m.img.h}
-                            loading="lazy"
-                          />
-                        )}
-                        {m.file && (
-                          <span class="cfile">
-                            <i class="cfico" set:html={SF.clip} />
-                            <span class="cfbody">
-                              <b>{m.file.name}</b>
-                              <em>{m.file.meta}</em>
-                            </span>
-                          </span>
-                        )}
-                        {m.card && (
-                          <span class="ccard">
-                            <span class="ccard-top">
-                              <b>skalenetwork/clawbits</b>
-                              <em>
-                                Team chat where agents are members, not integrations - with
-                                their own mailbox, git repos, and automations.
-                              </em>
-                            </span>
-                            <span class="ccard-bar"></span>
-                            {/* The section under the bar. Not decoration: with
-                                the card nested and clipped, a language bar
-                                flush against a 16pt radius reads as severed.
-                                In the real preview it is a DIVIDER, which is
-                                what this restores. */}
-                            <span class="ccard-foot">
-                              <b>GitHub - skalenetwork/clawbits</b>
-                              <em>
-                                A frictionless way to communicate and collaborate with
-                                humans and agents.
-                              </em>
-                            </span>
-                          </span>
-                        )}
-                        {m.reactions && (
-                          <span class="creacts">
-                            {m.reactions.map((r) => (
-                              <span class:list={["creact", { mine: r.mine }]}>
-                                <i>{r.e}</i>{r.n}
+                        <div class="cbub">
+                          {startsRun && !m.own && isChannel && m.name && (
+                            <span class="csender">{m.name}</span>
+                          )}
+                          {m.html && <div class="ctext" set:html={m.html} />}
+                          {m.img && (
+                            <img
+                              class="cimg"
+                              src={m.img.src}
+                              alt=""
+                              width={m.img.w}
+                              height={m.img.h}
+                              loading="lazy"
+                            />
+                          )}
+                          {m.file && (
+                            <span class="cfile">
+                              <i class="cfico" set:html={SF.clip} />
+                              <span class="cfbody">
+                                <b>{m.file.name}</b>
+                                <em>{m.file.meta}</em>
                               </span>
-                            ))}
-                          </span>
-                        )}
+                            </span>
+                          )}
+                          {m.card && (
+                            <span class="ccard">
+                              {/* The same lockup the desktop window unfurls,
+                                  so one message does not describe two
+                                  different releases depending on which device
+                                  it is read on. It carries its own container
+                                  query, so it lays out for this bubble's width
+                                  with nothing passed in. */}
+                              <ReleaseOg
+                                tag={release.tag}
+                                title={release.title}
+                                sha={release.sha}
+                                channel={release.channel}
+                              />
+                              <span class="ccard-top">
+                                <b>Release {release.title}</b>
+                                {release.sha && (
+                                  <em>
+                                    Built from {release.sha} on channel {release.channel}.
+                                  </em>
+                                )}
+                              </span>
+                            </span>
+                          )}
+                          {m.reactions && (
+                            <span class="creacts">
+                              {m.reactions.map((r) => (
+                                <span class:list={["creact", { mine: r.mine }]}>
+                                  <i>{r.e}</i>{r.n}
+                                </span>
+                              ))}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </>
-                );
-              })}
+                    </>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* iOS 26's `scrollEdgeEffects: { top: 'soft' }`, which the Stack is
+                configured with - the content does not just slide under the bar,
+                it dissolves into it. Approximated as a fade to the page ground
+                rather than a progressive blur; on white the two are close, and a
+                real progressive blur costs a stack of backdrop-filter layers. */}
+            <div class="cveil"></div>
+            <div class="cveil cveil-b"></div>
+
+            {/* Floating nav bar: back on the left, the contact-card title column
+                centred. Content scrolls UNDER both. */}
+            <div class="chead">
+              <label class="cback glass" for="ph-list">
+                <i class="cbico" set:html={SF.chevronL} />
+                {totalUnread - (c.unread ?? 0) > 0 && (
+                  <i class="cbbadge">{totalUnread - (c.unread ?? 0)}</i>
+                )}
+              </label>
+              <span class="ctitle">
+                <img class="ctav" src={c.src} alt="" width="128" height="128" loading="lazy" />
+                <label class="cnamepill glass" for="ph-det">
+                  <span class="cname">{c.name}</span>
+                  <i class="cnchev" set:html={SF.chevronR} />
+                </label>
+              </span>
+            </div>
+
+            <div class="ccomposer">
+              <span class="cbtn glass" set:html={SF.plus} />
+              <span class="cbtn glass" set:html={SF.robot} />
+              <span class="cinput glass">
+                <span class="cph">{c.draft ?? PLACEHOLDER}</span>
+                <i class="cmic" set:html={SF.mic} />
+              </span>
             </div>
           </div>
 
-          {/* iOS 26's `scrollEdgeEffects: { top: 'soft' }`, which the Stack is
-              configured with - the content does not just slide under the bar,
-              it dissolves into it. Approximated as a fade to the page ground
-              rather than a progressive blur; on white the two are close, and a
-              real progressive blur costs a stack of backdrop-filter layers. */}
-          <div class="cveil"></div>
-          <div class="cveil cveil-b"></div>
+          {/* ── The details sheet ──────────────────────────────────────────
+              Presented over the conversation, iOS-26 style: the card scales
+              back behind a dim, and the sheet arrives from the bottom on a
+              glass ground. It stops 44pt short of the top so the thing it
+              came from stays visible - that is what makes it read as pushed
+              over the chat rather than as a different screen. */}
+          <label class="sdim" for="ph-det"></label>
 
-          {/* Floating nav bar: back on the left, the contact-card title column
-              centred. Content scrolls UNDER both. */}
-          <div class="chead">
-            <label class="cback glass" for="ph-list">
-              <i class="cbico" set:html={SF.chevronL} />
-              {totalUnread - (c.unread ?? 0) > 0 && (
-                <i class="cbbadge">{totalUnread - (c.unread ?? 0)}</i>
+          <div class="sheet">
+            <span class="sgrab"></span>
+            <div class="shead">
+              <label class="sdone glass" for="ph-det">Done</label>
+            </div>
+
+            <div class="shero">
+              <img class="shava" src={c.src} alt="" width="256" height="256" loading="lazy" />
+              <b class="shname">{c.name}</b>
+              <span class="shline">{aboutOf(c).line}</span>
+            </div>
+
+            <div class="sacts">
+              {actionsOf(c).map(([icon, label]) => (
+                <span class="sact">
+                  <i class="sactic glass" set:html={SF[icon]} />
+                  <em>{label}</em>
+                </span>
+              ))}
+            </div>
+
+            <div class="stabs glass">
+              <label class="stab" for="ph-dt-info">Info</label>
+              <label class="stab" for="ph-dt-files">Attachments</label>
+            </div>
+
+            <div class="spane sp-info">
+              <div class="scard">
+                {aboutOf(c).rows.map(([k, v]) => (
+                  <span class="srow">
+                    <span class="srk">{k}</span>
+                    <span class="srv">{v}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div class="spane sp-files">
+              {attachmentsOf(c).length > 0 ? (
+                <div class="scard">
+                  {attachmentsOf(c).map((f) => (
+                    <span class="srow frow">
+                      {f.kind === "image" && f.src ? (
+                        <img class="fthumb" src={f.src} alt="" width="128" height="128" loading="lazy" />
+                      ) : (
+                        <i class="fthumb fdoc" set:html={SF.doc} />
+                      )}
+                      <span class="fbody">
+                        <b>{f.name}</b>
+                        <em>{f.meta} · {f.from} · {f.when}</em>
+                      </span>
+                      <i class="fchev" set:html={SF.chevronR} />
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <div class="sempty">Nothing shared here yet</div>
               )}
-            </label>
-            <span class="ctitle">
-              <img class="ctav" src={c.src} alt="" width="128" height="128" loading="lazy" />
-              <span class="cnamepill glass">
-                <span class="cname">{c.name}</span>
-                <i class="cnchev" set:html={SF.chevronR} />
-              </span>
-            </span>
-          </div>
-
-          <div class="ccomposer">
-            <span class="cbtn glass" set:html={SF.plus} />
-            <span class="cbtn glass" set:html={SF.robot} />
-            <span class="cinput glass">
-              <span class="cph">{c.draft ?? PLACEHOLDER}</span>
-              <i class="cmic" set:html={SF.mic} />
-            </span>
+            </div>
           </div>
         </section>
       );
@@ -362,6 +530,77 @@ const rowPreview = (c: Chat) => c.preview;
       a placeholder bezel from the same aperture variables - see --ap-*. */}
   <div class="frame"></div>
 </div>
+
+<script>
+  /**
+   * The status bar shows the READER'S clock.
+   *
+   * A device frame with 9:41 frozen on it is a stock mockup; the same frame
+   * showing the time on the phone in your hand is a product shot. It is the
+   * cheapest "this is running" signal on the page, and the only one here that
+   * CSS genuinely cannot produce.
+   *
+   * Bundled, not inline: Astro emits this as a module under /_astro, which the
+   * CSP already allows via script-src 'self'. An inline script would depend on
+   * the build-computed hash surviving, for no gain.
+   *
+   * Server-rendered as 9:41, so a reader with JS off keeps Apple's marketing
+   * time rather than an empty status bar.
+   */
+  const clocks = document.querySelectorAll("[data-phone-clock]");
+
+  if (clocks.length > 0) {
+    /* The reader's own locale and hour cycle - a 24-hour reader should not be
+     * shown a 12-hour phone. `hour: "numeric"` is right for a 12-hour clock
+     * (iOS shows "9:41", not "09:41") and wrong for a 24-hour one, where iOS
+     * pads; ask the runtime which it resolved to rather than guessing from the
+     * language tag. */
+    const probe = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+    const cycle = probe.resolvedOptions().hourCycle;
+    const wide = cycle === "h23" || cycle === "h24";
+    const fmt = wide
+      ? new Intl.DateTimeFormat(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+          hourCycle: cycle,
+        })
+      : probe;
+
+    const paint = () => {
+      /* iOS drops the AM/PM from the status bar, so the day period and the
+       * space in front of it both go. Assembled from parts rather than by
+       * regex: the hour-minute separator is not ":" in every locale. */
+      const parts = fmt
+        .formatToParts(new Date())
+        .filter((p) => p.type === "hour" || p.type === "minute" || p.type === "literal");
+      while (parts.length > 0 && parts[0].type === "literal") parts.shift();
+      while (parts.length > 0 && parts[parts.length - 1].type === "literal") parts.pop();
+
+      const text = parts.map((p) => p.value).join("");
+      for (const node of clocks) node.textContent = text;
+    };
+
+    /* Repainted ON the minute, not every minute: a naive 60s interval drifts
+     * and lands mid-minute, so the displayed time can be a full minute stale.
+     * Every timezone offset is a whole number of minutes, so the epoch
+     * remainder is the local one too. */
+    let timer = 0;
+    const tick = () => {
+      paint();
+      timer = window.setTimeout(tick, 60_000 - (Date.now() % 60_000) + 200);
+    };
+    tick();
+
+    /* A backgrounded tab has its timers throttled, so the clock comes back
+     * wrong; resync the moment it is looked at again. */
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        clearTimeout(timer);
+        tick();
+      }
+    });
+  }
+</script>
 
 <style>
   /* ── The device ───────────────────────────────────────────────────────────
@@ -409,6 +648,11 @@ const rowPreview = (c: Chat) => c.preview;
     /* These visuals resize their own children on a loop; nothing here is
      * content a reader is tracking, so nothing here should anchor a scroll. */
     overflow-anchor: none;
+    /* Every control here is a label. A tap that drags a pixel selects the
+     * label's text instead of activating it, which on a touch screen is most
+     * taps - and the transcript is decorative, so there is nothing to lose. */
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   /* The radios are the state. Off-screen rather than display:none so the
@@ -1073,11 +1317,13 @@ const rowPreview = (c: Chat) => c.preview;
     opacity: 0.7;
   }
 
-  /* The link preview, hung under the text inside the bubble. */
-  /* A card NESTED in the bubble, not a full-bleed panel across it -
-   * link-preview-card.tsx: radius 16, marginTop 8, overflow hidden, inner
-   * padding 14/12. It keeps the bubble's own 14pt inset on both sides, and the
-   * clip is what rounds the language bar's ends with the card. */
+  /* The link preview, hung under the text inside the bubble.
+   *
+   * A card NESTED in the bubble, not a full-bleed panel across it -
+   * link-preview-card.tsx: radius 16, marginTop 8, overflow hidden, OG image
+   * across the top at 1.91:1, inner padding 14/12 under it. It keeps the
+   * bubble's own 14pt inset on both sides, and the clip is what rounds the
+   * lockup's top corners with the card. */
   .ccard {
     display: block;
     margin-top: calc(8 * var(--pu));
@@ -1089,12 +1335,19 @@ const rowPreview = (c: Chat) => c.preview;
 
   .ccard-top {
     display: block;
-    padding: calc(12 * var(--pu)) calc(14 * var(--pu));
+    padding: calc(11 * var(--pu)) calc(14 * var(--pu)) calc(12 * var(--pu));
   }
 
+  /* Two lines, then ellipsis - the real card's line-clamp-2. The release
+   * title is long enough to need it at this width. */
   .ccard-top b {
-    display: block;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
     font-size: calc(15 * var(--pu));
+    line-height: calc(19 * var(--pu));
     font-weight: 700;
   }
 
@@ -1105,41 +1358,9 @@ const rowPreview = (c: Chat) => c.preview;
     line-height: calc(16 * var(--pu));
     font-style: normal;
     color: var(--ph-sec);
-  }
-
-  /* GitHub's language bar. */
-  .ccard-bar {
-    display: block;
-    height: calc(5 * var(--pu));
-    background: linear-gradient(
-      to right,
-      #3178c6 0 56%,
-      #f1e05a 56% 78%,
-      #e34c26 78% 92%,
-      #89e051 92% 100%
-    );
-  }
-
-  .ccard-foot {
-    display: block;
-    padding: calc(10 * var(--pu)) calc(14 * var(--pu));
-    background: var(--ph-elem);
-  }
-
-  .ccard-foot b {
-    display: block;
-    font-size: calc(13 * var(--pu));
-    font-weight: 600;
-    line-height: calc(17 * var(--pu));
-  }
-
-  .ccard-foot em {
-    display: block;
-    margin-top: calc(2 * var(--pu));
-    font-size: calc(12 * var(--pu));
-    line-height: calc(16 * var(--pu));
-    font-style: normal;
-    color: var(--ph-sec);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .creacts {
@@ -1389,6 +1610,370 @@ const rowPreview = (c: Chat) => c.preview;
   .tbtn.on {
     background: rgb(120 120 128 / 0.16);
     color: var(--ph-text);
+  }
+
+
+  /* ── The details sheet ────────────────────────────────────────────────────
+   *
+   * iOS 26's presentation, as far as CSS can take it:
+   *
+   *   1. the presenting view scales back behind a dim   - .cstage
+   *   2. the sheet rises from the bottom on glass       - .sheet
+   *   3. its controls are the same material as the bar  - .glass, reused
+   *
+   * The screen is CROPPED by the hero canvas (--ph-crop, index.astro), so a
+   * bottom sheet in the usual sense - anchored to the chin, growing upward -
+   * would be entirely below the fold. This one is anchored to the TOP instead:
+   * 66pt down, running past the crop, with everything that has to be read in
+   * the first ~570pt. That is also how a full-height iOS sheet behaves, so the
+   * constraint and the reference agree.
+   */
+
+  /* The conversation, so it can be pushed back as a unit. Nothing about it
+   * changes while the sheet is closed - `scale` is left at its initial `none`
+   * rather than written as 1, so the chat does not carry a stacking context
+   * and a containing block it has no use for. */
+  .cstage {
+    position: absolute;
+    inset: 0;
+    transform-origin: 50% 0%;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .cstage {
+      transition:
+        scale 460ms var(--ease-out-expo),
+        translate 460ms var(--ease-out-expo),
+        filter 460ms var(--ease-out-expo);
+    }
+  }
+
+  #ph-det:checked ~ .screen .cstage {
+    scale: 0.93;
+    translate: 0 calc(12 * var(--pu));
+    /* Corners, because a scaled-back view with square ones reads as a
+     * mis-sized screen rather than as a card behind a sheet. */
+    border-radius: calc(40 * var(--pu));
+    overflow: hidden;
+    /* Not opacity: the sheet's own backdrop-filter samples whatever is behind
+     * it, and a half-transparent chat over the white screen turns the glass
+     * into flat white. Desaturating leaves something for it to pick up. */
+    filter: saturate(0.75) brightness(0.94);
+  }
+
+  .sdim,
+  .sheet {
+    display: none;
+  }
+
+  #ph-det:checked ~ .screen .sdim {
+    display: block;
+  }
+
+  #ph-det:checked ~ .screen .sheet {
+    display: flex;
+  }
+
+  .sdim {
+    position: absolute;
+    inset: 0;
+    z-index: 8;
+    background: rgb(0 0 0 / 0.3);
+    cursor: pointer;
+  }
+
+  .sheet {
+    position: absolute;
+    inset: calc(66 * var(--pu)) 0 0;
+    z-index: 9;
+    flex-direction: column;
+    border-radius: calc(44 * var(--pu)) calc(44 * var(--pu)) 0 0;
+    overflow: hidden;
+    /* systemGroupedBackground, thinned so the pushed-back chat shows through
+     * as light and colour rather than as a picture. */
+    background: rgb(244 244 248 / 0.82);
+    -webkit-backdrop-filter: blur(calc(26 * var(--pu))) saturate(180%);
+    backdrop-filter: blur(calc(26 * var(--pu))) saturate(180%);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.75),
+      0 calc(-8 * var(--pu)) calc(30 * var(--pu)) rgb(0 0 0 / 0.14);
+  }
+
+  /* Longhands, never the `animation` shorthand - see the scroll-timeline note
+   * at the foot of this file for what the minifier does to it. */
+  @media (prefers-reduced-motion: no-preference) {
+    #ph-det:checked ~ .screen .sheet {
+      animation-name: ph-sheet-in;
+      animation-duration: 460ms;
+      animation-timing-function: var(--ease-out-expo);
+      animation-fill-mode: both;
+    }
+
+    #ph-det:checked ~ .screen .sdim {
+      animation-name: ph-dim-in;
+      animation-duration: 300ms;
+      animation-timing-function: ease-out;
+      animation-fill-mode: both;
+    }
+  }
+
+  @keyframes ph-sheet-in {
+    from {
+      translate: 0 100%;
+    }
+  }
+
+  @keyframes ph-dim-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  .sgrab {
+    align-self: center;
+    width: calc(38 * var(--pu));
+    height: calc(5 * var(--pu));
+    margin-top: calc(8 * var(--pu));
+    border-radius: 999px;
+    background: rgb(60 60 67 / 0.3);
+  }
+
+  .shead {
+    display: flex;
+    justify-content: flex-end;
+    padding: calc(6 * var(--pu)) calc(16 * var(--pu)) 0;
+  }
+
+  .sdone {
+    padding: calc(7 * var(--pu)) calc(16 * var(--pu));
+    border-radius: 999px;
+    font-size: calc(15 * var(--pu));
+    font-weight: 600;
+    color: var(--ph-blue);
+    cursor: pointer;
+  }
+
+  /* ── Who this is ── */
+
+  .shero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(3 * var(--pu));
+    padding: calc(2 * var(--pu)) calc(20 * var(--pu)) calc(20 * var(--pu));
+  }
+
+  .shava {
+    width: calc(92 * var(--pu));
+    height: calc(92 * var(--pu));
+    margin-bottom: calc(10 * var(--pu));
+    border-radius: 999px;
+    object-fit: cover;
+    background: var(--ph-sel);
+  }
+
+  .shname {
+    font-size: calc(26 * var(--pu));
+    font-weight: 700;
+    letter-spacing: calc(-0.5 * var(--pu));
+  }
+
+  .shline {
+    font-size: calc(14 * var(--pu));
+    color: var(--ph-sec);
+  }
+
+  /* ── Actions: four equal columns of glass ── */
+
+  .sacts {
+    display: flex;
+    gap: calc(12 * var(--pu));
+    padding: 0 calc(20 * var(--pu));
+  }
+
+  .sact {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(6 * var(--pu));
+  }
+
+  .sactic {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: calc(52 * var(--pu));
+    border-radius: calc(18 * var(--pu));
+    color: var(--ph-blue);
+  }
+
+  /* A fixed glyph in a wide button: the shared "svg fills its box" rule the
+   * rest of this file uses is for icons whose box IS the icon, and these
+   * buttons are 74pt wide capsules holding a 24pt symbol. */
+  .sactic :global(svg) {
+    display: block;
+    width: calc(24 * var(--pu));
+    height: auto;
+  }
+
+  .fchev :global(svg),
+  .fdoc :global(svg) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .sact em {
+    font-size: calc(11 * var(--pu));
+    font-style: normal;
+    font-weight: 500;
+    color: var(--ph-sec);
+  }
+
+  /* ── Tabs: the same capsule the list's scope tabs use ── */
+
+  .stabs {
+    display: flex;
+    gap: calc(4 * var(--pu));
+    margin: calc(20 * var(--pu)) calc(20 * var(--pu)) 0;
+    padding: calc(4 * var(--pu));
+    border-radius: 999px;
+  }
+
+  .stab {
+    flex: 1;
+    min-height: calc(32 * var(--pu));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-size: calc(13 * var(--pu));
+    font-weight: 600;
+    color: var(--ph-sec);
+    cursor: pointer;
+  }
+
+  #ph-dt-info:checked ~ .screen label[for="ph-dt-info"],
+  #ph-dt-files:checked ~ .screen label[for="ph-dt-files"] {
+    background: rgb(255 255 255 / 0.9);
+    color: var(--ph-text);
+  }
+
+  .spane {
+    display: none;
+    padding: calc(16 * var(--pu)) calc(20 * var(--pu)) 0;
+  }
+
+  #ph-dt-info:checked ~ .screen .sp-info,
+  #ph-dt-files:checked ~ .screen .sp-files {
+    display: block;
+  }
+
+  /* The grouped inset card every iOS settings list is made of. */
+  .scard {
+    border-radius: calc(16 * var(--pu));
+    background: rgb(255 255 255 / 0.86);
+    overflow: hidden;
+  }
+
+  .srow {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--pu));
+    min-height: calc(44 * var(--pu));
+    padding: calc(9 * var(--pu)) calc(16 * var(--pu));
+    font-size: calc(15 * var(--pu));
+  }
+
+  /* Hairline between rows, inset to the text - not under the leading edge. */
+  .srow + .srow::before {
+    content: "";
+    position: absolute;
+    left: calc(16 * var(--pu));
+    right: 0;
+    top: 0;
+    height: 1px;
+    background: rgb(60 60 67 / 0.13);
+  }
+
+  .frow + .frow::before {
+    left: calc(72 * var(--pu));
+  }
+
+  .srk {
+    flex: none;
+    color: var(--ph-sec);
+  }
+
+  .srv {
+    flex: 1;
+    min-width: 0;
+    text-align: right;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ── Attachments ── */
+
+  .fthumb {
+    flex: none;
+    width: calc(44 * var(--pu));
+    height: calc(44 * var(--pu));
+    border-radius: calc(11 * var(--pu));
+    object-fit: cover;
+    background: var(--ph-sel);
+  }
+
+  .fdoc {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: calc(10 * var(--pu));
+    background: rgb(10 132 255 / 0.12);
+    color: var(--ph-blue);
+  }
+
+  .fbody {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: calc(1 * var(--pu));
+  }
+
+  .fbody b {
+    font-size: calc(15 * var(--pu));
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .fbody em {
+    font-size: calc(12 * var(--pu));
+    font-style: normal;
+    color: var(--ph-sec);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .fchev {
+    flex: none;
+    width: calc(9 * var(--pu));
+    color: rgb(60 60 67 / 0.3);
+  }
+
+  .sempty {
+    padding: calc(28 * var(--pu)) 0;
+    text-align: center;
+    font-size: calc(14 * var(--pu));
+    color: var(--ph-sec);
   }
 
   /* ── Scrolling, without ever taking the gesture ───────────────────────────
