@@ -3,7 +3,7 @@
 //! Two rules the commands rely on:
 //!
 //! * **stdout is the payload.** Transcripts, tables and JSON go there and
-//!   nothing else does, so `clawbits read general > log.txt` is exactly the
+//!   nothing else does, so `cbs read general > log.txt` is exactly the
 //!   transcript.
 //! * **stderr is the commentary.** Pagination cursors, "3 more above", warnings
 //!   — anything a pipe shouldn't swallow — goes through [`hint`].

@@ -44,7 +44,7 @@ fn create(ctx: &Ctx, label: &str, expires_days: Option<u32>) -> Result<()> {
         return Ok(());
     };
 
-    // Plaintext alone on stdout so `clawbits tokens create --label ci` can be
+    // Plaintext alone on stdout so `cbs tokens create --label ci` can be
     // captured or piped; everything human goes to stderr.
     hint(&format!(
         "Token {} ({label}) created{}. This is the only time it is shown — store it now.",
@@ -54,7 +54,7 @@ fn create(ctx: &Ctx, label: &str, expires_days: Option<u32>) -> Result<()> {
             None => ", no expiry".to_string(),
         }
     ));
-    hint("Use it with: export CLAWBITS_TOKEN=<token>   or: clawbits login --pat");
+    hint("Use it with: export CLAWBITS_TOKEN=<token>   or: cbs login --pat");
     println!("{}", created.token);
     Ok(())
 }

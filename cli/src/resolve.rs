@@ -16,9 +16,9 @@ pub fn require_org(settings: &Settings) -> Result<String> {
     settings.org.clone().ok_or_else(|| {
         anyhow!(
             "no organization selected.\n  \
-             Pick one with: clawbits orgs use <ORG>\n  \
+             Pick one with: cbs orgs use <ORG>\n  \
              Or pass --org <ORG_ID|NAME> / set CLAWBITS_ORG.\n  \
-             List them with: clawbits orgs"
+             List them with: cbs orgs"
         )
     })
 }
@@ -71,7 +71,7 @@ pub fn channel(client: &Client, settings: &Settings, needle: &str) -> Result<Cha
     match partial.len() {
         1 => Ok(partial[0].clone()),
         0 => Err(not_found(format!(
-            "no channel matching {wanted:?}{}.\n  List them with: clawbits channels",
+            "no channel matching {wanted:?}{}.\n  List them with: cbs channels",
             match &settings.org {
                 Some(o) => format!(" in org {o}"),
                 None => String::new(),
@@ -101,7 +101,7 @@ pub fn org(client: &Client, needle: &str) -> Result<Org> {
     match matches.len() {
         1 => Ok(matches[0].clone()),
         0 => Err(not_found(format!(
-            "no organization matching {wanted:?}.\n  List them with: clawbits orgs"
+            "no organization matching {wanted:?}.\n  List them with: cbs orgs"
         ))),
         _ => bail!(
             "{}",
@@ -139,7 +139,7 @@ pub fn human_id(client: &Client, org_id: &str, needle: &str) -> Result<i64> {
         1 => Ok(by_name[0].human_id),
         0 => Err(not_found(format!(
             "no member of this organization matching {wanted:?}.\n  \
-             Try their email, or list members with: clawbits raw GET /api/human/orgs/{org_id}/members"
+             Try their email, or list members with: cbs raw GET /api/human/orgs/{org_id}/members"
         ))),
         _ => bail!(
             "{}",
@@ -178,7 +178,7 @@ pub fn agent_for_dm(client: &Client, org_id: &str, needle: &str) -> Result<Agent
         .ok_or_else(|| {
             not_found(format!(
                 "no agent matching {wanted:?} in this organization.\n  \
-                 List them with: clawbits raw GET /api/human/orgs/{org_id}/agents"
+                 List them with: cbs raw GET /api/human/orgs/{org_id}/agents"
             ))
         })?;
 
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn require_org_explains_how_to_set_one() {
         let err = require_org(&settings(None)).unwrap_err().to_string();
-        assert!(err.contains("clawbits orgs use"), "{err}");
+        assert!(err.contains("cbs orgs use"), "{err}");
         assert!(err.contains("--org"), "{err}");
         assert_eq!(require_org(&settings(Some("org_1"))).unwrap(), "org_1");
     }

@@ -8,10 +8,11 @@ description = "Terminal client for the Clawbits human messaging API"
 license = "MIT"
 repository = "https://github.com/skalenetwork/clawbits"
 
-# The package can't be called `clawbits` — desktop/src-tauri already is. The
-# binary users actually type is, which is what matters.
+# The binary users type is `cbs` — short for Clawbits, and quick to type for
+# a tool used many times a day. (The package also can't be called `clawbits`:
+# desktop/src-tauri already claims that crate name.)
 [[bin]]
-name = "clawbits"
+name = "cbs"
 path = "src/main.rs"
 
 [dependencies]

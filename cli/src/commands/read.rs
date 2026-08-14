@@ -48,7 +48,7 @@ pub fn run(ctx: &Ctx, args: &ReadArgs) -> Result<()> {
     if fetched as u32 == limit {
         if let Some(oldest) = posts.first() {
             hint(&format!(
-                "more above — continue with: clawbits read {} --before {}",
+                "more above — continue with: cbs read {} --before {}",
                 args.channel, oldest.post_id
             ));
         }

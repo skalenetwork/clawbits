@@ -68,7 +68,7 @@ pub fn dispatch(ctx: &mut Ctx, command: &Command) -> Result<()> {
 
 /// Read a line from stdin, after writing `label` to stderr.
 ///
-/// The prompt goes to stderr so `clawbits login < answers.txt > out` keeps
+/// The prompt goes to stderr so `cbs login < answers.txt > out` keeps
 /// stdout clean.
 pub fn prompt(label: &str) -> Result<String> {
     use std::io::{BufRead, Write};

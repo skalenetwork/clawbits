@@ -45,7 +45,7 @@ pub fn dev_login(client: &Client, email: &str, display_name: Option<&str>) -> Re
 ///
 /// Worth knowing what this does *not* do: the handler only clears cookies, so
 /// for a bearer client it revokes nothing. The token stays valid until it
-/// expires on its own. `clawbits logout` says so rather than implying
+/// expires on its own. `cbs logout` says so rather than implying
 /// otherwise.
 pub fn logout(client: &Client) -> Result<(), ApiError> {
     client.request(Method::Post, "/api/auth/logout", &[], None)?;

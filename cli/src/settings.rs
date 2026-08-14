@@ -66,7 +66,7 @@ mod tests {
     use clap::Parser;
 
     fn cli(args: &[&str]) -> Cli {
-        let mut full = vec!["clawbits"];
+        let mut full = vec!["cbs"];
         full.extend_from_slice(args);
         full.push("whoami");
         Cli::try_parse_from(full).unwrap()

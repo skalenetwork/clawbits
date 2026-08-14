@@ -17,11 +17,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "clawbits",
+    name = "cbs",
     version,
     about = "Read and post to Clawbits from a terminal",
     long_about = "Terminal client for the Clawbits human messaging API.\n\n\
-                  Start with `clawbits login`, then `clawbits channels`.",
+                  Start with `cbs login`, then `cbs channels`.",
     after_help = "Exit codes: 0 ok · 1 error · 2 usage · 3 not signed in · \
                   4 forbidden · 5 not found · 6 network"
 )]
@@ -34,7 +34,7 @@ pub struct Cli {
     #[arg(long, global = true, env = "CLAWBITS_PROFILE", value_name = "NAME")]
     pub profile: Option<String>,
 
-    /// Organization to scope to (id or name). Defaults to `clawbits orgs use`.
+    /// Organization to scope to (id or name). Defaults to `cbs orgs use`.
     #[arg(long, global = true, env = "CLAWBITS_ORG", value_name = "ORG")]
     pub org: Option<String>,
 
@@ -124,7 +124,7 @@ pub struct LoginArgs {
 
     /// Sign in with a personal access token, read from stdin.
     ///
-    /// Mint one with `clawbits tokens create`. Stdin-only on purpose — a
+    /// Mint one with `cbs tokens create`. Stdin-only on purpose — a
     /// token flag would put the credential on argv, which `ps` exposes.
     #[arg(long, conflicts_with_all = ["dev", "code"])]
     pub pat: bool,
@@ -198,7 +198,7 @@ pub struct ReadArgs {
 
     /// Also mark the channel read up to the newest message shown.
     ///
-    /// Off by default so `clawbits read foo | grep bar` doesn't silently
+    /// Off by default so `cbs read foo | grep bar` doesn't silently
     /// clear your unread badge as a side effect of grepping.
     #[arg(long)]
     pub mark_read: bool,
@@ -445,17 +445,17 @@ mod tests {
 
     #[test]
     fn login_pat_conflicts_with_the_other_login_modes() {
-        assert!(Cli::try_parse_from(["clawbits", "login", "--pat", "--dev"]).is_err());
-        assert!(Cli::try_parse_from(["clawbits", "login", "--pat", "--code", "123456"]).is_err());
-        assert!(Cli::try_parse_from(["clawbits", "login", "--pat"]).is_ok());
+        assert!(Cli::try_parse_from(["cbs", "login", "--pat", "--dev"]).is_err());
+        assert!(Cli::try_parse_from(["cbs", "login", "--pat", "--code", "123456"]).is_err());
+        assert!(Cli::try_parse_from(["cbs", "login", "--pat"]).is_ok());
     }
 
     #[test]
     fn tokens_subcommands_parse() {
-        assert!(Cli::try_parse_from(["clawbits", "tokens", "list"]).is_ok());
-        assert!(Cli::try_parse_from(["clawbits", "tokens", "revoke", "7"]).is_ok());
+        assert!(Cli::try_parse_from(["cbs", "tokens", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["cbs", "tokens", "revoke", "7"]).is_ok());
         assert!(Cli::try_parse_from([
-            "clawbits",
+            "cbs",
             "tokens",
             "create",
             "--label",
@@ -466,46 +466,40 @@ mod tests {
         .is_ok());
         // A label is not optional — an unlabelled token is unidentifiable in
         // the list, which is how tokens end up never revoked.
-        assert!(Cli::try_parse_from(["clawbits", "tokens", "create"]).is_err());
+        assert!(Cli::try_parse_from(["cbs", "tokens", "create"]).is_err());
     }
 
     #[test]
     fn message_and_stdin_are_mutually_exclusive() {
-        assert!(
-            Cli::try_parse_from(["clawbits", "post", "general", "-m", "hi", "--stdin"]).is_err()
-        );
-        assert!(Cli::try_parse_from(["clawbits", "post", "general", "-m", "hi"]).is_ok());
-        assert!(Cli::try_parse_from(["clawbits", "post", "general", "--stdin"]).is_ok());
+        assert!(Cli::try_parse_from(["cbs", "post", "general", "-m", "hi", "--stdin"]).is_err());
+        assert!(Cli::try_parse_from(["cbs", "post", "general", "-m", "hi"]).is_ok());
+        assert!(Cli::try_parse_from(["cbs", "post", "general", "--stdin"]).is_ok());
     }
 
     #[test]
     fn read_cursors_are_mutually_exclusive() {
         assert!(
-            Cli::try_parse_from(["clawbits", "read", "g", "--before", "1", "--after", "2"])
-                .is_err()
+            Cli::try_parse_from(["cbs", "read", "g", "--before", "1", "--after", "2"]).is_err()
         );
     }
 
     #[test]
     fn dm_targets_are_mutually_exclusive() {
         assert!(
-            Cli::try_parse_from(["clawbits", "dm", "open", "--user", "a@b.c", "--agent", "x"])
-                .is_err()
+            Cli::try_parse_from(["cbs", "dm", "open", "--user", "a@b.c", "--agent", "x"]).is_err()
         );
     }
 
     #[test]
     fn display_name_is_dev_login_only() {
         // Without --dev there is no account-creation step to name.
-        assert!(Cli::try_parse_from(["clawbits", "login", "--display-name", "Al"]).is_err());
-        assert!(
-            Cli::try_parse_from(["clawbits", "login", "--dev", "--display-name", "Al"]).is_ok()
-        );
+        assert!(Cli::try_parse_from(["cbs", "login", "--display-name", "Al"]).is_err());
+        assert!(Cli::try_parse_from(["cbs", "login", "--dev", "--display-name", "Al"]).is_ok());
     }
 
     #[test]
     fn globals_are_accepted_after_the_subcommand() {
-        let cli = Cli::try_parse_from(["clawbits", "read", "general", "--json"]).unwrap();
+        let cli = Cli::try_parse_from(["cbs", "read", "general", "--json"]).unwrap();
         assert!(cli.json);
     }
 
@@ -513,21 +507,21 @@ mod tests {
     fn raw_accepts_http_methods_in_the_case_people_write_them() {
         for method in ["GET", "get", "Get"] {
             assert!(
-                Cli::try_parse_from(["clawbits", "raw", method, "/api/human/orgs"]).is_ok(),
+                Cli::try_parse_from(["cbs", "raw", method, "/api/human/orgs"]).is_ok(),
                 "raw should accept {method}"
             );
         }
-        assert!(Cli::try_parse_from(["clawbits", "raw", "FETCH", "/x"]).is_err());
+        assert!(Cli::try_parse_from(["cbs", "raw", "FETCH", "/x"]).is_err());
     }
 
     #[test]
     fn orgs_works_bare_and_with_use() {
-        let bare = Cli::try_parse_from(["clawbits", "orgs"]).unwrap();
+        let bare = Cli::try_parse_from(["cbs", "orgs"]).unwrap();
         assert!(matches!(
             bare.command,
             Command::Orgs(OrgsArgs { cmd: None })
         ));
-        let used = Cli::try_parse_from(["clawbits", "orgs", "use", "acme"]).unwrap();
+        let used = Cli::try_parse_from(["cbs", "orgs", "use", "acme"]).unwrap();
         assert!(matches!(
             used.command,
             Command::Orgs(OrgsArgs {

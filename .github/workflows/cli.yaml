@@ -164,7 +164,7 @@ jobs:
           set -euo pipefail
           name="clawbits-cli-v${STAMP_VERSION}-${{ matrix.target }}"
           mkdir -p "stage/${name}"
-          cp "target/${{ matrix.target }}/release/clawbits" "stage/${name}/"
+          cp "target/${{ matrix.target }}/release/cbs" "stage/${name}/"
           cp ../LICENSE README.md "stage/${name}/"
           tar -C stage -czf "${name}.tar.gz" "${name}"
           tar -tzf "${name}.tar.gz"
@@ -244,13 +244,13 @@ jobs:
           gh release create "$TAG" \
             --latest=false \
             --title "clawbits CLI v$VERSION" \
-            --notes "Terminal client for the Clawbits human messaging API — binaries for Linux (x86_64/arm64, glibc ≥ 2.35) and macOS (arm64/x86_64).
+            --notes "Terminal client for the Clawbits human messaging API. The binary is \`cbs\` — Linux (x86_64/arm64, glibc ≥ 2.35) and macOS (arm64/x86_64).
 
           Install:
           \`\`\`bash
           tar -xzf clawbits-cli-v${VERSION}-<target>.tar.gz
-          install -m 755 clawbits-cli-v${VERSION}-<target>/clawbits ~/.local/bin/
-          clawbits login --email you@example.com
+          install -m 755 clawbits-cli-v${VERSION}-<target>/cbs ~/.local/bin/
+          cbs login --email you@example.com
           \`\`\`
 
           Verify with \`sha256sum -c SHA256SUMS\`. Docs: [cli/README.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/cli/README.md)." \

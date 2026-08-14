@@ -73,10 +73,8 @@ fn open_and_report(ctx: &Ctx, target: &DmTarget) -> Result<()> {
     );
     println!(
         "{}",
-        ctx.style.dim(&format!(
-            "Read it with: clawbits read {}",
-            channel.channel_id
-        ))
+        ctx.style
+            .dim(&format!("Read it with: cbs read {}", channel.channel_id))
     );
     Ok(())
 }

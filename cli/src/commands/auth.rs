@@ -87,8 +87,8 @@ fn pat_login(ctx: &Ctx) -> Result<(crate::models::Me, String)> {
     if token.is_empty() {
         bail!(
             "no token on stdin.\n  \
-             Mint one with: clawbits tokens create --label <name>\n  \
-             Then: clawbits login --pat < token.txt"
+             Mint one with: cbs tokens create --label <name>\n  \
+             Then: cbs login --pat < token.txt"
         );
     }
     if !token.starts_with("cbp_") {
@@ -117,7 +117,7 @@ fn dev_login(ctx: &Ctx, args: &LoginArgs) -> Result<crate::models::Me> {
             "dev auth is not enabled on {}.\n  \
              It requires CLAWBITS_DEV_AUTH=1 *and* CLAWBITS_ENV set to one of \
              development, dev, local or test.\n  \
-             For a real deployment, sign in with an emailed code: clawbits login --email you@example.com",
+             For a real deployment, sign in with an emailed code: cbs login --email you@example.com",
             ctx.settings.base_url
         );
     }

@@ -87,7 +87,7 @@ fn load_token(paths: &Paths, settings: &settings::Settings) -> Result<Option<Str
     if !record.matches_base_url(&settings.base_url) {
         render::hint(&format!(
             "warning: the stored session for profile {} was issued by {}, not {} — \
-             not sending it.\n  Sign in again with: clawbits --base-url {} login",
+             not sending it.\n  Sign in again with: cbs --base-url {} login",
             settings.profile, record.base_url, settings.base_url, settings.base_url
         ));
         return Ok(None);
@@ -110,7 +110,7 @@ fn report(cli: &Cli, err: &anyhow::Error) {
         } else {
             format!(" --profile {profile}")
         };
-        eprintln!("  run: clawbits{suffix} login");
+        eprintln!("  run: cbs{suffix} login");
     }
 }
 
