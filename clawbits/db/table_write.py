@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import secrets
 import uuid as _uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -38,6 +39,7 @@ from clawbits.db.models import (
     Automation,
     AutomationRun,
     ChallengeSession,
+    HumanApiToken,
     HumanChannelState,
     HumanConnector,
     HumanUser,
@@ -347,6 +349,77 @@ class TableWrite:
         session.add(user)
         session.flush()
         return user.id
+
+    # ---------------- human api tokens (PATs) ----------------
+
+    # Ceiling on live tokens per user. High enough that nobody legitimate
+    # hits it, low enough that a leaked minting credential can't spray
+    # thousands of durable footholds.
+    HUMAN_API_TOKEN_CAP = 25
+
+    @staticmethod
+    def create_human_api_token(
+        session: Session,
+        human_id: int,
+        label: str,
+        expires_at: _dt.datetime | None = None,
+    ) -> tuple[int, str]:
+        """Mint a personal access token. Returns ``(token_id, plaintext)``.
+
+        The plaintext exists only in this return value — the row keeps the
+        SHA-256 and a display hint. ``cbp_`` (ClawBits Personal) is the
+        namespace: agent keys are ``fc_`` + 16 alnum, and the human auth
+        resolver only consults this table for bearers carrying this prefix,
+        so neither credential is ever looked up in the other's table.
+        """
+        count = len(
+            session.exec(
+                select(HumanApiToken.id).where(HumanApiToken.human_id == human_id)
+            ).all()
+        )
+        if count >= TableWrite.HUMAN_API_TOKEN_CAP:
+            raise ValueError(
+                f"Token limit reached ({TableWrite.HUMAN_API_TOKEN_CAP}). "
+                "Revoke one you no longer use first."
+            )
+
+        plaintext = "cbp_" + secrets.token_urlsafe(32)
+        row = HumanApiToken(
+            human_id=human_id,
+            token_hash=hashlib.sha256(plaintext.encode()).hexdigest(),
+            token_hint=plaintext[:8],
+            label=label,
+            expires_at=expires_at,
+        )
+        session.add(row)
+        session.flush()
+        return row.id, plaintext
+
+    @staticmethod
+    def delete_human_api_token(session: Session, human_id: int, token_id: int) -> bool:
+        """Revoke one of the caller's own tokens. False if it isn't theirs —
+        the endpoint turns that into a 404, indistinguishable from
+        "no such token" so ids can't be probed across accounts."""
+        row = session.get(HumanApiToken, token_id)
+        if row is None or row.human_id != human_id:
+            return False
+        session.delete(row)
+        session.flush()
+        return True
+
+    @staticmethod
+    def touch_human_api_token_last_used(session: Session, token_id: int) -> None:
+        """Stamp ``last_used_at``, at most once a minute (the resolver runs on
+        every request; a write per request would be pure amplification)."""
+        row = session.get(HumanApiToken, token_id)
+        if row is None:
+            return
+        now = _dt.datetime.now(_dt.UTC)
+        if row.last_used_at is not None and (now - row.last_used_at).total_seconds() < 60:
+            return
+        row.last_used_at = now
+        session.add(row)
+        session.flush()
 
     # ---------------- push devices ----------------
 
@@ -1346,6 +1419,9 @@ class TableWrite:
             delete(MmChannelMember).where(MmChannelMember.human_id == human_id)
         )
         session.exec(delete(PushDevice).where(PushDevice.human_id == human_id))
+        session.exec(
+            delete(HumanApiToken).where(HumanApiToken.human_id == human_id)
+        )
         session.exec(
             delete(ChallengeSession).where(ChallengeSession.human_id == human_id)
         )

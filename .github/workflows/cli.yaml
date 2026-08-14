@@ -1,0 +1,257 @@
+name: CLI
+
+# Gate + release pipeline for the `clawbits` terminal client in cli/. It is a
+# standalone crate with its own lockfile — like ironclaw-channel and
+# desktop/src-tauri, there is no Cargo workspace in this repo — so it gets its
+# own workflow rather than riding along with the Python one in workflow.yaml.
+#
+# Two halves:
+#
+#   check    — fmt / clippy / tests. Runs on PRs and pushes.
+#   build+publish — on a push to main touching cli/** (or a manual dispatch),
+#              builds release binaries for four targets and attaches them to a
+#              GitHub Release ON THIS REPO, tagged `cli-v<version>`. That tag
+#              prefix keeps clear of the product's `v*` (semantic-release),
+#              `desktop-v*`, and the plugin tags, and `--latest=false` keeps
+#              the product release as the repo's "Latest".
+#
+# Versioning mirrors publish-ironclaw-channel.yaml: major.minor is
+# hand-controlled in cli/Cargo.toml, the patch is the count of commits touching
+# cli/, so every change publishes a fresh monotonic version with no manual
+# bump. The stamp lands in the CI checkout only, never committed back.
+# Re-running the same commit yields the same version and hits the
+# skip-if-exists guard; the `force` dispatch input re-uploads that version's
+# assets.
+#
+# The tests here need no server: URL building, error mapping, timestamp
+# parsing, config precedence and file permissions are all exercised against
+# fixtures and tempdirs. End-to-end coverage against a live server stays a
+# manual step (see cli/README.md).
+#
+# Linux builds run on ubuntu-22.04 deliberately: binaries link the runner's
+# glibc, so 22.04 (glibc 2.35) sets the compatibility floor — ubuntu-latest
+# would silently raise it on every runner-image bump. Fully-static musl builds
+# would remove the floor entirely but need a musl cross toolchain for ring's C
+# — worth revisiting, not worth an unverifiable first release recipe.
+on:
+  push:
+    branches: [main]
+    paths:
+      - cli/**
+      - .github/workflows/cli.yaml
+  pull_request:
+    paths:
+      - cli/**
+      - .github/workflows/cli.yaml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Re-upload assets even if this version's release already exists
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+
+      - name: Format
+        working-directory: cli
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: cli
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: cli
+        run: cargo test
+
+  build:
+    # PRs stop at `check`; only main pushes and manual dispatches build
+    # release binaries.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          # Cross-compiled from the arm runner — the Apple toolchain carries
+          # both architectures, so no Intel runner (deprecating anyway).
+          - target: x86_64-apple-darwin
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history: the auto version's patch component is the count of
+          # commits touching cli/.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust (${{ matrix.target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+          key: ${{ matrix.target }}
+
+      - name: Stamp auto version (patch = commit count)
+        working-directory: cli
+        run: |
+          set -euo pipefail
+          base="$(python3 -c "
+          import re
+          text = open('Cargo.toml').read()
+          v = re.search(r'(?m)^version = \"([^\"]+)\"', text).group(1)
+          print('.'.join(v.split('.')[:2]))
+          ")"
+          patch="$(git rev-list --count HEAD -- .)"
+          export STAMP_VERSION="${base}.${patch}"
+          echo "auto version = ${STAMP_VERSION}"
+          # python, not sed -i: this step runs on both Linux and macOS and
+          # BSD sed spells in-place editing differently.
+          python3 - <<'PY'
+          import os, pathlib, re
+          v = os.environ["STAMP_VERSION"]
+          cargo = pathlib.Path("Cargo.toml")
+          text, n = re.subn(r'(?m)^version = "[^"]+"', f'version = "{v}"', cargo.read_text(), count=1)
+          if n != 1:
+              raise SystemExit("failed to stamp Cargo.toml version")
+          cargo.write_text(text)
+          PY
+          echo "STAMP_VERSION=${STAMP_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: cli
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        working-directory: cli
+        run: |
+          set -euo pipefail
+          name="clawbits-cli-v${STAMP_VERSION}-${{ matrix.target }}"
+          mkdir -p "stage/${name}"
+          cp "target/${{ matrix.target }}/release/clawbits" "stage/${name}/"
+          cp ../LICENSE README.md "stage/${name}/"
+          tar -C stage -czf "${name}.tar.gz" "${name}"
+          tar -tzf "${name}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: cli/clawbits-cli-v*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # Creates the `cli-v*` tag + release on this repo. The default
+      # GITHUB_TOKEN suffices — no cross-repo secret, unlike the plugin
+      # mirrors.
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: meta
+        working-directory: cli
+        run: |
+          set -euo pipefail
+          base="$(python3 -c "
+          import re
+          text = open('Cargo.toml').read()
+          v = re.search(r'(?m)^version = \"([^\"]+)\"', text).group(1)
+          print('.'.join(v.split('.')[:2]))
+          ")"
+          patch="$(git rev-list --count HEAD -- .)"
+          version="${base}.${patch}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=cli-v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum clawbits-cli-v*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$FORCE" != "true" ]; then
+              echo "::notice::Release $TAG already exists (this commit's auto version is already published) — push another cli/ change to publish a new version, or dispatch with force=true to re-upload. Skipping."
+              exit 0
+            fi
+            echo "force=true: re-uploading assets to existing release $TAG"
+            gh release upload "$TAG" dist/* --clobber
+            exit 0
+          fi
+          # --latest=false so a CLI release never displaces the product
+          # release as the repo's "Latest"; the `cli-v*` prefix keeps it
+          # clear of `v*` / `desktop-v*` / the plugin tags.
+          gh release create "$TAG" \
+            --latest=false \
+            --title "clawbits CLI v$VERSION" \
+            --notes "Terminal client for the Clawbits human messaging API — binaries for Linux (x86_64/arm64, glibc ≥ 2.35) and macOS (arm64/x86_64).
+
+          Install:
+          \`\`\`bash
+          tar -xzf clawbits-cli-v${VERSION}-<target>.tar.gz
+          install -m 755 clawbits-cli-v${VERSION}-<target>/clawbits ~/.local/bin/
+          clawbits login --email you@example.com
+          \`\`\`
+
+          Verify with \`sha256sum -c SHA256SUMS\`. Docs: [cli/README.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/cli/README.md)." \
+            dist/*

@@ -37,6 +37,7 @@ from clawbits.fastapi.human_mm_endpoints import (
     human_mm_router,
     user_presence_expiry_watcher,
 )
+from clawbits.fastapi.human_token_endpoints import human_tokens_router
 from clawbits.fastapi.push_endpoints import push_router
 from clawbits.fastapi.trace_endpoints import trace_router
 from clawbits.fastapi.workos_auth import workos_router
@@ -286,6 +287,7 @@ async def add_cache_control_headers(request: Request, call_next):
 app.include_router(workos_router)
 app.include_router(dev_auth_router)
 app.include_router(human_router)
+app.include_router(human_tokens_router)
 app.include_router(connectors_router)
 app.include_router(avatar_router)
 app.include_router(human_mm_router)
