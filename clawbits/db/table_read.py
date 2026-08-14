@@ -1997,6 +1997,25 @@ class TableRead:
         return filters
 
     @staticmethod
+    def _search_acl_filters_agent(agent_id: str, channel_ids: list[str]) -> list:
+        """Content-search visibility for an agent caller.
+
+        The membership predicate is the hard boundary (SEARCH_SPEC §11: every
+        query joins ``mm_channel_members`` for the caller; only ``published``
+        posts). The ``channel_ids`` allowlist layered on top is the
+        context-derived scope — a per-request protocol guardrail, not a
+        security boundary: the agent can already read any of its channels via
+        the normal read endpoints. No DM-contact EXISTS is needed here because
+        the allowlist comes from :meth:`get_mm_channels_for_agent`, which
+        already drops contact-revoked DMs.
+        """
+        return [
+            MmChannelMember.agent_id == agent_id,
+            MmPost.status == "published",
+            MmPost.channel_id.in_(channel_ids),
+        ]
+
+    @staticmethod
     def _search_operator_filters(
         *,
         from_human_id: int | None = None,
@@ -2202,7 +2221,7 @@ class TableRead:
         # that otherwise matched nothing — keeps it bounded and predictable.
         if has_text and not results and cursor is None and len(q.split()) == 1:
             results = TableRead._search_trigram_fallback(
-                session, human_id, q, org_id, channel_id, limit, op_filters
+                session, q, limit, acl, op_filters
             )
 
         return results, next_cursor
@@ -2210,14 +2229,14 @@ class TableRead:
     @staticmethod
     def _search_trigram_fallback(
         session: Session,
-        human_id: int,
         term: str,
-        org_id: str | None,
-        channel_id: str | None,
         limit: int,
+        acl_filters: list,
         op_filters: list | None = None,
     ) -> list[dict]:
-        """Misspelling-tolerant fallback over the trigram GIN index. Uses
+        """Misspelling-tolerant fallback over the trigram GIN index. The
+        caller supplies the visibility filters (human or agent ACL), so the
+        fallback can never drift from the primary query's rules. Uses
         ``word_similarity`` (the ``%>`` operator) rather than whole-string
         ``similarity`` so a typo'd *word* still matches inside a longer
         message — ``similarity('kubernetes deployment', 'kubernates')`` is
@@ -2233,13 +2252,12 @@ class TableRead:
         """
         session.execute(text("SET LOCAL pg_trgm.word_similarity_threshold = 0.3"))
         sim = func.word_similarity(term, MmPost.message)
-        filters = TableRead._search_acl_filters(human_id, org_id, channel_id)
         stmt = (
             select(MmPost, HumanUser, MmChannel, sim.label("rank"))
             .join(MmChannelMember, MmChannelMember.channel_id == MmPost.channel_id)
             .join(MmChannel, MmChannel.channel_id == MmPost.channel_id)
             .join(HumanUser, HumanUser.id == MmPost.human_id, isouter=True)
-            .where(*filters, *(op_filters or []))
+            .where(*acl_filters, *(op_filters or []))
             .where(MmPost.message.op("%>")(term))
             .order_by(sim.desc(), MmPost.post_id.desc())
             .limit(limit)
@@ -2250,6 +2268,179 @@ class TableRead:
             )
             for (p, u, c, r) in session.exec(stmt).all()
         ]
+
+    @staticmethod
+    def _agent_middle_tier_scope(
+        context_channel_id: str, public_ids: list[str]
+    ) -> list[str]:
+        """Scope for a private-channel or non-operator-DM context: the current
+        channel plus the agent's public channels. Deliberately a separate
+        function — this is the one owner-tunable tier of the scoping policy.
+        """
+        if context_channel_id in public_ids:
+            return public_ids
+        return [context_channel_id, *public_ids]
+
+    @staticmethod
+    def agent_search_scope(
+        session: Session, agent_id: str, context_channel_id: str
+    ) -> tuple[str, list[str]]:
+        """``(scope_name, channel_id allowlist)`` for an agent searching from
+        a context channel — the channel the agent is currently responding in.
+
+        Tiers: the operator DM unlocks everything the agent is a member of
+        (``all_channels``); a public context restricts to the agent's public
+        channels (``public_channels``); anything else — private channel or a
+        DM with someone other than the operator — gets the current channel
+        plus public ones (``context_and_public``). The caller must already
+        have enforced membership of ``context_channel_id``.
+
+        The operator DM is identified via the canonical membership-based
+        resolver (:meth:`find_dm_channel_human_agent`, the same one
+        ``ensure_owner_agent_comm_channel`` uses) — never by the
+        ``dm-human-…`` channel name, which squatter reconciliation makes
+        unreliable. Legacy agents with a NULL ``operator_id``/``org_id``
+        simply never reach operator scope.
+        """
+        channels = TableRead.get_mm_channels_for_agent(session, agent_id)
+        all_ids = [c["channel_id"] for c in channels]
+        public_ids = [
+            c["channel_id"] for c in channels if c.get("channel_type") == "public"
+        ]
+
+        agent = session.get(Agent, agent_id)
+        if (
+            agent is not None
+            and agent.operator_id is not None
+            and agent.org_id is not None
+        ):
+            dm = TableRead.find_dm_channel_human_agent(
+                session, int(agent.operator_id), agent_id, agent.org_id
+            )
+            if dm is not None and dm["channel_id"] == context_channel_id:
+                return "all_channels", all_ids
+
+        context = next(
+            (c for c in channels if c["channel_id"] == context_channel_id), None
+        )
+        if context is not None and context.get("channel_type") == "public":
+            return "public_channels", public_ids
+        return "context_and_public", TableRead._agent_middle_tier_scope(
+            context_channel_id, public_ids
+        )
+
+    @staticmethod
+    def search_mm_posts_for_agent(
+        session: Session,
+        agent_id: str,
+        query: str,
+        channel_ids: list[str],
+        sort: str = "recent",
+        limit: int = 25,
+        cursor: dict | None = None,
+        *,
+        from_human_id: int | None = None,
+        from_agent_id: str | None = None,
+        before: datetime | None = None,
+        after: datetime | None = None,
+        has_link: bool = False,
+        has_file: bool = False,
+    ) -> tuple[list[dict], dict | None]:
+        """Full-text search over published posts within an agent's
+        context-derived channel allowlist (see :meth:`agent_search_scope`).
+
+        Mirrors :meth:`search_mm_posts_for_human`: same cursor contract
+        (``{'post_id'}`` keyset for recent, ``{'offset'}`` for relevance),
+        same blank-query/filter-only semantics, same trigram typo fallback —
+        with the agent ACL from :meth:`_search_acl_filters_agent`.
+        """
+        q = (query or "").strip()
+        limit = max(1, min(limit, 50))
+        if not channel_ids:
+            return [], None
+        op_filters = TableRead._search_operator_filters(
+            from_human_id=from_human_id,
+            from_agent_id=from_agent_id,
+            before=before,
+            after=after,
+            has_link=has_link,
+            has_file=has_file,
+        )
+        has_text = bool(q)
+        # Nothing to search on — no query and no filters.
+        if not has_text and not op_filters:
+            return [], None
+
+        acl = TableRead._search_acl_filters_agent(agent_id, channel_ids)
+        use_relevance = has_text and sort == "relevant"
+
+        if has_text:
+            tsq = func.websearch_to_tsquery("english", q)
+            rank = func.ts_rank_cd(MmPost.message_tsv, tsq)
+            snippet = func.ts_headline(
+                "english",
+                MmPost.message,
+                tsq,
+                "StartSel=<mark>, StopSel=</mark>, MaxFragments=2, MinWords=5, MaxWords=20",
+            )
+            stmt = select(
+                MmPost, HumanUser, MmChannel, rank.label("rank"), snippet.label("snippet")
+            )
+        else:
+            stmt = select(MmPost, HumanUser, MmChannel)
+
+        stmt = (
+            stmt.join(MmChannelMember, MmChannelMember.channel_id == MmPost.channel_id)
+            .join(MmChannel, MmChannel.channel_id == MmPost.channel_id)
+            .join(HumanUser, HumanUser.id == MmPost.human_id, isouter=True)
+            .where(*acl, *op_filters)
+        )
+        if has_text:
+            stmt = stmt.where(MmPost.message_tsv.op("@@")(tsq))
+
+        base_offset = int(cursor.get("offset", 0)) if cursor else 0
+        if use_relevance:
+            stmt = (
+                stmt.order_by(rank.desc(), MmPost.post_id.desc())
+                .offset(base_offset)
+                .limit(limit + 1)
+            )
+        else:  # recent / filter-only — newest-first, keyset on post_id
+            if cursor and cursor.get("post_id") is not None:
+                stmt = stmt.where(MmPost.post_id < int(cursor["post_id"]))
+            stmt = stmt.order_by(MmPost.post_id.desc()).limit(limit + 1)
+
+        rows = session.exec(stmt).all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        if has_text:
+            results = [
+                TableRead._mm_search_result_to_dict(session, p, u, c, float(r or 0.0), s)
+                for (p, u, c, r, s) in rows
+            ]
+        else:
+            results = [
+                TableRead._mm_search_result_to_dict(
+                    session, p, u, c, 0.0, TableRead._plain_snippet(p.message)
+                )
+                for (p, u, c) in rows
+            ]
+
+        next_cursor: dict | None = None
+        if has_more and results:
+            if use_relevance:
+                next_cursor = {"offset": base_offset + limit}
+            else:
+                next_cursor = {"post_id": rows[-1][0].post_id}
+
+        # Typo fallback: only on a fresh (uncursored) single-term text query
+        # that otherwise matched nothing — keeps it bounded and predictable.
+        if has_text and not results and cursor is None and len(q.split()) == 1:
+            results = TableRead._search_trigram_fallback(
+                session, q, limit, acl, op_filters
+            )
+
+        return results, next_cursor
 
     @staticmethod
     def get_mm_posts_around_for_human(
@@ -2291,6 +2482,41 @@ class TableRead:
         older_v = [(p, u) for p, u in older if _visible(p)][: radius + 1]
         newer_v = [(p, u) for p, u in newer if _visible(p)][:radius]
         combined = older_v + newer_v
+        combined.sort(key=lambda pu: pu[0].post_id, reverse=True)
+        return [TableRead._mm_post_to_dict(session, p, u) for p, u in combined]
+
+    @staticmethod
+    def get_mm_posts_around_for_agent(
+        session: Session,
+        channel_id: str,
+        around_post_id: int,
+        radius: int = 25,
+    ) -> list[dict]:
+        """Agent variant of :meth:`get_mm_posts_around_for_human` — a window
+        of posts surrounding ``around_post_id`` for search deep-links. Agents
+        have no draft/rejected owner-visibility rule; they see exactly what
+        :meth:`get_mm_posts` shows them (``streaming`` + ``published``), so
+        the status filter lives in SQL and no over-scan is needed.
+        """
+        radius = max(1, min(radius, 50))
+        statuses = ("streaming", "published")
+
+        def _side(predicate, order, cap: int):
+            return session.exec(
+                select(MmPost, HumanUser)
+                .join(HumanUser, HumanUser.id == MmPost.human_id, isouter=True)
+                .where(MmPost.channel_id == channel_id)
+                .where(MmPost.status.in_(statuses))
+                .where(predicate)
+                .order_by(order)
+                .limit(cap)
+            ).all()
+
+        older = _side(
+            MmPost.post_id <= around_post_id, MmPost.post_id.desc(), radius + 1
+        )
+        newer = _side(MmPost.post_id > around_post_id, MmPost.post_id.asc(), radius)
+        combined = list(older) + list(newer)
         combined.sort(key=lambda pu: pu[0].post_id, reverse=True)
         return [TableRead._mm_post_to_dict(session, p, u) for p, u in combined]
 

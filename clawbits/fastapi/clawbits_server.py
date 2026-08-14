@@ -72,6 +72,7 @@ from clawbits.datastructures.mm_models import (
     MmAddMemberRequest,
     MmAgentAliveRequest,
     MmAgentAliveResponse,
+    MmAgentSearchResponse,
     MmAgentStatusRequest,
     MmChannelListResponse,
     MmChannelMemberResponse,
@@ -89,6 +90,7 @@ from clawbits.datastructures.mm_models import (
     MmPostRequest,
     MmPostResponse,
     MmReactionRequest,
+    MmSearchResult,
     UsageReportRequest,
     UsageReportResponse,
     agent_liveness_status,
@@ -119,6 +121,11 @@ from clawbits.fastapi.mm_file_helpers import (
     load_file_config,
     new_file_id,
     probe_image_dimensions,
+)
+from clawbits.fastapi.search_helpers import (
+    decode_search_cursor,
+    encode_search_cursor,
+    parse_search_date,
 )
 from clawbits.fastapi.version_check import (
     build_version_check_response,
@@ -645,6 +652,35 @@ class ClawBitsServer(FastAPI):
             tags=["Mattermost"],
             summary="Get channel posts",
             description="Get messages from a channel. Caller must be a member.",
+        )
+        self.add_api_route(
+            "/api/agentic/mm/channels/{channel_id}/posts/around/{post_id}",
+            self.mm_list_posts_around,
+            methods=["GET"],
+            response_model=MmPostListResponse,
+            tags=["Mattermost"],
+            summary="Get posts around a post",
+            description=(
+                "Window of posts around a target post, for rendering a search "
+                "hit in context. Caller must be a member."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/mm/search",
+            self.mm_search,
+            methods=["GET"],
+            response_model=MmAgentSearchResponse,
+            tags=["Mattermost"],
+            summary="Search messages (context-scoped)",
+            description=(
+                "Full-text search over published posts, scoped by the channel "
+                "the agent is responding in (context_channel_id, required): "
+                "the operator DM unlocks all the agent's channels; a public "
+                "channel restricts to its public channels; a private channel "
+                "or other DM gets that channel plus its public channels. The "
+                "scope is a per-request protocol guardrail, not a security "
+                "boundary — channel membership is always enforced."
+            ),
         )
         self.add_api_route(
             "/api/agentic/mm/direct",
@@ -2648,6 +2684,114 @@ class ClawBitsServer(FastAPI):
                 total=len(posts),
                 limit=limit,
                 offset=offset,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.exception(f"Error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @cost(1)
+    def mm_list_posts_around(
+        self,
+        channel_id: str,
+        post_id: int,
+        radius: int = 25,
+        api_key: str = Security(api_key_header),
+    ) -> MmPostListResponse:
+        """Window of posts around a post, for search deep-links. Caller must
+        be a member. Equal in power to the plain posts read — no context
+        scoping applies here."""
+        try:
+            cfg = load_file_config()
+            radius = max(1, min(radius, 50))
+            agent = self._mm_extract_agent(api_key)
+            with Session(self._engine) as db:
+                self._require_mm_member(db, channel_id, agent.agent_id.value)
+                posts = TableRead.get_mm_posts_around_for_agent(
+                    db, channel_id, post_id, radius
+                )
+            for p in posts:
+                enrich_post_files_with_urls(
+                    p, self._r2_presigner, ttl=cfg.download_url_ttl
+                )
+            return MmPostListResponse(
+                posts=[MmPostResponse(**p) for p in posts],
+                total=len(posts),
+                limit=radius,
+                offset=0,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.exception(f"Error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @cost(1)
+    def mm_search(
+        self,
+        context_channel_id: str,
+        q: str = "",
+        channel_id: str | None = None,
+        sort: str = "recent",
+        cursor: str | None = None,
+        limit: int = 25,
+        from_human_id: int | None = None,
+        from_agent_id: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+        has_link: bool = False,
+        has_file: bool = False,
+        api_key: str = Security(api_key_header),
+    ) -> MmAgentSearchResponse:
+        """Context-scoped full-text search. ``context_channel_id`` is the
+        channel the agent is responding in and decides the scope (see the
+        route description); the caller must be a member of it."""
+        try:
+            agent = self._mm_extract_agent(api_key)
+            agent_id = agent.agent_id.value
+            sort = sort if sort in ("recent", "relevant") else "recent"
+            limit = max(1, min(limit, 50))
+            decoded = decode_search_cursor(cursor)
+            with Session(self._engine) as db:
+                # Membership (and DM-contact) gate on the context channel
+                # comes first — it also guarantees the context appears in
+                # the agent's gated channel listing used by the scope.
+                self._require_mm_member(db, context_channel_id, agent_id)
+                scope, scope_ids = TableRead.agent_search_scope(
+                    db, agent_id, context_channel_id
+                )
+                if channel_id is not None:
+                    if channel_id not in set(scope_ids):
+                        raise HTTPException(
+                            status_code=403,
+                            detail=(
+                                "channel_id is outside the search scope for "
+                                f"this context (scope: {scope})"
+                            ),
+                        )
+                    scope_ids = [channel_id]
+                results, next_cursor = TableRead.search_mm_posts_for_agent(
+                    db,
+                    agent_id,
+                    q,
+                    channel_ids=scope_ids,
+                    sort=sort,
+                    limit=limit,
+                    cursor=decoded,
+                    from_human_id=from_human_id,
+                    from_agent_id=from_agent_id,
+                    before=parse_search_date(before),
+                    after=parse_search_date(after),
+                    has_link=has_link,
+                    has_file=has_file,
+                )
+            return MmAgentSearchResponse(
+                results=[MmSearchResult(**r) for r in results],
+                next_cursor=encode_search_cursor(next_cursor),
+                query=q,
+                sort=sort,
+                scope=scope,
             )
         except HTTPException:
             raise
