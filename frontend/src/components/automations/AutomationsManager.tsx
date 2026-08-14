@@ -47,7 +47,7 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
     orgId: string;
     scopeAgentId?: string;
     /** Set when the scoped agent's runtime can't apply Clawbits automations
-     *  (hermes/ironclaw — see {@link automationsUnsupportedReason}). The
+     *  (ironclaw, or a pre-0.7.0 hermes plugin — see {@link automationsUnsupportedReason}). The
      *  manager then runs in honest mode: the reason replaces the create-flavored
      *  empty state, and existing stuck rows stay visible for cleanup. (Create
      *  affordances are already absent — `createAgents` filters such agents.) */
@@ -100,7 +100,7 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
         agentLivenessStatus(agentById.get(agentId)?.last_alive_at ?? null, now);
 
     // Operated agents eligible for the create picker. When scoped, only the
-    // one. Runtimes without a cron reconciler (hermes/ironclaw) are excluded —
+    // one. Runtimes without a cron reconciler (ironclaw, or a pre-0.7.0 hermes plugin) are excluded —
     // the server would 422 the create anyway.
     const createAgents = useMemo(
         () =>

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Last-resort value if the manifest can't be read (a broken install). Kept in step
 # with plugin.yaml, but never the thing that ships — see _read_plugin_version.
-_FALLBACK_PLUGIN_VERSION = "0.6.3"
+_FALLBACK_PLUGIN_VERSION = "0.7.0"
 
 
 def _read_plugin_version() -> str:

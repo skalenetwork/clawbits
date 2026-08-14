@@ -29,35 +29,69 @@ import {
 
 export type AutomationAccent = "blue" | "violet" | "teal";
 
-/** Runtimes with NO Clawbits cron reconciler in their in-VM plugin. Only the
- *  OpenClaw plugin reconciles desired-state automations today; a hermes or
- *  ironclaw agent would store rows that sit on "requested" forever. Mirrors
- *  the server's `_AUTOMATION_INCAPABLE_RUNTIMES` gate (which 422s as the hard
- *  boundary — this just keeps the UI honest). */
-const AUTOMATION_INCAPABLE_RUNTIMES = new Set(["hermes", "ironclaw"]);
+/** Runtimes with no Clawbits cron reconciler in their in-VM plugin. Mirrors
+ *  the server's `_AUTOMATION_INCAPABLE_RUNTIMES` gate. */
+const AUTOMATION_INCAPABLE_RUNTIMES = new Set(["ironclaw"]);
 
 const RUNTIME_LABELS: Record<string, string> = {
   hermes: "Hermes",
   ironclaw: "IronClaw",
 };
 
+/** The Hermes plugin version that first shipped the reconciler. Mirrors the
+ *  server's `_HERMES_AUTOMATIONS_MIN_VERSION`, which 422s as the hard boundary —
+ *  this just keeps the UI from offering a control the server will reject. */
+type SemVer = readonly [number, number, number];
+
+const HERMES_AUTOMATIONS_MIN_VERSION: SemVer = [0, 7, 0];
+
+/** Compare a reported plugin version against a floor. Unparseable ⇒ null, which
+ *  every caller treats as "pass" (same back-compat posture as the server). */
+function isBelowVersion(
+  reported: string | null | undefined,
+  floor: SemVer,
+): boolean | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec((reported ?? "").trim());
+  if (!match) return null;
+  const [, rawMajor, rawMinor, rawPatch] = match;
+  const [major, minor, patch] = [rawMajor, rawMinor, rawPatch].map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const [floorMajor, floorMinor, floorPatch] = floor;
+  if (major !== floorMajor) return major < floorMajor;
+  if (minor !== floorMinor) return minor < floorMinor;
+  return patch < floorPatch;
+}
+
 /** Whether Clawbits-managed automations can actually apply on this agent's
- *  runtime. Null/unknown passes: `agent_type` is self-reported on the first
- *  alive ping and the back-compat default is openclaw. */
+ *  runtime. Null/unknown passes: `agent_type` and `plugin_version` are
+ *  self-reported on the first alive ping and the back-compat default is
+ *  openclaw. */
 export function supportsAutomations(
   agentType: string | null | undefined,
+  pluginVersion?: string | null,
 ): boolean {
-  return !AUTOMATION_INCAPABLE_RUNTIMES.has(agentType ?? "");
+  if (AUTOMATION_INCAPABLE_RUNTIMES.has(agentType ?? "")) return false;
+  if (agentType === "hermes") {
+    return isBelowVersion(pluginVersion, HERMES_AUTOMATIONS_MIN_VERSION) !== true;
+  }
+  return true;
 }
 
 /** The honest empty-state copy for an automation-incapable runtime, or null
  *  when the runtime is fine. */
 export function automationsUnsupportedReason(
   agentType: string | null | undefined,
+  pluginVersion?: string | null,
 ): string | null {
-  if (supportsAutomations(agentType)) return null;
+  if (supportsAutomations(agentType, pluginVersion)) return null;
+  if (agentType === "hermes") {
+    return `Automations need the Clawbits Hermes plugin ${HERMES_AUTOMATIONS_MIN_VERSION.join(".")} or newer; this agent reports ${pluginVersion}. Redeploy the agent to upgrade its plugin.`;
+  }
   const label = RUNTIME_LABELS[agentType ?? ""] ?? "this runtime's";
-  return `Automations aren't available for ${label} agents yet. Only OpenClaw agents can run them.`;
+  return `Automations aren't available for ${label} agents yet.`;
 }
 
 export interface ScheduleUnit {
