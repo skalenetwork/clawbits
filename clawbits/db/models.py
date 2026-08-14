@@ -295,12 +295,16 @@ class HumanApiToken(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     human_id: int = Field(foreign_key="human_users.id", nullable=False, index=True)
+    # Explicit TEXT (not a bare ``str``, which SQLModel maps to VARCHAR):
+    # the migration creates these as TEXT — the repo's house type for
+    # strings — and ``alembic check`` compares column types, so the model
+    # must say TEXT too or every check run reports modify_type drift.
     # SHA-256 hex of the full plaintext token, same at-rest scheme as
     # ``agents.api_key_hash``.
-    token_hash: str = Field(nullable=False)
+    token_hash: str = Field(sa_column=SAColumn(Text, nullable=False))
     # First characters of the plaintext (``cbp_`` + 4), for display only.
-    token_hint: str = Field(nullable=False)
-    label: str = Field(nullable=False)
+    token_hint: str = Field(sa_column=SAColumn(Text, nullable=False))
+    label: str = Field(sa_column=SAColumn(Text, nullable=False))
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
     # NULL = does not expire. Enforced at resolve time, not by a sweeper —
     # an expired row is inert either way, and keeping it lets the owner see

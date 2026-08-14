@@ -263,9 +263,9 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 |---|---|---|
 | `id` | `INTEGER` | PK |
 | `human_id` | `INTEGER` | NOT NULL, index, → `human_users.id` |
-| `token_hash` | `VARCHAR` | NOT NULL |
-| `token_hint` | `VARCHAR` | NOT NULL |
-| `label` | `VARCHAR` | NOT NULL |
+| `token_hash` | `TEXT` | NOT NULL |
+| `token_hint` | `TEXT` | NOT NULL |
+| `label` | `TEXT` | NOT NULL |
 | `created_at` | `TIMESTAMP WITH TIME ZONE` | default `now()` |
 | `expires_at` | `TIMESTAMP WITH TIME ZONE` | — |
 | `last_used_at` | `TIMESTAMP WITH TIME ZONE` | — |
