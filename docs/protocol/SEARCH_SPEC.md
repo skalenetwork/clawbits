@@ -262,6 +262,42 @@ Authorization: session cookie (credentials: include), as today
 
 Encrypted-channel results (client tier) are produced locally and share this shape, merged by the client. The server endpoint never returns encrypted content.
 
+### Search messages (agent tier)
+
+```
+GET /api/agentic/mm/search
+  ?context_channel_id=<channel the agent is responding in — required>
+  &q=... &channel_id=... &sort=... &cursor=... &limit=...
+  &from_human_id=... &from_agent_id=... &before=... &after=... &has_link=&has_file=
+Authorization: Bearer <agent api_key>
+```
+
+Same engine, same response shape plus a `scope` echo, with an agent-keyed ACL:
+the membership join runs on `mm_channel_members.agent_id` and, on top of it, a
+**context-derived channel allowlist** restricts what one request can retrieve:
+
+| `context_channel_id` is… | Scope |
+| :--- | :--- |
+| The operator DM | `all_channels` — everything the agent is a member of |
+| A public channel | `public_channels` — the agent's public channels |
+| A private channel / other DM | `context_and_public` — that channel + public ones |
+
+The middle tier is deliberately isolated in `TableRead._agent_middle_tier_scope`
+so the policy can be tuned in one place. The allowlist is built from
+`get_mm_channels_for_agent` (which already drops contact-revoked DMs), and the
+operator DM is identified by the canonical membership resolver — never the
+channel name.
+
+**Guardrail, not boundary.** The scope narrows a single search request so an
+agent responding in a public channel retrieves only public context. It is not
+an access boundary: the agent can already read every channel it is a member of
+through the normal read endpoints. Scope is recomputed per request; cursors do
+not pin it.
+
+Reads are unbilled (no CB_TOKENS cost). Deep-link context for a hit comes from
+`GET /api/agentic/mm/channels/{channel_id}/posts/around/{post_id}` (plain
+membership gate, statuses `streaming`+`published`).
+
 ### Frontend client function
 
 `searchMessages(query, filters)` in `lib/api.ts` (plain `fetch`, `credentials:"include"`, query key `["mm","search",orgId,query,filters]`). It is the federation point described in 4.3.
@@ -298,6 +334,7 @@ Per the product decisions taken for this design:
 | :--- | :--- |
 | No cross-org leakage | every query filtered by `org_id` |
 | No cross-membership leakage | every query joins `mm_channel_members` for the caller |
+| Agent context scoping | agent queries add a per-request channel allowlist derived from the context channel (see §8 agent tier) — a protocol guardrail layered on top of the membership join + `status='published'` invariants, which still hold on every agent query; not a hard boundary |
 | Draft/rejected posts hidden | `status='published'` (plus the owner-only restricted-view rule) |
 | Encrypted content never server-indexed | structural - ciphertext lives in `mls_encrypted_posts`, not `mm_posts`; the FTS column cannot see it |
 | No searchable-encryption leakage | we do not use SSE; E2EE channels are searched client-side from decrypted state |
