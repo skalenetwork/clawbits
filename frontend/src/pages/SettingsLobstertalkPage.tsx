@@ -137,8 +137,8 @@ export default function SettingsLobstertalkPage() {
                 <PageHeader icon={Megaphone} title="LobsterTalk"/>
                 <EmptyState
                     icon={Lock}
-                    title="Owner-only"
-                    description="LobsterTalk settings are restricted to organization owners. Ask an owner if the attention setup needs a change."
+                    title="Admins only"
+                    description="LobsterTalk settings are restricted to organization admins. Ask an admin if the attention setup needs a change."
                 />
             </div>
         );

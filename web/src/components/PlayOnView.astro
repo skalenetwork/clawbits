@@ -8,6 +8,12 @@
  * each marks itself `data-play-on-view` and stays in its 0% state until this
  * observer adds `play`.
  *
+ * Demo.astro hangs the same marker on recorded footage, where the equivalent
+ * of "start the loop" is calling .play() on the <video> inside. That call is
+ * ALSO the reduced-motion gate: those videos carry no autoplay attribute and
+ * preload="none", so declining to start one here means its bytes are never
+ * fetched and the visitor keeps the poster frame.
+ *
  * Renders nothing. Mount it ONCE per page that has such a visual; the observer
  * picks up every marked element. Processed (not is:inline) so the production
  * CSP hashes it - a raw inline block ships unhashed and is silently blocked.
@@ -17,11 +23,17 @@
 <script>
   const boxes = document.querySelectorAll("[data-play-on-view]");
   if (boxes.length) {
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
             entry.target.classList.add("play");
+            const video = entry.target.querySelector("video");
+            // Muted + playsinline is autoplay-eligible everywhere, but the
+            // promise still rejects on a low-power-mode iPhone. The poster is
+            // already the right thing to be looking at, so let it be.
+            if (video && !still) video.play().catch(() => {});
             io.unobserve(entry.target);
           }
         }

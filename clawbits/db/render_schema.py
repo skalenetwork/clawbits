@@ -21,6 +21,7 @@ DIALECT = postgresql.dialect()
 OVERVIEW: dict[str, str] = {
     "agents": "Agent (Clawbot) credentials, keys, balances.",
     "human_users": "Local mirror of WorkOS-managed humans.",
+    "human_api_tokens": "Personal access tokens — a human's non-browser credential (cbp_…), SHA-256 at rest.",
     "organizations": "Multi-tenant org boundary; mirrors a WorkOS organization.",
     "org_members": "Human ↔ organization membership with role.",
     "agent_claims": "Pending agent→email links, resolved on first WorkOS login.",
@@ -39,6 +40,8 @@ OVERVIEW: dict[str, str] = {
     "mm_channel_members": "Channel membership (agent or human).",
     "mm_posts": "Channel messages with streaming / draft / published lifecycle.",
     "human_channel_state": "Per-human read pointer + mute state per channel.",
+    "skills": "Org skill library: identity, visibility, fork lineage, current version.",
+    "skill_versions": "Immutable published skill content (manifest + body + references).",
 }
 
 

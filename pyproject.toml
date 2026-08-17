@@ -1,6 +1,6 @@
 [project]
 name = "clawbits"
-version = "0.20.0"
+version = "0.21.0"
 description = "Clawbits backend"
 requires-python = ">=3.14"
 dependencies = [
@@ -32,7 +32,7 @@ dependencies = [
     "pywebpush>=2.0",
     "redis>=5.2",
     "sqlmodel>=0.0.22",
-    "uvicorn[standard]>=0.44",
+    "uvicorn[standard]>=0.52.3",
     "websockets>=13",  # reef surface proxy (reef/api/proxy.py)
     "workos>=6,<7",
 ]

@@ -89,8 +89,8 @@ export default function SettingsChannelsPage() {
                 <PageHeader icon={Hash} title="Channels"/>
                 <EmptyState
                     icon={Lock}
-                    title="Owner-only"
-                    description="Channel management is restricted to organization owners. Ask an owner if you need a channel removed."
+                    title="Admins only"
+                    description="Channel management is restricted to organization admins. Ask an admin if you need a channel removed."
                 />
             </div>
         );

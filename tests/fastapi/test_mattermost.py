@@ -554,3 +554,135 @@ def test_dm_messaging(test_client):
     assert "Hello back!" in msgs
 
 
+
+
+# ---------------------------------------------------------------------------
+# Forward cursor (after_post_id) — the resumable read an agent uses to catch up
+# on what arrived while it was offline. See MmPostListResponse.has_more.
+# ---------------------------------------------------------------------------
+
+def _seed_channel_with_posts(tc: TestClient, count: int):
+    """Owned agent + a channel carrying `count` posts. Returns (agent, ch_id, ids)."""
+    a1 = _create_owned_agent(tc)
+    r = tc.post(
+        "/api/agentic/mm/channels",
+        json={"name": "cursor-chan", "channel_type": "public"},
+        headers=_write_headers(tc, a1["api_key"]),
+    )
+    ch_id = r.json()["channel_id"]
+    ids = []
+    for i in range(count):
+        r = tc.post(
+            f"/api/agentic/mm/channels/{ch_id}/posts",
+            json={"message": f"m{i}"},
+            headers=_write_headers(tc, a1["api_key"]),
+        )
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["post_id"])
+    return a1, ch_id, ids
+
+
+def test_after_post_id_returns_only_newer_posts_oldest_first(test_client):
+    a1, ch_id, ids = _seed_channel_with_posts(test_client, 5)
+
+    r = test_client.get(
+        f"/api/agentic/mm/channels/{ch_id}/posts",
+        params={"after_post_id": ids[1]},
+        headers=_auth(a1["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    got = [p["post_id"] for p in data["posts"]]
+    assert got == ids[2:], "strictly newer than the cursor, ascending"
+    assert data["has_more"] is False
+
+
+def test_after_post_id_pages_a_gap_wider_than_the_limit(test_client):
+    # The whole point of ascending order: with DESC+limit the OLDEST part of
+    # the gap — the part still owed a reply — would be the part dropped.
+    a1, ch_id, ids = _seed_channel_with_posts(test_client, 6)
+
+    r = test_client.get(
+        f"/api/agentic/mm/channels/{ch_id}/posts",
+        params={"after_post_id": ids[0], "limit": 2},
+        headers=_auth(a1["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    page1 = r.json()
+    assert [p["post_id"] for p in page1["posts"]] == ids[1:3]
+    assert page1["has_more"] is True, "caller must know to keep paging"
+
+    r = test_client.get(
+        f"/api/agentic/mm/channels/{ch_id}/posts",
+        params={"after_post_id": page1["posts"][-1]["post_id"], "limit": 2},
+        headers=_auth(a1["api_key"]),
+    )
+    page2 = r.json()
+    assert [p["post_id"] for p in page2["posts"]] == ids[3:5]
+    assert page2["has_more"] is True
+
+    r = test_client.get(
+        f"/api/agentic/mm/channels/{ch_id}/posts",
+        params={"after_post_id": page2["posts"][-1]["post_id"], "limit": 2},
+        headers=_auth(a1["api_key"]),
+    )
+    page3 = r.json()
+    assert [p["post_id"] for p in page3["posts"]] == ids[5:]
+    assert page3["has_more"] is False, "gap fully drained"
+
+
+def test_after_post_id_at_head_returns_empty(test_client):
+    a1, ch_id, ids = _seed_channel_with_posts(test_client, 3)
+    r = test_client.get(
+        f"/api/agentic/mm/channels/{ch_id}/posts",
+        params={"after_post_id": ids[-1]},
+        headers=_auth(a1["api_key"]),
+    )
+    assert r.status_code == 200
+    assert r.json()["posts"] == []
+    assert r.json()["has_more"] is False
+
+
+def test_default_read_is_unchanged_by_the_cursor_addition(test_client):
+    # Backwards compatibility: no after_post_id means newest-first, as before.
+    a1, ch_id, ids = _seed_channel_with_posts(test_client, 3)
+    r = test_client.get(
+        f"/api/agentic/mm/channels/{ch_id}/posts",
+        headers=_auth(a1["api_key"]),
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert [p["post_id"] for p in data["posts"]] == list(reversed(ids))
+    assert data["has_more"] is False
+
+
+def test_after_post_id_still_requires_membership(test_client):
+    a1, ch_id, ids = _seed_channel_with_posts(test_client, 2)
+    outsider = _create_agent(test_client)
+    r = test_client.get(
+        f"/api/agentic/mm/channels/{ch_id}/posts",
+        params={"after_post_id": 0},
+        headers=_auth(outsider["api_key"]),
+    )
+    assert r.status_code in (403, 404), r.text
+
+
+def test_agent_channel_list_exposes_latest_post_id(test_client):
+    a1, ch_id, ids = _seed_channel_with_posts(test_client, 3)
+    r = test_client.get("/api/agentic/mm/channels", headers=_auth(a1["api_key"]))
+    assert r.status_code == 200, r.text
+    by_id = {c["channel_id"]: c for c in r.json()["channels"]}
+    assert by_id[ch_id]["latest_post_id"] == ids[-1]
+
+
+def test_agent_channel_list_latest_post_id_is_none_for_empty_channel(test_client):
+    a1 = _create_owned_agent(test_client)
+    r = test_client.post(
+        "/api/agentic/mm/channels",
+        json={"name": "quiet", "channel_type": "public"},
+        headers=_write_headers(test_client, a1["api_key"]),
+    )
+    ch_id = r.json()["channel_id"]
+    r = test_client.get("/api/agentic/mm/channels", headers=_auth(a1["api_key"]))
+    by_id = {c["channel_id"]: c for c in r.json()["channels"]}
+    assert by_id[ch_id]["latest_post_id"] is None

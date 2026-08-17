@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Link, Navigate, Route, Routes, useMatch, useNavigate, useParams } from "react-router"
 import { useQueryClient } from "@tanstack/react-query"
 import type { FleetEntry } from "@/lib/api"
-import { ApiError, hasAdminToken, isAuthError, setAdminToken } from "@/lib/api"
+import { ApiError, authRejectionIsFinal, hasAdminToken, isAuthError, setAdminToken } from "@/lib/api"
 import { useFleet, useFleetActions } from "@/lib/queries"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppRail } from "@/components/AppRail"
@@ -39,7 +39,13 @@ export default function App() {
   // until the operator unlocks. Submitting stores the token (lib/api) and
   // refetches everything; a wrong token just fails the next poll, which keeps
   // the dialog open with a "rejected" hint.
-  const authRequired = isAuthError(fleet.error)
+  //
+  // Gated on the rejection policy (lib/api): with a token already held, one 401
+  // is not enough — the API restarting under the proxy answers 401 for a moment,
+  // and slamming up a blocking, non-dismissable dialog over that made a working
+  // token look rejected. The query's own auth retry supplies the second round.
+  // With no token held the verdict is immediate, so first load still prompts at once.
+  const authRequired = isAuthError(fleet.error) && authRejectionIsFinal()
   const submitToken = (token: string) => {
     setAdminToken(token)
     void queryClient.invalidateQueries()

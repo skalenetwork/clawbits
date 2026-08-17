@@ -4,9 +4,10 @@
  * carries the agent's avatar; each section crumb carries its own icon.
  */
 import {
-  Robot02Icon as Bot,
+  BookOpen01Icon,
   Clock05Icon,
   Mail01Icon,
+  Robot02Icon as Bot,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import type { MouseEvent } from "react";
@@ -17,11 +18,12 @@ import { agentDisplay } from "@/lib/agentDisplay";
 import type { AgentProfile } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-export type AgentSection = "inbox" | "automations" | "manage";
+export type AgentSection = "inbox" | "automations" | "skills" | "manage";
 
 const SECTION: Record<AgentSection, { label: string; icon: IconSvgElement }> = {
   inbox: { label: "Inbox", icon: Mail01Icon },
   automations: { label: "Automations", icon: Clock05Icon },
+  skills: { label: "Skills", icon: BookOpen01Icon },
   manage: { label: "Manage", icon: Settings02Icon },
 };
 

@@ -1,9 +1,15 @@
+import { useEffect } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
+  type AgentEnv,
   api,
   ApiError,
   type BuildImageIn,
+  type EnvApplyResult,
+  type EnvPatchIn,
+  AUTH_RETRY_DELAY_MS,
+  hasAdminToken,
   isAuthError,
   type CreateSandboxIn,
   type FleetEntry,
@@ -11,6 +17,23 @@ import {
 } from "@/lib/api"
 
 const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : String(e))
+
+/** Shared retry policy for API calls.
+ *
+ *  Auth failures used to fail fast on the theory that they "aren't transient" —
+ *  but the API restarting under the admin-ui proxy answers 401 for a moment, and
+ *  failing fast popped the blocking unlock dialog over a blip, with re-pasting a
+ *  perfectly good token as the only way out. So a 401 against a HELD token is
+ *  retried once: that second round is what lets `authRejectionIsFinal` (lib/api)
+ *  tell a wrong token from a hiccup. With no token held there is nothing to retry
+ *  with, so it still surfaces immediately and the dialog opens at once. */
+const retryApi = (failureCount: number, error: unknown): boolean =>
+  isAuthError(error) ? hasAdminToken() && failureCount < 2 : failureCount < 3
+
+/** Fixed, wide-enough delay for the auth retry above; react-query's usual
+ *  exponential backoff for everything else. */
+const retryApiDelay = (failureCount: number, error: unknown): number =>
+  isAuthError(error) ? AUTH_RETRY_DELAY_MS : Math.min(1000 * 2 ** failureCount, 30_000)
 
 export function useHealth() {
   return useQuery({ queryKey: ["health"], queryFn: api.health, refetchInterval: 10_000 })
@@ -24,7 +47,8 @@ export function useProviders(enabled = true) {
     queryFn: api.providers,
     enabled,
     staleTime: 60_000,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -48,7 +72,8 @@ export function useSettings() {
     queryKey: ["settings"],
     queryFn: api.settings,
     staleTime: 60_000,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -70,9 +95,8 @@ export function useFleet(refetchInterval: number | false) {
     queryKey: ["fleet"],
     queryFn: () => api.fleet(),
     refetchInterval,
-    // Auth failures aren't transient — surface them at once so the unlock
-    // dialog appears without waiting out the default retries.
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -147,7 +171,8 @@ export function useImages(refetchInterval: number | false = 15_000) {
     queryKey: ["images"],
     queryFn: api.images,
     refetchInterval,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -159,7 +184,8 @@ export function useImageStatus(refetchInterval: number | false = 15_000) {
     queryKey: ["image-status"],
     queryFn: api.imageStatus,
     refetchInterval,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -300,4 +326,53 @@ export function useFleetActions() {
   })
 
   return { start, stop, restart, destroy, setColor, setRestartPolicy }
+}
+
+// ── Guest env (the user layer) ─────────────────────────────────────────────
+// Never polled: a refetch under a half-typed draft would clobber it.
+export function useAgentEnv(id: string | null) {
+  return useQuery({
+    queryKey: ["env", id],
+    queryFn: () => api.env(id!),
+    enabled: id != null,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
+  })
+}
+
+const envApplyMessage = (r: EnvApplyResult): string => {
+  if (!r.changed) return "No changes to apply"
+  if (r.takes_effect === "on_next_start")
+    return `Saved - ${r.sandbox_id} picks it up the next time it starts`
+  return r.applied === "recreate"
+    ? `Saved - recreating ${r.sandbox_id}…`
+    : `Saved - restarting ${r.sandbox_id}…`
+}
+
+/** Write an env diff (`PATCH /fleet/{id}/env`) and apply it. */
+export function useEnvActions(id: string) {
+  const qc = useQueryClient()
+
+  // Never optimistic: an onMutate would write plaintext into the query cache.
+  const save = useMutation({
+    mutationFn: (body: EnvPatchIn) => api.patchEnv(id, body),
+    onSuccess: (r) => {
+      toast.success(envApplyMessage(r))
+      // The response omits editable / apply_modes, so merge, don't replace.
+      qc.setQueryData<AgentEnv>(["env", id], (old) =>
+        old ? { ...old, vars: r.vars, state: r.state } : old,
+      )
+      qc.invalidateQueries({ queryKey: ["env", id] })
+      qc.invalidateQueries({ queryKey: ["fleet"] })
+      qc.invalidateQueries({ queryKey: ["detail", id] })
+    },
+    onError: (e) => toast.error(errMsg(e)),
+  })
+
+  // TanStack keeps `variables` on a settled mutation - drop the plaintext.
+  useEffect(() => {
+    if (save.isSuccess || save.isError) save.reset()
+  }, [save])
+
+  return { save }
 }

@@ -72,6 +72,7 @@ from clawbits.datastructures.mm_models import (
     MmAddMemberRequest,
     MmAgentAliveRequest,
     MmAgentAliveResponse,
+    MmAgentSearchResponse,
     MmAgentStatusRequest,
     MmChannelListResponse,
     MmChannelMemberResponse,
@@ -89,6 +90,11 @@ from clawbits.datastructures.mm_models import (
     MmPostRequest,
     MmPostResponse,
     MmReactionRequest,
+    MmSearchResult,
+    SkillDesiredResponse,
+    SkillStateReportRequest,
+    SkillStateReportResponse,
+    SkillVersionContentResponse,
     UsageReportRequest,
     UsageReportResponse,
     agent_liveness_status,
@@ -120,6 +126,11 @@ from clawbits.fastapi.mm_file_helpers import (
     new_file_id,
     probe_image_dimensions,
 )
+from clawbits.fastapi.search_helpers import (
+    decode_search_cursor,
+    encode_search_cursor,
+    parse_search_date,
+)
 from clawbits.fastapi.version_check import (
     build_version_check_response,
     parse_plugin_kind,
@@ -147,6 +158,7 @@ class ClawBitsServer(FastAPI):
             "/api/agentic/auth/challenge_response",
             "/api/agentic/alive",
             "/api/agentic/automations/state",
+            "/api/agentic/skills/state",
             "/api/agentic/usage/report",
         }
     )
@@ -647,6 +659,35 @@ class ClawBitsServer(FastAPI):
             description="Get messages from a channel. Caller must be a member.",
         )
         self.add_api_route(
+            "/api/agentic/mm/channels/{channel_id}/posts/around/{post_id}",
+            self.mm_list_posts_around,
+            methods=["GET"],
+            response_model=MmPostListResponse,
+            tags=["Mattermost"],
+            summary="Get posts around a post",
+            description=(
+                "Window of posts around a target post, for rendering a search "
+                "hit in context. Caller must be a member."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/mm/search",
+            self.mm_search,
+            methods=["GET"],
+            response_model=MmAgentSearchResponse,
+            tags=["Mattermost"],
+            summary="Search messages (context-scoped)",
+            description=(
+                "Full-text search over published posts, scoped by the channel "
+                "the agent is responding in (context_channel_id, required): "
+                "the operator DM unlocks all the agent's channels; a public "
+                "channel restricts to its public channels; a private channel "
+                "or other DM gets that channel plus its public channels. The "
+                "scope is a per-request protocol guardrail, not a security "
+                "boundary — channel membership is always enforced."
+            ),
+        )
+        self.add_api_route(
             "/api/agentic/mm/direct",
             self.mm_create_or_get_direct,
             methods=["POST"],
@@ -754,6 +795,45 @@ class ClawBitsServer(FastAPI):
                 "(mirror-only), and recent run-log entries. Billing-exempt and "
                 "size-capped. The agent is identified by its bearer API key; any "
                 "agent id in the body is ignored."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/skills/desired",
+            self.mm_agent_skills_desired,
+            methods=["GET"],
+            response_model=SkillDesiredResponse,
+            tags=["Mattermost"],
+            summary="Fetch the desired skill set",
+            description=(
+                "The skills Clawbits wants installed on this agent. Index only: "
+                "each entry carries a content hash, and the agent fetches a "
+                "version's files only when its local copy differs."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/skills/versions/{version_id}",
+            self.mm_agent_skill_version,
+            methods=["GET"],
+            response_model=SkillVersionContentResponse,
+            tags=["Mattermost"],
+            summary="Fetch one skill version's files",
+            description=(
+                "The files to write, with SKILL.md rendered for the caller's "
+                "runtime. Requires a live install resolving to this version."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/skills/state",
+            self.mm_agent_skills_state,
+            methods=["POST"],
+            response_model=SkillStateReportResponse,
+            tags=["Mattermost"],
+            summary="Self-report the skills present on the agent",
+            description=(
+                "Telemetry-class self-report from the agent's plugin: every "
+                "skill it found on disk, with provenance. Billing-exempt and "
+                "size-capped. The agent is identified by its bearer API key; "
+                "any agent id in the body is ignored."
             ),
         )
         self.add_api_route(
@@ -2627,14 +2707,38 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
         limit: int = 50,
         offset: int = 0,
+        after_post_id: int | None = None,
     ) -> MmPostListResponse:
-        """Get posts from a channel. Caller must be a member."""
+        """Get posts from a channel. Caller must be a member.
+
+        ``after_post_id`` makes this a forward cursor: posts strictly newer than
+        that id, oldest first, so an agent coming back online reads exactly the
+        gap it missed. Keep paging while ``has_more`` is true. Without it the
+        response is the newest ``limit`` posts, newest-first, as before.
+
+        Prefer the cursor over a timestamp for anything resumable: ``created_at``
+        is naive, second-granularity and not comparable against a guest VM's
+        clock, whereas ``post_id`` is a serial.
+        """
         try:
             cfg = load_file_config()
             agent = self._mm_extract_agent(api_key)
+            has_more = False
             with Session(self._engine) as db:
                 self._require_mm_member(db, channel_id, agent.agent_id.value)
-                posts = TableRead.get_mm_posts(db, channel_id, limit, offset)
+                if after_post_id is not None:
+                    # Over-fetch by one to answer has_more without a COUNT.
+                    posts = TableRead.get_mm_posts(
+                        db,
+                        channel_id,
+                        limit + 1,
+                        offset,
+                        after_post_id=after_post_id,
+                    )
+                    has_more = len(posts) > limit
+                    posts = posts[:limit]
+                else:
+                    posts = TableRead.get_mm_posts(db, channel_id, limit, offset)
             # Same enrichment as the human read path: presign GET URLs for
             # image attachments inline so `<img src>` works without a per-
             # image round trip. URLs are cached for ~ttl-60s, keeping
@@ -2648,6 +2752,115 @@ class ClawBitsServer(FastAPI):
                 total=len(posts),
                 limit=limit,
                 offset=offset,
+                has_more=has_more,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.exception(f"Error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @cost(1)
+    def mm_list_posts_around(
+        self,
+        channel_id: str,
+        post_id: int,
+        radius: int = 25,
+        api_key: str = Security(api_key_header),
+    ) -> MmPostListResponse:
+        """Window of posts around a post, for search deep-links. Caller must
+        be a member. Equal in power to the plain posts read — no context
+        scoping applies here."""
+        try:
+            cfg = load_file_config()
+            radius = max(1, min(radius, 50))
+            agent = self._mm_extract_agent(api_key)
+            with Session(self._engine) as db:
+                self._require_mm_member(db, channel_id, agent.agent_id.value)
+                posts = TableRead.get_mm_posts_around_for_agent(
+                    db, channel_id, post_id, radius
+                )
+            for p in posts:
+                enrich_post_files_with_urls(
+                    p, self._r2_presigner, ttl=cfg.download_url_ttl
+                )
+            return MmPostListResponse(
+                posts=[MmPostResponse(**p) for p in posts],
+                total=len(posts),
+                limit=radius,
+                offset=0,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.exception(f"Error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @cost(1)
+    def mm_search(
+        self,
+        context_channel_id: str,
+        q: str = "",
+        channel_id: str | None = None,
+        sort: str = "recent",
+        cursor: str | None = None,
+        limit: int = 25,
+        from_human_id: int | None = None,
+        from_agent_id: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+        has_link: bool = False,
+        has_file: bool = False,
+        api_key: str = Security(api_key_header),
+    ) -> MmAgentSearchResponse:
+        """Context-scoped full-text search. ``context_channel_id`` is the
+        channel the agent is responding in and decides the scope (see the
+        route description); the caller must be a member of it."""
+        try:
+            agent = self._mm_extract_agent(api_key)
+            agent_id = agent.agent_id.value
+            sort = sort if sort in ("recent", "relevant") else "recent"
+            limit = max(1, min(limit, 50))
+            decoded = decode_search_cursor(cursor)
+            with Session(self._engine) as db:
+                # Membership (and DM-contact) gate on the context channel
+                # comes first — it also guarantees the context appears in
+                # the agent's gated channel listing used by the scope.
+                self._require_mm_member(db, context_channel_id, agent_id)
+                scope, scope_ids = TableRead.agent_search_scope(
+                    db, agent_id, context_channel_id
+                )
+                if channel_id is not None:
+                    if channel_id not in set(scope_ids):
+                        raise HTTPException(
+                            status_code=403,
+                            detail=(
+                                "channel_id is outside the search scope for "
+                                f"this context (scope: {scope})"
+                            ),
+                        )
+                    scope_ids = [channel_id]
+                results, next_cursor = TableRead.search_mm_posts_for_agent(
+                    db,
+                    agent_id,
+                    q,
+                    channel_ids=scope_ids,
+                    sort=sort,
+                    limit=limit,
+                    cursor=decoded,
+                    from_human_id=from_human_id,
+                    from_agent_id=from_agent_id,
+                    before=parse_search_date(before),
+                    after=parse_search_date(after),
+                    has_link=has_link,
+                    has_file=has_file,
+                )
+            return MmAgentSearchResponse(
+                results=[MmSearchResult(**r) for r in results],
+                next_cursor=encode_search_cursor(next_cursor),
+                query=q,
+                sort=sort,
+                scope=scope,
             )
         except HTTPException:
             raise
@@ -3117,6 +3330,96 @@ class ClawBitsServer(FastAPI):
         with Session(self._engine) as db:
             desired = TableRead.get_desired_automations(db, agent_id)
         return AutomationDesiredResponse(**desired)
+
+    # ----------------------------------------------------------------------
+    # Skills sync (agent surface)
+    # ----------------------------------------------------------------------
+
+    async def mm_agent_skills_state(
+        self,
+        body: SkillStateReportRequest,
+        api_key: str = Security(api_key_header),
+    ) -> SkillStateReportResponse:
+        """Self-report of the skills present on the agent's disk.
+
+        Telemetry-class and billing-exempt. ``report_mode='observe'`` means the
+        client has no write path, so the server updates the mirror only.
+        """
+        from clawbits.db.models import SKILL_SCHEMA_VERSION
+
+        agent = self._mm_extract_agent(api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            seen, mirrored = TableWrite.apply_skill_state_report(
+                db,
+                agent_id,
+                skills=body.skills,
+                report_mode=body.report_mode,
+                skills_root=body.skills_root,
+                scanned_roots=body.scanned_roots,
+                apply_mode=body.apply_mode,
+                prompt_chars_observed=body.prompt_chars_observed,
+                prompt_budget_observed=body.prompt_budget_observed,
+                truncated=body.truncated,
+                plugin_version=body.plugin_version,
+                agent_runtime_version=body.runtime_version,
+            )
+            db.commit()
+        return SkillStateReportResponse(
+            schema_version=SKILL_SCHEMA_VERSION,
+            seen=seen,
+            mirrored=mirrored,
+            truncated=body.truncated or seen < len(body.skills),
+        )
+
+    async def mm_agent_skills_desired(
+        self,
+        api_key: str = Security(api_key_header),
+    ) -> SkillDesiredResponse:
+        """The desired skill set for this agent."""
+        agent = self._mm_extract_agent(api_key)
+        with Session(self._engine) as db:
+            return SkillDesiredResponse(
+                **TableRead.get_desired_skills(db, agent.agent_id.value)
+            )
+
+    async def mm_agent_skill_version(
+        self,
+        version_id: str,
+        api_key: str = Security(api_key_header),
+    ) -> SkillVersionContentResponse:
+        """One version's content, rendered for the caller's runtime.
+
+        Entitlement is having a live install that resolves to this version, so
+        an agent cannot pull arbitrary catalog content by guessing an id.
+        """
+        from clawbits.db.models import Agent as _AgentRow
+        from clawbits.skills.render import render_skill, resolve_runtime
+
+        agent = self._mm_extract_agent(api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            version = TableRead.get_agent_skill_version(db, agent_id, version_id)
+            if version is None:
+                raise HTTPException(status_code=404, detail="Version not found")
+            row = db.get(_AgentRow, agent_id)
+            runtime = resolve_runtime(row.agent_type if row else None)
+            files = [
+                {
+                    "path": "SKILL.md",
+                    "content": render_skill(
+                        version.manifest, version.body_md, runtime=runtime.name
+                    ),
+                }
+            ] + [
+                {"path": f["path"], "content": f["content"]}
+                for f in (version.files or [])
+            ]
+        return SkillVersionContentResponse(
+            version_id=version.version_id,
+            content_hash=version.content_hash,
+            files=files,
+        )
 
     # ----------------------------------------------------------------------
     # AI-usage self-report (agent surface)

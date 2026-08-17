@@ -2,13 +2,14 @@ import type { ReactNode } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
-    Settings01Icon as SettingsIcon,
+    ArrowRight01Icon as ChevronRight,
+    BookOpen01Icon,
+    Link01Icon as LinkIcon,
+    LockIcon as PrivacyLock,
+    Logout01Icon as LogOut,
     Notification03Icon as Bell,
     PaintBrush01Icon as PaintBrush,
-    LockIcon as PrivacyLock,
-    Link01Icon as LinkIcon,
-    Logout01Icon as LogOut,
-    ArrowRight01Icon as ChevronRight,
+    Settings01Icon as SettingsIcon,
     Tick01Icon as Check,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -97,6 +98,17 @@ export default function SettingsMenuPage() {
                 </div>
                 <Icon icon={ChevronRight} className="size-4 shrink-0 text-muted-foreground" />
             </button>
+
+            {/* Org resources with no mobile tab of their own. */}
+            <Section label="Library">
+                <Row
+                    leading={<RowIcon icon={BookOpen01Icon} />}
+                    label="Skills"
+                    trailing={<Icon icon={ChevronRight} className="size-4 text-muted-foreground" />}
+                    onClick={() => { void navigate("/skills"); }}
+                    isLast
+                />
+            </Section>
 
             {/* Preferences — Appearance hosts the theme switcher. */}
             <Section label="Preferences">

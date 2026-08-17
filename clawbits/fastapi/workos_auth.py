@@ -373,6 +373,7 @@ def get_current_human_user(
     out on transient races during parallel-request refresh storms.
     """
     from clawbits.fastapi.dev_auth import resolve_dev_session_user
+    from clawbits.fastapi.human_token_endpoints import PAT_PREFIX, resolve_pat_user
 
     dev_user = resolve_dev_session_user(request, dev_session_cookie)
     if dev_user is not None:
@@ -381,6 +382,17 @@ def get_current_human_user(
     sealed = _resolve_sealed(request, session_cookie)
     if not sealed:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Personal access tokens (``cbp_…``) — header-only credentials, checked
+    # before WorkOS. Unlike the dev resolver's silent fall-through, a bearer
+    # carrying the PAT prefix is *committed* to this path: it can't be a
+    # sealed session, so on a miss we 401 here rather than hand a known-bad
+    # string to WorkOS validation.
+    if sealed.startswith(PAT_PREFIX):
+        pat_user = resolve_pat_user(request, sealed)
+        if pat_user is not None:
+            return pat_user
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     claims = _authenticate_or_refresh(request, sealed)
     if claims is None:
@@ -1316,6 +1328,45 @@ def register_membership(
             f"user={workos_user_id} org={workos_org_id}. The user will not "
             f"appear as a member of this org in the WorkOS dashboard."
         )
+
+
+def update_membership_role(
+    client: Any, *, workos_user_id: str, workos_org_id: str, role: str,
+) -> None:
+    """Mirror a local role change onto the WorkOS-side membership.
+
+    Best-effort, but not cosmetic: :func:`_reconcile_workos_memberships`
+    copies WorkOS roles back into ``org_members`` on every login, so a
+    local promotion that never reaches WorkOS is silently undone the next
+    time that user signs in.
+    """
+    if not workos_user_id or not workos_org_id:
+        return
+    workos_role = _LOCAL_TO_WORKOS_ROLE.get(role, "member")
+    try:
+        page = client.user_management.list_organization_memberships(
+            user_id=workos_user_id, organization_id=workos_org_id
+        )
+        memberships = getattr(page, "data", []) or []
+    except Exception as e:
+        logging.warning(
+            f"WorkOS membership lookup failed for user={workos_user_id} "
+            f"org={workos_org_id}: {e}. Local role is now {role!r} but WorkOS "
+            f"still holds the old one; the next login will revert it."
+        )
+        return
+
+    for m in memberships:
+        try:
+            client.user_management.update_organization_membership(
+                m.id, role=RoleSingle(role_slug=workos_role),
+            )
+        except Exception:
+            logging.exception(
+                f"WorkOS membership role update to {workos_role!r} failed for "
+                f"user={workos_user_id} org={workos_org_id}. Local role is now "
+                f"{role!r}; the next login will revert it."
+            )
 
 
 def unregister_membership(

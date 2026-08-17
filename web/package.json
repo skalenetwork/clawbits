@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "astro dev --port ${PORT:-4321}",
     "brand:assets": "node scripts/build-brand-assets.mjs",
+    "demo": "node scripts/make-demo.mjs",
     "build": "bun run brand:assets && astro build && node scripts/build-headers.mjs && node scripts/build-bot-page.mjs",
     "preview": "astro preview",
     "check": "astro check && tsc -p worker",
@@ -23,22 +24,23 @@
   "dependencies": {
     "@astrojs/react": "^6.0.2",
     "@astrojs/sitemap": "3.7.3",
-    "@paper-design/shaders-react": "^0.0.78",
-    "astro": "7.1.6",
+    "@paper-design/shaders-react": "0.0.80",
+    "astro": "7.2.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
     "@astrojs/markdown-satteri": "0.3.5",
-    "@cloudflare/workers-types": "^5.20260813.1",
+    "@cloudflare/workers-types": "^5.20260814.1",
     "@hugeicons/core-free-icons": "^4.2.2",
     "@tailwindcss/vite": "4.3.3",
-    "@types/node": "^26",
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "puppeteer-core": "^25.7.0",
     "tailwindcss": "4.3.3",
-    "typescript": "~5.9.3",
-    "wrangler": "^4.44.0"
+    "typescript": "~6.0.3",
+    "wrangler": "^4.123.0"
   }
 }

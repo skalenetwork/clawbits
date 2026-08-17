@@ -16,7 +16,6 @@ import {
   ShieldIcon,
   StopIcon,
   Tick01Icon,
-  TerminalIcon,
   ViewIcon,
   ViewOffIcon,
 } from "@hugeicons/core-free-icons"
@@ -36,7 +35,9 @@ import {
   terminalAuthUrl,
 } from "@/lib/utils"
 import { AgentAvatar } from "@/components/AgentAvatar"
+import { AgentEnvPanel } from "@/components/AgentEnvPanel"
 import { ClawbitsIcon, HermesIcon, IronClawIcon, OpenClawIcon } from "@/components/agent-icons"
+import { CARD, Chip, Panel } from "@/components/detail-bits"
 import { ReefMark } from "@/components/ReefMark"
 import { StatusBadge } from "@/components/StatusBadge"
 import { Icon } from "@/components/Icon"
@@ -50,71 +51,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
-// One flat, solid surface for every card — depth comes from the 3-tier tokens
-// (background → panel → card), not blur or shadow. One radius, one border.
-const CARD = "rounded-xl border border-border bg-card"
-
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
-
-// ── Chip system ────────────────────────────────────────────────────────────
-// Soft-tinted, functional colour. Used sparingly — status, policy, "update".
-type ChipColor = "brand" | "green" | "blue" | "amber" | "red" | "violet" | "neutral"
-type ChipSize = "sm" | "md"
-
-const CHIP_COLOR: Record<ChipColor, string> = {
-  brand: "bg-brand/12 text-brand",
-  green: "bg-success/15 text-success",
-  blue: "bg-sky-500/12 text-sky-600 dark:text-sky-400",
-  amber: "bg-warning/15 text-warning",
-  red: "bg-destructive/12 text-destructive",
-  violet: "bg-violet-500/12 text-violet-600 dark:text-violet-400",
-  neutral: "bg-muted/70 text-muted-foreground",
-}
-const CHIP_DOT: Record<ChipColor, string> = {
-  brand: "bg-brand",
-  green: "bg-success",
-  blue: "bg-sky-500",
-  amber: "bg-warning",
-  red: "bg-destructive",
-  violet: "bg-violet-500",
-  neutral: "bg-muted-foreground/60",
-}
-const CHIP_SIZE: Record<ChipSize, string> = {
-  sm: "gap-1 px-2 py-0.5 text-[11px]",
-  md: "gap-1.5 px-2.5 py-1 text-xs",
-}
-const DOT_SIZE: Record<ChipSize, string> = { sm: "size-1", md: "size-1.5" }
-
-function Chip({
-  color = "neutral",
-  size = "md",
-  icon,
-  dot,
-  title,
-  children,
-}: {
-  color?: ChipColor
-  size?: ChipSize
-  icon?: ReactNode
-  dot?: boolean
-  title?: string
-  children: ReactNode
-}) {
-  return (
-    <span
-      title={title}
-      className={cn(
-        "inline-flex items-center rounded-full font-medium",
-        CHIP_COLOR[color],
-        CHIP_SIZE[size],
-      )}
-    >
-      {dot && <span className={cn("shrink-0 rounded-full", DOT_SIZE[size], CHIP_DOT[color])} />}
-      {icon}
-      {children}
-    </span>
-  )
-}
 
 // Metric meter tone by load: healthy → amber → red.
 const METER = { ok: "bg-success", warn: "bg-warning", danger: "bg-destructive" } as const
@@ -385,32 +322,6 @@ function VitalCard({
   )
 }
 
-/** A flat card with a header row (icon + title + optional right-aligned meta). */
-function Panel({
-  icon,
-  title,
-  meta,
-  className,
-  children,
-}: {
-  icon?: ReactNode
-  title: string
-  meta?: ReactNode
-  className?: string
-  children: ReactNode
-}) {
-  return (
-    <section className={cn(CARD, "p-4", className)}>
-      <div className="mb-3 flex items-center gap-2">
-        {icon && <span className="text-muted-foreground">{icon}</span>}
-        <h4 className="text-sm font-medium">{title}</h4>
-        {meta && <div className="ml-auto">{meta}</div>}
-      </div>
-      {children}
-    </section>
-  )
-}
-
 /** Overview — a two-column bento: reference config in the main column, the
  *  status-y "Versions + Self-healing" pinned in a side rail on wide screens. */
 function DetailOverview({
@@ -448,7 +359,7 @@ function DetailOverview({
         <ConfigurationPanel entry={entry} detail={detail} />
         <NetworkingPanel detail={detail} metrics={m} />
         {detail.mounts.length > 0 && <MountsPanel mounts={detail.mounts} />}
-        <EnvironmentPanel env={detail.env} />
+        <AgentEnvPanel detail={detail} />
       </div>
 
       {/* Side rail — current-ness + self-healing, sticky on wide screens. */}
@@ -786,60 +697,6 @@ function MountsPanel({ mounts }: { mounts: SandboxDetail["mounts"] }) {
           )
         })}
       </div>
-    </Panel>
-  )
-}
-
-/** Environment vars — collapsed to the first chunk when long. Masked values
- *  (server-side "***") render as a "hidden" token. */
-function EnvironmentPanel({ env }: { env: Record<string, string> }) {
-  const keys = Object.keys(env).sort()
-  const [expanded, setExpanded] = useState(false)
-  const LIMIT = 10
-  const overflow = keys.length - LIMIT
-  const shown = expanded ? keys : keys.slice(0, LIMIT)
-  const hidden = keys.filter((k) => env[k] === "***").length
-  return (
-    <Panel
-      icon={<Icon icon={TerminalIcon} className="size-3.5" />}
-      title="Environment"
-      meta={
-        <span className="text-xs text-muted-foreground tabular-nums">
-          {keys.length} vars{hidden ? ` · ${hidden} hidden` : ""}
-        </span>
-      }
-    >
-      {keys.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No environment variables.</p>
-      ) : (
-        <div className="space-y-1">
-          {shown.map((k) => {
-            const masked = env[k] === "***"
-            return (
-              <div key={k} className="flex items-start gap-2 font-mono text-xs leading-relaxed">
-                <span className="shrink-0 text-muted-foreground/80">{k}</span>
-                <span className="text-muted-foreground/50">=</span>
-                {masked ? (
-                  <span className="rounded bg-muted/60 px-1.5 text-[11px] text-muted-foreground/70">
-                    hidden
-                  </span>
-                ) : (
-                  <span className="break-all text-foreground">{env[k]}</span>
-                )}
-              </div>
-            )
-          })}
-          {overflow > 0 && (
-            <button
-              type="button"
-              onClick={() => setExpanded((s) => !s)}
-              className="mt-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {expanded ? "Show less" : `Show all ${keys.length}`}
-            </button>
-          )}
-        </div>
-      )}
     </Panel>
   )
 }

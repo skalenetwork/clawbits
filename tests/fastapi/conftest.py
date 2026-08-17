@@ -101,9 +101,15 @@ _ALL_TABLES_FK_ORDER = (
     # FK to agents.agent_id + organizations.org_id — wipe before both.
     "agent_usage_events",
     "agent_usage_daily",
+    "agent_skill_sync_state",
+    "agent_skill_installs",
+    "skill_versions",
+    "skills",
     "agents",
     "org_members",
     "organizations",
+    # FK to human_users.id — wipe before human_users.
+    "human_api_tokens",
     "human_users",
 )
 

@@ -39,6 +39,8 @@ import {
 import { runLivenessPinger } from "./liveness.js";
 import { runAutomationsReconciler } from "./automations/reconcile.js";
 import { runUsageReporter } from "./usage/reporter.js";
+import { claimSkillsReporter, runSkillsReporter } from "./skills/sync.js";
+import { getWorkspaceDir } from "./skills/scan.js";
 import {
   resolveInboundDispatchGuardTarget,
   withInboundDispatchGuard,
@@ -696,6 +698,11 @@ export async function dispatchInboundMessage(
           // plain-text name reference, which the agent can't act on unless it
           // knows what it's called.
           ctx.account.agentId,
+          // Boot catch-up: flips the history block from "do not reply to these"
+          // to "these are unanswered, address them". Without it the recovered
+          // messages reach the model under an explicit instruction to ignore
+          // them, and the agent answers only the trigger.
+          msg.catchUp,
         ),
         commandBody: effectiveText,
         commandAuthorized: isAuthorizedCommand ? true : undefined,
@@ -953,6 +960,19 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
       accountId: ctx.accountId,
       log: ctx.log,
     });
+
+    // Skills sync: converges the agent's skill directories to the desired set
+    // and reports what is actually there. Single owner per gateway, since the
+    // roots are shared across accounts.
+    if (claimSkillsReporter(ctx.accountId)) {
+      void runSkillsReporter({
+        client,
+        abortSignal: ctx.abortSignal,
+        accountId: ctx.accountId,
+        workspaceDir: getWorkspaceDir(),
+        log: ctx.log,
+      });
+    }
 
     // Email ingestion runs alongside the chat poller. Fire-and-forget like the
     // liveness pinger: it shares the poller's abort signal, self-disables if the

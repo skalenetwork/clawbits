@@ -275,6 +275,52 @@ class HumanUser(SQLModel, table=True):
     )
 
 
+class HumanApiToken(SQLModel, table=True):
+    """A personal access token — a human's non-browser credential.
+
+    The human analogue of ``agents.api_key_hash``, deliberately in its own
+    table so the two credential planes can never be confused: agent keys
+    (``fc_…``) resolve only on ``/api/agentic/*`` via the agents table, and
+    these (``cbp_…``) resolve only on human routes via
+    ``resolve_pat_user``. Plaintext is shown once at mint time and only the
+    SHA-256 lands here; ``token_hint`` keeps the first few characters so a
+    user can tell their tokens apart in a list without us retaining anything
+    recoverable.
+    """
+
+    __tablename__ = "human_api_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_human_api_tokens_token_hash"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    human_id: int = Field(foreign_key="human_users.id", nullable=False, index=True)
+    # Explicit TEXT (not a bare ``str``, which SQLModel maps to VARCHAR):
+    # the migration creates these as TEXT — the repo's house type for
+    # strings — and ``alembic check`` compares column types, so the model
+    # must say TEXT too or every check run reports modify_type drift.
+    # SHA-256 hex of the full plaintext token, same at-rest scheme as
+    # ``agents.api_key_hash``.
+    token_hash: str = Field(sa_column=SAColumn(Text, nullable=False))
+    # First characters of the plaintext (``cbp_`` + 4), for display only.
+    token_hint: str = Field(sa_column=SAColumn(Text, nullable=False))
+    label: str = Field(sa_column=SAColumn(Text, nullable=False))
+    created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+    # NULL = does not expire. Enforced at resolve time, not by a sweeper —
+    # an expired row is inert either way, and keeping it lets the owner see
+    # (and delete) it in the list.
+    expires_at: datetime | None = Field(
+        default=None,
+        sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
+    )
+    # Updated at most once a minute by the resolver — enough to answer "is
+    # this token still in use anywhere?" before revoking it.
+    last_used_at: datetime | None = Field(
+        default=None,
+        sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
+    )
+
+
 class HumanConnector(SQLModel, table=True):
     """Third-party identity link for a human (GitHub, Notion, …).
 
@@ -555,6 +601,12 @@ class MmChannelMember(SQLModel, table=True):
             "agent_id IS NOT NULL OR human_id IS NOT NULL",
             name="mm_channel_members_participant_check",
         ),
+        # "Which channels am I in?" — the first join of every sidebar load.
+        # Both uniques above lead with ``channel_id``, so neither can seek on
+        # a bare participant predicate; without these the lookup degrades to a
+        # scan of the whole membership table.
+        Index("ix_mm_channel_members_human_id", "human_id"),
+        Index("ix_mm_channel_members_agent_id", "agent_id"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -750,6 +802,21 @@ class MmPost(SQLModel, table=True):
             "channel_id",
             text("pinned_at DESC"),
             postgresql_where=text("pinned_at IS NOT NULL"),
+        ),
+        # THE sidebar index. Every per-channel read in the chat list —
+        # latest post, unread count, mention count — seeks published rows by
+        # ``(channel_id, post_id)``. ``channel_id`` is a bare FK and Postgres
+        # does not index those, so without this the planner falls back to
+        # walking ``mm_posts_pkey`` on the ``post_id > last_read`` half and
+        # filtering ``channel_id`` per row: it reads the entire table once per
+        # channel and discards ~99% of it. Partial on ``published`` because
+        # nothing on the read path ever wants a draft or a streaming
+        # placeholder, and the predicate keeps the index off the churn.
+        Index(
+            "ix_mm_posts_channel_post",
+            "channel_id",
+            "post_id",
+            postgresql_where=text("status = 'published'"),
         ),
         # Full-text search index over the generated ``message_tsv`` column,
         # and a trigram index on the raw ``message`` for the typo fallback.
@@ -1422,3 +1489,295 @@ class AgentUsageDaily(SQLModel, table=True):
     call_count: int = Field(
         default=0, sa_column=SAColumn(BigInteger, nullable=False, server_default="0")
     )
+
+
+# ---------------------------------------------------------------------------
+# Skills library (org catalog)
+# ---------------------------------------------------------------------------
+
+# Bumped when the normalized manifest shape changes in a way the plugin must
+# understand.
+SKILL_SCHEMA_VERSION = "1"
+
+
+class Skill(SQLModel, table=True):
+    """One skill in an org's library — the mutable pointer.
+
+    Identity and lineage only; content lives in immutable ``skill_versions``
+    rows. ``org_id`` is NOT NULL and is the tenancy boundary: a skill has no
+    agent to join through, so the column carries the check itself.
+    """
+
+    __tablename__ = "skills"
+    __table_args__ = (
+        CheckConstraint(
+            "visibility IN ('private', 'org', 'public')",
+            name="skills_visibility_check",
+        ),
+        CheckConstraint(
+            "origin IN ('authored', 'forked', 'imported')",
+            name="skills_origin_check",
+        ),
+        # One slug per org among LIVE skills. The slug is also the on-disk
+        # directory name, and OpenClaw requires frontmatter ``name`` == that
+        # directory name. Partial on ``deleted_at IS NULL`` because deletes are
+        # soft: a plain unique constraint would let a deleted skill burn its
+        # name in the org forever. (Contrast the install plane, where a plain
+        # unique is the right call — there a tombstone is awaiting agent
+        # confirmation and letting a live row coexist with it would make
+        # reconcile ordering load-bearing.)
+        Index(
+            "uq_skills_org_slug",
+            "org_id",
+            "slug",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_skills_org", "org_id"),
+    )
+
+    skill_id: str = Field(primary_key=True)
+    org_id: str = Field(nullable=False, foreign_key="organizations.org_id")
+    # Directory name on the agent, and the frontmatter ``name``.
+    slug: str = Field(sa_column=SAColumn(Text, nullable=False))
+    display_name: str = Field(sa_column=SAColumn(Text, nullable=False))
+    # The frontmatter ``description``; injected into every prompt.
+    summary: str = Field(sa_column=SAColumn(Text, nullable=False))
+    icon_emoji: str | None = None
+
+    # 'public' ships but the tier stays dark pending a licensing decision.
+    visibility: str = Field(
+        default="org",
+        sa_column=SAColumn(Text, nullable=False, server_default="org"),
+    )
+    origin: str = Field(
+        default="authored",
+        sa_column=SAColumn(Text, nullable=False, server_default="authored"),
+    )
+    runtimes: list[str] | None = Field(
+        default=None, sa_column=SAColumn(JSONB, nullable=True)
+    )
+
+    # No cascade: deleting the source must never delete the fork.
+    forked_from_skill_id: str | None = Field(
+        default=None,
+        sa_column=SAColumn(Text, ForeignKey("skills.skill_id"), nullable=True),
+    )
+    forked_from_version_id: str | None = Field(
+        default=None, sa_column=SAColumn(Text, nullable=True)
+    )
+
+    # NULL = draft, never published, not installable.
+    latest_version_id: str | None = Field(
+        default=None, sa_column=SAColumn(Text, nullable=True)
+    )
+
+    archived_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    deleted_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    created_by: int | None = Field(default=None, foreign_key="human_users.id")
+    created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+    updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+
+
+class SkillVersion(SQLModel, table=True):
+    """One immutable published version. Editing publishes a new row.
+
+    No update path, so ``content_hash`` is stable under a fixed id and is safe
+    as the plugin's drift gate.
+    """
+
+    __tablename__ = "skill_versions"
+    __table_args__ = (
+        UniqueConstraint("skill_id", "version", name="uq_skill_versions_skill_version"),
+        Index("ix_skill_versions_skill", "skill_id"),
+        Index("ix_skill_versions_hash", "content_hash"),
+    )
+
+    version_id: str = Field(primary_key=True)
+    skill_id: str = Field(nullable=False, foreign_key="skills.skill_id")
+    # Semver; publishing is an implicit patch bump.
+    version: str = Field(sa_column=SAColumn(Text, nullable=False))
+    # sha256 over {manifest, body_md, files}; the plugin's drift gate.
+    content_hash: str = Field(sa_column=SAColumn(Text, nullable=False))
+
+    # Normalized + neutralized frontmatter, never a raw SKILL.md.
+    manifest: dict[str, Any] = Field(sa_column=SAColumn(JSONB, nullable=False))
+    body_md: str = Field(sa_column=SAColumn(Text, nullable=False))
+    # [{path, content, sha256, size_bytes}]
+    files: list[dict[str, Any]] | None = Field(
+        default=None, sa_column=SAColumn(JSONB, nullable=True)
+    )
+    total_bytes: int = Field(
+        default=0, sa_column=SAColumn(Integer, nullable=False, server_default="0")
+    )
+    # Always false in v1 (no scripts/); ships so the affordance exists early.
+    has_executable: bool = Field(
+        default=False,
+        sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
+    )
+
+    changelog: str | None = None
+    schema_version: str = Field(
+        default=SKILL_SCHEMA_VERSION,
+        sa_column=SAColumn(Text, nullable=False, server_default=SKILL_SCHEMA_VERSION),
+    )
+    published_by: int | None = Field(default=None, foreign_key="human_users.id")
+    created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+
+
+class AgentSkillInstall(SQLModel, table=True):
+    """One skill present on (or destined for) one agent — the sync plane.
+
+    The only table an agent report may touch. ``managed_by='clawbits'`` rows are
+    reconciled to a resolved version; ``managed_by='external'`` rows mirror
+    skills the agent already had (image-bundled, terminal-installed, or
+    installed by the agent itself) and are never written or deleted.
+
+    ``UNIQUE(agent_id, slug)`` is deliberately NOT partial: a partial index
+    would let a tombstone and a live row for the same slug coexist, making
+    reconcile ordering load-bearing.
+    """
+
+    __tablename__ = "agent_skill_installs"
+    __table_args__ = (
+        CheckConstraint(
+            "managed_by IN ('clawbits', 'external')",
+            name="agent_skill_installs_managed_check",
+        ),
+        CheckConstraint(
+            "sync_status IN ('requested', 'applied', 'staged', 'failed', 'removing')",
+            name="agent_skill_installs_sync_status_check",
+        ),
+        CheckConstraint(
+            "channel IN ('pinned', 'latest')",
+            name="agent_skill_installs_channel_check",
+        ),
+        UniqueConstraint("agent_id", "slug", name="uq_agent_skill_installs_agent_slug"),
+        Index("ix_agent_skill_installs_agent", "agent_id"),
+        Index("ix_agent_skill_installs_org", "org_id"),
+        Index("ix_agent_skill_installs_skill", "skill_id"),
+    )
+
+    install_id: str = Field(primary_key=True)
+    agent_id: str = Field(nullable=False, foreign_key="agents.agent_id")
+    org_id: str | None = Field(default=None, foreign_key="organizations.org_id")
+    # NULL exactly when managed_by='external'.
+    skill_id: str | None = Field(
+        default=None, sa_column=SAColumn(Text, ForeignKey("skills.skill_id"), nullable=True)
+    )
+    slug: str = Field(sa_column=SAColumn(Text, nullable=False))
+
+    managed_by: str = Field(
+        default="external",
+        sa_column=SAColumn(Text, nullable=False, server_default="external"),
+    )
+    # 'latest' follows the skill's current version; 'pinned' stays put.
+    channel: str = Field(
+        default="latest",
+        sa_column=SAColumn(Text, nullable=False, server_default="latest"),
+    )
+    pinned_version_id: str | None = None
+    resolved_version_id: str | None = None
+    desired_content_hash: str | None = None
+    enabled: bool = Field(
+        default=True, sa_column=SAColumn(Boolean, nullable=False, server_default=text("true"))
+    )
+
+    desired_generation: int = Field(
+        default=0, sa_column=SAColumn(BigInteger, nullable=False, server_default="0")
+    )
+    observed_generation: int | None = Field(
+        default=None, sa_column=SAColumn(BigInteger, nullable=True)
+    )
+
+    sync_status: str = Field(
+        default="requested",
+        sa_column=SAColumn(Text, nullable=False, server_default="requested"),
+    )
+    sync_error: str | None = None
+    # watch | restart | ondemand. Verified 'watch' on OpenClaw 2026.6.11.
+    apply_mode: str | None = None
+
+    reported_version: str | None = None
+    reported_content_hash: str | None = None
+    reported_path: str | None = None
+    # Agent-reported, therefore untrusted display text.
+    reported_root: str | None = None
+    reported_source: str | None = None
+    reported_manifest: dict[str, Any] | None = Field(
+        default=None, sa_column=SAColumn(JSONB, nullable=True)
+    )
+    # Loader verdict: eligible / modelVisible / missing requirements.
+    reported_state: dict[str, Any] | None = Field(
+        default=None, sa_column=SAColumn(JSONB, nullable=True)
+    )
+
+    schema_version: str = Field(
+        default=SKILL_SCHEMA_VERSION,
+        sa_column=SAColumn(Text, nullable=False, server_default=SKILL_SCHEMA_VERSION),
+    )
+    plugin_version: str | None = None
+    agent_runtime_version: str | None = None
+
+    missing_streak: int = Field(
+        default=0, sa_column=SAColumn(Integer, nullable=False, server_default="0")
+    )
+    last_seen_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    missing_since: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    last_reported_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    deleted_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+
+    installed_by: int | None = Field(default=None, foreign_key="human_users.id")
+    created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+    updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+
+
+class AgentSkillSyncState(SQLModel, table=True):
+    """Per-agent sync facts not about one skill: the generation, the kill
+    switch, and agent-reported observability.
+
+    ``prompt_budget_observed`` is the early warning for OpenClaw's
+    ``maxSkillsPromptChars``, past which the loader silently drops skills.
+    """
+
+    __tablename__ = "agent_skill_sync_state"
+
+    agent_id: str = Field(primary_key=True, foreign_key="agents.agent_id")
+    desired_generation: int = Field(
+        default=0, sa_column=SAColumn(BigInteger, nullable=False, server_default="0")
+    )
+    # Kill switch: the client reports but changes nothing while true.
+    paused: bool = Field(
+        default=False, sa_column=SAColumn(Boolean, nullable=False, server_default=false())
+    )
+    # 'observe' = the client has no write path; 'apply' = it reconciles.
+    report_mode: str | None = None
+    # Reported so a wrong root resolution is visible instead of silent.
+    skills_root: str | None = None
+    scanned_roots: list[str] | None = Field(
+        default=None, sa_column=SAColumn(JSONB, nullable=True)
+    )
+    apply_mode: str | None = None
+    prompt_chars_observed: int | None = None
+    prompt_budget_observed: int | None = None
+    report_truncated: bool = Field(
+        default=False, sa_column=SAColumn(Boolean, nullable=False, server_default=false())
+    )
+    plugin_version: str | None = None
+    agent_runtime_version: str | None = None
+    last_reported_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())

@@ -23,7 +23,11 @@ export async function getStaticPaths() {
           `Check the path in src/docs-allowlist.ts.`,
       );
     }
-    return { params: { slug: entry.slug }, props: { entry, doc } };
+    // cacheKey opts this route into experimental.incrementalBuild: the page is
+    // only re-rendered when the doc's body digest (computed by the loader) or
+    // the page's module graph changes. Title/summary edits are covered too -
+    // they live in src/docs-allowlist.ts, which is part of the graph.
+    return { params: { slug: entry.slug }, props: { entry, doc }, cacheKey: doc.digest };
   });
 }
 

@@ -139,20 +139,35 @@ function buildAttachmentsBlock(
  *  doesn't mistake them for someone else) with a UTC timestamp. Returns an
  *  empty string when there's no backlog so the bare-message prompt shape is
  *  unchanged. */
-function buildHistoryBlock(priorContext: readonly InboundContextPost[] | undefined): string {
+function buildHistoryBlock(
+  priorContext: readonly InboundContextPost[] | undefined,
+  catchUp = false,
+): string {
   if (!priorContext || priorContext.length === 0) return "";
-  const lines: string[] = [
-    `[Channel history — ${priorContext.length} message(s) before you were tagged, oldest first.`,
-    "Read-only context to catch up on the conversation; do not reply to these,",
-    "only to the message that follows this block.]",
-  ];
+  // The two framings are not interchangeable. A mention in a busy room comes
+  // with background chatter nobody asked the agent about, so that block says
+  // don't answer it. Catch-up is the opposite: these were addressed to the
+  // agent while it was offline and are still unanswered, and recovering them
+  // only to tell the model to ignore them is worse than not recovering them.
+  const lines: string[] = catchUp
+    ? [
+        `[Missed while you were offline — ${priorContext.length} message(s), oldest first.`,
+        "You were unreachable when these arrived and have not answered them yet.",
+        "Address them together with the message that follows this block, in one reply.",
+        "Don't apologise at length for the delay; just pick up where things left off.]",
+      ]
+    : [
+        `[Channel history — ${priorContext.length} message(s) before you were tagged, oldest first.`,
+        "Read-only context to catch up on the conversation; do not reply to these,",
+        "only to the message that follows this block.]",
+      ];
   for (const p of priorContext) {
     const who = p.isSelf ? "you" : p.senderId || "unknown";
     const when = Number.isFinite(p.createAt) ? new Date(p.createAt).toISOString() : "?";
     const text = p.text.trim().length > 0 ? p.text : "(no text)";
     lines.push(`${who} [${when}]: ${text}`);
   }
-  lines.push("[end Channel history]");
+  lines.push(catchUp ? "[end Missed while you were offline]" : "[end Channel history]");
   return lines.join("\n");
 }
 
@@ -189,13 +204,14 @@ export function buildAgentBody(
   senderTag?: string,
   attention?: boolean,
   agentId?: string,
+  catchUp?: boolean,
 ): string {
   // Without a session id *or* an agent id the context block is byte-identical
   // to the pre-feature preamble, so callers/tests that omit both keep the exact
   // old prompt shape. Either one folds into the bracketed context.
   const context =
     sessionId || agentId ? buildClawbitsContext(sessionId, agentId) : CLAWBITS_AGENT_PREAMBLE;
-  const historyBlock = buildHistoryBlock(priorContext);
+  const historyBlock = buildHistoryBlock(priorContext, catchUp === true);
   const replyTagBlock = buildReplyTagBlock(senderTag);
   const attentionBlock = buildAttentionBlock(attention);
   // Channel catch-up history sits between the Clawbits context and the

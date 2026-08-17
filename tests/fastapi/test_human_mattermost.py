@@ -1500,3 +1500,95 @@ def test_delete_agent_rebuilds_stale_channel_preview(test_client):
         assert ch.last_message_author_human_id == human_id
         assert ch.last_message_text == "human earlier"
 
+
+
+# ---------------------------------------------------------------------------
+# Tests: unread counting is capped (sidebar read-path performance)
+# ---------------------------------------------------------------------------
+
+def test_unread_counts_are_capped(test_client):
+    """``unread_count`` and ``unread_mention_count`` stop counting at
+    ``UNREAD_COUNT_CAP``.
+
+    Every client renders anything past 99 as "99+", so the read path stops
+    counting at 100 rather than walking an unbounded backlog — the pathological
+    case being a busy channel the viewer has never opened, where there is no
+    read pointer and "count the unread" means "count the channel". A returned
+    value equal to the cap means "at least this many", never "exactly".
+
+    Below the cap the counts must still be exact, which is what makes this a
+    cap and not an approximation.
+    """
+    from datetime import UTC, datetime
+
+    from sqlmodel import Session, select
+
+    from clawbits.db.models import MmChannel, MmChannelMember, MmPost
+    from clawbits.db.table_read import UNREAD_COUNT_CAP, TableRead
+
+    over = UNREAD_COUNT_CAP + 25
+    h1 = _register_human(test_client, "capviewer@test.com", display_name="Cap Viewer")
+    h2 = _register_human(test_client, "cappeer@test.com")
+    viewer_id = h1["user"]["id"]
+    peer_id = h2["user"]["id"]
+    now = datetime.now(UTC)
+
+    # Bulk-insert straight to the DB: posting `over` messages through the API
+    # would drag the whole fan-out plane (events, previews, attention) into a
+    # test about arithmetic.
+    with Session(test_client.app._engine) as db:
+        db.add(MmChannel(
+            channel_id="cap_ch", name="cap", channel_type="public", created_at=now,
+        ))
+        db.add(MmChannelMember(channel_id="cap_ch", human_id=viewer_id, joined_at=now))
+        db.add(MmChannelMember(channel_id="cap_ch", human_id=peer_id, joined_at=now))
+        # Every post both unread AND a mention, so one loop exercises both
+        # counters against the same cap.
+        for i in range(over):
+            db.add(MmPost(
+                channel_id="cap_ch", human_id=peer_id,
+                message=f"@here message {i}", status="published", created_at=now,
+            ))
+        db.commit()
+
+    resp = test_client.get(
+        "/api/human/mm/channels", headers=_human_auth(h1["access_token"])
+    )
+    assert resp.status_code == 200, resp.text
+    ch = next(c for c in resp.json()["channels"] if c["channel_id"] == "cap_ch")
+
+    assert ch["unread_count"] == UNREAD_COUNT_CAP
+    assert ch["unread_mention_count"] == UNREAD_COUNT_CAP
+
+    # ``latest_post_id`` and ``last_message_at`` must describe the SAME post.
+    # They come from one row via LATERAL rather than being max()'d
+    # independently, which is what stops two posts sharing a timestamp from
+    # handing back the id of one and the time of the other. ``latest_post_id``
+    # is internal to the read path (the response model does not carry it), so
+    # this asserts against the accessor directly.
+    with Session(test_client.app._engine) as db:
+        newest = db.exec(
+            select(MmPost).where(MmPost.channel_id == "cap_ch")
+            .order_by(MmPost.post_id.desc())
+        ).first()
+        row = next(
+            c for c in TableRead.get_mm_channels_for_human(db, viewer_id)
+            if c["channel_id"] == "cap_ch"
+        )
+        assert row["latest_post_id"] == newest.post_id
+        assert row["last_message_at"] == ch["last_message_at"]
+
+    # Read up to 25 short of the end: the remainder is under the cap, so the
+    # count must be exact again.
+    r = test_client.post(
+        "/api/human/mm/channels/cap_ch/read",
+        json={"post_id": newest.post_id - 25},
+        headers=_human_auth(h1["access_token"]),
+    )
+    assert r.status_code == 200, r.text
+    resp = test_client.get(
+        "/api/human/mm/channels", headers=_human_auth(h1["access_token"])
+    )
+    ch = next(c for c in resp.json()["channels"] if c["channel_id"] == "cap_ch")
+    assert ch["unread_count"] == 25
+    assert ch["unread_mention_count"] == 25

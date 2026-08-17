@@ -40,7 +40,12 @@ export function PageHeader({icon, leading, title, breadcrumb, count, actions}: P
     const content = (
         <>
             {breadcrumb ? (
-                <Breadcrumbs items={breadcrumb} />
+                // min-w-0 so the trail yields to the actions instead of pushing
+                // them off-screen: the <ol> and its items already carry min-w-0
+                // and truncate, but the <nav> was floored at its content width,
+                // which pushed an overflow button past the right edge on
+                // narrow viewports.
+                <Breadcrumbs items={breadcrumb} className="min-w-0" />
             ) : (
                 <div className="flex min-w-0 items-center gap-2">
                     {leading ?? (icon && <Icon icon={icon} className="size-4 shrink-0 text-muted-foreground"/>)}

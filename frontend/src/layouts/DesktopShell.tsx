@@ -9,6 +9,7 @@ import { PageHeaderSlotProvider } from "@/components/PageHeader";
 import { ChatsSidebar } from "@/components/sidebars/ChatsSidebar";
 import { AgentsSidebar } from "@/components/sidebars/AgentsSidebar";
 import { SettingsSidebar } from "@/components/sidebars/SettingsSidebar";
+import { SkillsSidebar } from "@/components/sidebars/SkillsSidebar";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { WizardDockChip } from "@/components/new-agent/WizardDockChip";
 import {
@@ -41,6 +42,7 @@ function SidebarShortcutBinding() {
  *  chats hub, so it shows the channel/DM list. */
 function ContextualSidebar({ section }: { section: SectionId }) {
   if (section === "agents") return <AgentsSidebar />;
+  if (section === "skills") return <SkillsSidebar />;
   if (section === "settings") return <SettingsSidebar />;
   return <ChatsSidebar />;
 }

@@ -58,7 +58,7 @@ jobs:
         working-directory: web
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           # Full checkout, NOT sparse: the build reads ../frontend and ../docs
@@ -80,7 +80,7 @@ jobs:
           node-version: '22'
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.bun/install/cache

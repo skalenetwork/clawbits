@@ -42,6 +42,9 @@ import SettingsChannelsPage from "./pages/SettingsChannelsPage";
 import SettingsLobstertalkPage from "./pages/SettingsLobstertalkPage";
 import SettingsReefPage from "./pages/SettingsReefPage";
 import AutomationsPage from "./pages/AutomationsPage";
+import AgentSkillsPage from "./pages/AgentSkillsPage";
+import SkillDetailPage from "./pages/SkillDetailPage";
+import SkillsPage from "./pages/SkillsPage";
 import AutomationDetailPage from "./pages/AutomationDetailPage";
 import { DesktopTitleBar } from "./components/DesktopTitleBar";
 import { useDesktopNav } from "./hooks/useDesktopNav";
@@ -107,8 +110,11 @@ function AppShell() {
             <Route path="inbox/:uid?" element={<AgentInboxPage />} />
             <Route path="automations" element={<AgentAutomationsPage />} />
             <Route path="automations/:automationId" element={<AgentAutomationDetailPage />} />
+            <Route path="skills" element={<AgentSkillsPage />} />
             <Route path="manage" element={<AgentManagePage />} />
           </Route>
+          <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/skills/:skillId" element={<SkillDetailPage />} />
           <Route path="/automations" element={<AutomationsPage />} />
           <Route path="/automations/:automationId" element={<AutomationDetailPage />} />
           <Route path="/channels/:channelId" element={<ChannelPage />} />
@@ -156,7 +162,9 @@ export default function App() {
         </AgentPresenceProvider>
         </UserPresenceProvider>
       </AuthProvider>
-      <ReactQueryDevtools initialIsOpen={false} />
+      {/* Explicit DEV literal so the bundler drops this from production: the
+          devtools panel renders the whole query cache, reef reads included. */}
+      {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
     </QueryClientProvider>
     </ThemeProvider>
   );

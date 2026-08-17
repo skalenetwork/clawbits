@@ -17,7 +17,9 @@ ARG OPENCLAW_VERSION=2026.6.10
 # build without it. If a pinned version has no `-browser` tag the FROM fails loudly
 # at pull time, which is the intended behaviour - do not silently fall back.
 ARG OPENCLAW_IMAGE_VARIANT=-browser
-FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}${OPENCLAW_IMAGE_VARIANT}
+# BuildKit builds ONLY the selected stage, so a default build never needs .plugin-src/.
+ARG CLAWBITS_PLUGIN_STAGE=plugin-clawhub
+FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}${OPENCLAW_IMAGE_VARIANT} AS base
 
 # Bake in the clawbits channel plugin from the clawhub registry. `--pin` locks
 # the resolved version so the image is reproducible (bump deliberately, like the
@@ -31,9 +33,17 @@ FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}${OPENCLAW_IMAGE_VARIANT}
 # into `security.installPolicy`; a community package now prints a review warning and
 # installs rather than aborting. If a future OpenClaw tightens that policy back to
 # fail-closed, set `security.installPolicy` here rather than reintroducing a flag.
+FROM base AS plugin-clawhub
 ARG CLAWBITS_PLUGIN_CACHE_KEY=dev
 RUN echo "clawbits plugin cache key=${CLAWBITS_PLUGIN_CACHE_KEY}" \
     && openclaw plugins install clawhub:clawbits-openclaw-plugin --pin
+
+# .plugin-src/ is the working-tree ./plugin, staged into the context by build.sh.
+FROM base AS plugin-local
+COPY --chown=node:node .plugin-src/ /tmp/clawbits-plugin/
+RUN openclaw plugins install /tmp/clawbits-plugin --force
+
+FROM ${CLAWBITS_PLUGIN_STAGE}
 
 # Everything below needs root (writes to /usr/bin, /usr/local/bin, /etc), then we
 # drop back to the image's non-root `node` user. The agent NEVER runs as root and
@@ -143,6 +153,11 @@ COPY --chmod=0644 reef-term.mjs /usr/local/bin/reef-term.mjs
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/reef-entrypoint.sh
 
+# reef reads REEF_FEATURES off `inspect` to pick in-place restart vs recreate, so it
+# must only claim env-file on an image whose entrypoint carries reef_apply_env_file.
+ENV REEF_FEATURES=env-file
+ENV REEF_ENV_DIR=/home/node/.reef-env
+
 # Reef runtime-image version. A `dev` placeholder here; build.sh OVERWRITES it
 # post-build with the derived stack identity (oc<openclaw>-pl<plugin>) once it has
 # probed the real versions. The entrypoint reports it in status.json so the
@@ -157,6 +172,7 @@ LABEL org.opencontainers.image.version="${REEF_IMAGE_VERSION}"
 # org.reef.openclaw.version / org.reef.clawbits-plugin.version post-build by
 # probing the built image — the same source entrypoint.sh reports into status.json
 # — so a default build is self-describing without a passed --build-arg.
+ARG CLAWBITS_PLUGIN_CACHE_KEY=dev
 LABEL org.reef.clawbits-plugin.version="${CLAWBITS_PLUGIN_CACHE_KEY}"
 
 # Headless onboard -> foreground gateway (validated). No ports published by

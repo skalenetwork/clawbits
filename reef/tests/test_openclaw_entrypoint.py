@@ -1,7 +1,23 @@
+import base64
+import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
+
+from reef import fleet
+from reef.fleet import (
+    _DANGEROUS_ENV_KEYS,
+    _GUEST_DROPPED_ENV_KEYS,
+    _GUEST_DROPPED_ENV_PREFIXES,
+    _supports_env_file,
+    _validate_user_env,
+)
 
 ENTRYPOINT = Path(__file__).parents[1] / "images" / "openclaw-runtime" / "entrypoint.sh"
 BUILD_SCRIPT = ENTRYPOINT.with_name("build.sh")
+DOCKERFILE = ENTRYPOINT.with_name("Dockerfile")
 
 
 def test_token_signup_runs_before_gateway_start():
@@ -93,10 +109,24 @@ def test_build_derives_truthful_stack_tag_from_probe():
     # tag reef-oc:oc<oc>-pl<pl> — no hand-bumped VERSION file, no reef-oc:<version>.
     assert "openclaw --version" in text
     assert "openclaw plugins list --json" in text
-    assert 'stack="oc${installed_oc}-pl${installed_plugin}"' in text
+    assert 'stack="oc${installed_oc}-pl${installed_plugin}${stack_suffix}"' in text
     assert "reef-oc:${stack}" in text
     assert 'cat "$here/VERSION"' not in text
     assert "reef-oc:${version}" not in text
+
+
+def test_local_plugin_build_cannot_overwrite_a_clawhub_stack_tag():
+    text = BUILD_SCRIPT.read_text()
+    assert 'stack_suffix=""' in text
+    assert 'stack_suffix="-local"' in text
+    local_block = text[
+        text.index('if [ -n "${CLAWBITS_PLUGIN_LOCAL:-}" ]') : text.index("# Smart cache")
+    ]
+    assert 'stack_suffix="-local"' in local_block
+    assert 'image="reef-oc:local-plugin"' in local_block
+    assert 'plugin_stage="plugin-local"' in local_block
+    assert '--build-arg "CLAWBITS_PLUGIN_STAGE=${plugin_stage}"' in text
+    assert "ARG CLAWBITS_PLUGIN_STAGE=plugin-clawhub" in DOCKERFILE.read_text()
 
 
 def test_gemini_onboards_with_dedicated_auth_choice():
@@ -304,3 +334,251 @@ def test_no_capability_grants_messaging():
         assert "group:messaging" not in stripped
         # tools.profile="full" would pull messaging in silently.
         assert "tools.profile" not in stripped
+
+
+# ── The reef-managed user env file (REEF_ENV_DIR/env) ─────────────────────────
+
+
+def _env_reader_source() -> str:
+    text = ENTRYPOINT.read_text()
+    start = text.index("reef_apply_env_file() {")
+    end = text.index("\n}\n", start) + len("\n}\n")
+    func = text[start:end]
+    assert func.rstrip().endswith("}")
+    assert "base64 -d" in func and "export " in func
+    return func
+
+
+def _run_env_reader(
+    tmp_path: Path, records: list[str], *, preset: dict[str, str] | None = None
+) -> tuple[int, dict[str, tuple[bool, str]]]:
+    if shutil.which("base64") is None:
+        pytest.skip("no base64(1) on this host; the guest image ships coreutils")
+    env_dir = tmp_path / "reef-env"
+    env_dir.mkdir()
+    # No trailing newline: exercises the reader's `|| [ -n "${_op:-}" ]` clause.
+    (env_dir / "env").write_text("\n".join(records))
+
+    # Only legal shell identifiers can be probed: `${9BAD+x}` is a syntax error.
+    probes = sorted(
+        {"ORIGPATH", "PATH"}
+        | set(preset or {})
+        | {
+            p[1]
+            for p in (r.split() for r in records)
+            if len(p) >= 2 and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p[1])
+        }
+    )
+    presets = "\n".join(f"{k}={v!r}; export {k}" for k, v in (preset or {}).items())
+    # Delimiter-framed rather than line-based: a value may legally contain newlines.
+    script = f"""set -eu
+{_env_reader_source()}
+ORIGPATH="${{PATH}}"; export ORIGPATH
+{presets}
+REEF_ENV_DIR="{env_dir}"; export REEF_ENV_DIR
+reef_apply_env_file
+for _key in {" ".join(probes)}; do
+  eval "_present=\\${{${{_key}}+yes}}"
+  eval "_val=\\${{${{_key}}-}}"
+  printf '<<%s|%s>>%s<<END>>' "${{_key}}" "${{_present:-no}}" "${{_val}}"
+  unset _present _val
+done
+"""
+    proc = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True)
+    found = {
+        m.group(1): (m.group(2) == "yes", m.group(3))
+        for m in re.finditer(r"<<(\w+)\|(\w+)>>(.*?)<<END>>", proc.stdout, re.S)
+    }
+    return proc.returncode, found
+
+
+def _rec(key: str, value: str) -> str:
+    return f"s {key} {base64.b64encode(value.encode()).decode()}"
+
+
+def test_env_file_reader_runs_before_the_gateway_and_the_terminal():
+    text = ENTRYPOINT.read_text()
+    setpriv = text.index("exec setpriv --reuid node")
+    apply_idx = text.index("\nreef_apply_env_file\n")
+    assert setpriv < apply_idx
+    assert apply_idx < text.index('if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]')
+    assert apply_idx < text.index("ttyd --writable")
+    assert apply_idx < text.index("exec openclaw gateway run")
+    assert "ENV REEF_ENV_DIR=/home/node/.reef-env" in DOCKERFILE.read_text()
+
+
+def test_env_file_reader_applies_sets_empties_and_unsets(tmp_path):
+    code, env = _run_env_reader(
+        tmp_path,
+        [
+            "# reef guest env v1 - written by reef, parsed (never eval'd) by the entrypoint.",
+            "v1",
+            _rec("AGENTPIT_API_KEY", "sk-live-example"),
+            "s EMPTY",  # the two-field form serialize() emits for an empty value
+            "u GONE",
+        ],
+        preset={"GONE": "inherited from the container -e layer"},
+    )
+    assert code == 0
+    assert env["AGENTPIT_API_KEY"] == (True, "sk-live-example")
+    assert env["EMPTY"] == (True, "")
+    assert env["GONE"][0] is False
+
+
+def test_env_file_reader_never_evaluates_a_value(tmp_path):
+    nasty = "`id` $(id) ${HOME} $HOME 'sq' \"dq\" \\ ; | > & \nsecond line\ttab"
+    code, env = _run_env_reader(tmp_path, [_rec("NASTY", nasty)])
+    assert code == 0
+    assert env["NASTY"] == (True, nasty)
+    # Nothing ran: a `uid=` anywhere would mean `id` was executed, not quoted.
+    assert "uid=" not in env["NASTY"][1]
+
+
+def test_env_file_reader_survives_a_malformed_file(tmp_path):
+    code, env = _run_env_reader(
+        tmp_path,
+        [
+            "",  # blank
+            "garbage",  # one field
+            "s 9BAD aGk=",  # key starts with a digit
+            "s BAD-KEY aGk=",  # key is not an identifier
+            "x SOMETHING aGk=",  # unknown op
+            "u",  # `u` with no key
+            "s BADB64 ***not-base64***",  # value fails to decode
+            _rec("SURVIVOR", "still applied"),
+        ],
+    )
+    assert code == 0
+    for key in ("SOMETHING", "BADB64"):
+        assert env[key][0] is False
+    assert env["SURVIVOR"] == (True, "still applied")
+
+
+def _guest_filter_arms() -> tuple[set[str], set[str], set[str]]:
+    """(namespace prefixes, namespace keys, dangerous keys), parsed out of the reader."""
+    body = _env_reader_source().split('case "${_k}" in', 1)[1].split("esac", 1)[0]
+    namespace: set[str] = set()
+    dangerous: set[str] = set()
+    for line in body.splitlines():
+        patterns = {p.strip().strip('"') for p in line.split(")", 1)[0].split("|")}
+        patterns = {p for p in patterns if p and "[" not in p}
+        if not patterns:
+            continue
+        (namespace if any(p.endswith("*") for p in patterns) else dangerous).update(patterns)
+    prefixes = {p.rstrip("*") for p in namespace if p.endswith("*")}
+    return prefixes, {p for p in namespace if not p.endswith("*")}, dangerous
+
+
+def test_every_server_filtered_key_is_dropped_by_the_reader(tmp_path):
+    prefixes, namespace_keys, dangerous = _guest_filter_arms()
+    assert len(prefixes) >= 5 and len(namespace_keys) >= 2 and len(dangerous) >= 9
+    assert prefixes == set(_GUEST_DROPPED_ENV_PREFIXES)
+    assert namespace_keys == set(_GUEST_DROPPED_ENV_KEYS)
+    assert dangerous == set(_DANGEROUS_ENV_KEYS)
+
+    probes = [f"{prefix}PROBE" for prefix in _GUEST_DROPPED_ENV_PREFIXES]
+    probes += sorted(_GUEST_DROPPED_ENV_KEYS | _DANGEROUS_ENV_KEYS)
+    # Controls go FIRST: a landed PATH would break every later decode and make the
+    # drop assertions pass for the wrong reason.
+    controls = ["AGENTPIT_API_KEY", "OPENCLAW_STATE_DIR"]
+    code, env = _run_env_reader(
+        tmp_path, [_rec(key, f"applied-{key}") for key in controls + probes]
+    )
+    assert code == 0
+
+    for key in controls:
+        assert env[key] == (True, f"applied-{key}"), f"{key} should have been applied"
+    for key in probes:
+        assert env[key][1] != f"applied-{key}", f"{key} reached the guest"
+    assert env["PATH"][1] == env["ORIGPATH"][1]
+
+
+def test_guest_dropped_keys_are_refused_by_the_server_validator():
+    prefixes, namespace_keys, dangerous = _guest_filter_arms()
+    keys = [f"{prefix}PROBE" for prefix in sorted(prefixes)]
+    keys += sorted(namespace_keys | dangerous)
+    assert len(keys) >= 17
+
+    secret = "sk-live-should-never-be-echoed"
+    for key in keys:
+        with pytest.raises(ValueError) as excinfo:
+            _validate_user_env({key: secret})
+        message = str(excinfo.value)
+        assert key in message, f"{key}: refusal does not say which key"
+        assert secret not in message, f"{key}: refusal echoed the value"
+    assert _validate_user_env({"AGENTPIT_API_KEY": secret}) == {"AGENTPIT_API_KEY": secret}
+
+
+def test_the_api_refuses_exactly_the_values_the_reader_would_change(tmp_path):
+    cases = {
+        "PLAIN": "sk-live-example",
+        "EMPTY_VALUE": "",
+        "TRAILING_SPACE": "trailing space ",
+        "TRAILING_TAB": "trailing tab\t",
+        "INNER_NEWLINE": "mid\nline",
+        "NEWLINE_THEN_SPACE": "keep\n ",
+        "ONE_TRAILING_NEWLINE": "keep\n",
+        "TWO_TRAILING_NEWLINES": "keep\n\n",
+        "ONLY_A_NEWLINE": "\n",
+    }
+    # No "\r" case: subprocess text mode rewrites a lone CR on the way back.
+    code, env = _run_env_reader(tmp_path, [_rec(key, value) for key, value in cases.items()])
+    assert code == 0
+
+    lossy = set()
+    for key, sent in cases.items():
+        present, got = env[key]
+        assert present, f"{key} was not applied at all"
+        if got != sent:
+            lossy.add(key)
+    assert lossy == {"ONE_TRAILING_NEWLINE", "TWO_TRAILING_NEWLINES", "ONLY_A_NEWLINE"}
+    assert env["ONE_TRAILING_NEWLINE"][1] == "keep"
+    assert env["TWO_TRAILING_NEWLINES"][1] == "keep"
+    assert env["ONLY_A_NEWLINE"][1] == ""
+    assert env["INNER_NEWLINE"][1] == "mid\nline"
+    assert env["NEWLINE_THEN_SPACE"][1] == "keep\n "
+
+    refused = set()
+    for key, sent in cases.items():
+        try:
+            _validate_user_env({key: sent})
+        except ValueError as exc:
+            refused.add(key)
+            assert sent not in str(exc), f"{key}: refusal echoed the value"
+    assert refused == lossy, "the API refuses a different set than the reader loses"
+
+
+def test_the_image_and_the_server_name_each_other_by_real_symbols():
+    body = "\n".join(
+        line
+        for text in (ENTRYPOINT.read_text(), DOCKERFILE.read_text())
+        for line in text.splitlines()
+        if line.lstrip().startswith("#")
+    )
+    named = set(re.findall(r"fleet\.(_[a-z][a-z0-9_]*|[A-Z][A-Z0-9_]+)", body))
+    named |= set(re.findall(r"(?<![A-Za-z0-9_])(_[A-Z][A-Z0-9_]{4,})(?![A-Za-z0-9_])", body))
+    assert {
+        "_DANGEROUS_ENV_KEYS",
+        "_GUEST_DROPPED_ENV_KEYS",
+        "_GUEST_DROPPED_ENV_PREFIXES",
+    } <= named, f"the KEEP IN SYNC note stopped naming the mirrored constants; found {named}"
+    for symbol in sorted(named):
+        assert hasattr(fleet, symbol), f"image comments name fleet.{symbol}, which does not exist"
+
+    fleet_source = Path(fleet.__file__).read_text()
+    assert "reef_apply_env_file() {" in ENTRYPOINT.read_text()
+    assert "reef_apply_env_file" in fleet_source
+    repo_root = Path(__file__).resolve().parents[2]
+    referenced = {p.rstrip(".") for p in re.findall(r"reef/images/[A-Za-z0-9_./-]+", fleet_source)}
+    assert referenced  # the notes exist at all
+    for rel in sorted(referenced):
+        assert (repo_root / rel).exists(), f"fleet.py points at {rel}, which is not there"
+
+
+def test_the_baked_features_marker_satisfies_the_servers_apply_gate():
+    baked = dict(re.findall(r"(?m)^ENV ([A-Za-z_][A-Za-z0-9_]*)=(.*)$", DOCKERFILE.read_text()))
+    assert _supports_env_file(baked), f"the shipped marker {baked.get('REEF_FEATURES')!r} fails"
+
+    restamp = BUILD_SCRIPT.read_text().split("printf 'FROM %s\\n", 1)[1].split("' \\", 1)[0]
+    redeclared = set(re.findall(r"ENV ([A-Za-z_][A-Za-z0-9_]*)=", restamp))
+    assert redeclared == {"REEF_IMAGE_VERSION"}, f"the re-stamp layer now declares {redeclared}"

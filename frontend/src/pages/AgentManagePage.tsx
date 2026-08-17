@@ -24,6 +24,7 @@ import { Stagger } from "@/components/agent/manage/Stagger";
 import { IdentitySection } from "@/components/agent/manage/IdentitySection";
 import { BehaviorSection } from "@/components/agent/manage/BehaviorSection";
 import { AccessSection } from "@/components/agent/manage/AccessSection";
+import { EnvSection } from "@/components/agent/manage/EnvSection";
 import { DangerZone } from "@/components/agent/manage/DangerZone";
 
 export default function AgentManagePage() {
@@ -81,8 +82,14 @@ export default function AgentManagePage() {
             </Stagger>
           )}
 
-          {profile.can_manage_contacts && (
+          {profile.reef_sandbox_id && (
             <Stagger delay={160}>
+              <EnvSection orgId={orgId} sandboxId={profile.reef_sandbox_id} />
+            </Stagger>
+          )}
+
+          {profile.can_manage_contacts && (
+            <Stagger delay={240}>
               <AccessSection
                 orgId={orgId}
                 agentId={profile.agent_id}
@@ -91,7 +98,7 @@ export default function AgentManagePage() {
             </Stagger>
           )}
 
-          <Stagger delay={240}>
+          <Stagger delay={320}>
             <DangerZone
               agentName={name}
               isPending={deleteMutation.isPending}

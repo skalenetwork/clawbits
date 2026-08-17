@@ -28,7 +28,8 @@ import {
 import {
     reefCreate, reefProviders, reefImages, reefHealth, reefOllamaModels, reefOpenRouterModels,
     getReefToken, setReefToken,
-    terminalAuthUrl, ReefAuthError, ReefUnreachableError,
+    terminalAuthUrl, ReefAuthError, ReefAuthRequired, ReefUnreachableError,
+    retryReefAuthOnce, REEF_AUTH_RETRY_DELAY_MS,
     type ReefCreateBody, type ReefProvider, type ReefImage,
 } from "@/lib/reefApi";
 import {queryKeys} from "@/lib/queryKeys";
@@ -236,7 +237,8 @@ function WizardBody({
             return reefProviders(reefUrl ?? "");
         },
         enabled: Boolean(reefUrl) && debouncedToken.length > 0,
-        retry: false,
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         staleTime: 60_000,
     });
     const providerList: ReefProvider[] | null = providersQuery.data?.providers ?? null;
@@ -256,7 +258,8 @@ function WizardBody({
         queryKey: ["org", targetOrgId ?? "none", "reef-images", debouncedToken],
         queryFn: () => reefImages(reefUrl ?? ""),
         enabled: Boolean(reefUrl) && debouncedToken.length > 0,
-        retry: false,
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         staleTime: 60_000,
     });
     const images: ReefImage[] | null = imagesQuery.data ?? null;
@@ -380,7 +383,7 @@ function WizardBody({
         mutationFn: async () => {
             if (!reefUrl) throw new Error("No Reef connected");
             const token = reefTokenInput.trim();
-            if (!token) throw new ReefAuthError("Enter your Reef admin token");
+            if (!token) throw new ReefAuthRequired("Enter your Reef admin token");
             setReefToken(token);
             const session = await startHumanAgentSignup(targetOrgId ?? "");
             const body: ReefCreateBody = {
@@ -447,13 +450,15 @@ function WizardBody({
     }, [createdSandboxId]);
     const createError: string | null =
         state.launched && state.mode === "reef" && createMutation.isError
-            ? createMutation.error instanceof ReefAuthError
-                ? "Reef rejected the token - check it and retry."
-                : createMutation.error instanceof ReefUnreachableError
-                    ? "Can't reach Reef over its tunnel."
-                    : createMutation.error instanceof Error
-                        ? createMutation.error.message
-                        : "Couldn't create the agent"
+            ? createMutation.error instanceof ReefAuthRequired
+                ? "Enter your Reef admin token."
+                : createMutation.error instanceof ReefAuthError
+                    ? "Reef rejected the token - check it and retry."
+                    : createMutation.error instanceof ReefUnreachableError
+                        ? "Can't reach Reef over its tunnel."
+                        : createMutation.error instanceof Error
+                            ? createMutation.error.message
+                            : "Couldn't create the agent"
             : null;
 
     // ── Say hi ──

@@ -83,6 +83,11 @@
             "minimum": 0,
             "default": 600000
           },
+          "catchUpEnabled": {
+            "type": "boolean",
+            "description": "On gateway start, answer messages that arrived while the agent was down (VM restart, image upgrade, crash) instead of silently skipping them. One turn per channel: newest unanswered addressed message is the trigger, older ones ride along as context.",
+            "default": true
+          },
           "channelContextBacklog": {
             "type": "integer",
             "minimum": 0,
