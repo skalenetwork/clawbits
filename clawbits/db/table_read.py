@@ -1453,13 +1453,34 @@ class TableRead:
 
     @staticmethod
     def get_mm_channels_for_agent(session: Session, agent_id: str) -> list[dict]:
+        # ``latest_post_id`` lets a reconnecting agent see which channels moved
+        # while it was offline and skip the quiet ones, in this one call.
+        # LATERAL rather than ``GROUP BY`` for the reason spelled out in
+        # ``get_mm_channels_for_human``: the aggregate scans every post in the
+        # deployment to answer for a handful of channels.
+        latest_post = (
+            select(MmPost.post_id.label("post_id"))
+            .where(MmPost.channel_id == MmChannel.channel_id)
+            .where(MmPost.status == "published")
+            .order_by(MmPost.post_id.desc())
+            .limit(1)
+            .correlate(MmChannel)
+            .lateral("latest_post")
+        )
         rows = session.exec(
-            select(MmChannel)
+            select(MmChannel, latest_post.c.post_id.label("latest_post_id"))
             .join(MmChannelMember, MmChannelMember.channel_id == MmChannel.channel_id)
+            .join(latest_post, true(), isouter=True)
             .where(MmChannelMember.agent_id == agent_id)
             .order_by(MmChannel.created_at.desc())
         ).all()
-        out = [TableRead._channel_to_dict(c, session) for c in rows]
+        out = []
+        for c, latest_post_id in rows:
+            d = TableRead._channel_to_dict(c, session)
+            d["latest_post_id"] = (
+                int(latest_post_id) if latest_post_id is not None else None
+            )
+            out.append(d)
         # Hide DMs the agent may no longer access — a human peer whose ``can_dm``
         # was revoked, or an agent peer whose grant was removed. Mirrors the
         # access gate in ``can_agent_access_dm`` so the bot isn't handed a
@@ -1888,6 +1909,7 @@ class TableRead:
         offset: int = 0,
         before_post_id: int | None = None,
         include_drafts: bool = False,
+        after_post_id: int | None = None,
     ) -> list[dict]:
         # Default visibility: streaming posts (live agent replies) and
         # published posts. Drafts (pending owner approval) and rejected
@@ -1903,7 +1925,19 @@ class TableRead:
             .where(MmPost.channel_id == channel_id)
             .where(MmPost.status.in_(visible_statuses))
         )
-        if before_post_id is not None:
+        if after_post_id is not None:
+            # Forward cursor, OLDEST-first. Ascending is load-bearing: with
+            # ``DESC LIMIT n`` a gap wider than the page returns the NEWEST n
+            # and drops the oldest part — exactly what a resuming reader still
+            # owes a reply to. Callers page with ``after_post_id = <last id>``.
+            # ``offset`` is ignored: cursors and offsets don't mix. Seeks
+            # ``ix_mm_posts_channel_post``.
+            stmt = (
+                stmt.where(MmPost.post_id > after_post_id)
+                .order_by(MmPost.post_id.asc())
+                .limit(limit)
+            )
+        elif before_post_id is not None:
             stmt = stmt.where(MmPost.post_id < before_post_id).order_by(
                 MmPost.post_id.desc()
             ).limit(limit)
@@ -3455,7 +3489,61 @@ class TableRead:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _skill_to_dict(row: Skill, latest: SkillVersion | None = None) -> dict:
+    def _install_counts_by_skill(
+        session: Session, skill_ids: list[str]
+    ) -> dict[str, tuple[int, int]]:
+        """``skill_id -> (agents that have it, agents still moving)``.
+
+        One grouped read for a whole page of skills. ``applied`` is the only
+        status that means the agent confirmed the file is on disk, so it is the
+        only one that counts as installed; ``requested``/``removing`` are the
+        in-flight states and are reported separately rather than folded in. A
+        library row must never claim a skill is live somewhere the agent has
+        not confirmed.
+        """
+        if not skill_ids:
+            return {}
+        # COUNT(DISTINCT CASE ...) rather than a FILTER clause: both back ends
+        # we run on understand it, and SQLite only learned FILTER in 3.30.
+        def _distinct_when(*statuses: str):
+            return func.count(
+                func.distinct(
+                    case(
+                        (
+                            AgentSkillInstall.sync_status.in_(statuses),
+                            AgentSkillInstall.agent_id,
+                        ),
+                        else_=None,
+                    )
+                )
+            )
+
+        rows = session.exec(
+            select(
+                AgentSkillInstall.skill_id,
+                _distinct_when("applied"),
+                _distinct_when("requested", "removing"),
+            )
+            .where(
+                AgentSkillInstall.skill_id.in_(skill_ids),
+                # Same visibility rule as list_agent_skills: an uninstall
+                # soft-deletes the row but leaves it 'removing' until the agent
+                # confirms, and that pending work has to stay countable.
+                or_(
+                    AgentSkillInstall.deleted_at.is_(None),
+                    AgentSkillInstall.sync_status == "removing",
+                ),
+            )
+            .group_by(AgentSkillInstall.skill_id)
+        ).all()
+        return {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in rows}
+
+    @staticmethod
+    def _skill_to_dict(
+        row: Skill,
+        latest: SkillVersion | None = None,
+        counts: tuple[int, int] = (0, 0),
+    ) -> dict:
         """Operator/UI projection of a catalog row."""
         return {
             "skill_id": row.skill_id,
@@ -3474,6 +3562,10 @@ class TableRead:
             "content_hash": latest.content_hash if latest is not None else None,
             "has_executable": bool(latest.has_executable) if latest is not None else False,
             "is_draft": row.latest_version_id is None,
+            # Agents that have CONFIRMED the skill on disk, and agents with an
+            # install/removal still in flight. See _install_counts_by_skill.
+            "installed_agent_count": counts[0],
+            "pending_agent_count": counts[1],
             "archived_at": _iso(row.archived_at),
             "created_by": row.created_by,
             "created_at": _iso(row.created_at),
@@ -3524,8 +3616,13 @@ class TableRead:
                     select(SkillVersion).where(SkillVersion.version_id.in_(version_ids))
                 ).all()
             }
+        counts = TableRead._install_counts_by_skill(session, [r.skill_id for r in rows])
         return [
-            TableRead._skill_to_dict(r, latest_by_id.get(r.latest_version_id or ""))
+            TableRead._skill_to_dict(
+                r,
+                latest_by_id.get(r.latest_version_id or ""),
+                counts.get(r.skill_id, (0, 0)),
+            )
             for r in rows
         ]
 
@@ -3552,7 +3649,8 @@ class TableRead:
             if row.latest_version_id
             else None
         )
-        out = TableRead._skill_to_dict(row, latest)
+        counts = TableRead._install_counts_by_skill(session, [row.skill_id])
+        out = TableRead._skill_to_dict(row, latest, counts.get(row.skill_id, (0, 0)))
         out["current_version"] = (
             TableRead._skill_version_to_dict(latest, include_content=True)
             if latest is not None
@@ -3683,7 +3781,19 @@ class TableRead:
 
         items = []
         for row in rows:
-            absent = row.deleted_at is not None or not row.enabled
+            skill = session.get(Skill, row.skill_id) if row.skill_id is not None else None
+            absent = (
+                row.deleted_at is not None
+                or not row.enabled
+                # Belt and braces. ``delete_skill`` tombstones its installs, so a
+                # live row pointing at a deleted skill means it raced that fan-out.
+                # The invariant is that a deleted skill has no desired version -
+                # and it has to land here rather than in the resolver, because a
+                # resolver miss `continue`s the item, which would leave the
+                # directory on the agent forever instead of removing it.
+                # KEEP IN STEP with TableWrite._wants_absent.
+                or (skill is not None and skill.deleted_at is not None)
+            )
             version = None if absent else TableRead._resolve_install_version(session, row)
             # A managed row whose skill has no published version yet has nothing
             # to apply; skip rather than emit an item the client cannot satisfy.

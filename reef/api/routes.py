@@ -258,7 +258,11 @@ async def patch_env(
     uvicorn access log and the admin-ui proxy log both keep a copy of."""
     try:
         result = await service.set_env(
-            sandbox_id, set_vars=body.set, unset_keys=body.unset, apply=body.apply
+            sandbox_id,
+            set_vars=body.set,
+            unset_keys=body.unset,
+            apply=body.apply,
+            tiers=body.tiers,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from None

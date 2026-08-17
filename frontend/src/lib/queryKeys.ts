@@ -61,6 +61,10 @@ export const queryKeys = {
   reefFleet: (orgId: string) => ["org", orgId, "reef-fleet"] as const,
   /** Browser-direct Reef provider availability (presence booleans only). */
   reefProviders: (orgId: string) => ["org", orgId, "reef-providers"] as const,
+  /** One agent's Reef env (key names + lengths, never values). Keyed by
+   *  sandbox id, so the agent Manage section and Settings → Reef share a cache. */
+  reefAgentEnv: (orgId: string, sandboxId: string) =>
+    ["org", orgId, "reef-agent-env", sandboxId] as const,
   /** Operator-only agent email inbox (Stalwart). */
   agentInbox: {
     /** Prefix to invalidate every cache for one agent's inbox at once. */

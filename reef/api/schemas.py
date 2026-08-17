@@ -213,11 +213,15 @@ class SandboxPatchOut(BaseModel):
 
 # ── The editable user-env overlay (GET/PATCH /fleet/{id}/env) ─────────────────
 class EnvVarOut(BaseModel):
-    """Described WITHOUT its value: there is no value field and no reveal endpoint."""
+    """``value`` is present ONLY for ``tier="regular"``. A secret is write-only and
+    has no reveal endpoint: reef holds the plaintext but never hands it back, which
+    is the promise every value stored before tiers existed was given."""
 
     key: str
     value_length: int  # characters; 0 = set-but-empty, a real distinct state
     source: Literal["file", "container"]
+    tier: Literal["secret", "regular"] = "secret"
+    value: str | None = None
 
 
 class EnvOut(BaseModel):
@@ -248,6 +252,10 @@ class EnvPatchIn(BaseModel):
     set: dict[str, str] = {}
     unset: list[str] = []
     apply: Literal["restart", "recreate", "none"] = "restart"
+    # Per-key tier. Omitted keys keep the tier they already had, or - for a key reef
+    # has never seen - get ``fleet.default_env_tier`` (secret iff the NAME looks like
+    # a credential). Safe to constrain here: tiers carry no values.
+    tiers: dict[str, Literal["secret", "regular"]] = {}
 
 
 class EnvApplyOut(BaseModel):
@@ -263,7 +271,13 @@ class EnvApplyOut(BaseModel):
 
 
 def _env_var_out(v: GuestEnvVar) -> EnvVarOut:
-    return EnvVarOut(key=v.key, value_length=v.value_length, source=v.source)
+    return EnvVarOut(
+        key=v.key,
+        value_length=v.value_length,
+        source=v.source,
+        tier=v.tier,
+        value=v.value,
+    )
 
 
 def env_out(view: GuestEnvView) -> EnvOut:

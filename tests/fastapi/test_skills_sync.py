@@ -255,6 +255,109 @@ def test_disable_makes_intent_absent(test_client: TestClient):
     assert [s["intent"] for s in desired["skills"]] == ["absent"]
 
 
+def test_disable_converges_once_the_agent_confirms_removal(test_client: TestClient):
+    """A disable is an 'absent' intent, not a delete: the row survives so it can
+    be re-enabled. It must still SETTLE - the removed-report used to be discarded
+    for any row without ``deleted_at``, leaving the install stuck at 'requested'
+    with observed_generation behind desired forever."""
+    agent_id, api_key, token, org_id = _setup(test_client, "m3-disable-conv@clawbits.ai")
+    h = {"Authorization": f"Bearer {token}"}
+    agent_h = {"Authorization": f"Bearer {api_key}"}
+    skill = _create_skill(test_client, token, org_id)
+    install_id = test_client.post(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills",
+        json={"skill_id": skill["skill_id"]},
+        headers=h,
+    ).json()["skills"][0]["install_id"]
+
+    test_client.patch(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}",
+        json={"enabled": False},
+        headers=h,
+    )
+    item = test_client.get("/api/agentic/skills/desired", headers=agent_h).json()["skills"][0]
+    assert item["intent"] == "absent"
+
+    test_client.post(
+        "/api/agentic/skills/state",
+        json=_report(
+            [{
+                "slug": "house-style",
+                "status": "removed",
+                "observed_generation": item["desired_generation"],
+            }],
+            report_mode="apply",
+        ),
+        headers=agent_h,
+    )
+
+    row = test_client.get(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills", headers=h
+    ).json()["skills"][0]
+    assert row["enabled"] is False
+    assert row["sync_status"] == "applied", "a disabled install must converge, not spin"
+    assert row["sync_error"] is None
+
+    # And it is still re-enablable: a disable is not a delete.
+    test_client.patch(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}",
+        json={"enabled": True},
+        headers=h,
+    )
+    back = test_client.get("/api/agentic/skills/desired", headers=agent_h).json()["skills"][0]
+    assert back["intent"] == "present"
+
+
+def test_deleting_a_library_skill_uninstalls_it_from_agents(test_client: TestClient):
+    """Deleting from the library must REMOVE the skill from every agent. The soft
+    delete leaves latest_version_id intact, so without the fan-out the feed kept
+    saying 'present' forever - the org sees it gone while agents keep running it."""
+    agent_id, api_key, token, org_id = _setup(test_client, "m3-delete-fanout@clawbits.ai")
+    h = {"Authorization": f"Bearer {token}"}
+    agent_h = {"Authorization": f"Bearer {api_key}"}
+    skill = _create_skill(test_client, token, org_id)
+    test_client.post(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills",
+        json={"skill_id": skill["skill_id"]},
+        headers=h,
+    )
+    assert [
+        s["intent"]
+        for s in test_client.get("/api/agentic/skills/desired", headers=agent_h).json()["skills"]
+    ] == ["present"]
+
+    r = test_client.delete(
+        f"/api/human/orgs/{org_id}/skills/{skill['skill_id']}", headers=h
+    )
+    assert r.status_code in (200, 204), r.text
+
+    # Gone from the library...
+    listed = test_client.get(f"/api/human/orgs/{org_id}/skills", headers=h).json()["skills"]
+    assert [s["skill_id"] for s in listed] == []
+
+    # ...and actively being removed from the agent, not silently left behind.
+    item = test_client.get("/api/agentic/skills/desired", headers=agent_h).json()["skills"][0]
+    assert item["intent"] == "absent"
+    row = test_client.get(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills", headers=h
+    ).json()["skills"][0]
+    assert row["sync_status"] == "removing"
+
+    test_client.post(
+        "/api/agentic/skills/state",
+        json=_report(
+            [{
+                "slug": "house-style",
+                "status": "removed",
+                "observed_generation": item["desired_generation"],
+            }],
+            report_mode="apply",
+        ),
+        headers=agent_h,
+    )
+    assert test_client.get("/api/agentic/skills/desired", headers=agent_h).json()["skills"] == []
+
+
 def test_agent_cannot_fetch_a_version_it_has_no_install_for(test_client: TestClient):
     _, api_key, token, org_id = _setup(test_client, "m3-entitle@clawbits.ai")
     skill = _create_skill(test_client, token, org_id)
@@ -277,3 +380,62 @@ def test_cannot_install_another_orgs_skill(test_client: TestClient):
         headers={"Authorization": f"Bearer {token_a}"},
     )
     assert r.status_code == 404
+
+
+def test_library_reports_confirmed_installs_separately_from_pending(test_client: TestClient):
+    """The library dot must mean "the agent has it", not "we asked"."""
+    agent_id, api_key, token, org_id = _setup(test_client, "m3-counts@clawbits.ai")
+    h = {"Authorization": f"Bearer {token}"}
+    agent_h = {"Authorization": f"Bearer {api_key}"}
+    skill = _create_skill(test_client, token, org_id, slug="counted-style")
+
+    def library_row():
+        rows = test_client.get(f"/api/human/orgs/{org_id}/skills", headers=h).json()["skills"]
+        return next(s for s in rows if s["skill_id"] == skill["skill_id"])
+
+    row = library_row()
+    assert (row["installed_agent_count"], row["pending_agent_count"]) == (0, 0)
+
+    test_client.post(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills",
+        json={"skill_id": skill["skill_id"]},
+        headers=h,
+    )
+    # Requested, not confirmed: pending, and NOT counted as installed.
+    row = library_row()
+    assert (row["installed_agent_count"], row["pending_agent_count"]) == (0, 1)
+
+    test_client.post(
+        "/api/agentic/skills/state",
+        json=_report(
+            [{
+                "slug": "counted-style",
+                "root": "/home/node/.openclaw/workspace/skills",
+                "manifest": {"name": "counted-style", "description": "House style."},
+                "content_hash": skill["content_hash"],
+                "status": "applied",
+                "observed_generation": 1,
+            }],
+            report_mode="apply",
+        ),
+        headers=agent_h,
+    )
+    row = library_row()
+    assert (row["installed_agent_count"], row["pending_agent_count"]) == (1, 0)
+
+    # The detail projection carries the same numbers — the inspector reads it.
+    detail = test_client.get(
+        f"/api/human/orgs/{org_id}/skills/{skill['skill_id']}", headers=h
+    ).json()
+    assert detail["installed_agent_count"] == 1
+
+    # A removal is in flight until the agent confirms it, so it leaves the
+    # confirmed count and shows up as pending rather than vanishing.
+    install_id = test_client.get(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills", headers=h
+    ).json()["skills"][0]["install_id"]
+    test_client.delete(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}", headers=h
+    )
+    row = library_row()
+    assert (row["installed_agent_count"], row["pending_agent_count"]) == (0, 1)

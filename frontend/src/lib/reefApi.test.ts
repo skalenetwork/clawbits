@@ -10,8 +10,14 @@ import {
   reefRestart,
   reefStart,
   reefStop,
+  ReefAuthRejected,
+  ReefAuthRequired,
   ReefBuildInProgressError,
   ReefSandboxBusyError,
+  authRejectionIsFinal,
+  forgetTokenIfRejected,
+  hasReefToken,
+  reefFleet,
   setReefToken,
   surfaceAuthUrl,
   terminalAuthUrl,
@@ -211,10 +217,10 @@ describe("guest env", () => {
   it("never sends a value for a key the operator did not retype", async () => {
     setReefToken(TEST_TOKEN);
     const rows: EnvDraftRow[] = [
-      { id: "srv:UNTOUCHED_KEY", key: "UNTOUCHED_KEY", value: null, storedLength: 40, removed: false, existing: true },
-      { id: "srv:RETYPED_KEY", key: "RETYPED_KEY", value: "typed-placeholder-value", storedLength: 12, removed: false, existing: true },
-      { id: "srv:DROPPED_KEY", key: "DROPPED_KEY", value: null, storedLength: 8, removed: true, existing: true },
-      { id: "new:1", key: "ABANDONED_KEY", value: "abandoned", storedLength: null, removed: true, existing: false },
+      { id: "srv:UNTOUCHED_KEY", key: "UNTOUCHED_KEY", value: null, storedLength: 40, removed: false, existing: true, tier: null },
+      { id: "srv:RETYPED_KEY", key: "RETYPED_KEY", value: "typed-placeholder-value", storedLength: 12, removed: false, existing: true, tier: null },
+      { id: "srv:DROPPED_KEY", key: "DROPPED_KEY", value: null, storedLength: 8, removed: true, existing: true, tier: null },
+      { id: "new:1", key: "ABANDONED_KEY", value: "abandoned", storedLength: null, removed: true, existing: false, tier: null },
     ];
     const patch = buildEnvPatch(rows, "restart");
     expect(patch).toEqual({
@@ -236,5 +242,102 @@ describe("guest env", () => {
     expect(body).not.toContain("UNTOUCHED_KEY");
     expect(body).not.toContain("ABANDONED_KEY");
     expect(body).not.toContain("abandoned");
+  });
+});
+
+// The reason the operator kept getting re-prompted: a lone 401 (reef restarting
+// behind the tunnel, an edge hiccup) used to drop the token. It now takes two
+// SEPARATE rounds — see the rejection policy in reefApi.
+describe("rejection policy", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Drive one failed authed call and hand back the error. */
+  async function rejectOnce(status = 401): Promise<unknown> {
+    stubFetch(status, { detail: "invalid or missing admin credentials" });
+    return await reefFleet(BASE).then(
+      () => null,
+      (e: unknown) => e,
+    );
+  }
+
+  it("keeps the token after a single rejection - one 401 is not a verdict", async () => {
+    setReefToken(TEST_TOKEN);
+    const e = await rejectOnce();
+    expect(e).toBeInstanceOf(ReefAuthRejected);
+    expect(authRejectionIsFinal()).toBe(false);
+    expect(forgetTokenIfRejected(e)).toBe(false);
+    expect(hasReefToken()).toBe(true);
+  });
+
+  it("drops the token once reef rejects it in two separate rounds", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    await rejectOnce();
+    vi.advanceTimersByTime(1_200); // the retry delay — a genuinely new round
+    const e = await rejectOnce();
+    expect(authRejectionIsFinal()).toBe(true);
+    expect(forgetTokenIfRejected(e)).toBe(true);
+    expect(hasReefToken()).toBe(false);
+  });
+
+  it("counts rejections from parallel polls as ONE round", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    // Several queries poll at once; a single bad instant must not burn the budget.
+    const e1 = await rejectOnce();
+    const e2 = await rejectOnce();
+    const e3 = await rejectOnce();
+    expect([e1, e2, e3].every((e) => e instanceof ReefAuthRejected)).toBe(true);
+    expect(authRejectionIsFinal()).toBe(false);
+    expect(hasReefToken()).toBe(true);
+  });
+
+  it("resets the count when reef accepts the token again (the blip case)", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    await rejectOnce();
+    stubFetch(200, []);
+    await reefFleet(BASE);
+    vi.advanceTimersByTime(1_200);
+    const e = await rejectOnce();
+    // Back to round 1, so the recovered blip didn't leave the token half-condemned.
+    expect(authRejectionIsFinal()).toBe(false);
+    expect(forgetTokenIfRejected(e)).toBe(false);
+    expect(hasReefToken()).toBe(true);
+  });
+
+  it("treats a 403 the same as a 401", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    await rejectOnce(403);
+    vi.advanceTimersByTime(1_200);
+    expect(forgetTokenIfRejected(await rejectOnce(403))).toBe(true);
+    expect(hasReefToken()).toBe(false);
+  });
+
+  it("never counts 'no token held' as a rejection - reef said nothing", async () => {
+    setReefToken(null);
+    const spy = stubFetch(200, []);
+    const e = await reefFleet(BASE).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(e).toBeInstanceOf(ReefAuthRequired);
+    expect(spy).not.toHaveBeenCalled(); // it never left the browser
+    expect(forgetTokenIfRejected(e)).toBe(false);
+  });
+
+  it("does not clear on a non-auth failure", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    stubFetch(500, { detail: "boom" });
+    const e = await reefFleet(BASE).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(forgetTokenIfRejected(e)).toBe(false);
+    expect(hasReefToken()).toBe(true);
   });
 });

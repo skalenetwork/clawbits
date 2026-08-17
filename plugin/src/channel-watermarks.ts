@@ -1,20 +1,23 @@
-// Persistent "last seen" watermark per (account, channel).
+// Persistent per-(account, channel) watermarks, as a small JSON file next to
+// the plugin's logs (``process.cwd()``). Three key shapes share the store:
 //
-// The inbound poller injects a one-time catch-up backlog the first time the
-// agent is tagged in a shared channel. That dedupe lives in memory, so a
-// gateway restart would re-inject history the agent has already seen. This
-// store records the `create_at` of the newest post the agent has been shown
-// per channel and survives restarts, so the post-restart backlog only ever
-// carries genuinely new messages.
+//   "<channelId>"        — newest post already SHOWN as read-only context.
+//   "cursor:<channelId>" — newest post whose turn FINISHED (or was refused).
+//                          The boot catch-up resume point; written for every
+//                          channel, DMs included.
+//   "email:inbox"        — the email poller's UID watermark.
 //
-// There is no plugin-SDK key/value surface, so we persist to a small JSON
-// file next to the plugin's logs (``process.cwd()``), matching how
-// `file-logger` picks its paths. The on-disk shape is:
+// On-disk: { "<accountId>": { "<key>": <createAtMs>, ... }, ... }
 //
-//   { "<accountId>": { "<channelId>": <createAtMs>, ... }, ... }
+// DURABILITY (unresolved): cwd is not one of the volumes reef mounts
+// (`~/.openclaw/workspace`, `~/.config/openclaw`), so this survives an in-place
+// restart — what an env-var change does — but not a recreate or image upgrade,
+// i.e. every plugin release resets it. Losing it degrades to the poller's cold
+// window, which is bounded and duplicate-safe. Path is logged at poller start.
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+
 
 /** Minimal contract the poller depends on. Kept narrow so tests can pass a
  *  pure in-memory implementation (or omit it entirely). */
@@ -30,6 +33,11 @@ export interface WatermarkStore {
   set(accountId: string, channelId: string, createAt: number): void;
   /** Force any pending write to disk (test seam / clean shutdown). */
   flush?(): Promise<void>;
+  /** Resolved backing path, or null/undefined when purely in-memory. */
+  readonly path?: string | null;
+  /** Whether `load()` found existing state. Distinguishes a first-ever boot
+   *  from "the state we had is gone" — very different for catch-up. */
+  readonly loadedExisting?: boolean;
 }
 
 const DEFAULT_STATE_FILENAME = "clawbits-channel-state.json";
@@ -48,9 +56,17 @@ export class ChannelWatermarkStore implements WatermarkStore {
   private dirty = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushChain: Promise<void> = Promise.resolve();
+  loadedExisting = false;
 
   constructor(filePath?: string | null) {
     this.filePath = filePath ?? null;
+  }
+
+  /** Resolved backing path, or null for a pure in-memory store. Logged at
+   *  poller start: the default lands wherever the gateway's cwd happens to be,
+   *  which is worth seeing in the logs before trusting it. */
+  get path(): string | null {
+    return this.filePath;
   }
 
   /** File-backed store at `filePath` (defaults to ``<cwd>/<state file>``). */
@@ -77,6 +93,7 @@ export class ChannelWatermarkStore implements WatermarkStore {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
       if (parsed && typeof parsed === "object") {
+        this.loadedExisting = true;
         for (const [accountId, channels] of Object.entries(parsed as Record<string, unknown>)) {
           if (!channels || typeof channels !== "object") continue;
           for (const [channelId, value] of Object.entries(channels as Record<string, unknown>)) {
@@ -133,12 +150,20 @@ export class ChannelWatermarkStore implements WatermarkStore {
       (snapshot[accountId] ??= {})[channelId] = value;
     }
     const path = this.filePath;
-    // Serialise writes so two rapid flushes can't interleave/corrupt the
-    // file. Swallow write errors — a failed persist degrades to a one-time
-    // re-read after restart, never a crash.
-    this.flushChain = this.flushChain.then(() =>
-      writeFile(path, JSON.stringify(snapshot), "utf8").catch(() => {}),
-    );
+    // Serialised so two rapid flushes can't interleave. tmp + rename because
+    // rename is atomic: a SIGKILL mid-write can no longer leave truncated JSON
+    // that `load()` silently discards as a cold start.
+    this.flushChain = this.flushChain.then(async () => {
+      const tmp = `${path}.tmp`;
+      try {
+        await writeFile(tmp, JSON.stringify(snapshot), "utf8");
+        await rename(tmp, path);
+      } catch {
+        // Swallowed: a failed persist degrades to a cold catch-up window on
+        // the next boot, never a crash. The startup log reports whether state
+        // was actually found, which is where a broken path shows up.
+      }
+    });
     await this.flushChain;
   }
 }

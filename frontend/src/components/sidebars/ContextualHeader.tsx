@@ -8,11 +8,19 @@ import type {ReactNode} from "react";
  * it; the sidebar's scroll container clears it with top padding. The content
  * card already clears the desktop title bar, so this needs no traffic-light
  * padding of its own.
+ *
+ * ``title`` may be a node rather than a string, so a section whose title IS a
+ * control (Skills, where the heading opens the scope menu) keeps the same bar
+ * instead of hand-rolling one that drifts out of alignment.
  */
-export function ContextualHeader({title, action}: {title: string; action?: ReactNode}) {
+export function ContextualHeader({title, action}: {title: ReactNode; action?: ReactNode}) {
     return (
         <div className="absolute inset-x-0 top-0 z-10 flex h-12 items-center justify-between gap-2 border-b border-sidebar-border bg-panel/80 px-3 backdrop-blur-xl supports-[backdrop-filter]:bg-panel/65">
-            <h2 className="truncate text-sm font-semibold text-sidebar-foreground">{title}</h2>
+            {typeof title === "string" ? (
+                <h2 className="truncate text-sm font-semibold text-sidebar-foreground">{title}</h2>
+            ) : (
+                <h2 className="flex min-w-0 flex-1 items-center">{title}</h2>
+            )}
             {action && <div className="flex shrink-0 items-center gap-1">{action}</div>}
         </div>
     );

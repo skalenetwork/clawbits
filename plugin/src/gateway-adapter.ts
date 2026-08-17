@@ -698,6 +698,11 @@ export async function dispatchInboundMessage(
           // plain-text name reference, which the agent can't act on unless it
           // knows what it's called.
           ctx.account.agentId,
+          // Boot catch-up: flips the history block from "do not reply to these"
+          // to "these are unanswered, address them". Without it the recovered
+          // messages reach the model under an explicit instruction to ignore
+          // them, and the agent answers only the trigger.
+          msg.catchUp,
         ),
         commandBody: effectiveText,
         commandAuthorized: isAuthorizedCommand ? true : undefined,

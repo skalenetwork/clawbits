@@ -1,34 +1,94 @@
 import {useState} from "react";
-import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
+import {useQuery} from "@tanstack/react-query";
 import {
     BookOpen01Icon as Book,
     PlusSignIcon as Plus,
+    Search01Icon as Search,
 } from "@hugeicons/core-free-icons";
 import {Icon} from "@/components/Icon";
 import {PageHeader} from "@/components/PageHeader";
-import {SkillCard} from "@/components/skills/SkillCard";
 import {SkillForge} from "@/components/skills/SkillForge";
+import {SkillList} from "@/components/skills/SkillList";
+import {SkillScopeMenu} from "@/components/skills/SkillScopeMenu";
 import {Button} from "@/components/ui/button";
-import {
-    Dialog,
-    DialogClose,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogTitle,
-} from "@/components/ui/dialog";
+import {Input} from "@/components/ui/input";
 import {useAuth} from "@/context/AuthContext";
-import {deleteSkill, forkSkill, listOrgSkills, type Skill} from "@/lib/api";
+import {useSidebar} from "@/components/ui/sidebar";
+import {useIsMobile} from "@/hooks/use-mobile";
+import {listOrgSkills} from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
-import {errMsg, toast} from "@/lib/toast";
+import {
+    SELECTABLE_SKILL_SCOPES,
+    filterSkillsByScope,
+    matchesSkillQuery,
+    useSkillScope,
+    type SkillScope,
+} from "@/lib/skillScopes";
+import {errMsg} from "@/lib/toast";
 
-/** The org's skill library. */
+/**
+ * ``/skills`` with nothing selected.
+ *
+ * On desktop the library lives in the contextual sidebar, so this route is the
+ * zero state that tells you to pick one (or write the first). On mobile there
+ * is no sidebar — the shell renders one full-screen column — so the same route
+ * IS the library, built from the same list and the same scope menu, hosted in
+ * the page header instead of a sidebar header.
+ */
 export default function SkillsPage() {
+    const isMobile = useIsMobile();
+    // Two components rather than one conditional hook: useSidebar() throws
+    // outside a SidebarProvider, and the mobile shell mounts none.
+    return isMobile ? <SkillsLibrary/> : <DesktopSkillsPage/>;
+}
+
+/** Desktop: the sidebar normally holds the library, so this route is the zero
+ *  state. Collapse the sidebar (⌘B) and that would be a dead end with no way to
+ *  reach a skill, so the list moves inline instead. */
+function DesktopSkillsPage() {
+    const {open} = useSidebar();
+    return open ? <SkillsZeroState/> : <SkillsLibrary/>;
+}
+
+function SkillsZeroState() {
     const {activeOrgId} = useAuth();
-    const queryClient = useQueryClient();
     const [forgeOpen, setForgeOpen] = useState(false);
-    const [editing, setEditing] = useState<Skill | null>(null);
-    const [pendingDelete, setPendingDelete] = useState<Skill | null>(null);
+    const skillsQuery = useQuery({
+        queryKey: queryKeys.skills(activeOrgId ?? ""),
+        queryFn: () => listOrgSkills(activeOrgId ?? ""),
+        enabled: Boolean(activeOrgId),
+    });
+
+    if (!activeOrgId) {
+        return <div className="text-sm text-muted-foreground">Select an organization.</div>;
+    }
+    const empty = !skillsQuery.isPending && (skillsQuery.data?.skills.length ?? 0) === 0;
+
+    return (
+        <div className="pb-16">
+            <PageHeader
+                icon={Book}
+                title="Skills"
+                actions={
+                    <Button size="sm" onClick={() => { setForgeOpen(true); }}>
+                        <Icon icon={Plus} className="size-4"/>
+                        New skill
+                    </Button>
+                }
+            />
+            <ZeroState empty={empty} onCreate={() => { setForgeOpen(true); }}/>
+            <SkillForge open={forgeOpen} editing={null} onOpenChange={setForgeOpen}/>
+        </div>
+    );
+}
+
+/** The library as a full page: scope menu in the page header, search, list.
+ *  Used on mobile, and on desktop whenever the sidebar is collapsed. */
+function SkillsLibrary() {
+    const {user, activeOrgId} = useAuth();
+    const [scope, setScope] = useSkillScope();
+    const [query, setQuery] = useState("");
+    const [forgeOpen, setForgeOpen] = useState(false);
 
     const skillsQuery = useQuery({
         queryKey: queryKeys.skills(activeOrgId ?? ""),
@@ -36,129 +96,90 @@ export default function SkillsPage() {
         enabled: Boolean(activeOrgId),
     });
 
-    const invalidate = () => {
-        void queryClient.invalidateQueries({queryKey: queryKeys.skills(activeOrgId ?? "")});
-    };
-
-    const fork = useMutation({
-        mutationFn: (s: Skill) => forkSkill(activeOrgId ?? "", s.skill_id),
-        onSuccess: (created) => {
-            invalidate();
-            toast.success(`Forked as ${created.slug}`);
-        },
-        onError: (e) => { toast.error(errMsg(e)); },
-    });
-
-    const remove = useMutation({
-        mutationFn: (s: Skill) => deleteSkill(activeOrgId ?? "", s.skill_id),
-        onSuccess: () => {
-            invalidate();
-            setPendingDelete(null);
-            toast.success("Skill deleted");
-        },
-        onError: (e) => { toast.error(errMsg(e)); },
-    });
-
     if (!activeOrgId) {
         return <div className="text-sm text-muted-foreground">Select an organization.</div>;
     }
 
-    const skills = skillsQuery.data?.skills ?? [];
+    const all = skillsQuery.data?.skills ?? [];
+    const userId = user?.id ?? null;
+    const counts = Object.fromEntries(
+        SELECTABLE_SKILL_SCOPES.map(s => [s.id, filterSkillsByScope(all, s.id, userId).length]),
+    ) as Record<SkillScope, number>;
+    counts.public = 0;
+
+    const scoped = filterSkillsByScope(all, scope, userId);
+    const visible = query.trim() ? scoped.filter(s => matchesSkillQuery(s, query)) : scoped;
+
+    const forge = (
+        <SkillForge open={forgeOpen} editing={null} onOpenChange={setForgeOpen}/>
+    );
 
     return (
-        <div className="space-y-6 pb-16">
+        <div className="flex flex-col gap-3 pb-16">
             <PageHeader
-                icon={Book}
-                title="Skills"
+                title={
+                    <SkillScopeMenu scope={scope} onScopeChange={setScope} counts={counts}/>
+                }
                 actions={
-                    <Button
-                        size="sm"
-                        onClick={() => { setEditing(null); setForgeOpen(true); }}
-                    >
+                    <Button size="sm" onClick={() => { setForgeOpen(true); }}>
                         <Icon icon={Plus} className="size-4"/>
-                        New skill
+                        New
                     </Button>
                 }
             />
-
+            <div className="relative">
+                <Icon
+                    icon={Search}
+                    className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <Input
+                    value={query}
+                    onChange={(e) => { setQuery(e.target.value); }}
+                    placeholder="Search skills"
+                    aria-label="Search skills"
+                    className="pl-9"
+                />
+            </div>
             {skillsQuery.isPending ? (
-                <div className="text-sm text-muted-foreground">Loading skills…</div>
+                <p className="px-1 text-sm text-muted-foreground">Loading skills…</p>
             ) : skillsQuery.isError ? (
-                <div className="text-sm text-destructive">{errMsg(skillsQuery.error)}</div>
-            ) : skills.length === 0 ? (
-                <EmptyState onCreate={() => { setEditing(null); setForgeOpen(true); }}/>
+                <p className="px-1 text-sm text-destructive">{errMsg(skillsQuery.error)}</p>
+            ) : all.length === 0 ? (
+                <ZeroState empty onCreate={() => { setForgeOpen(true); }}/>
+            ) : visible.length > 0 ? (
+                <SkillList skills={visible} grouped={!query.trim()}/>
             ) : (
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {skills.map(skill => (
-                        <SkillCard
-                            key={skill.skill_id}
-                            skill={skill}
-                            actions={{
-                                onEdit: (s) => { setEditing(s); setForgeOpen(true); },
-                                onFork: (s) => { fork.mutate(s); },
-                                onDelete: (s) => { setPendingDelete(s); },
-                            }}
-                        />
-                    ))}
-                </div>
+                <p className="px-1 py-8 text-center text-sm text-muted-foreground">
+                    {query.trim() ? "No skill matches that." : "Nothing in this view."}
+                </p>
             )}
-
-            <SkillForge
-                open={forgeOpen}
-                editing={editing}
-                onOpenChange={(open) => {
-                    setForgeOpen(open);
-                    if (!open) setEditing(null);
-                }}
-            />
-
-            <Dialog
-                open={pendingDelete != null}
-                onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
-            >
-                <DialogContent className="sm:max-w-md">
-                    <DialogTitle>Delete {pendingDelete?.display_name}?</DialogTitle>
-                    <DialogDescription>
-                        It's removed from the library. Its version history is kept, and
-                        the name <span className="font-mono">{pendingDelete?.slug}</span> becomes
-                        available again.
-                    </DialogDescription>
-                    <DialogFooter>
-                        <DialogClose render={<Button variant="ghost" />}>
-                            Cancel
-                        </DialogClose>
-                        <Button
-                            variant="destructive"
-                            disabled={remove.isPending}
-                            onClick={() => { if (pendingDelete) remove.mutate(pendingDelete); }}
-                        >
-                            {remove.isPending ? "Deleting…" : "Delete"}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
+            {forge}
         </div>
     );
 }
 
-function EmptyState({onCreate}: {onCreate: () => void}) {
+/** Two different nothings: an empty library (write one) and a library you
+ *  simply haven't picked from yet (pick one). */
+function ZeroState({empty, onCreate}: {empty: boolean; onCreate: () => void}) {
     return (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/60 px-6 py-16 text-center">
+        <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
             <span className="flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
                 <Icon icon={Book} className="size-6"/>
             </span>
             <h2 className="mt-4 text-base font-semibold tracking-tight text-foreground">
-                No skills yet
+                {empty ? "No skills yet" : "Pick a skill"}
             </h2>
             <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                A skill is a set of instructions your agents can follow — how your team
-                writes changelogs, how to triage an invoice, the house style for a
-                report.
+                {empty
+                    ? "A skill is a set of instructions your agents can follow — how your team writes changelogs, how to triage an invoice, the house style for a report."
+                    : "Choose one from the library to read it, edit it, or see which agents have it."}
             </p>
-            <Button className="mt-4" size="sm" onClick={onCreate}>
-                <Icon icon={Plus} className="size-4"/>
-                New skill
-            </Button>
+            {empty && (
+                <Button className="mt-4" size="sm" onClick={onCreate}>
+                    <Icon icon={Plus} className="size-4"/>
+                    New skill
+                </Button>
+            )}
         </div>
     );
 }

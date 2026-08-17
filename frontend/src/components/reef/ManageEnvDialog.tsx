@@ -31,7 +31,8 @@ import {
     type EnvDraftRow,
 } from "@/components/reef/envKeys";
 import {
-    reefAgentEnv, reefPatchEnv, ReefAuthError, ReefRequestError, ReefSandboxBusyError,
+    reefAgentEnv, reefPatchEnv, ReefAuthRejected, ReefRequestError,
+    ReefSandboxBusyError, retryReefAuthOnce, REEF_AUTH_RETRY_DELAY_MS,
     type ReefAgentEnvView, type ReefEnvApplyMode,
 } from "@/lib/reefApi";
 import {queryKeys} from "@/lib/queryKeys";
@@ -40,6 +41,9 @@ import {cn} from "@/lib/utils";
 
 // 422 and 503 fall through to reef's own detail, which names the remedy.
 function envErrorMessage(e: unknown): string {
+    // Only reachable while a rejection is NON-final (the final one closes the
+    // dialog), so it reads as a retryable hiccup rather than "your token is wrong".
+    if (e instanceof ReefAuthRejected) return "Reef didn't accept that request - try again";
     if (e instanceof ReefSandboxBusyError) return "This agent is busy - try again in a moment";
     if (e instanceof ReefRequestError) {
         if (e.status === 404) return "Reef no longer manages this VM";
@@ -72,24 +76,30 @@ export function ManageEnvDialog({
     apiUrl: string | null;
     orgId: string;
     onClose: () => void;
-    onAuthReject: () => void;
+    /** Report a failed reef call; true ⇒ the token was dropped (so this dialog
+     *  closes and the page re-prompts), false ⇒ possibly a blip, stay open. */
+    onAuthReject: (e: unknown) => boolean;
 }) {
     // Never polled or refetched on focus: it would clobber a half-typed draft.
     const envQuery = useQuery({
         queryKey: ["reef-agent-env", apiUrl, sandboxId],
         queryFn: () => reefAgentEnv(apiUrl ?? "", sandboxId),
         enabled: Boolean(apiUrl),
-        retry: false,
+        // One shot, so it carries its own auth retry — without a second round the
+        // rejection policy could never reach a verdict for this dialog.
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         refetchOnWindowFocus: false,
         staleTime: Infinity,
     });
 
+    // Close only when the rejection is FINAL — a blip leaves the dialog open with
+    // its own error state instead of slamming shut and losing the operator's place.
     useEffect(() => {
-        if (envQuery.error instanceof ReefAuthError) {
-            onAuthReject();
-            toast.error("Reef rejected the token - re-enter it");
-            onClose();
-        }
+        if (!(envQuery.error instanceof ReefAuthRejected)) return;
+        if (!onAuthReject(envQuery.error)) return;
+        toast.error("Reef rejected the token - re-enter it");
+        onClose();
     }, [envQuery.error, onAuthReject, onClose]);
 
     const view = envQuery.data;
@@ -156,7 +166,7 @@ function EnvEditor({
     apiUrl: string | null;
     orgId: string;
     onClose: () => void;
-    onAuthReject: () => void;
+    onAuthReject: (e: unknown) => boolean;
 }) {
     const queryClient = useQueryClient();
     const [rows, setRows] = useState<EnvDraftRow[]>(() => toDraftRows(view.vars));
@@ -193,8 +203,7 @@ function EnvEditor({
             onClose();
         },
         onError: (e) => {
-            if (e instanceof ReefAuthError) {
-                onAuthReject();
+            if (e instanceof ReefAuthRejected && onAuthReject(e)) {
                 toast.error("Reef rejected the token - re-enter it");
                 onClose();
                 return;
@@ -218,7 +227,7 @@ function EnvEditor({
         nextId.current += 1;
         setRows((prev) => [
             ...prev,
-            {id: `new:${String(nextId.current)}`, key: "", value: "", storedLength: null, removed: false, existing: false},
+            {id: `new:${String(nextId.current)}`, key: "", value: "", storedLength: null, removed: false, existing: false, tier: null},
         ]);
     };
 

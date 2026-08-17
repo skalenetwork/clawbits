@@ -9,7 +9,7 @@ tenant-agnostic; never imports clawbits.
 
 import asyncio
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
@@ -21,7 +21,7 @@ from reef.capabilities import normalize as _normalize_caps
 from reef.capabilities import to_env as _caps_to_env
 from reef.errors import RuntimeUnavailable, SandboxBusy, SandboxNotFound
 from reef.exposure import Exposure, surface_digest
-from reef.guest_env import EnvRecord
+from reef.guest_env import EnvRecord, EnvTier
 from reef.manager import SandboxManager
 from reef.models import Sandbox
 from reef.names import random_name
@@ -260,12 +260,18 @@ class SandboxDetail:
 
 @dataclass(frozen=True, slots=True)
 class GuestEnvVar:
-    """One user-supplied guest env var, described WITHOUT its value; there is
-    deliberately no value field anywhere in this feature."""
+    """One user-supplied guest env var.
+
+    ``value`` is populated ONLY for ``tier="regular"``. A secret stays write-only:
+    reef holds the plaintext (it is in the overlay file) but no surface hands it
+    back, which is the promise every value entered before tiers was given.
+    """
 
     key: str
     value_length: int  # characters; 0 is set-but-empty, not "missing"
     source: str  # "file" (the editable overlay) | "container" (the create-time -e layer)
+    tier: str = "secret"
+    value: str | None = None  # regular only; None for every secret
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +318,9 @@ class _EnvContext:
     container_user: dict[str, str]  # user vars from the create-time -e layer
     current: dict[str, str]  # container_user with the overlay file applied over it
     file_keys: frozenset[str]  # which of ``current`` the overlay file carries
+    # Tier per overlay-carried key. A key absent here (a create-time -e var, or a
+    # file written before tiers existed) is secret - see ``guest_env._DEFAULT_TIER``.
+    file_tiers: dict[str, str]
     # The overlay file EXACTLY as read, unfiltered; ``None`` when there is no file.
     # Verbatim, not rebuilt from ``current``: it is the undo buffer for a failed
     # apply, and a rebuild would "clean" records the operator never saved.
@@ -488,15 +497,75 @@ def _net_allow_union(*urls: str | None) -> tuple[str, ...]:
     return tuple(rules)
 
 
-def _env_vars_out(values: dict[str, str], file_keys: Collection[str]) -> tuple[GuestEnvVar, ...]:
-    return tuple(
-        GuestEnvVar(
-            key=key,
-            value_length=len(value),
-            source="file" if key in file_keys else "container",
+def default_env_tier(key: str) -> EnvTier:
+    """The tier a NEW variable gets when the caller does not say.
+
+    Named, not fixed: a flat "regular by default" would make ``ANTHROPIC_API_KEY``
+    readable because someone did not tick a box, and the pasted-credential case is
+    the common one. ``_SECRET_KEY`` is the same heuristic the log redactor and both
+    UIs already share, so the guess is consistent everywhere.
+    """
+    return "secret" if _SECRET_KEY.search(key) else "regular"
+
+
+def _resolve_env_tiers(
+    result: Mapping[str, str],
+    *,
+    current_tiers: Mapping[str, str],
+    known_keys: Collection[str],
+    requested: Mapping[str, str],
+    set_keys: Collection[str],
+) -> dict[str, str]:
+    """The tier to store for every key in the post-save env.
+
+    Precedence: what the caller asked for, else the tier the key already had, else
+    ``default_env_tier`` for a key reef has never seen. A key reef already knows
+    therefore keeps its tier through an ordinary value edit, and a pre-tier key
+    stays secret instead of being silently reclassified by the heuristic.
+
+    One transition is refused: secret -> regular WITHOUT re-supplying the value.
+    Reef *could* reveal the old plaintext - it is right there in the overlay file -
+    but then the flip is a read primitive: anyone holding the admin token could
+    flip, read, and flip back. Requiring re-entry means whoever reveals a value
+    already knew it.
+    """
+    out: dict[str, str] = {}
+    for key in result:
+        was = current_tiers.get(key, "secret") if key in known_keys else None
+        want = requested.get(key)
+        if want is None:
+            out[key] = was if was is not None else default_env_tier(key)
+            continue
+        if want not in ("secret", "regular"):
+            raise ValueError(f"invalid tier {want!r} for env key {key!r}: use secret or regular")
+        if want == "regular" and was == "secret" and key not in set_keys:
+            raise ValueError(
+                f"env key {key!r} is stored as a secret; re-enter its value to make it "
+                "readable (reef does not reveal a value that was saved as a secret)"
+            )
+        out[key] = want
+    return out
+
+
+def _env_vars_out(
+    values: dict[str, str],
+    file_keys: Collection[str],
+    tiers: Mapping[str, str],
+) -> tuple[GuestEnvVar, ...]:
+    out = []
+    for key, value in sorted(values.items()):
+        # Anything with no recorded tier is pre-tier data: secret (see guest_env).
+        tier = tiers.get(key, "secret")
+        out.append(
+            GuestEnvVar(
+                key=key,
+                value_length=len(value),
+                source="file" if key in file_keys else "container",
+                tier=tier,
+                value=value if tier == "regular" else None,
+            )
         )
-        for key, value in sorted(values.items())
-    )
+    return tuple(out)
 
 
 def _recreate_net_allow(injected: dict[str, str]) -> tuple[str, ...]:
@@ -1239,13 +1308,23 @@ class FleetService:
             return await self._rebuild(sandbox_id)
         await self._runtime.stop(sandbox_id)
         await self._runtime.start(sandbox_id)
+        # Read the state back instead of asserting RUNNING because ``start`` did not
+        # raise. A container can accept ``start`` and still fail to come up - most
+        # relevantly here, the entrypoint parses the env overlay at boot, so a file
+        # it cannot read is a boot failure, and asserting RUNNING is how "your
+        # credential is live" gets reported for an agent that never saw it.
+        #
+        # This closes the loop against the CONTAINER, not against the guest having
+        # consumed the file: confirming that needs a receipt the entrypoint writes
+        # to the workspace volume, which is an image change.
+        observed = await self._runtime.status(sandbox_id)
         await self._sync(
             sandbox_id,
-            state=SandboxState.RUNNING,
+            state=observed,
             desired=DesiredState.RUNNING,
             reset_restarts=True,
         )
-        return SandboxState.RUNNING
+        return observed
 
     async def _rebuild(self, sandbox_id: str) -> SandboxState:
         """Re-run the create half of a failed recreate, on the SAME image and volumes.
@@ -1444,6 +1523,7 @@ class FleetService:
         managed = _managed_keys(profile)
         current = dict(container_user)
         file_keys: set[str] = set()
+        file_tiers: dict[str, str] = {}
         file_records = await self._runtime.read_guest_env(sandbox_id)
         for record in file_records or ():
             if not _is_user_env_key(record.key, managed):
@@ -1451,9 +1531,11 @@ class FleetService:
             if record.op == "u":
                 current.pop(record.key, None)
                 file_keys.discard(record.key)
+                file_tiers.pop(record.key, None)
             else:
                 current[record.key] = record.value
                 file_keys.add(record.key)
+                file_tiers[record.key] = record.tier
         return _EnvContext(
             sandbox_id=sandbox_id,
             state=state,
@@ -1464,6 +1546,7 @@ class FleetService:
             container_user=container_user,
             current=current,
             file_keys=frozenset(file_keys),
+            file_tiers=file_tiers,
             file_records=tuple(file_records) if file_records is not None else None,
             degraded=degraded,
             # RAW live container env, never the image's - see ``_supports_env_file``.
@@ -1478,7 +1561,7 @@ class FleetService:
         reason = "drift" if ctx.rec is None else ("unreadable-image" if ctx.degraded else None)
         return GuestEnvView(
             sandbox_id=sandbox_id,
-            vars=_env_vars_out(ctx.current, ctx.file_keys),
+            vars=_env_vars_out(ctx.current, ctx.file_keys, ctx.file_tiers),
             editable=reason is None,
             editable_reason=reason,
             complete=not ctx.degraded,
@@ -1496,6 +1579,7 @@ class FleetService:
         set_vars: dict[str, str],
         unset_keys: Sequence[str] = (),
         apply: str = "restart",
+        tiers: Mapping[str, str] | None = None,
     ) -> EnvApplyResult:
         """Apply a diff to the agent's user env. ``apply``:
 
@@ -1514,7 +1598,11 @@ class FleetService:
         try:
             async with lock:
                 return await self._set_env_locked(
-                    sandbox_id, set_vars=set_vars, unset_keys=unset_keys, apply=apply
+                    sandbox_id,
+                    set_vars=set_vars,
+                    unset_keys=unset_keys,
+                    apply=apply,
+                    tiers=tiers,
                 )
         finally:
             self._locks.pop(sandbox_id, None)
@@ -1526,6 +1614,7 @@ class FleetService:
         set_vars: dict[str, str],
         unset_keys: Sequence[str],
         apply: str,
+        tiers: Mapping[str, str] | None = None,
     ) -> EnvApplyResult:
         ctx = await self._env_context(sandbox_id)
         if ctx.rec is None:  # drift: reef can neither recreate it nor claim its mounts
@@ -1549,8 +1638,18 @@ class FleetService:
         result.update(set_vars)
         _validate_env_totals(result)  # count + bytes against the RESULT, not the delta
         _validate_written_env(result, set_vars)
+        tier_map = _resolve_env_tiers(
+            result,
+            current_tiers=ctx.file_tiers,
+            known_keys=ctx.current,
+            requested=tiers or {},
+            set_keys=set_vars,
+        )
+        # A tier-only change (secret <-> regular, same value) is a REAL change, so
+        # the no-op short-circuit has to compare tiers too or it would swallow it.
+        current_tiers = {k: ctx.file_tiers.get(k, "secret") for k in ctx.current}
 
-        if result == ctx.current:
+        if result == ctx.current and tier_map == current_tiers:
             # Before the image gate, so a retry against an old image reports the
             # truth instead of a 422 about a change it isn't making.
             return EnvApplyResult(
@@ -1559,7 +1658,7 @@ class FleetService:
                 applied="none",
                 takes_effect="now" if ctx.state is SandboxState.RUNNING else "on_next_start",
                 state=ctx.state.value,
-                vars=_env_vars_out(ctx.current, ctx.file_keys),
+                vars=_env_vars_out(ctx.current, ctx.file_keys, ctx.file_tiers),
             )
         if not ctx.supports_env_file and apply != "recreate":
             # The gate is on the WRITE, not the restart: a container without the
@@ -1577,7 +1676,9 @@ class FleetService:
         wrote_file = ctx.supports_env_file
         touched_file = wrote_file  # whether the undo below has anything to undo
         if wrote_file:
-            records = [EnvRecord(op="s", key=k, value=v) for k, v in result.items()]
+            records = [
+                EnvRecord(op="s", key=k, value=v, tier=tier_map[k]) for k, v in result.items()
+            ]
             if apply != "recreate":
                 # Explicit removals for keys the create-time -e layer still carries;
                 # a recreate instead rebuilds that layer as exactly ``result``.
@@ -1609,7 +1710,10 @@ class FleetService:
                 and ctx.state is SandboxState.RUNNING
             ):
                 state = await self.restart(sandbox_id)
-                applied, takes_effect = "restart", "now"
+                applied = "restart"
+                # Same honesty rule as the recreate branch above: the agent has the
+                # new env "now" only if it actually came back up.
+                takes_effect = "now" if state is SandboxState.RUNNING else "on_next_start"
         except BaseException as exc:
             # Without the undo the retry is a NO-OP: it now equals ``ctx.current``
             # and short-circuits, leaving the agent on the OLD env. Guarded, or the
@@ -1637,7 +1741,9 @@ class FleetService:
             applied=applied,
             takes_effect=takes_effect,
             state=state.value,
-            vars=_env_vars_out(result, frozenset(result) if wrote_file else frozenset()),
+            vars=_env_vars_out(
+                result, frozenset(result) if wrote_file else frozenset(), tier_map
+            ),
         )
 
     async def _restore_guest_env(

@@ -52,7 +52,9 @@ import {getReefConnection, setReefConnection, deleteReefConnection, getAgents, t
 import {AgentFaceAvatar} from "@/components/AgentFaceAvatar";
 import {
     reefHealth, reefFleet, reefDetail, setReefToken, hasReefToken,
-    ReefAuthError, ReefBuildInProgressError,
+    forgetTokenIfRejected, authRejectionIsFinal,
+    retryReefAuthOnce, REEF_AUTH_RETRY_DELAY_MS,
+    ReefAuthError, ReefAuthRejected, ReefBuildInProgressError,
     reefImages, reefImageStatus, reefStartBuild, reefBuildJob, reefBuildJobs, reefActivateImage, reefUpgrade,
     reefProviders, reefStart, reefStop, reefRestart, reefDestroy,
     type ReefFleetEntry, type ReefState, type ReefImage, type ReefBuildBody,
@@ -300,7 +302,11 @@ export default function SettingsReefPage() {
         // Gated on the health probe: when the Reef is unreachable the fleet section
         // shows an offline state instead of firing a request that can't succeed.
         enabled: Boolean(apiUrl) && tokenSet && !offline,
-        retry: false,
+        // Retry a 401 once (~1.2s) so a reef restart or an edge hiccup is absorbed
+        // here rather than surfacing as "your token is wrong". Everything else
+        // still fails fast.
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         // Live state + metrics (CPU/mem/uptime) without a manual refresh — the
         // list is cheap and only polls while the tab is focused.
         refetchInterval: 8_000,
@@ -349,14 +355,16 @@ export default function SettingsReefPage() {
     });
     const envEditSupported = providersQuery.data?.features?.includes("env-edit") ?? false;
 
-    // A rejected token (401/403) → drop it and re-prompt rather than show "down".
-    const authRejected = fleetQuery.error instanceof ReefAuthError;
+    // A rejected token → drop it and re-prompt rather than show "down". Gated on
+    // the rejection policy (lib/reefApi): reef has to reject the token in two
+    // separate rounds, so a single blip no longer logs the operator out. The
+    // query's own auth retry supplies the second round, which is why by the time
+    // `isError` flips the verdict is already final.
+    const authRejected =
+        fleetQuery.error instanceof ReefAuthRejected && authRejectionIsFinal();
     useEffect(() => {
-        if (authRejected) {
-            setReefToken(null);
-            setTokenSet(false);
-        }
-    }, [authRejected]);
+        if (forgetTokenIfRejected(fleetQuery.error)) setTokenSet(false);
+    }, [fleetQuery.error]);
 
     const submitToken = (e: React.SyntheticEvent) => {
         e.preventDefault();
@@ -368,10 +376,21 @@ export default function SettingsReefPage() {
         void queryClient.invalidateQueries({queryKey: queryKeys.reefFleet(orgId)});
     };
 
+    /** The explicit operator gesture ("Forget token") — always drops it. */
     const forgetToken = () => {
         setReefToken(null);
         setTokenSet(false);
         queryClient.removeQueries({queryKey: queryKeys.reefFleet(orgId)});
+    };
+
+    /** What child dialogs report a failed reef call to. Drops the token only when
+     *  the rejection policy says it's final; returns that verdict so the caller
+     *  can decide whether to close itself or stay open and retry. */
+    const handleAuthReject = (e: unknown): boolean => {
+        if (!forgetTokenIfRejected(e)) return false;
+        setTokenSet(false);
+        queryClient.removeQueries({queryKey: queryKeys.reefFleet(orgId)});
+        return true;
     };
 
     // Opening a surface needs the one-time access password (reef no longer reveals
@@ -394,9 +413,11 @@ export default function SettingsReefPage() {
             toast.success(`Destroyed ${id}`);
         },
         onError: (e) => {
-            if (e instanceof ReefAuthError) {
-                forgetToken();
-                toast.error("Reef rejected the token - re-enter it");
+            if (e instanceof ReefAuthRejected) {
+                const dropped = handleAuthReject(e);
+                toast.error(dropped
+                    ? "Reef rejected the token - re-enter it"
+                    : "Reef didn't accept that request - try again");
                 setDestroyTarget(null);
                 return;
             }
@@ -601,7 +622,7 @@ export default function SettingsReefPage() {
                             orgId={orgId}
                             imageStatus={imageStatusQuery.data}
                             fleet={fleet}
-                            onAuthReject={forgetToken}
+                            onAuthReject={handleAuthReject}
                         />
                     </section>
                 )}
@@ -727,7 +748,7 @@ export default function SettingsReefPage() {
                                             const a = agentBySandbox.get(vm.sandbox_id);
                                             setDestroyTarget({id: vm.sandbox_id, agentName: a ? agentLabel(a) : null});
                                         }}
-                                        onAuthReject={forgetToken}
+                                        onAuthReject={handleAuthReject}
                                     />
                                 ))}
                             </div>
@@ -741,7 +762,7 @@ export default function SettingsReefPage() {
                     target={openTarget}
                     apiUrl={apiUrl}
                     onClose={() => { setOpenTarget(null); }}
-                    onAuthReject={forgetToken}
+                    onAuthReject={handleAuthReject}
                 />
             )}
 
@@ -752,7 +773,7 @@ export default function SettingsReefPage() {
                     apiUrl={apiUrl}
                     orgId={orgId}
                     onClose={() => { setEnvTarget(null); }}
-                    onAuthReject={forgetToken}
+                    onAuthReject={handleAuthReject}
                 />
             )}
 
@@ -836,7 +857,9 @@ function FleetCard({
     onOpen: (surface: "ui" | "terminal") => void;
     onManageEnv: () => void;
     onDestroy: () => void;
-    onAuthReject: () => void;
+    /** Report a failed reef call; true ⇒ the token was dropped and the page
+     *  re-prompts, false ⇒ the rejection policy says this may be a blip. */
+    onAuthReject: (e: unknown) => boolean;
 }) {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
@@ -844,7 +867,8 @@ function FleetCard({
         queryKey: ["reef-surface-detail", apiUrl, vm.sandbox_id],
         queryFn: () => reefDetail(apiUrl ?? "", vm.sandbox_id),
         enabled: Boolean(apiUrl),
-        retry: false,
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         staleTime: 15_000,
         // Versions/resources change rarely — refresh on a slow cadence so an
         // in-place upgrade surfaces without a manual reload.
@@ -871,9 +895,10 @@ function FleetCard({
             void queryClient.invalidateQueries({queryKey: ["reef-surface-detail", apiUrl, vm.sandbox_id]});
         },
         onError: (e) => {
-            if (e instanceof ReefAuthError) {
-                onAuthReject();
-                toast.error("Reef rejected the token - re-enter it");
+            if (e instanceof ReefAuthRejected) {
+                toast.error(onAuthReject(e)
+                    ? "Reef rejected the token - re-enter it"
+                    : "Reef didn't accept that request - try again");
                 return;
             }
             toast.error(upgradeErrorMessage(e));
@@ -886,9 +911,10 @@ function FleetCard({
     };
     // Its own auth branch: the page-level effect only watches fleetQuery.error.
     const onLifecycleError = (e: unknown) => {
-        if (e instanceof ReefAuthError) {
-            onAuthReject();
-            toast.error("Reef rejected the token - re-enter it");
+        if (e instanceof ReefAuthRejected) {
+            toast.error(onAuthReject(e)
+                ? "Reef rejected the token - re-enter it"
+                : "Reef didn't accept that request - try again");
             return;
         }
         toast.error(lifecycleErrorMessage(e, vm.managed));
@@ -1214,7 +1240,9 @@ function ReefImagePanel({
     orgId: string;
     imageStatus: ReefImageStatus | undefined;
     fleet: ReefFleetEntry[];
-    onAuthReject: () => void;
+    /** Report a failed reef call; true ⇒ the token was dropped and the page
+     *  re-prompts, false ⇒ the rejection policy says this may be a blip. */
+    onAuthReject: (e: unknown) => boolean;
 }) {
     const queryClient = useQueryClient();
     const [jobId, setJobId] = useState<string | null>(null);
@@ -1227,7 +1255,8 @@ function ReefImagePanel({
         queryKey: ["reef-images", apiUrl],
         queryFn: () => reefImages(apiUrl),
         enabled: Boolean(apiUrl),
-        retry: false,
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         // The set only changes on a build or activate — a slow poll keeps it fresh.
         refetchInterval: 15_000,
     });
@@ -1266,9 +1295,10 @@ function ReefImagePanel({
         onError: (e) => {
             // A rejected token must clear it + re-prompt (the page only watches the
             // fleet query for auth, so a mutation auth error has to do it itself).
-            if (e instanceof ReefAuthError) {
-                onAuthReject();
-                toast.error("Reef rejected the token - re-enter it");
+            if (e instanceof ReefAuthRejected) {
+                toast.error(onAuthReject(e)
+                    ? "Reef rejected the token - re-enter it"
+                    : "Reef didn't accept that request - try again");
                 return;
             }
             // One build at a time — on a 409, attach to the running job instead of
@@ -1286,9 +1316,10 @@ function ReefImagePanel({
                     } catch (err) {
                         // A token rejected mid-attach must re-prompt, not masquerade
                         // as "a build is already running".
-                        if (err instanceof ReefAuthError) {
-                            onAuthReject();
-                            toast.error("Reef rejected the token - re-enter it");
+                        if (err instanceof ReefAuthRejected) {
+                            toast.error(onAuthReject(err)
+                                ? "Reef rejected the token - re-enter it"
+                                : "Reef didn't accept that request - try again");
                             return;
                         }
                         /* otherwise fall through to the generic message */
@@ -1325,9 +1356,10 @@ function ReefImagePanel({
             void queryClient.invalidateQueries({queryKey: queryKeys.reefFleet(orgId)});
         },
         onError: (e) => {
-            if (e instanceof ReefAuthError) {
-                onAuthReject();
-                toast.error("Reef rejected the token - re-enter it");
+            if (e instanceof ReefAuthRejected) {
+                toast.error(onAuthReject(e)
+                    ? "Reef rejected the token - re-enter it"
+                    : "Reef didn't accept that request - try again");
                 return;
             }
             toast.error(e instanceof Error ? e.message : "Couldn't set the active image");

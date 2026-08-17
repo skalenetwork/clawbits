@@ -3849,10 +3849,31 @@ class TableWrite:
 
     @staticmethod
     def delete_skill(session: Session, *, skill: Skill) -> Skill:
-        """Soft-delete a catalog row. Versions stay: forks reference them."""
+        """Soft-delete a catalog row, and uninstall it from every agent that has
+        it. Versions stay: forks reference them.
+
+        The fan-out is the point. A soft delete leaves ``latest_version_id``
+        intact, so a live install would keep resolving to a version and the
+        desired feed would keep saying ``present`` forever - the org sees the
+        skill gone from the library while every agent keeps running it, and a
+        later publish on this same row would still propagate to all of them.
+        Deletes are rare, so paying for a fan-out here is affordable in a way
+        the per-publish one deliberately is not.
+        """
         skill.deleted_at = _dt.datetime.now(_dt.UTC)
         skill.updated_at = skill.deleted_at
         session.add(skill)
+        installs = session.exec(
+            select(AgentSkillInstall).where(
+                AgentSkillInstall.skill_id == skill.skill_id,
+                AgentSkillInstall.managed_by == "clawbits",
+                AgentSkillInstall.deleted_at.is_(None),
+            )
+        ).all()
+        for row in installs:
+            # Same tombstone path as an explicit uninstall: the row stays visible
+            # as "Removing..." until the agent confirms the directory is gone.
+            TableWrite.uninstall_skill(session, row=row)
         session.flush()
         return skill
 
@@ -3862,6 +3883,22 @@ class TableWrite:
 
     # The server truncates past this and says so in the ack.
     SKILL_REPORT_MAX_ITEMS = 500
+
+    @staticmethod
+    def _wants_absent(session: Session, row: AgentSkillInstall) -> bool:
+        """Whether a LIVE (non-tombstoned) managed install is desired absent.
+
+        Mirrors the rule in ``TableRead.get_desired_skills``: disabled, or its
+        catalog skill has been deleted. Keep the two in step - if the feed asks
+        for a removal the report handler will not settle, the install never
+        converges.
+        """
+        if not row.enabled:
+            return True
+        if row.skill_id is None:
+            return False
+        skill = session.get(Skill, row.skill_id)
+        return skill is not None and skill.deleted_at is not None
 
     @staticmethod
     def apply_skill_state_report(
@@ -3915,8 +3952,30 @@ class TableWrite:
             # A verified removal: the client deleted the directory and stat'd to
             # confirm. It is NOT on disk, so it must not count as seen.
             if item.get("status") == "removed":
-                if row is not None and row.deleted_at is not None and not observing:
-                    removed_slugs.add(slug)
+                if row is not None and not observing:
+                    if row.deleted_at is not None:
+                        removed_slugs.add(slug)
+                    elif row.managed_by == "clawbits" and TableWrite._wants_absent(session, row):
+                        # A disable (and a deleted catalog skill) is an 'absent'
+                        # intent, NOT a delete: the row has to survive so it can be
+                        # re-enabled. It still has to CONVERGE - discarding this
+                        # report leaves it at 'requested' with observed_generation
+                        # permanently behind desired, so the UI shows a spinner
+                        # forever and the plugin re-removes an already-absent
+                        # directory on every pass. Settled on the same terms as the
+                        # present-path below.
+                        obs = item.get("observed_generation")
+                        if isinstance(obs, int):
+                            row.observed_generation = obs
+                        if isinstance(obs, int) and obs >= row.desired_generation:
+                            if error := item.get("error"):
+                                row.sync_status = "failed"
+                                row.sync_error = str(error)[:2000]
+                            else:
+                                row.sync_status = "applied"
+                                row.sync_error = None
+                        row.last_reported_at = now
+                        row.updated_at = now
                 continue
 
             seen_slugs.add(slug)

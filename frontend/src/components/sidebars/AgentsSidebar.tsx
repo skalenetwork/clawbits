@@ -4,7 +4,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
     Add01Icon as Plus,
     ArrowDown01Icon as ArrowDown,
-    BookOpen01Icon,
     BubbleChatIcon,
     Clock05Icon,
     IdIcon,
@@ -19,7 +18,6 @@ import {
     getAgentInboxCount,
     getAgents,
     listAgentAutomations,
-    listAgentSkills,
     type AgentUser,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
@@ -240,12 +238,6 @@ function RosterRow({
         enabled: Boolean(orgId && isOperator && selected),
     });
     const automationCount = automationsQuery.data?.automations.length;
-    const skillsQuery = useQuery({
-        queryKey: queryKeys.agentSkills(orgId, agent.agent_id),
-        queryFn: () => listAgentSkills(orgId, agent.agent_id),
-        enabled: Boolean(orgId && isOperator && selected),
-    });
-    const skillCount = skillsQuery.data?.skills.length;
     // Hermes/IronClaw runtimes can't apply Clawbits automations — hide the
     // entry unless stuck rows still exist to clean up (the page then runs in
     // delete-only mode).
@@ -340,10 +332,6 @@ function RosterRow({
                                     Automations
                                 </ContextMenuItem>
                             )}
-                            <ContextMenuItem onClick={() => { void navigate(`${base}/skills`); }}>
-                                <Icon icon={BookOpen01Icon} className="size-4" />
-                                Skills
-                            </ContextMenuItem>
                             <ContextMenuItem onClick={() => { void navigate(`${base}/manage`); }}>
                                 <Icon icon={Settings02Icon} className="size-4" />
                                 Manage
@@ -407,23 +395,13 @@ function RosterRow({
                                 />
                             )}
                             <SidebarNavItem
-                                id={`skills-${agent.agent_id}`}
-                                icon={BookOpen01Icon}
-                                label="Skills"
-                                to={`${base}/skills`}
-                                isActive={Boolean(rest?.startsWith("/skills"))}
-                                count={skillCount}
-                                className="disclosure-item"
-                                style={{ "--i": 3 } as CSSProperties}
-                            />
-                            <SidebarNavItem
                                 id={`manage-${agent.agent_id}`}
                                 icon={Settings02Icon}
                                 label="Manage"
                                 to={`${base}/manage`}
                                 isActive={Boolean(rest?.startsWith("/manage"))}
                                 className="disclosure-item"
-                                style={{ "--i": 4 } as CSSProperties}
+                                style={{ "--i": 3 } as CSSProperties}
                             />
                         </ul>
                     </div>

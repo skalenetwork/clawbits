@@ -1,5 +1,4 @@
 import {
-    BookOpen01Icon,
     BubbleChatIcon,
     Home03Icon,
     Robot02Icon,
@@ -21,11 +20,13 @@ export interface NavSection {
 }
 
 /** Primary rail cluster, top → bottom. The org switcher sits above these
- *  (rendered separately at the very top); Settings is pinned at the bottom. */
+ *  (rendered separately at the very top); Settings is pinned at the bottom.
+ *
+ *  Skills is hidden for now: the section and its routes still exist, they just
+ *  have no rail icon (re-add the entry to bring it back). */
 export const NAV_SECTIONS: NavSection[] = [
     {id: "home", label: "Home", icon: Home03Icon, landingPath: "/home"},
     {id: "agents", label: "Agents", icon: Robot02Icon, landingPath: "/agents"},
-    {id: "skills", label: "Skills", icon: BookOpen01Icon, landingPath: "/skills"},
 ];
 
 /** Bottom-pinned rail icon. */
@@ -49,10 +50,10 @@ export function deriveSection(pathname: string): SectionId {
     return "home";
 }
 
-/** Home shows the chat list, Agents the roster, Settings the nav. Skills is a
- *  full-width library grid with nothing to put in a sidebar. */
+/** Home shows the chat list, Agents the roster, Settings the nav, Skills the
+ *  org's library (the selected skill opens in the pane beside it). */
 export function sectionHasSidebar(section: SectionId): boolean {
-    return ["home", "agents", "settings"].includes(section);
+    return ["home", "agents", "skills", "settings"].includes(section);
 }
 
 // ── Mobile navigation ─────────────────────────────────────────────────────

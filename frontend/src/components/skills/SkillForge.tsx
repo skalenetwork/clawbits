@@ -1,14 +1,11 @@
 import {useState} from "react";
-import {useMutation, useQueryClient} from "@tanstack/react-query";
-import {BookOpen01Icon as Book} from "@hugeicons/core-free-icons";
-import {Icon} from "@/components/Icon";
+import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
+import {SkillGlyph} from "@/components/skills/SkillGlyph";
 import {useAuth} from "@/context/AuthContext";
 import {useIsMobile} from "@/hooks/use-mobile";
-import {createSkill, publishSkillVersion, type Skill} from "@/lib/api";
+import {createSkill, getSkill, publishSkillVersion, type Skill} from "@/lib/api";
 import {
     DESCRIPTION_MAX,
-    SKILL_ACCENT_BG,
-    accentForSkill,
     buildManifest,
     slugProblem,
     slugify,
@@ -94,17 +91,18 @@ function ForgeForm({editing, onOpenChange}: {
         onError: (e) => { toast.error(errMsg(e)); },
     });
 
-    const accent = accentForSkill(editing ? editing.skill_id : (effectiveSlug || "new"));
     const Title = isMobile ? DrawerTitle : DialogTitle;
 
     return (
         <>
             <div className={cn("flex items-center gap-3 border-b border-border/60", isMobile ? "px-4 py-3" : "p-6 pb-4")}>
-                <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl text-white", SKILL_ACCENT_BG[accent])}>
-                    {emoji.trim()
-                        ? <span className="text-xl leading-none">{emoji.trim()}</span>
-                        : <Icon icon={Book} className="size-5"/>}
-                </span>
+                {/* Live preview of the row the library will show — same glyph
+                    component, so the emoji field's effect is visible as it is
+                    typed and an empty one falls back to the same monogram. */}
+                <SkillGlyph
+                    skill={{slug: effectiveSlug || "new-skill", icon_emoji: emoji}}
+                    size="lg"
+                />
                 <Title className="text-lg font-semibold tracking-tight">
                     {editing ? `Edit ${editing.display_name}` : "New skill"}
                 </Title>
@@ -132,7 +130,6 @@ function ForgeForm({editing, onOpenChange}: {
                             setSlug(e.target.value.toLowerCase());
                         }}
                         disabled={isEdit}
-                        className="font-mono"
                         placeholder="invoice-triage"
                     />
                     <p className={cn("text-xs", showSlugIssue ? "text-destructive" : "text-muted-foreground")}>
@@ -241,6 +238,7 @@ export function SkillForge({open, editing, onOpenChange}: {
     onOpenChange: (open: boolean) => void;
 }) {
     const isMobile = useIsMobile();
+    const {activeOrgId} = useAuth();
     // Cache across the close transition; key a fresh form per open.
     const [cached, setCached] = useState<Skill | null>(null);
     const [epoch, setEpoch] = useState(0);
@@ -253,10 +251,32 @@ export function SkillForge({open, editing, onOpenChange}: {
         }
     }
 
-    const form = (
+    // ``current_version`` is optional on ``Skill`` because the LIST projection
+    // omits it - and the form seeds its body and reference files from exactly
+    // that field. Handed a list row (which is what the library grid has), the
+    // form opens with an empty Instructions box and publishes it over the real
+    // body, dropping every reference/ file with it. So: re-read the full record
+    // here and do not mount the form until it is in hand. Fetching in the
+    // wrapper rather than the form keeps ``useState`` initialisers correct -
+    // they run once, on a mount that already has the data.
+    const skillId = cached?.skill_id ?? null;
+    const detailQuery = useQuery({
+        queryKey: queryKeys.skill(activeOrgId ?? "", skillId ?? ""),
+        queryFn: () => getSkill(activeOrgId ?? "", skillId ?? ""),
+        enabled: open && Boolean(activeOrgId) && skillId !== null,
+    });
+
+    const record = skillId === null ? null : (detailQuery.data ?? null);
+    const form = skillId !== null && record === null ? (
+        <div className="px-6 py-10 text-center text-caption text-muted-foreground">
+            {detailQuery.isError
+                ? "That skill could not be loaded, so it is not safe to edit it here."
+                : "Loading the current version..."}
+        </div>
+    ) : (
         <ForgeForm
             key={`${cached?.skill_id ?? "new"}:${String(epoch)}`}
-            editing={cached}
+            editing={record ?? cached}
             onOpenChange={onOpenChange}
         />
     );

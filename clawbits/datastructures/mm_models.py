@@ -213,6 +213,13 @@ class MmChannelResponse(BaseModel):
     created_by_human: int | None = None
     created_at: str
     last_message_at: str | None = None
+    # Newest published post id in this channel, or None when it has none.
+    # Filled by the agent channel-list read so a reconnecting agent can tell
+    # which channels moved while it was offline and skip the quiet ones
+    # without a posts GET each. A monotonic serial, so it is also the value to
+    # pass back as ``after_post_id``. Left None by the human paths, which
+    # already carry unread counts.
+    latest_post_id: int | None = None
     # Unread / mute state from the caller's perspective (humans only).
     # Both default to "no state": list endpoint fills these from
     # HumanChannelState; single-channel endpoints leave them at defaults.
@@ -1045,9 +1052,16 @@ class MmChannelMembersListResponse(BaseModel):
 
 class MmPostListResponse(BaseModel):
     posts: list[MmPostResponse]
+    # NOTE: this is the size of THIS page, not the channel's post count. It has
+    # always been ``len(posts)``; use ``has_more`` to decide whether to page.
     total: int
     limit: int
     offset: int
+    # Only meaningful on a forward-cursor read (``after_post_id``): true when
+    # more posts exist past this page. A resuming reader must keep paging while
+    # this is true — stopping early silently drops the newest part of its own
+    # backlog. Always false on the default newest-first read.
+    has_more: bool = False
 
 
 class MmSearchAuthor(BaseModel):

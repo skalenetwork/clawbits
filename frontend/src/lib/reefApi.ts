@@ -7,6 +7,9 @@
 // breach can't reach anyone's Reef, and the token leaves no trace on disk once
 // the tab is gone).
 //
+// A held token is dropped ONLY by `forgetTokenIfRejected` (the rejection policy
+// below) or an explicit "forget" gesture — never by a lone 401.
+//
 // Shapes mirror reef/api/schemas.py; we keep only the fields the UI renders.
 
 const TOKEN_STORAGE_KEY = "reef.adminToken"
@@ -28,6 +31,7 @@ let _token: string | null = readStoredToken()
 export function setReefToken(token: string | null): void {
   const t = (token ?? "").trim()
   _token = t.length > 0 ? t : null
+  resetRejections() // a new (or cleared) credential starts with a clean slate
   try {
     if (_token) sessionStorage.setItem(TOKEN_STORAGE_KEY, _token)
     else sessionStorage.removeItem(TOKEN_STORAGE_KEY)
@@ -42,12 +46,87 @@ export function hasReefToken(): boolean {
   return _token !== null
 }
 
-/** Reef rejected (or is missing) the admin token — distinct from a transport
- *  failure so the UI can prompt to re-enter the token rather than "Reef down". */
+// ── Rejection policy ────────────────────────────────────────────────────────
+// A 401 is NOT proof the token is wrong. Reef restarting behind the tunnel, a
+// redeploy, or a Cloudflare edge hiccup all answer 401 for a few seconds, and
+// dropping the token on the first one logged the operator out (and, with
+// sessionStorage, lost it for the whole tab) over a blip. So reef has to reject
+// us in ROUNDS_BEFORE_FORGET *separate* rounds before we believe it, and any
+// accepted authed response resets the count.
+//
+// Rounds, not requests: several queries poll in parallel, so a single bad
+// instant would otherwise burn the whole budget at once. Rejections landing
+// within ROUND_WINDOW_MS of each other count as one round.
+const ROUNDS_BEFORE_FORGET = 2
+const ROUND_WINDOW_MS = 400
+
+/** Retry delay for the auth retry below. Comfortably wider than ROUND_WINDOW_MS
+ *  so the retry always lands as a genuinely new round. */
+export const REEF_AUTH_RETRY_DELAY_MS = 1_200
+
+let _rejectionRounds = 0
+let _lastRejectionAt = 0
+
+function noteAuthRejection(): void {
+  const now = Date.now()
+  if (now - _lastRejectionAt > ROUND_WINDOW_MS) _rejectionRounds += 1
+  _lastRejectionAt = now
+}
+
+function resetRejections(): void {
+  _rejectionRounds = 0
+  _lastRejectionAt = 0
+}
+
+/** Reef has rejected the held token in enough separate rounds that it's the
+ *  token, not a blip. */
+export const authRejectionIsFinal = (): boolean => _rejectionRounds >= ROUNDS_BEFORE_FORGET
+
+/** The ONLY place a failed reef call may drop the stored token. Returns true when
+ *  it did (⇒ the caller should re-prompt); false means "keep it, this may still
+ *  be a blip" — the caller should leave its query running and let the next round
+ *  decide. Anything that isn't a server rejection (no token held, transport
+ *  failure, 404/422/500) never clears. */
+export function forgetTokenIfRejected(e: unknown): boolean {
+  if (!(e instanceof ReefAuthRejected) || !authRejectionIsFinal()) return false
+  setReefToken(null)
+  return true
+}
+
+/** react-query `retry` for reef calls: retry an auth REJECTION exactly once, so a
+ *  blip gets its second round before the policy can fire — a genuinely wrong
+ *  token just fails twice ~1s apart and re-prompts, while a transient 401 is
+ *  absorbed and never surfaces to the UI at all. Every other error still fails
+ *  fast. Pair with `retryDelay: REEF_AUTH_RETRY_DELAY_MS`. */
+export const retryReefAuthOnce = (failureCount: number, error: unknown): boolean =>
+  error instanceof ReefAuthRejected && failureCount < 2
+
+/** Base for both credential problems — distinct from a transport failure so the
+ *  UI can prompt for the token rather than say "Reef down". Callers that only
+ *  need "this is a credential problem" keep matching on this; anything that
+ *  DROPS the stored token must go through `forgetTokenIfRejected` instead. */
 export class ReefAuthError extends Error {
   constructor(message = "Reef rejected the admin token") {
     super(message)
     this.name = "ReefAuthError"
+  }
+}
+
+/** No token is held locally, so the request never left the browser. Reef has
+ *  said nothing — this must never clear storage or count as a rejection. */
+export class ReefAuthRequired extends ReefAuthError {
+  constructor(message = "Reef admin token required") {
+    super(message)
+    this.name = "ReefAuthRequired"
+  }
+}
+
+/** Reef itself answered 401/403 to a request that DID carry the token. Still not
+ *  proof the token is wrong — see the rejection policy below. */
+export class ReefAuthRejected extends ReefAuthError {
+  constructor(message = "Reef rejected the admin token") {
+    super(message)
+    this.name = "ReefAuthRejected"
   }
 }
 
@@ -182,7 +261,7 @@ async function reefReq<T>(
 ): Promise<T> {
   const headers = new Headers()
   if (opts.auth) {
-    if (!_token) throw new ReefAuthError("Reef admin token required")
+    if (!_token) throw new ReefAuthRequired()
     headers.set("Authorization", `Bearer ${_token}`)
   }
   if (opts.body !== undefined) headers.set("Content-Type", "application/json")
@@ -197,7 +276,10 @@ async function reefReq<T>(
   } catch {
     throw new ReefUnreachableError()
   }
-  if (res.status === 401 || res.status === 403) throw new ReefAuthError()
+  if (res.status === 401 || res.status === 403) {
+    if (opts.auth) noteAuthRejection()
+    throw new ReefAuthRejected()
+  }
   if (!res.ok) {
     let detail = `Reef error ${String(res.status)}`
     try {
@@ -214,6 +296,8 @@ async function reefReq<T>(
     }
     throw new ReefRequestError(res.status, detail)
   }
+  // Reef accepted the credential — whatever rejections preceded this were a blip.
+  if (opts.auth) resetRejections()
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
@@ -283,11 +367,19 @@ export const reefDestroy = (baseUrl: string, id: string) =>
 // A typed value goes browser → the operator's own reef and nowhere else: never
 // proxy one, never log one, never put one in a URL or a query cache.
 
+/** "secret" is write-only: reef holds the plaintext but no surface hands it back.
+ *  "regular" can be read again. Tier is a READ-PATH policy - the agent is handed
+ *  the same env either way and never learns the tier. */
+export type ReefEnvTier = "secret" | "regular"
+
 export interface ReefEnvVar {
   key: string
   /** Characters in the stored value; 0 is set-but-empty, not absent. */
   value_length: number
   source: string
+  tier: ReefEnvTier
+  /** Present only for ``tier: "regular"``; always null for a secret. */
+  value: string | null
 }
 
 /** `GET /fleet/{id}/env`. Key names + value lengths only. */
@@ -307,6 +399,10 @@ export interface ReefEnvPatchBody {
   set: Record<string, string>
   unset: string[]
   apply: ReefEnvApplyMode
+  /** Per-key tier. A key omitted here keeps the tier it already had, or - if reef
+   *  has never seen it - gets reef's name-based default. Sending secret -> regular
+   *  without also re-sending the value is a 422 by design. */
+  tiers?: Record<string, ReefEnvTier>
 }
 
 export interface ReefEnvApplyResult {

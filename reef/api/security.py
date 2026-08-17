@@ -11,6 +11,9 @@ Two doors, checked in order:
    ``Authorization: Bearer <REEF_ADMIN_TOKEN>`` (mTLS is the planned hardening,
    docs/REEF.md §11).
 
+Both doors are tried before anything is refused: an expired Access assertion
+riding along on a request does not shadow a valid bearer token.
+
 When neither Access nor a token is configured the API is OPEN — fine for local
 dev, never for a reachable deployment. Higher-stakes routes add
 ``require_configured_auth`` to refuse (503) in that configuration.
@@ -32,17 +35,20 @@ def admin_auth(
     verifier = get_access_verifier()
     token = os.getenv("REEF_ADMIN_TOKEN")
 
-    # 1) Human operator via Cloudflare Access.
+    # 1) Human operator via Cloudflare Access. A bad/expired assertion FALLS
+    #    THROUGH to the token door rather than 401ing here: Access assertions are
+    #    short-lived, and a stale one riding along on a request that also carries a
+    #    perfectly good bearer token used to be rejected — which reads to the
+    #    operator as "my admin token stopped working" and no amount of re-pasting
+    #    it helps. Both doors are equally authoritative, so try both before failing.
     if verifier is not None and cf_access_jwt:
         try:
             claims = verifier.verify(cf_access_jwt)
         except AccessError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="invalid Cloudflare Access assertion",
-            )
-        request.state.operator = claims.get("email") or claims.get("sub") or "access"
-        return
+            claims = None
+        if claims is not None:
+            request.state.operator = claims.get("email") or claims.get("sub") or "access"
+            return
 
     # 2) Machine path via the service token.
     if token:

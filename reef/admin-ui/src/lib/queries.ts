@@ -8,6 +8,8 @@ import {
   type BuildImageIn,
   type EnvApplyResult,
   type EnvPatchIn,
+  AUTH_RETRY_DELAY_MS,
+  hasAdminToken,
   isAuthError,
   type CreateSandboxIn,
   type FleetEntry,
@@ -15,6 +17,23 @@ import {
 } from "@/lib/api"
 
 const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : String(e))
+
+/** Shared retry policy for API calls.
+ *
+ *  Auth failures used to fail fast on the theory that they "aren't transient" —
+ *  but the API restarting under the admin-ui proxy answers 401 for a moment, and
+ *  failing fast popped the blocking unlock dialog over a blip, with re-pasting a
+ *  perfectly good token as the only way out. So a 401 against a HELD token is
+ *  retried once: that second round is what lets `authRejectionIsFinal` (lib/api)
+ *  tell a wrong token from a hiccup. With no token held there is nothing to retry
+ *  with, so it still surfaces immediately and the dialog opens at once. */
+const retryApi = (failureCount: number, error: unknown): boolean =>
+  isAuthError(error) ? hasAdminToken() && failureCount < 2 : failureCount < 3
+
+/** Fixed, wide-enough delay for the auth retry above; react-query's usual
+ *  exponential backoff for everything else. */
+const retryApiDelay = (failureCount: number, error: unknown): number =>
+  isAuthError(error) ? AUTH_RETRY_DELAY_MS : Math.min(1000 * 2 ** failureCount, 30_000)
 
 export function useHealth() {
   return useQuery({ queryKey: ["health"], queryFn: api.health, refetchInterval: 10_000 })
@@ -28,7 +47,8 @@ export function useProviders(enabled = true) {
     queryFn: api.providers,
     enabled,
     staleTime: 60_000,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -52,7 +72,8 @@ export function useSettings() {
     queryKey: ["settings"],
     queryFn: api.settings,
     staleTime: 60_000,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -74,9 +95,8 @@ export function useFleet(refetchInterval: number | false) {
     queryKey: ["fleet"],
     queryFn: () => api.fleet(),
     refetchInterval,
-    // Auth failures aren't transient — surface them at once so the unlock
-    // dialog appears without waiting out the default retries.
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -151,7 +171,8 @@ export function useImages(refetchInterval: number | false = 15_000) {
     queryKey: ["images"],
     queryFn: api.images,
     refetchInterval,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -163,7 +184,8 @@ export function useImageStatus(refetchInterval: number | false = 15_000) {
     queryKey: ["image-status"],
     queryFn: api.imageStatus,
     refetchInterval,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 
@@ -313,7 +335,8 @@ export function useAgentEnv(id: string | null) {
     queryKey: ["env", id],
     queryFn: () => api.env(id!),
     enabled: id != null,
-    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+    retry: retryApi,
+    retryDelay: retryApiDelay,
   })
 }
 

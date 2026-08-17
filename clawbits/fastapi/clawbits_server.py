@@ -2671,14 +2671,38 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
         limit: int = 50,
         offset: int = 0,
+        after_post_id: int | None = None,
     ) -> MmPostListResponse:
-        """Get posts from a channel. Caller must be a member."""
+        """Get posts from a channel. Caller must be a member.
+
+        ``after_post_id`` makes this a forward cursor: posts strictly newer than
+        that id, oldest first, so an agent coming back online reads exactly the
+        gap it missed. Keep paging while ``has_more`` is true. Without it the
+        response is the newest ``limit`` posts, newest-first, as before.
+
+        Prefer the cursor over a timestamp for anything resumable: ``created_at``
+        is naive, second-granularity and not comparable against a guest VM's
+        clock, whereas ``post_id`` is a serial.
+        """
         try:
             cfg = load_file_config()
             agent = self._mm_extract_agent(api_key)
+            has_more = False
             with Session(self._engine) as db:
                 self._require_mm_member(db, channel_id, agent.agent_id.value)
-                posts = TableRead.get_mm_posts(db, channel_id, limit, offset)
+                if after_post_id is not None:
+                    # Over-fetch by one to answer has_more without a COUNT.
+                    posts = TableRead.get_mm_posts(
+                        db,
+                        channel_id,
+                        limit + 1,
+                        offset,
+                        after_post_id=after_post_id,
+                    )
+                    has_more = len(posts) > limit
+                    posts = posts[:limit]
+                else:
+                    posts = TableRead.get_mm_posts(db, channel_id, limit, offset)
             # Same enrichment as the human read path: presign GET URLs for
             # image attachments inline so `<img src>` works without a per-
             # image round trip. URLs are cached for ~ttl-60s, keeping
@@ -2692,6 +2716,7 @@ class ClawBitsServer(FastAPI):
                 total=len(posts),
                 limit=limit,
                 offset=offset,
+                has_more=has_more,
             )
         except HTTPException:
             raise

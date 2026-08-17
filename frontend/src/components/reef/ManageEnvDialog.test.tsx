@@ -39,7 +39,7 @@ const {ReefRequestError} = await import("@/lib/reefApi");
 function envView(over: Partial<ReefAgentEnvView>): ReefAgentEnvView {
     return {
         sandbox_id: "oc1",
-        vars: [{key: "AGENTPIT_API_KEY", value_length: 32, source: "file"}],
+        vars: [{key: "AGENTPIT_API_KEY", value_length: 32, source: "file", tier: "secret", value: null}],
         editable: true,
         apply_modes: ["restart", "recreate"],
         state: "running",
@@ -230,9 +230,9 @@ describe("failures and hygiene", () => {
     it("has no \"Managed by reef\" disclosure, and hides no row behind one", async () => {
         mount(envView({
             vars: [
-                {key: "AGENTPIT_API_KEY", value_length: 32, source: "file"},
-                {key: "LEGACY_KEY", value_length: 8, source: "container"},
-                {key: "FROM_THE_FUTURE", value_length: 4, source: "something-new"},
+                {key: "AGENTPIT_API_KEY", value_length: 32, source: "file", tier: "secret", value: null},
+                {key: "LEGACY_KEY", value_length: 8, source: "container", tier: "secret", value: null},
+                {key: "FROM_THE_FUTURE", value_length: 4, source: "something-new", tier: "secret", value: null},
             ],
         }));
         await screen.findByDisplayValue("AGENTPIT_API_KEY");

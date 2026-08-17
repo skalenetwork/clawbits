@@ -1,4 +1,4 @@
-import type {ReefEnvApplyMode, ReefEnvPatchBody, ReefEnvVar} from "@/lib/reefApi";
+import type {ReefEnvApplyMode, ReefEnvPatchBody, ReefEnvTier, ReefEnvVar} from "@/lib/reefApi";
 import {ENV_KEY_RE} from "@/components/new-agent/prompts";
 
 export {ENV_KEY_RE};
@@ -23,6 +23,27 @@ export interface EnvDraftRow {
     storedLength: number | null;
     removed: boolean;
     existing: boolean;
+    /** null = don't send a tier, so reef keeps the existing one (or applies its
+     *  name-based default to a brand-new key). Set only when the user chose. */
+    tier: ReefEnvTier | null;
+    /** The tier the server reported, so the row can render read-vs-hidden without
+     *  guessing. null for a row that does not exist server-side yet. */
+    serverTier?: ReefEnvTier | null;
+    /** The STORED value, which reef returns only for a regular var. null for a
+     *  secret (and for a row with nothing saved yet) - that is the whole point. */
+    storedValue?: string | null;
+}
+
+/** Reef's own default, mirrored so the UI can show the tier a NEW key will get
+ *  before it is saved. Same regex as ``looksSecret`` / reef's ``_SECRET_KEY``. */
+export function defaultTierFor(key: string): ReefEnvTier {
+    return looksSecret(key) ? "secret" : "regular";
+}
+
+/** What a row's tier will BE after saving: the explicit choice, else the server's
+ *  current tier, else reef's name-based default. */
+export function effectiveTier(row: EnvDraftRow): ReefEnvTier {
+    return row.tier ?? row.serverTier ?? defaultTierFor(row.key.trim());
 }
 
 export function toDraftRows(vars: ReefEnvVar[]): EnvDraftRow[] {
@@ -33,22 +54,54 @@ export function toDraftRows(vars: ReefEnvVar[]): EnvDraftRow[] {
         storedLength: v.value_length,
         removed: false,
         existing: true,
+        tier: null,
+        serverTier: v.tier,
+        storedValue: v.value,
     }));
+}
+
+// KEEP IN SYNC with reef/admin-ui/src/lib/envApply.ts - envApplyParity.test.ts
+// runs both copies.
+//
+// A key the operator removed and then re-added is an OVERWRITE, not a removal:
+// reef rejects any key present in both `set` and `unset` ("pick one", 422), and
+// `set` already carries the new value. Without this, the dialog's own advice for
+// emptying a variable - "remove the variable and add it back" - builds a request
+// the server always rejects.
+//
+// `Object.hasOwn`, not `in`: env names are `[A-Za-z_][A-Za-z0-9_]*`, so
+// "constructor" is a legal one and `"constructor" in {}` is true - which would
+// silently swallow a real removal.
+export function reconcileUnset(set: Record<string, string>, removed: readonly string[]): string[] {
+    return [...new Set(removed)].filter((k) => !Object.hasOwn(set, k));
 }
 
 export function buildEnvPatch(rows: EnvDraftRow[], apply: ReefEnvApplyMode): ReefEnvPatchBody {
     const set: Record<string, string> = {};
-    const unset: string[] = [];
+    const removed: string[] = [];
+    const tiers: Record<string, ReefEnvTier> = {};
     for (const r of rows) {
         const key = r.key.trim();
         if (key.length === 0) continue;
         if (r.removed) {
-            if (r.existing) unset.push(key);
+            if (r.existing) removed.push(key);
             continue;
         }
-        if (r.value !== null) set[key] = r.value;
+        // Opening Edit on a regular row seeds the input with the stored value so
+        // it can be amended rather than retyped. Re-sending that untouched value
+        // would cost the agent a restart for nothing, so only a real change goes.
+        // (A secret has no stored value to compare against, so it always sends.)
+        if (r.value !== null && r.value !== (r.storedValue ?? null)) set[key] = r.value;
+        // Only an explicit choice that actually CHANGES something is sent.
+        // Omitting it is what makes an ordinary value edit keep the tier it
+        // already had instead of being reclassified by the name heuristic; and
+        // skipping a choice equal to the server's keeps a flip-and-flip-back from
+        // looking like a pending change.
+        if (r.tier !== null && r.tier !== (r.serverTier ?? null)) tiers[key] = r.tier;
     }
-    return {set, unset, apply};
+    const body: ReefEnvPatchBody = {set, unset: reconcileUnset(set, removed), apply};
+    if (Object.keys(tiers).length > 0) body.tiers = tiers;
+    return body;
 }
 
 export type EnvApplyReach = "now" | "stopping" | "down";
@@ -82,7 +135,13 @@ export function envReadOnlyCause(editable: boolean, managed: boolean): EnvReadOn
 }
 
 export function envPatchIsEmpty(body: ReefEnvPatchBody): boolean {
-    return Object.keys(body.set).length === 0 && body.unset.length === 0;
+    // Tiers count: flipping one is a real change reef will write and report, so
+    // ignoring them here would grey out Save on a tier-only edit.
+    return (
+        Object.keys(body.set).length === 0 &&
+        body.unset.length === 0 &&
+        Object.keys(body.tiers ?? {}).length === 0
+    );
 }
 
 export function envDraftProblem(rows: EnvDraftRow[]): string | null {

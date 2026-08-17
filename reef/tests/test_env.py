@@ -34,6 +34,21 @@ BAKED = {"PATH": "/usr/bin", "REEF_IMAGE_VERSION": "0.5.0"}
 FEATURE = {"REEF_FEATURES": "env-file", "REEF_ENV_DIR": "/home/node/.reef-env"}
 
 
+def _var(key, value_length, source, tier="secret", value=None):
+    """One expected ``vars[]`` entry. ``tier`` is stated at every call site where it
+    is not the safe default, so these tests double as the tier truth table:
+    a NEW key gets ``fleet.default_env_tier`` (secret iff the name looks like a
+    credential), while a key reef already knew KEEPS the tier it had - which for a
+    pre-tier file or a create-time ``-e`` var is secret."""
+    return {
+        "key": key,
+        "value_length": value_length,
+        "source": source,
+        "tier": tier,
+        "value": value,
+    }
+
+
 def _seed(
     rt: FakeAdminRuntime,
     store: InMemorySandboxStore,
@@ -179,7 +194,11 @@ def test_get_env_lists_only_user_vars_and_never_a_value(monkeypatch):
     assert secret not in r.text
     body = r.json()
     assert [v["key"] for v in body["vars"]] == ["AGENTPIT_API_KEY"]
-    assert set(body["vars"][0]) == {"key", "value_length", "source"}
+    assert set(body["vars"][0]) == {"key", "value_length", "source", "tier", "value"}
+    # A container-sourced var has no recorded tier, so it reads secret and its
+    # value is withheld.
+    assert body["vars"][0]["tier"] == "secret"
+    assert body["vars"][0]["value"] is None
     assert body["vars"][0]["value_length"] == len(secret)
     assert body["vars"][0]["source"] == "container"
     assert body["editable"] is True
@@ -200,9 +219,39 @@ def test_patch_restart_writes_file_and_does_not_recreate(monkeypatch):
     assert body["changed"] is True
     assert body["applied"] == "restart"
     assert body["takes_effect"] == "now"
-    assert body["vars"] == [{"key": "AGENTPIT_API_KEY", "value_length": 15, "source": "file"}]
+    assert body["vars"] == [_var("AGENTPIT_API_KEY", 15, "file")]
     assert rt.calls == [("stop", "oc1"), ("start", "oc1")]
     assert rt.created == []
+    assert rt.guest_env_data["oc1"] == [EnvRecord("s", "AGENTPIT_API_KEY", "sk-live-example")]
+
+
+def test_patch_restart_that_does_not_come_back_is_not_reported_as_live(monkeypatch):
+    """A container can accept ``start`` and still fail to boot - the entrypoint
+    parses the env overlay, so a file it cannot read IS a boot failure. Reporting
+    ``takes_effect: "now"`` there tells the operator their credential is live on an
+    agent that never saw it."""
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+
+    real_start = rt.start
+
+    async def start_but_die(handle: str) -> None:
+        await real_start(handle)
+        rt.states[handle] = SandboxState.FAILED
+
+    monkeypatch.setattr(rt, "start", start_but_die)
+
+    r = _client(rt, store, monkeypatch).patch(
+        "/fleet/oc1/env",
+        json={"set": {"AGENTPIT_API_KEY": "sk-live-example"}, "apply": "restart"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["changed"] is True
+    assert body["applied"] == "restart"
+    assert body["takes_effect"] == "on_next_start"
+    assert body["state"] == "failed"
+    # The write still happened, so the next successful start picks it up.
     assert rt.guest_env_data["oc1"] == [EnvRecord("s", "AGENTPIT_API_KEY", "sk-live-example")]
 
 
@@ -289,7 +338,8 @@ def test_unset_removes_and_empty_string_is_kept(monkeypatch):
     assert {v["key"] for v in body["vars"]} == {"KEEP", "EMPTY"}
 
     assert EnvRecord("u", "OLD_KEY") in rt.guest_env_data["oc1"]
-    assert EnvRecord("s", "EMPTY", "") in rt.guest_env_data["oc1"]
+    # EMPTY is new and its name does not look like a credential -> regular.
+    assert EnvRecord("s", "EMPTY", "", tier="regular") in rt.guest_env_data["oc1"]
 
     after = {v["key"]: v for v in client.get("/fleet/oc1/env").json()["vars"]}
     assert set(after) == {"KEEP", "EMPTY"}
@@ -548,7 +598,7 @@ def test_user_settable_managed_key_is_readable_and_survives_a_later_patch(monkey
     r = client.patch("/fleet/oc1/env", json={"set": {"UNRELATED": "v"}, "apply": "none"})
     assert r.status_code == 200, r.text
     assert {v["key"] for v in r.json()["vars"]} == {"OTHER", "LLM_BACKEND", "UNRELATED"}
-    assert EnvRecord("s", "LLM_BACKEND", "groq") in rt.guest_env_data["oc1"]
+    assert EnvRecord("s", "LLM_BACKEND", "groq", tier="regular") in rt.guest_env_data["oc1"]
 
 
 class _FlakyRuntime(FakeAdminRuntime):
@@ -592,7 +642,7 @@ def test_failed_restart_restores_the_overlay_verbatim_and_stays_retriable(monkey
     assert rt.guest_env_data["oc1"] == before
     # Both values are 9 chars: the record list above pins WHICH one came back.
     assert client.get("/fleet/oc1/env").json()["vars"] == [
-        {"key": "AGENTPIT_API_KEY", "value_length": 9, "source": "file"},
+        _var("AGENTPIT_API_KEY", 9, "file"),
     ]
 
     rt.fail.clear()
@@ -635,7 +685,7 @@ def test_recreate_on_a_pre_feature_image_writes_no_overlay(monkeypatch):
         json={"set": {"AGENTPIT_API_KEY": "sk-live-example"}, "apply": "recreate"},
     )
     assert r.status_code == 200, r.text
-    listed = [{"key": "AGENTPIT_API_KEY", "value_length": 15, "source": "container"}]
+    listed = [_var("AGENTPIT_API_KEY", 15, "container")]
     assert r.json()["vars"] == listed
     assert "oc1" not in rt.guest_env_data  # not "written empty" - never written
     assert rt.created[-1].env["AGENTPIT_API_KEY"] == "sk-live-example"
@@ -664,7 +714,7 @@ def test_failed_recreate_on_a_pre_feature_image_restores_what_it_found(monkeypat
     assert rt.created == []
     assert rt.guest_env_data["oc1"] == before
     assert client.get("/fleet/oc1/env").json()["vars"] == [
-        {"key": "OLD_KEY", "value_length": 25, "source": "file"},
+        _var("OLD_KEY", 25, "file"),
     ]
 
     rt.fail.clear()
@@ -791,7 +841,7 @@ def test_failed_start_leaves_the_agent_down_and_the_save_retriable(monkeypatch):
     assert rt.calls == [("stop", "oc1")]  # the half that did land
     assert rt.guest_env_data["oc1"] == before
     view = client.get("/fleet/oc1/env").json()
-    assert view["vars"] == [{"key": "AGENTPIT_API_KEY", "value_length": 9, "source": "file"}]
+    assert view["vars"] == [_var("AGENTPIT_API_KEY", 9, "file")]
     assert view["state"] == "stopped"
 
     rt.fail.clear()
@@ -1000,8 +1050,8 @@ def test_a_failed_recreate_save_is_rolled_back_and_never_lands_on_start(monkeypa
     assert rt.created[-1].env["K1"] == old  # the failed set did not go live
     assert rt.created[-1].env["K2"] == kept  # the failed unset did not delete the key
     assert client.get("/fleet/oc1/env").json()["vars"] == [
-        {"key": "K1", "value_length": len(old), "source": "container"},
-        {"key": "K2", "value_length": len(kept), "source": "container"},
+        _var("K1", len(old), "container"),
+        _var("K2", len(kept), "container"),
     ]
 
     r = client.patch("/fleet/oc1/env", json=body)  # and the save is still retriable
@@ -1033,8 +1083,8 @@ def test_a_failed_recreate_whose_undo_also_failed_reports_the_save_as_pending(mo
     # What the guest computes at boot is exactly what the 503 promised: the set is
     # live off the file, the unset is not - hence "re-read its env and set it".
     assert client.get("/fleet/oc1/env").json()["vars"] == [
-        {"key": "K1", "value_length": len(new), "source": "file"},
-        {"key": "K2", "value_length": len(kept), "source": "container"},
+        _var("K1", len(new), "file"),
+        _var("K2", len(kept), "container"),
     ]
 
 
@@ -1135,7 +1185,7 @@ def test_a_legacy_trailing_newline_value_is_never_written_to_the_file(monkeypatc
     assert "LEGACY" in detail and "newline" in detail and "predates the rule" in detail
     assert "oc1" not in rt.guest_env_data and rt.calls == []
     assert client.get("/fleet/oc1/env").json()["vars"] == [
-        {"key": "LEGACY", "value_length": 4, "source": "container"},
+        _var("LEGACY", 4, "container"),
     ]
 
     r = client.patch("/fleet/oc1/env", json={"set": {"LEGACY": "val"}, "apply": "restart"})
@@ -1164,3 +1214,169 @@ def test_rotating_a_create_time_value_leaves_the_old_one_nowhere(monkeypatch):
     rotate("rotated-v3", "recreate")
     assert rt.created[-1].env["AGENTPIT_API_KEY"] == "rotated-v3"
     assert not {"leaked-v1", "rotated-v2"} & set(rt.created[-1].env.values())
+
+
+# ── Tiers ───────────────────────────────────────────────────────────────────
+# "secret" is write-only (no surface hands it back); "regular" is readable again
+# through GET /env. Tier is read-path policy only: the guest is handed the same
+# env either way and never learns the tier.
+
+
+def test_a_new_key_is_regular_unless_its_name_looks_like_a_credential(monkeypatch):
+    """The default is by NAME, not a flat "regular". A flat default would make a
+    pasted credential readable because nobody ticked a box, and that is the common
+    case. (A provider key like ANTHROPIC_API_KEY is reef-managed and cannot be set
+    here at all - this is about the operator's own credentials.)"""
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    r = _client(rt, store, monkeypatch).patch(
+        "/fleet/oc1/env",
+        json={"set": {"ALGOLIA_APP_ID": "PLZ8QK4C1N", "AGENTPIT_API_KEY": "sk-live-x"}},
+    )
+    assert r.status_code == 200, r.text
+    by_key = {v["key"]: v for v in r.json()["vars"]}
+    assert by_key["ALGOLIA_APP_ID"]["tier"] == "regular"
+    assert by_key["ALGOLIA_APP_ID"]["value"] == "PLZ8QK4C1N"
+    assert by_key["AGENTPIT_API_KEY"]["tier"] == "secret"
+    assert by_key["AGENTPIT_API_KEY"]["value"] is None
+    assert "sk-live-x" not in r.text
+
+
+def test_a_regular_value_is_readable_again_and_a_secret_never_is(monkeypatch):
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    client = _client(rt, store, monkeypatch)
+    client.patch(
+        "/fleet/oc1/env",
+        json={
+            "set": {"PUBLIC_URL": "https://example.test", "SESSION_SECRET": "hunter2"},
+            "tiers": {"PUBLIC_URL": "regular", "SESSION_SECRET": "secret"},
+        },
+    )
+    r = client.get("/fleet/oc1/env")
+    by_key = {v["key"]: v for v in r.json()["vars"]}
+    assert by_key["PUBLIC_URL"]["value"] == "https://example.test"
+    assert by_key["SESSION_SECRET"]["value"] is None
+    assert by_key["SESSION_SECRET"]["value_length"] == len("hunter2")
+    assert "hunter2" not in r.text
+
+
+def test_an_explicit_tier_overrides_the_name_heuristic(monkeypatch):
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    r = _client(rt, store, monkeypatch).patch(
+        "/fleet/oc1/env",
+        json={"set": {"ALGOLIA_SEARCH_KEY": "public-search-key"},
+              "tiers": {"ALGOLIA_SEARCH_KEY": "regular"}},
+    )
+    assert r.json()["vars"][0]["tier"] == "regular"
+    assert r.json()["vars"][0]["value"] == "public-search-key"
+
+
+def test_an_ordinary_value_edit_keeps_the_tier_it_already_had(monkeypatch):
+    """Otherwise editing SESSION_SECRET's value would silently reclassify it to
+    regular via the heuristic and publish the new value."""
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    client = _client(rt, store, monkeypatch)
+    client.patch(
+        "/fleet/oc1/env",
+        json={"set": {"WEBHOOK_URL": "one"}, "tiers": {"WEBHOOK_URL": "secret"}},
+    )
+    r = client.patch("/fleet/oc1/env", json={"set": {"WEBHOOK_URL": "two"}})
+    assert r.json()["vars"][0]["tier"] == "secret"
+    assert r.json()["vars"][0]["value"] is None
+
+
+def test_a_pre_tier_variable_reads_as_secret_rather_than_being_reclassified(monkeypatch):
+    """The migration rule. These values were stored under a UI that promised they
+    are never shown; the heuristic must not retroactively publish them."""
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    # A file written by a reef that had no tiers: no ``t`` records at all.
+    rt.guest_env_data["oc1"] = [EnvRecord("s", "PUBLIC_URL", "https://example.test")]
+    r = _client(rt, store, monkeypatch).get("/fleet/oc1/env")
+    var = next(v for v in r.json()["vars"] if v["key"] == "PUBLIC_URL")
+    assert var["tier"] == "secret"
+    assert var["value"] is None
+
+
+def test_secret_to_regular_is_refused_without_re_entering_the_value(monkeypatch):
+    """Reef HAS the plaintext, so it could just reveal it - but then the flip is a
+    read primitive: flip, read, flip back. Re-entry means whoever reveals a value
+    already knew it."""
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    client = _client(rt, store, monkeypatch)
+    client.patch("/fleet/oc1/env", json={"set": {"SESSION_SECRET": "hunter2"}})
+
+    r = client.patch("/fleet/oc1/env", json={"tiers": {"SESSION_SECRET": "regular"}})
+    assert r.status_code == 422, r.text
+    assert "re-enter its value" in r.json()["detail"]
+    # Still secret, still withheld.
+    assert client.get("/fleet/oc1/env").json()["vars"][0]["value"] is None
+
+    # Supplying the value in the same call is allowed.
+    r = client.patch(
+        "/fleet/oc1/env",
+        json={"set": {"SESSION_SECRET": "hunter2"}, "tiers": {"SESSION_SECRET": "regular"}},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["vars"][0]["value"] == "hunter2"
+
+
+def test_regular_to_secret_needs_no_re_entry_and_stops_returning_the_value(monkeypatch):
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    client = _client(rt, store, monkeypatch)
+    client.patch(
+        "/fleet/oc1/env",
+        json={"set": {"PUBLIC_URL": "https://example.test"}, "tiers": {"PUBLIC_URL": "regular"}},
+    )
+    r = client.patch("/fleet/oc1/env", json={"tiers": {"PUBLIC_URL": "secret"}})
+    assert r.status_code == 200, r.text
+    assert r.json()["changed"] is True, "a tier-only change is a real change"
+    assert r.json()["vars"][0]["value"] is None
+
+
+def test_a_tier_only_change_is_not_swallowed_as_a_no_op(monkeypatch):
+    """The no-op short-circuit compares values; without comparing tiers too it
+    would report changed=False and write nothing."""
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    client = _client(rt, store, monkeypatch)
+    client.patch(
+        "/fleet/oc1/env",
+        json={"set": {"PUBLIC_URL": "https://example.test"}, "tiers": {"PUBLIC_URL": "regular"}},
+    )
+    before = list(rt.guest_env_data["oc1"])
+    r = client.patch("/fleet/oc1/env", json={"tiers": {"PUBLIC_URL": "secret"}})
+    assert r.json()["changed"] is True
+    assert rt.guest_env_data["oc1"] != before
+    assert rt.guest_env_data["oc1"][0].tier == "secret"
+
+
+def test_an_unset_key_drops_its_tier_with_it(monkeypatch):
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    client = _client(rt, store, monkeypatch)
+    client.patch(
+        "/fleet/oc1/env",
+        json={"set": {"PUBLIC_URL": "https://example.test"}, "tiers": {"PUBLIC_URL": "regular"}},
+    )
+    client.patch("/fleet/oc1/env", json={"unset": ["PUBLIC_URL"]})
+    # Re-adding a same-named key is a NEW key: it must not inherit "regular" from
+    # the deleted one, it goes back through the heuristic.
+    r = client.patch("/fleet/oc1/env", json={"set": {"PUBLIC_URL": "https://other.test"}})
+    assert r.json()["vars"][0]["tier"] == "regular"  # the name is not credential-shaped
+    r = client.patch("/fleet/oc1/env", json={"set": {"NEW_TOKEN": "t"}})
+    assert next(v for v in r.json()["vars"] if v["key"] == "NEW_TOKEN")["tier"] == "secret"
+
+
+def test_an_invalid_tier_is_a_422(monkeypatch):
+    rt, store = FakeAdminRuntime(), InMemorySandboxStore()
+    _seed(rt, store)
+    r = _client(rt, store, monkeypatch).patch(
+        "/fleet/oc1/env", json={"set": {"A": "v"}, "tiers": {"A": "public"}}
+    )
+    assert r.status_code == 422, r.text

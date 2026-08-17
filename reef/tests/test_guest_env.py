@@ -64,7 +64,11 @@ def test_file_shape_is_the_v1_line_format():
     assert lines[0].startswith("# reef guest env v1")
     assert lines[1] == "v1"
     assert lines[2] == f"s AGENTPIT_API_KEY {base64.b64encode(b'sk-live-example').decode()}"
-    assert lines[3] == "u OLD"
+    # Tier rides beside its value as a third op. The guest entrypoint's
+    # `case "${_op}" in s | u) ;; *) continue ;; esac` skips it, which is why
+    # adding it needed no new image.
+    assert lines[3] == "t AGENTPIT_API_KEY secret"
+    assert lines[4] == "u OLD"
     assert text.endswith("\n")
     assert "sk-live-example" not in text
 
@@ -79,7 +83,8 @@ def test_serialize_rejects_unrepresentable_records():
 
 
 def test_parse_skips_malformed_lines_without_raising():
-    good = serialize([EnvRecord("s", "GOOD", "yes")]).splitlines()[-1]
+    # Everything after the two header lines: the value record AND its tier record.
+    good = "\n".join(serialize([EnvRecord("s", "GOOD", "yes")]).splitlines()[2:])
     text = "\n".join(
         [
             "# a comment",
@@ -249,3 +254,33 @@ def test_destroy_keeps_the_overlay_and_remove_guest_env_drops_the_whole_dir(kind
     asyncio.run(rt.remove_guest_env("agent-1"))
     assert asyncio.run(rt.read_guest_env("agent-1")) is None
     assert not env_dir.exists()
+
+
+def test_tier_round_trips_and_defaults_to_secret_without_a_t_record():
+    records = [
+        EnvRecord("s", "ALGOLIA_APP_ID", "PLZ8QK4C1N", tier="regular"),
+        EnvRecord("s", "ANTHROPIC_API_KEY", "sk-live-x", tier="secret"),
+    ]
+    assert _roundtrip(records) == records
+
+    # A file written BEFORE tiers has no ``t`` records at all. Those values were
+    # entered under a UI that promised they are never shown, so they must read as
+    # secret - never as the heuristic's guess.
+    pre_tier = "# reef guest env v1\nv1\ns ALGOLIA_APP_ID UExaOFFLNEMxTg==\n"
+    assert [(r.key, r.tier) for r in parse(pre_tier)] == [("ALGOLIA_APP_ID", "secret")]
+
+
+def test_unknown_or_malformed_tier_records_fall_back_to_secret():
+    for bad in ("t ALGOLIA_APP_ID public", "t ALGOLIA_APP_ID", "t 1BAD regular", "t"):
+        text = f"# reef guest env v1\nv1\ns ALGOLIA_APP_ID UExaOFFLNEMxTg==\n{bad}\n"
+        assert [r.tier for r in parse(text)] == ["secret"], bad
+
+
+def test_a_t_record_before_its_s_record_still_applies():
+    text = "# reef guest env v1\nv1\nt A dW51c2Vk\nt A regular\ns A dmFs\n"
+    assert [(r.key, r.value, r.tier) for r in parse(text)] == [("A", "val", "regular")]
+
+
+def test_serialize_rejects_an_unknown_tier():
+    with pytest.raises(ValueError):
+        serialize([EnvRecord("s", "K", "v", tier="public")])  # type: ignore[arg-type]

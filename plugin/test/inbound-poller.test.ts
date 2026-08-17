@@ -2191,3 +2191,249 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// Boot catch-up.
+//
+// Every other runInboundPoller test in this file hands the poller an explicit
+// `initialCursor`, which means the production default — `?? now()`, the thing
+// that silently drops everything sent while the VM was restarting — was never
+// exercised. These tests deliberately omit it.
+// ---------------------------------------------------------------------------
+
+const NOW = 1_700_000_000_000;
+
+/** Drive the poller with a frozen clock and no `initialCursor`, so the real
+ *  resume-floor logic runs. Aborts on the first dispatch, or after a short
+ *  idle when nothing is dispatched. */
+async function runCatchUpHarness(opts: {
+  posts: MattermostPost[];
+  account?: Partial<ResolvedClawBitsAccount>;
+  watermarks?: ChannelWatermarkStore;
+  pollerOverrides?: Record<string, unknown>;
+}): Promise<InboundMessage[]> {
+  const stub = installFetchStub(() => ({
+    body: {
+      order: opts.posts.map((p) => p.id),
+      posts: Object.fromEntries(opts.posts.map((p) => [p.id, p])),
+    },
+  }));
+  const ac = new AbortController();
+  const received: InboundMessage[] = [];
+  const timer = setTimeout(() => ac.abort(), 60);
+  try {
+    await runInboundPoller({
+      client: makeClient(),
+      account: makeAccount(opts.account),
+      abortSignal: ac.signal,
+      pollIntervalMs: 1,
+      now: () => NOW,
+      ...(opts.watermarks ? { watermarkStore: opts.watermarks } : {}),
+      onInboundMessage: (msg) => {
+        received.push(msg);
+        ac.abort();
+      },
+      ...opts.pollerOverrides,
+    });
+  } finally {
+    clearTimeout(timer);
+    stub.restore();
+  }
+  return received;
+}
+
+describe("runInboundPoller — boot catch-up", () => {
+  it("dispatches a message that arrived while the gateway was down", async () => {
+    // The reported bug: post created 60s before the plugin started. Under the
+    // old `cursor = now()` seed this was fetched and then dropped on a
+    // timestamp compare.
+    const received = await runCatchUpHarness({
+      posts: [
+        {
+          id: "missed",
+          create_at: NOW - 60_000,
+          human_id: 1,
+          message: "did the env var take effect?",
+          channel_id: "chan-123",
+        },
+      ],
+    });
+    assert.deepEqual(
+      received.map((m) => m.postId),
+      ["missed"],
+    );
+    assert.equal(received[0]?.catchUp, true);
+  });
+
+  it("does not replay a message the agent already answered", async () => {
+    // A settled (published) self post after the trigger proves the reply landed.
+    const received = await runCatchUpHarness({
+      posts: [
+        { id: "q", create_at: NOW - 60_000, human_id: 1, message: "ping", channel_id: "chan-123" },
+        {
+          id: "a",
+          create_at: NOW - 59_000,
+          agent_id: "bot-agent",
+          status: "published",
+          message: "pong",
+          channel_id: "chan-123",
+        },
+      ],
+    });
+    assert.deepEqual(received, []);
+  });
+
+  it("DOES replay when the agent's reply was only a half-streamed draft", async () => {
+    // The turn died mid-reply. Live activity appends partial assistant text
+    // into the streaming draft, so this row has a non-empty message and passes
+    // isUserAuthoredPost — treating it as proof of an answer would clamp away
+    // the question permanently, and the server reaper deletes the evidence
+    // five minutes later.
+    const received = await runCatchUpHarness({
+      posts: [
+        { id: "q", create_at: NOW - 60_000, human_id: 1, message: "ping", channel_id: "chan-123" },
+        {
+          id: "half",
+          create_at: NOW - 59_000,
+          agent_id: "bot-agent",
+          status: "streaming",
+          message: "Sure, let me che",
+          channel_id: "chan-123",
+        },
+      ],
+    });
+    assert.deepEqual(
+      received.map((m) => m.postId),
+      ["q"],
+    );
+  });
+
+  it("collapses several missed messages into ONE turn with the rest as context", async () => {
+    // Dispatch is serial at three layers; N turns would take minutes and start
+    // expiring against inboundQueueTtlMs.
+    const received = await runCatchUpHarness({
+      posts: [
+        { id: "m1", create_at: NOW - 90_000, human_id: 1, message: "you there?", channel_id: "chan-123" },
+        { id: "m2", create_at: NOW - 80_000, human_id: 1, message: "need the token", channel_id: "chan-123" },
+        { id: "m3", create_at: NOW - 70_000, human_id: 1, message: "hello?", channel_id: "chan-123" },
+      ],
+    });
+    assert.equal(received.length, 1, "exactly one turn");
+    assert.equal(received[0]?.postId, "m3", "newest addressed post is the trigger");
+    assert.deepEqual(
+      received[0]?.priorContext?.map((p) => p.postId),
+      ["m1", "m2"],
+      "the older ones ride along as context",
+    );
+    assert.equal(received[0]?.catchUp, true, "context must be framed as unanswered");
+  });
+
+  it("resumes from the persisted cursor, not the window", async () => {
+    const store = ChannelWatermarkStore.inMemory();
+    // A turn for m1 finished before the restart; m2 did not.
+    store.set("default", "cursor:chan-123", NOW - 85_000);
+    const received = await runCatchUpHarness({
+      posts: [
+        { id: "m1", create_at: NOW - 90_000, human_id: 1, message: "answered", channel_id: "chan-123" },
+        { id: "m2", create_at: NOW - 80_000, human_id: 1, message: "not answered", channel_id: "chan-123" },
+      ],
+      watermarks: store,
+    });
+    assert.deepEqual(
+      received.map((m) => m.postId),
+      ["m2"],
+    );
+    assert.equal(received[0]?.priorContext, undefined, "m1 is below the cursor, not context");
+  });
+
+  it("ignores messages older than the cold look-back window", async () => {
+    // No persisted cursor (first boot, or a recreate wiped the file): the
+    // window is the only bound, and it must not replay ancient history.
+    const received = await runCatchUpHarness({
+      posts: [
+        { id: "ancient", create_at: NOW - 48 * 3_600_000, human_id: 1, message: "old", channel_id: "chan-123" },
+      ],
+    });
+    assert.deepEqual(received, []);
+  });
+
+  it("does not replay history when catchUpEnabled is false", async () => {
+    const received = await runCatchUpHarness({
+      posts: [
+        { id: "missed", create_at: NOW - 60_000, human_id: 1, message: "hi", channel_id: "chan-123" },
+      ],
+      pollerOverrides: { catchUpEnabled: false },
+    });
+    assert.deepEqual(received, []);
+  });
+
+  it("persists a resume cursor for a DM, which the old watermark path never did", async () => {
+    const store = ChannelWatermarkStore.inMemory();
+    await runCatchUpHarness({
+      posts: [
+        { id: "missed", create_at: NOW - 60_000, human_id: 1, message: "hi", channel_id: "chan-123" },
+      ],
+      watermarks: store,
+    });
+    assert.equal(
+      store.get("default", "cursor:chan-123") !== undefined,
+      true,
+      "a durable cursor must exist for the operator/direct channel",
+    );
+  });
+
+  it("never leaves a low floor behind when catch-up cannot run", async () => {
+    // If the control fetch fails, catch-up is deferred (agentSnoozed is only
+    // ever set by a real control payload, so running blind could make a snoozed
+    // agent answer its backlog). The ordinary poll still runs at the end of
+    // that same iteration — and it must NOT inherit a lowered floor and
+    // dispatch the backlog one turn per post.
+    const posts: MattermostPost[] = [
+      { id: "b1", create_at: NOW - 90_000, human_id: 1, message: "one", channel_id: "chan-123" },
+      { id: "b2", create_at: NOW - 80_000, human_id: 1, message: "two", channel_id: "chan-123" },
+      { id: "b3", create_at: NOW - 70_000, human_id: 1, message: "three", channel_id: "chan-123" },
+    ];
+    const stub = installFetchStub((url) => {
+      if (url.includes("/channels") && !url.includes("/posts")) {
+        return { body: { detail: "boom" }, status: 500 };
+      }
+      return {
+        body: {
+          order: posts.map((p) => p.id),
+          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
+        },
+      };
+    });
+    const ac = new AbortController();
+    const received: InboundMessage[] = [];
+    const timer = setTimeout(() => ac.abort(), 80);
+    try {
+      await runInboundPoller({
+        client: makeClient(),
+        account: makeAccount(),
+        abortSignal: ac.signal,
+        pollIntervalMs: 1,
+        now: () => NOW,
+        onInboundMessage: (msg) => {
+          received.push(msg);
+        },
+      });
+    } finally {
+      clearTimeout(timer);
+      stub.restore();
+    }
+    assert.deepEqual(received, [], "a deferred catch-up must not turn into a per-post burst");
+  });
+
+  it("skips a channel whose missed posts never address the agent", async () => {
+    // A shared room that took traffic while the agent was away, with no
+    // mention, must produce zero turns.
+    const received = await runCatchUpHarness({
+      posts: [
+        { id: "chatter", create_at: NOW - 60_000, human_id: 1, message: "unrelated", channel_id: "team-room" },
+      ],
+      account: { channelId: "team-room-not-this", config: { websocketEnabled: false } },
+    });
+    assert.deepEqual(received, []);
+  });
+});

@@ -23,14 +23,33 @@ _HEADER_LINES = (
 _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+# A "secret" value is write-only: no reef surface ever hands it back. A "regular"
+# one can be read again through ``GET /env``. Tier is READ-PATH POLICY ONLY - the
+# guest is handed the same env either way and never learns the tier.
+EnvTier = Literal["secret", "regular"]
+
+_TIER_VALUES: tuple[EnvTier, ...] = ("secret", "regular")
+
+# Tier rides in this file as a third record op, ``t <KEY> <tier>``. Both parsers
+# that already exist in the field - ``parse`` below and the image entrypoint's
+# `case "${_op}" in s | u) ;; *) continue ;; esac` - skip any op they don't know,
+# so writing these needs NO new image and no fleet upgrade. The corollary is the
+# migration rule: a file written before tiers has no ``t`` lines at all, and its
+# values were entered under a UI that promised they are never shown, so a missing
+# tier must read as SECRET. Never flip that default.
+_DEFAULT_TIER: EnvTier = "secret"
+
+
 @dataclass(frozen=True, slots=True)
 class EnvRecord:
     """``op`` is ``"s"`` (set) or ``"u"`` (unset); ``value`` is plaintext here -
-    base64 exists only on the wire to the guest."""
+    base64 exists only on the wire to the guest. ``tier`` is meaningful for ``s``
+    only, and defaults to the safe end (see ``_DEFAULT_TIER``)."""
 
     op: Literal["s", "u"]
     key: str
     value: str = ""
+    tier: EnvTier = _DEFAULT_TIER
 
 
 def serialize(records: Sequence[EnvRecord]) -> str:
@@ -43,20 +62,37 @@ def serialize(records: Sequence[EnvRecord]) -> str:
         if rec.op == "u":
             lines.append(f"u {rec.key}")
             continue
+        if rec.tier not in _TIER_VALUES:
+            raise ValueError(f"unknown env tier {rec.tier!r}")
         encoded = base64.b64encode(rec.value.encode("utf-8")).decode("ascii")
         # An empty value would leave a trailing space that is easy to strip in
         # transit; write the two-field form instead.
         lines.append(f"s {rec.key} {encoded}" if encoded else f"s {rec.key}")
+        # Written for every set record, not just the non-default one: an explicit
+        # tier per variable is what makes the file auditable on its own.
+        lines.append(f"t {rec.key} {rec.tier}")
     return "\n".join(lines) + "\n"
 
 
 def parse(text: str) -> list[EnvRecord]:
-    """A malformed line is skipped rather than raising, matching the guest-side parser."""
+    """A malformed line is skipped rather than raising, matching the guest-side parser.
+
+    Two passes: ``t`` records can appear anywhere relative to their ``s``, and a
+    key with no ``t`` record at all is a pre-tier file, which reads as secret.
+    """
     if len(text) > _MAX_BYTES:
         return []
+    lines = [line.split() for line in text.splitlines()]
+
+    tiers: dict[str, EnvTier] = {}
+    for parts in lines:
+        if len(parts) != 3 or parts[0] != "t" or not _KEY_RE.match(parts[1]):
+            continue
+        if parts[2] in _TIER_VALUES:
+            tiers[parts[1]] = parts[2]  # type: ignore[assignment]
+
     out: list[EnvRecord] = []
-    for line in text.splitlines():
-        parts = line.split()
+    for parts in lines:
         if not 2 <= len(parts) <= 3:
             continue
         op, key = parts[0], parts[1]
@@ -66,8 +102,9 @@ def parse(text: str) -> list[EnvRecord]:
             if len(parts) == 2:
                 out.append(EnvRecord(op="u", key=key))
             continue
+        tier = tiers.get(key, _DEFAULT_TIER)
         if len(parts) == 2:
-            out.append(EnvRecord(op="s", key=key))
+            out.append(EnvRecord(op="s", key=key, tier=tier))
             continue
         try:
             value = base64.b64decode(parts[2], validate=True).decode("utf-8")
@@ -75,7 +112,7 @@ def parse(text: str) -> list[EnvRecord]:
             continue
         if "\x00" in value:
             continue
-        out.append(EnvRecord(op="s", key=key, value=value))
+        out.append(EnvRecord(op="s", key=key, value=value, tier=tier))
     return out
 
 

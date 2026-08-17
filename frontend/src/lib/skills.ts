@@ -2,23 +2,20 @@ import type {Skill, SkillManifest, SkillRuntime} from "@/lib/api";
 
 /** Shared helpers for the skills library UI. */
 
-export type SkillAccent = "blue" | "violet" | "teal";
+/* A skill's visual identity is its emoji (or the monogram below) on a neutral
+ * chip — see components/skills/SkillGlyph. The id used to be hashed into one of
+ * three saturated tile colours; that colour meant nothing, so it was noise that
+ * shouted. */
 
-export const SKILL_ACCENT_BG: Record<SkillAccent, string> = {
-    blue: "bg-blue-500",
-    violet: "bg-violet-500",
-    teal: "bg-teal-500",
-};
-
-const ACCENT_ORDER: SkillAccent[] = ["blue", "violet", "teal"];
-
-/** Stable per-skill tile colour. */
-export function accentForSkill(id: string): SkillAccent {
-    let hash = 0;
-    for (let i = 0; i < id.length; i++) {
-        hash = (hash * 31 + id.charCodeAt(i)) | 0;
-    }
-    return ACCENT_ORDER[Math.abs(hash) % ACCENT_ORDER.length] ?? "blue";
+/** Up to two initials from the slug's segments, kept lowercase — it reads as a
+ *  short code rather than a shouted label. */
+export function skillMonogram(slug: string): string {
+    const initials = slug
+        .split("-")
+        .filter(Boolean)
+        .map(part => part[0])
+        .join("");
+    return (initials.slice(0, 2) || "?").toLowerCase();
 }
 
 export function skillDetailPath(skill: Skill): string {

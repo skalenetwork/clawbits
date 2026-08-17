@@ -2618,6 +2618,11 @@ export interface Skill {
   has_executable: boolean;
   /** No published version yet ⇒ not installable anywhere. */
   is_draft: boolean;
+  /** Agents that have CONFIRMED this skill on disk. Only `applied` installs
+   *  count — an install the agent hasn't acknowledged is not "live". */
+  installed_agent_count: number;
+  /** Agents with an install or removal still in flight. */
+  pending_agent_count: number;
   archived_at: string | null;
   created_by: number | null;
   created_at: string | null;

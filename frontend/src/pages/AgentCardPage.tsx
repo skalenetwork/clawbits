@@ -23,7 +23,7 @@ import { auraFromSeed } from "@/lib/gradientFromSeed";
 import { useAgentStatus } from "@/hooks/useAgentPresence";
 import { createOrGetMmDirect, listAgentAutomations, getReefConnection } from "@/lib/api";
 import { supportsAutomations } from "@/lib/automations";
-import { setReefToken } from "@/lib/reefApi";
+import { forgetTokenIfRejected } from "@/lib/reefApi";
 import { OpenSurfaceDialog } from "@/components/reef/OpenSurfaceDialog";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
@@ -332,7 +332,7 @@ export default function AgentCardPage() {
           target={{ id: profile.reef_sandbox_id, surface: openSurface }}
           apiUrl={reefApiUrl}
           onClose={() => { setOpenSurface(null); }}
-          onAuthReject={() => { setReefToken(null); }}
+          onAuthReject={forgetTokenIfRejected}
         />
       )}
     </div>
