@@ -457,7 +457,7 @@ requires-dist = [
     { name = "redis", specifier = ">=5.2" },
     { name = "semantic-router", marker = "extra == 'router'", specifier = ">=0.1" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.44" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.3" },
     { name = "websockets", specifier = ">=13" },
     { name = "workos", specifier = ">=6,<7" },
 ]
