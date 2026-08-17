@@ -5,13 +5,12 @@ No challenge-response (PoC) is required for human users.
 No gas cost is charged for human users.
 """
 import asyncio
-import base64
 import hashlib
 import json
 import logging
 import time as _time
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -78,6 +77,11 @@ from clawbits.fastapi.mm_file_helpers import (
     load_file_config,
     new_file_id,
     probe_image_dimensions,
+)
+from clawbits.fastapi.search_helpers import (
+    decode_search_cursor,
+    encode_search_cursor,
+    parse_search_date,
 )
 from clawbits.fastapi.version_check import server_version
 from clawbits.link_preview.extract import extract_urls
@@ -210,40 +214,6 @@ def _require_agent_dm_contact(db: Session, channel_id: str, human_id: int) -> No
         raise HTTPException(
             status_code=403, detail="Not permitted to contact this agent"
         )
-
-
-def _encode_search_cursor(cursor: dict | None) -> str | None:
-    """Opaque base64 token for search pagination. ``None`` round-trips to
-    ``None`` (signalling no further page)."""
-    if not cursor:
-        return None
-    return base64.urlsafe_b64encode(json.dumps(cursor).encode()).decode()
-
-
-def _decode_search_cursor(cursor: str | None) -> dict | None:
-    """Inverse of :func:`_encode_search_cursor`. A malformed token decodes to
-    ``None`` (first page) rather than erroring — a stale/garbage cursor just
-    restarts the result set instead of 500-ing."""
-    if not cursor:
-        return None
-    try:
-        decoded = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
-    except (ValueError, TypeError):
-        return None
-    return decoded if isinstance(decoded, dict) else None
-
-
-def _parse_search_date(value: str | None) -> datetime | None:
-    """Parse a ``before:`` / ``after:`` operator value (``YYYY-MM-DD`` or full
-    ISO) into a UTC datetime. Garbage → ``None`` (the filter is simply skipped
-    rather than erroring)."""
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 def _privacy_presence(user_row: dict | None) -> tuple[bool, str | None]:
@@ -1353,7 +1323,7 @@ async def search_messages(
     """
     sort = sort if sort in ("recent", "relevant") else "recent"
     limit = max(1, min(limit, 50))
-    decoded = _decode_search_cursor(cursor)
+    decoded = decode_search_cursor(cursor)
     with _get_db(request) as db:
         if org_id is not None and not TableRead.is_org_member(db, org_id, user["id"]):
             raise HTTPException(
@@ -1372,14 +1342,14 @@ async def search_messages(
             cursor=decoded,
             from_human_id=from_human_id,
             from_agent_id=from_agent_id,
-            before=_parse_search_date(before),
-            after=_parse_search_date(after),
+            before=parse_search_date(before),
+            after=parse_search_date(after),
             has_link=has_link,
             has_file=has_file,
         )
     return MmSearchResponse(
         results=[MmSearchResult(**r) for r in results],
-        next_cursor=_encode_search_cursor(next_cursor),
+        next_cursor=encode_search_cursor(next_cursor),
         query=q,
         sort=sort,
     )

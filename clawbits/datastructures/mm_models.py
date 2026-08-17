@@ -1103,6 +1103,16 @@ class MmSearchResponse(BaseModel):
     sort: str
 
 
+class MmAgentSearchResponse(MmSearchResponse):
+    """Agent-surface search response. ``scope`` echoes the context-derived
+    retrieval surface actually applied — ``"all_channels"`` (operator-DM
+    context), ``"public_channels"`` (public context), or
+    ``"context_and_public"`` — so a runtime can tell what its query could
+    see. It is a per-request guardrail, not a security boundary."""
+
+    scope: str
+
+
 class MmFileListResponse(BaseModel):
     """Channel-scoped file list for the chat-details "Media" / "Files" tabs.
 
