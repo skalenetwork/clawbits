@@ -24,6 +24,7 @@ export const SystemMessage = memo(function SystemMessage({
   const theme = useTheme();
   const isAdded = event.event_type === 'member.added';
   const isRemoved = event.event_type === 'member.removed';
+  const departed = departedAgent(event);
   const hasSubject =
     event.subject_human_id != null || event.subject_agent_id != null;
 
@@ -32,7 +33,11 @@ export const SystemMessage = memo(function SystemMessage({
   const subjectIsViewer =
     viewerHumanId != null && event.subject_human_id === viewerHumanId;
 
-  const actorLabel = actorIsViewer
+  // A deleted agent is the line's own subject ("Bot left the channel"),
+  // not something the actor did to it — it takes the leading slot.
+  const actorLabel = departed
+    ? departed.displayName
+    : actorIsViewer
     ? 'You'
     : event.actor_display_name ??
       (event.actor_agent_id ? `@${event.actor_agent_id}` : 'Someone');
@@ -42,7 +47,9 @@ export const SystemMessage = memo(function SystemMessage({
       (event.subject_agent_id ? `@${event.subject_agent_id}` : 'someone');
 
   let verbPhrase: string;
-  if (isAdded && hasSubject) {
+  if (departed) {
+    verbPhrase = 'left the channel';
+  } else if (isAdded && hasSubject) {
     verbPhrase = `added ${subjectLabel} to the channel`;
   } else if (isAdded) {
     verbPhrase = 'joined the channel';
@@ -59,8 +66,13 @@ export const SystemMessage = memo(function SystemMessage({
     <View style={styles.wrap}>
       <View style={styles.inner}>
         <Avatar
-          uri={event.actor_avatar?.url}
-          name={event.actor_display_name ?? event.actor_agent_id ?? '?'}
+          uri={departed ? undefined : event.actor_avatar?.url}
+          name={
+            departed?.displayName ??
+            event.actor_display_name ??
+            event.actor_agent_id ??
+            '?'
+          }
           size={16}
           framed={false}
         />
@@ -72,6 +84,24 @@ export const SystemMessage = memo(function SystemMessage({
     </View>
   );
 });
+
+/** A ``member.removed`` emitted by agent *deletion*: the agent row is gone,
+ *  so its identity travels in ``payload`` rather than the subject FKs (see
+ *  ``TableWrite._emit_agent_departure_events``). Null for other events. */
+function departedAgent(
+  event: MmChannelEvent,
+): { agentId: string; displayName: string } | null {
+  const payload = event.payload;
+  if (!payload || payload.reason !== 'agent_deleted') return null;
+  const agentId =
+    typeof payload.subject_agent_id === 'string' ? payload.subject_agent_id : null;
+  if (!agentId) return null;
+  const name =
+    typeof payload.subject_display_name === 'string'
+      ? payload.subject_display_name
+      : null;
+  return { agentId, displayName: name ?? `@${agentId}` };
+}
 
 const styles = StyleSheet.create({
   actor: {

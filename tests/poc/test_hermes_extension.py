@@ -5,7 +5,7 @@ import hashlib
 import importlib.util
 import sys
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,10 @@ class _FakeBasePlatformAdapter:
 
 class _FakeMessageType:
     TEXT = "text"
+    PHOTO = "photo"
+    VIDEO = "video"
+    AUDIO = "audio"
+    DOCUMENT = "document"
 
 
 @dataclass
@@ -52,6 +56,8 @@ class _FakeMessageEvent:
     source: Any
     raw_message: Any
     message_id: str
+    media_urls: list[str] = field(default_factory=list)
+    media_types: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -779,3 +785,1283 @@ def test_dispatched_post_is_remembered_so_a_nudge_cannot_double_fire() -> None:
 
     asyncio.run(scenario())
     assert len(adapter.events) == 1, "nudge for an already-dispatched post is deduped"
+
+
+def test_streaming_reply_creates_patches_and_finalizes() -> None:
+    mod = _load_hermes_module()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.posts: list[tuple[Any, ...]] = []
+            self.patches: list[tuple[str, str, dict[str, Any]]] = []
+
+        def post_message(self, *args: Any) -> dict[str, Any]:
+            self.posts.append(args)
+            return {"post_id": 91}
+
+        def patch_message(self, channel_id: str, post_id: str, **body: Any) -> dict[str, Any]:
+            self.patches.append((channel_id, post_id, body))
+            return {"post_id": int(post_id)}
+
+        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+
+    result = asyncio.run(
+        adapter.send("chan", "first tokens", reply_to="12", metadata={"expect_edits": True})
+    )
+    assert result.success and result.message_id == "91"
+    assert adapter.client.posts[0][-1] == "streaming"
+    assert adapter.client.patches[0] == ("chan", "91", {"replace": "first tokens"})
+
+    result = asyncio.run(adapter.edit_message("chan", "91", "complete", finalize=True))
+    assert result.success
+    assert adapter.client.patches[-1] == (
+        "chan",
+        "91",
+        {"replace": "complete", "done": True},
+    )
+
+
+def test_attachment_only_post_reaches_hermes_media(monkeypatch) -> None:
+    mod = _load_hermes_module()
+    monkeypatch.setattr(
+        sys.modules["hermes_clawbits_test.adapter"],
+        "cache_post_attachments",
+        lambda client, post: (["/cache/report.pdf"], ["application/pdf"], ["[document saved]"]),
+    )
+
+    class FakeClient:
+        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+    adapter._cursors["chan"] = (0, 0, "")
+    post = {
+        "post_id": 7,
+        "created_at": "2026-06-04 12:00:01",
+        "message": "",
+        "human_id": 1,
+        "files": [
+            {
+                "file_id": "f1",
+                "filename": "report.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 10,
+            }
+        ],
+    }
+
+    async def scenario() -> None:
+        await adapter._maybe_dispatch(mod._Channel("chan", "direct", "DM"), post)
+        await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert len(adapter.events) == 1
+    assert adapter.events[0].media_urls == ["/cache/report.pdf"]
+    assert adapter.events[0].media_types == ["application/pdf"]
+    assert adapter.events[0].message_type == "document"
+
+
+def test_snooze_and_inter_agent_limit_are_enforced() -> None:
+    mod = _load_hermes_module()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.posts: list[str] = []
+
+        def post_message(self, channel_id: str, message: str, *args: Any) -> dict[str, Any]:
+            self.posts.append(message)
+            return {"post_id": 99}
+
+        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "me"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+    channel = mod._Channel("chan", "public", "Room")
+    adapter._cursors["chan"] = (0, 0, "")
+
+    async def scenario() -> None:
+        adapter._apply_controls({"snoozed": True})
+        await adapter._maybe_dispatch(
+            channel,
+            {"post_id": 1, "created_at": "2026-06-04 12:00:01", "message": "@me hi", "human_id": 1},
+        )
+        adapter._apply_controls(
+            {
+                "snoozed": False,
+                "inter_agent_mode_enabled": True,
+                "inter_agent_message_limit": 1,
+            }
+        )
+        await adapter._maybe_dispatch(
+            channel,
+            {"post_id": 2, "created_at": "2026-06-04 12:00:02", "message": "@me first", "agent_id": "peer"},
+        )
+        await adapter._maybe_dispatch(
+            channel,
+            {"post_id": 3, "created_at": "2026-06-04 12:00:03", "message": "@me second", "agent_id": "peer"},
+        )
+        await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert len(adapter.events) == 1
+    assert adapter.events[0].message_id == "2"
+    assert adapter._reply_prefixes["2"] == "@peer"
+    assert adapter.client.posts == ["@peer Nice, but need human guidance to proceed."]
+
+
+def test_email_reply_context_preserves_threading_headers() -> None:
+    mod = _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    context = email_mod.email_reply_context(
+        {"uid": 42, "subject": "Question", "headers": {"Message-ID": "<abc@example>"}}
+    )
+
+    class FakeClient:
+        def email_send(
+            self,
+            agent_id: str,
+            subject: str,
+            message: str,
+            headers: dict[str, str],
+        ) -> dict[str, str]:
+            self.call = (agent_id, subject, message, headers)
+            return {"status": "sent"}
+
+    client = FakeClient()
+    email_mod.send_email_reply(client, "agent", context, "answer")
+    assert client.call == (
+        "agent",
+        "Re: Question",
+        "answer",
+        {
+            # Auto-Submitted is what stops an owner-side vacation responder from
+            # bouncing this reply straight back into the agent's mailbox.
+            "Auto-Submitted": "auto-replied",
+            "In-Reply-To": "<abc@example>",
+            "References": "<abc@example>",
+        },
+    )
+    assert mod.PLUGIN_VERSION == "0.7.0"
+
+
+def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> None:
+    _load_hermes_module()
+    automation_mod = sys.modules["hermes_clawbits_test.automations"]
+    monkeypatch.setattr(automation_mod.time, "time", lambda: 1_000.0)
+    schedule = {"kind": "every", "everyMs": 60_000, "anchorMs": 900_000}
+    next_ms, anchor_ms = automation_mod._next_schedule_ms(schedule, None)
+    assert (next_ms, anchor_ms) == (1_020_000, 900_000)
+
+    existing = {
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": "1970-01-01T00:18:00+00:00",
+        "clawbits_desired_schedule": schedule,
+        "clawbits_anchor_ms": anchor_ms,
+    }
+    assert automation_mod._next_schedule_ms(schedule, existing) == (1_080_000, 900_000)
+
+
+# --- automations reconciler -------------------------------------------------
+#
+# The fake below mirrors the real ``/opt/hermes/cron/jobs.py`` contract, checked
+# against the shipped ``hermes-agent`` image: ``update_job`` merges unknown keys
+# and returns the merged record, ``remove_job`` returns False (never raises) for
+# a job that is already gone, ``repeat`` is stored as ``{"times", "completed"}``
+# even though ``create_job`` takes it as an int, and only ``id`` is immutable.
+
+
+class _FakeCronJobs:
+    def __init__(self) -> None:
+        self.jobs: list[dict[str, Any]] = []
+        self.calls: list[tuple[Any, ...]] = []
+        self._next_id = 1
+        self.trigger_result: Any = {"ok": True}
+        self.trigger_raises: Exception | None = None
+        self.remove_raises: Exception | None = None
+
+    def create_job(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("create_job", kwargs))
+        job = {
+            "id": str(self._next_id),
+            "name": kwargs.get("name"),
+            "prompt": kwargs.get("prompt"),
+            "schedule": kwargs.get("schedule"),
+            "repeat": {"times": kwargs.get("repeat"), "completed": 0},
+            "deliver": kwargs.get("deliver"),
+            "model": kwargs.get("model"),
+            "origin": kwargs.get("origin"),
+            "enabled": True,
+            "state": "scheduled",
+        }
+        self._next_id += 1
+        self.jobs.append(job)
+        return dict(job)
+
+    def list_jobs(self, include_disabled: bool = False) -> list[dict[str, Any]]:
+        return [dict(j) for j in self.jobs if include_disabled or j.get("enabled", True)]
+
+    def update_job(self, job_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        self.calls.append(("update_job", str(job_id), dict(updates)))
+        for index, job in enumerate(self.jobs):
+            if job["id"] == str(job_id):
+                self.jobs[index] = {**job, **updates}
+                return dict(self.jobs[index])
+        return None
+
+    def pause_job(self, job_id: str, reason: str | None = None) -> dict[str, Any] | None:
+        self.calls.append(("pause_job", str(job_id), reason))
+        return self.update_job(job_id, {"enabled": False, "state": "paused", "paused_reason": reason})
+
+    def remove_job(self, job_id: str) -> bool:
+        self.calls.append(("remove_job", str(job_id)))
+        if self.remove_raises is not None:
+            raise self.remove_raises
+        before = len(self.jobs)
+        self.jobs = [j for j in self.jobs if j["id"] != str(job_id)]
+        return len(self.jobs) < before
+
+    def trigger_job(self, job_id: str) -> Any:
+        self.calls.append(("trigger_job", str(job_id)))
+        if self.trigger_raises is not None:
+            raise self.trigger_raises
+        return self.trigger_result
+
+
+class _FakeAutomationsClient:
+    def __init__(self, items: list[dict[str, Any]]) -> None:
+        self.items = items
+        self.reports: list[dict[str, Any]] = []
+        self.state_raises: Exception | None = None
+
+    def automations_desired(self) -> dict[str, Any]:
+        return {"automations": self.items}
+
+    def automations_state(self, report: dict[str, Any]) -> dict[str, Any]:
+        self.reports.append(report)
+        if self.state_raises is not None:
+            raise self.state_raises
+        return {"desired_generation": 1}
+
+
+def _install_fake_cron(fake: _FakeCronJobs) -> None:
+    cron = sys.modules.get("cron") or types.ModuleType("cron")
+    jobs_mod = types.ModuleType("cron.jobs")
+    for name in (
+        "create_job",
+        "list_jobs",
+        "update_job",
+        "pause_job",
+        "remove_job",
+        "trigger_job",
+    ):
+        setattr(jobs_mod, name, getattr(fake, name))
+    cron.jobs = jobs_mod
+    sys.modules["cron"] = cron
+    sys.modules["cron.jobs"] = jobs_mod
+
+
+def _automations_mod():
+    _load_hermes_module()
+    return sys.modules["hermes_clawbits_test.automations"]
+
+
+def _desired(spec: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    item = {
+        "automation_id": "a1",
+        "intent": "present",
+        "desired_generation": 1,
+        "desired_spec": spec,
+    }
+    item.update(overrides)
+    return item
+
+
+def _spec(**overrides: Any) -> dict[str, Any]:
+    # Interval rather than cron by default: the cron branch needs ``croniter``,
+    # which ships in the Hermes image but not in this repo's venv.
+    spec = {
+        "name": "Daily digest",
+        "payload": {"kind": "agentTurn", "message": "summarise the day"},
+        "schedule": {"kind": "every", "everyMs": 3_600_000},
+        "enabled": True,
+    }
+    spec.update(overrides)
+    return spec
+
+
+def _run_pass(mod, fake: _FakeCronJobs, client: _FakeAutomationsClient) -> dict[str, Any]:
+    _install_fake_cron(fake)
+    mod.reconcile_automations_once(client, "agent", "chan")
+    return client.reports[-1]
+
+
+def _managed(report: dict[str, Any], automation_id: str = "a1") -> list[dict[str, Any]]:
+    return [m for m in report["managed"] if m["automation_id"] == automation_id]
+
+
+def test_fired_one_shot_reports_applied_not_failed(monkeypatch) -> None:
+    """The headline bug: a one-shot that ran correctly used to report `failed`
+    forever, because the schedule was recomputed and its `at` was now past."""
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    spec = _spec(schedule={"kind": "at", "at": now_ms + 600_000})
+
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(spec)])
+    first = _run_pass(mod, fake, client)
+    assert _managed(first)[0]["status"] == "applied"
+
+    # The job fires: Hermes marks it completed and stamps last_run_at.
+    fake.jobs[0].update(
+        {
+            "state": "completed",
+            "repeat": {"times": 1, "completed": 1},
+            "last_run_at": mod._iso_at(now_ms + 600_000),
+            "last_status": "completed",
+        }
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: (now_ms + 900_000) / 1000)
+    second = _run_pass(mod, fake, client)
+
+    entry = _managed(second)[0]
+    assert entry["status"] == "applied", "a fired one-shot is done, not broken"
+    assert entry["reported_state"]["state"] == "completed"
+    assert "nextRunAtMs" not in entry["reported_state"]
+    assert not any(
+        call[0] == "update_job" and "schedule" in call[2] for call in fake.calls
+    ), "a terminal one-shot must never be re-armed"
+
+
+def test_edited_one_shot_rearms(monkeypatch) -> None:
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(schedule={"kind": "at", "at": now_ms + 600_000}))])
+    _run_pass(mod, fake, client)
+    fake.jobs[0].update(
+        {"state": "completed", "last_run_at": mod._iso_at(now_ms + 600_000), "last_status": "ok"}
+    )
+
+    # Operator edits the automation to a new future time — the hash changes.
+    monkeypatch.setattr(mod.time, "time", lambda: (now_ms + 900_000) / 1000)
+    client.items = [
+        _desired(_spec(schedule={"kind": "at", "at": now_ms + 3_600_000}), desired_generation=2)
+    ]
+    report = _run_pass(mod, fake, client)
+
+    assert _managed(report)[0]["status"] == "applied"
+    assert any(call[0] == "update_job" and "schedule" in call[2] for call in fake.calls)
+
+
+def test_bad_generation_does_not_abort_pass() -> None:
+    """A malformed field on one automation used to raise before the state POST,
+    freezing every other automation on the agent on 'Applying…'."""
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient(
+        [
+            _desired(_spec(), automation_id="bad", desired_generation="not-a-number"),
+            _desired(_spec(), automation_id="good"),
+        ]
+    )
+    report = _run_pass(mod, fake, client)
+
+    assert len(client.reports) == 1, "the state report still went out"
+    assert _managed(report, "good")[0]["status"] == "applied"
+    assert _managed(report, "bad")[0]["status"] == "applied"
+
+
+def test_remove_failure_does_not_report_removed() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+
+    fake.remove_raises = RuntimeError("cron store locked")
+    client.items = [_desired(_spec(), intent="absent", desired_generation=2)]
+    report = _run_pass(mod, fake, client)
+
+    entry = _managed(report)[0]
+    assert entry["status"] == "failed", "reporting 'removed' would delete the row server-side"
+    assert "cron store locked" in entry["error"]
+
+
+def test_missing_job_removal_is_success() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(), intent="absent")])
+    report = _run_pass(mod, fake, client)
+    assert _managed(report)[0]["status"] == "removed"
+
+
+def test_run_report_failure_does_not_double_report(monkeypatch) -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _install_fake_cron(fake)
+
+    def boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("telemetry exploded")
+
+    monkeypatch.setattr(mod, "_run_report", boom)
+    mod.reconcile_automations_once(client, "agent", "chan")
+
+    entries = _managed(client.reports[-1])
+    assert len(entries) == 1, "one automation must produce exactly one managed entry"
+    assert entries[0]["status"] == "applied"
+
+
+def test_run_report_synthesized_from_job_record(monkeypatch) -> None:
+    """Fallback path: on a Hermes without `cron.executions`, run rows are
+    synthesised from the job record rather than reporting nothing at all."""
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+
+    fake.jobs[0].update(
+        {
+            "last_run_at": "2026-08-12T09:00:00+00:00",
+            "last_status": "failed",
+            "last_error": "model timed out",
+        }
+    )
+    report = _run_pass(mod, fake, client)
+    runs = [r for r in report["runs"] if r["automation_id"] == "a1"]
+    assert len(runs) == 1
+    assert runs[0]["status"] == "error"
+    assert runs[0]["summary"]["error"] == "model timed out"
+    assert runs[0]["gateway_run_id"] == f"run:{mod._iso_ms('2026-08-12T09:00:00+00:00')}"
+    assert "finished_at_ms" not in runs[0], "Hermes records no duration; 0s would be a lie"
+
+    # Re-reporting the same run must upsert, not duplicate.
+    again = _run_pass(mod, fake, client)
+    assert [r["gateway_run_id"] for r in again["runs"] if r["automation_id"] == "a1"] == [
+        runs[0]["gateway_run_id"]
+    ]
+
+
+def test_unknown_run_status_is_omitted_not_green() -> None:
+    mod = _automations_mod()
+    assert mod._run_status("timeout", False) == "error"
+    assert mod._run_status("completed", False) == "ok"
+    assert mod._run_status("", False) is None
+    assert mod._run_status("", True) == "error"
+    assert mod._run_status("weird-new-status", False) is None
+
+
+def test_consecutive_errors_accumulate_and_persist() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+
+    streaks = []
+    for index in range(3):
+        fake.jobs[0].update(
+            {
+                "last_run_at": f"2026-08-12T09:0{index}:00+00:00",
+                "last_status": "failed",
+                "last_error": "boom",
+            }
+        )
+        report = _run_pass(mod, fake, client)
+        streaks.append(_managed(report)[0]["reported_state"]["consecutiveErrors"])
+    assert streaks == [1, 2, 3], "without this the UI's fail streak never reaches its threshold"
+
+    fake.jobs[0].update(
+        {"last_run_at": "2026-08-12T09:05:00+00:00", "last_status": "ok", "last_error": None}
+    )
+    report = _run_pass(mod, fake, client)
+    assert _managed(report)[0]["reported_state"]["consecutiveErrors"] == 0, "a clean run resets it"
+
+
+def test_streak_not_rewritten_when_no_new_run() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+    fake.jobs[0].update({"last_run_at": "2026-08-12T09:00:00+00:00", "last_status": "ok"})
+    _run_pass(mod, fake, client)
+    before = sum(1 for c in fake.calls if c[0] == "update_job" and mod._STREAK_KEY in c[2])
+    _run_pass(mod, fake, client)
+    after = sum(1 for c in fake.calls if c[0] == "update_job" and mod._STREAK_KEY in c[2])
+    assert before == after == 1, "the streak sentinel is written once per real run, not per pass"
+
+
+def test_delete_after_run_deletes_only_after_successful_post(monkeypatch) -> None:
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    spec = _spec(schedule={"kind": "at", "at": now_ms + 600_000}, deleteAfterRun=True)
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(spec)])
+    _run_pass(mod, fake, client)
+    fake.jobs[0].update(
+        {
+            "state": "completed",
+            "last_run_at": mod._iso_at(now_ms + 600_000),
+            "last_status": "ok",
+        }
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: (now_ms + 900_000) / 1000)
+
+    # The POST fails: nothing may be deleted, so the terminal report survives.
+    client.state_raises = RuntimeError("network")
+    _install_fake_cron(fake)
+    try:
+        mod.reconcile_automations_once(client, "agent", "chan")
+    except RuntimeError:
+        pass
+    assert fake.jobs, "a failed report must not take the job with it"
+
+    client.state_raises = None
+    _run_pass(mod, fake, client)
+    assert not fake.jobs, "a clean one-shot run is disarmed once the report landed"
+
+
+def test_delete_after_run_keeps_a_failed_one_shot(monkeypatch) -> None:
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    spec = _spec(schedule={"kind": "at", "at": now_ms + 600_000}, deleteAfterRun=True)
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(spec)])
+    _run_pass(mod, fake, client)
+    fake.jobs[0].update(
+        {
+            "state": "completed",
+            "last_run_at": mod._iso_at(now_ms + 600_000),
+            "last_status": "failed",
+            "last_error": "boom",
+        }
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: (now_ms + 900_000) / 1000)
+    _run_pass(mod, fake, client)
+    assert fake.jobs, "a failed one-shot stays so it can be retried"
+
+
+def test_deleted_one_shot_reports_applied_from_gateway_job_id(monkeypatch) -> None:
+    """After deleteAfterRun removed the job, the server still lists the
+    automation as present — without this branch it would be recreated and re-run."""
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    spec = _spec(schedule={"kind": "at", "at": now_ms - 3_600_000}, deleteAfterRun=True)
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(spec, gateway_job_id="7")])
+    report = _run_pass(mod, fake, client)
+
+    entry = _managed(report)[0]
+    assert entry["status"] == "applied"
+    assert entry["gateway_job_id"] == "7"
+    assert not any(call[0] == "create_job" for call in fake.calls), "must not re-run a done one-shot"
+
+
+def test_past_one_shot_never_applied_reports_failed(monkeypatch) -> None:
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    spec = _spec(schedule={"kind": "at", "at": now_ms - 3_600_000})
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(spec)])
+    report = _run_pass(mod, fake, client)
+    assert _managed(report)[0]["status"] == "failed"
+
+
+def test_declined_run_now_reports_miss_row() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+
+    fake.trigger_result = None  # gateway declined
+    client.items = [_desired(_spec(), run_requested_generation=1)]
+    report = _run_pass(mod, fake, client)
+
+    runs = [r for r in report["runs"] if r["gateway_run_id"] == "run-now:1"]
+    assert len(runs) == 1
+    assert runs[0]["status"] == "error"
+    assert runs[0]["summary"]["did_not_run"] is True
+    assert _managed(report)[0]["run_observed_generation"] == 1
+
+
+def test_transient_decline_is_skipped_not_error() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+    fake.trigger_result = {"ran": False, "reason": "already-running"}
+    client.items = [_desired(_spec(), run_requested_generation=1)]
+    report = _run_pass(mod, fake, client)
+    runs = [r for r in report["runs"] if r["gateway_run_id"] == "run-now:1"]
+    assert runs[0]["status"] == "skipped"
+
+
+def test_trigger_exception_is_reported_not_raised() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+    fake.trigger_raises = RuntimeError("scheduler down")
+    client.items = [_desired(_spec(), run_requested_generation=1)]
+    report = _run_pass(mod, fake, client)
+    assert _managed(report)[0]["status"] == "applied"
+    assert any(r["gateway_run_id"] == "run-now:1" for r in report["runs"])
+
+
+def test_paused_run_now_row_marks_did_not_run() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(enabled=False), run_requested_generation=1)])
+    report = _run_pass(mod, fake, client)
+    runs = [r for r in report["runs"] if r["gateway_run_id"] == "run-now:1"]
+    assert runs[0]["summary"]["did_not_run"] is True
+
+
+def test_every_schedule_uses_native_interval() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient(
+        [_desired(_spec(schedule={"kind": "every", "everyMs": 600_000}))]
+    )
+    _run_pass(mod, fake, client)
+
+    created = [c for c in fake.calls if c[0] == "create_job"][0][1]
+    assert created["schedule"] == "every 10m"
+    assert created["repeat"] is None, "Hermes owns the re-arm for a native interval"
+
+
+def test_native_interval_update_omits_schedule_when_unchanged() -> None:
+    mod = _automations_mod()
+    schedule = {"kind": "every", "everyMs": 600_000}
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(schedule=schedule))])
+    _run_pass(mod, fake, client)
+
+    # Prompt-only edit: including `schedule` would restart the interval grid.
+    spec = _spec(schedule=schedule)
+    spec["payload"] = {"kind": "agentTurn", "message": "something else"}
+    client.items = [_desired(spec, desired_generation=2)]
+    before = len(fake.calls)
+    _run_pass(mod, fake, client)
+    updates = [c for c in fake.calls[before:] if c[0] == "update_job"]
+    assert updates, "a prompt edit is drift and must update"
+    assert not any("schedule" in c[2] for c in updates)
+
+
+def test_non_minute_interval_falls_back_to_one_shot() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient(
+        [_desired(_spec(schedule={"kind": "every", "everyMs": 90_000}))]
+    )
+    _run_pass(mod, fake, client)
+    created = [c for c in fake.calls if c[0] == "create_job"][0][1]
+    assert created["repeat"] == 1
+    assert created["schedule"].startswith("20"), "an ISO instant, not a native interval"
+
+
+def test_prompt_edit_on_paused_automation_does_not_resume() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(enabled=False))])
+    _run_pass(mod, fake, client)
+    assert fake.jobs[0]["enabled"] is False
+
+    spec = _spec(enabled=False)
+    spec["payload"] = {"kind": "agentTurn", "message": "changed"}
+    client.items = [_desired(spec, desired_generation=2)]
+    _run_pass(mod, fake, client)
+    assert fake.jobs[0]["enabled"] is False, "editing a paused automation must not arm it"
+
+
+def test_orphan_managed_job_is_mirrored_as_external() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+
+    # The server no longer lists it, but the job is still on the agent, firing.
+    client.items = []
+    report = _run_pass(mod, fake, client)
+    assert not report["managed"]
+    assert [e["gateway_job_id"] for e in report["external"]] == ["1"]
+
+
+def test_unsupported_session_target_is_rejected() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(sessionTarget="main"))])
+    report = _run_pass(mod, fake, client)
+    assert _managed(report)[0]["status"] == "failed"
+    assert not any(c[0] == "create_job" for c in fake.calls)
+
+
+def test_sentinel_write_failure_does_not_create_duplicate() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+    # Simulate the sentinel never landing: the job exists but is unlabelled.
+    fake.jobs[0].pop(mod._MANAGED_KEY)
+
+    client.items = [_desired(_spec(), gateway_job_id="1", desired_generation=2)]
+    before = sum(1 for c in fake.calls if c[0] == "create_job")
+    _run_pass(mod, fake, client)
+    after = sum(1 for c in fake.calls if c[0] == "create_job")
+    assert after == before, "an unlabelled job is found by gateway_job_id, not recreated"
+
+
+def test_wake_during_pass_triggers_immediate_repass(monkeypatch) -> None:
+    mod = _automations_mod()
+    monkeypatch.setattr(mod, "AUTOMATIONS_RECONCILE_INTERVAL_SECONDS", 3600.0)
+    monkeypatch.setattr(mod, "AUTOMATIONS_MIN_REPASS_SECONDS", 0.0)
+    passes = 0
+
+    async def scenario() -> None:
+        nonlocal passes
+        wake = asyncio.Event()
+
+        def fake_pass(*_args: Any) -> None:
+            nonlocal passes
+            passes += 1
+            wake.set()  # a nudge lands while the pass is running
+
+        monkeypatch.setattr(mod, "reconcile_automations_once", fake_pass)
+        task = asyncio.create_task(
+            mod.run_automations_reconciler(object(), "agent", "chan", wake, lambda: passes < 2)
+        )
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(scenario())
+    assert passes == 2, "a mid-pass nudge must not be cleared and forgotten"
+
+
+# --- email ------------------------------------------------------------------
+
+
+def test_long_reply_is_truncated_to_the_server_limit() -> None:
+    _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    fitted = email_mod.fit_email_body("x" * 40_000)
+    assert len(fitted) <= 10_000, "the server rejects a body over 10k and the reply would be lost"
+    assert fitted.endswith("the full reply is in the Clawbits chat.]")
+    assert email_mod.fit_email_body("   ") == "(the agent produced an empty reply)"
+    assert email_mod.fit_email_body("short") == "short"
+
+
+def test_long_subject_is_capped() -> None:
+    _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    assert len(email_mod._reply_subject("s" * 400)) <= 256
+
+
+def test_email_reply_mirrors_to_chat_before_sending(monkeypatch) -> None:
+    """A send that 422s must not also cost the user the chat copy."""
+    mod = _load_hermes_module()
+    order: list[str] = []
+
+    class FakeClient:
+        def post_message(self, channel_id: str, message: str, *args: Any) -> dict[str, Any]:
+            order.append("post")
+            return {"post_id": 5}
+
+        def email_send(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+            order.append("email")
+            raise RuntimeError("HTTP 422: message too long")
+
+        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+            pass
+
+    cfg = _FakePlatformConfig(extra={"api_key": "k", "agent_id": "agent"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    context = email_mod.email_reply_context({"uid": 3, "subject": "Hi", "headers": {}})
+    adapter._email_reply_contexts["9"] = context
+
+    result = asyncio.run(adapter.send("chan", "the answer", reply_to="9"))
+    assert order == ["post", "email"], "chat mirror lands first"
+    assert result.success is False and result.retryable is False
+
+
+def test_email_failure_still_finalizes_the_streaming_post() -> None:
+    """The failure is deterministic (over-long body), so retrying would loop
+    forever and could double-send if the first email actually landed."""
+    mod = _load_hermes_module()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.patches: list[dict[str, Any]] = []
+
+        def patch_message(self, channel_id: str, post_id: str, **body: Any) -> dict[str, Any]:
+            self.patches.append(body)
+            return {"post_id": int(post_id)}
+
+        def email_send(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+            raise RuntimeError("HTTP 422: message too long")
+
+    cfg = _FakePlatformConfig(extra={"api_key": "k", "agent_id": "agent"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = FakeClient()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    adapter._stream_email_contexts["12"] = email_mod.email_reply_context(
+        {"uid": 3, "subject": "Hi", "headers": {}}
+    )
+
+    result = asyncio.run(adapter.edit_message("chan", "12", "the answer", finalize=True))
+    assert result.success is True
+    assert adapter.client.patches[-1]["done"] is True, "the draft must never be left streaming"
+    assert "could not send this as an email" in adapter.client.patches[-1]["replace"]
+    assert "12" not in adapter._stream_email_contexts
+
+
+def test_third_party_email_is_not_auto_replied() -> None:
+    mod = _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    assert email_mod.is_from_owner({"from_addr": "Owner <boss@corp.com>"}, "boss@corp.com")
+    assert not email_mod.is_from_owner({"from_addr": "stranger@elsewhere.com"}, "boss@corp.com")
+    assert not email_mod.is_from_owner({"from_addr": "boss@corp.com"}, None)
+
+    body = email_mod._format_email_turn({"from_addr": "s@x.com"}, [], from_owner=False)
+    assert "NOT from your owner" in body
+    assert "untrusted email body" in body, "an inbound email is a prompt-injection channel"
+
+
+def test_autoresponders_are_skipped() -> None:
+    _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    assert email_mod.is_auto_submitted({"headers": {"Auto-Submitted": "auto-replied"}})
+    assert email_mod.is_auto_submitted({"headers": {"Precedence": "bulk"}})
+    assert email_mod.is_auto_submitted({"headers": {"List-Id": "<x.example.com>"}})
+    assert not email_mod.is_auto_submitted({"headers": {"Auto-Submitted": "no"}})
+    assert not email_mod.is_auto_submitted({"headers": {"Subject": "hello"}})
+
+
+def test_self_addressed_only_matches_the_agents_own_domain() -> None:
+    _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    assert email_mod._is_self_addressed(
+        {"from_addr": "snivy@clawbits.ai"}, "snivy", "snivy@clawbits.ai"
+    )
+    assert not email_mod._is_self_addressed(
+        {"from_addr": "snivy@gmail.com"}, "snivy", "snivy@clawbits.ai"
+    ), "a stranger who happens to share the local part is not the agent"
+
+
+def test_watermark_round_trips_uidvalidity(tmp_path, monkeypatch) -> None:
+    _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    monkeypatch.setattr(email_mod, "_watermark_path", lambda: tmp_path / "wm.json")
+    email_mod.save_email_watermark(42, 900)
+    assert email_mod.load_email_watermark() == (42, 900)
+    # A file written by the previous format still loads.
+    (tmp_path / "wm.json").write_text('{"last_uid": 7}')
+    assert email_mod.load_email_watermark() == (7, None)
+    assert email_mod.load_email_watermark.__doc__
+
+
+def test_email_body_never_rides_on_argv() -> None:
+    """argv is world-readable through ps; the body is private correspondence."""
+    mod = _load_hermes_module()
+    captured: list[tuple[str, ...]] = []
+
+    cli = mod._ClawbitsCli("/nonexistent/cli.py", "http://x", "key", "0.7.0", None)
+    payloads: list[dict[str, Any]] = []
+
+    def fake_run(*args: str) -> Any:
+        captured.append(args)
+        path = args[args.index("--json") + 1]
+        assert path.startswith("@")
+        payloads.append(__import__("json").loads(Path(path[1:]).read_text()))
+        return {"status": "sent"}
+
+    cli._run = fake_run  # type: ignore[method-assign]
+    cli.email_send("agent", "Secret subject", "Confidential body", {"In-Reply-To": "<a@b>"})
+
+    flat = " ".join(captured[0])
+    assert "Confidential body" not in flat and "Secret subject" not in flat
+    assert payloads[0]["message"] == "Confidential body"
+    assert payloads[0]["headers"] == {"In-Reply-To": "<a@b>"}
+
+
+# --- streaming and activity --------------------------------------------------
+
+
+class _StreamClient:
+    def __init__(self) -> None:
+        self.posts: list[tuple[Any, ...]] = []
+        self.patches: list[tuple[str, str, dict[str, Any]]] = []
+
+    def post_message(self, *args: Any) -> dict[str, Any]:
+        self.posts.append(args)
+        return {"post_id": 91}
+
+    def patch_message(self, channel_id: str, post_id: str, **body: Any) -> dict[str, Any]:
+        self.patches.append((channel_id, post_id, body))
+        return {"post_id": int(post_id)}
+
+    def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+        pass
+
+
+def _stream_adapter(mod):
+    cfg = _FakePlatformConfig(extra={"api_key": "k", "agent_id": "agent"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = _StreamClient()
+    return adapter
+
+
+def test_failed_turn_closes_the_streaming_post() -> None:
+    """An abandoned draft shimmers in the channel until the server reaps it."""
+    mod = _load_hermes_module()
+    adapter = _stream_adapter(mod)
+
+    async def scenario() -> None:
+        async def boom(_event: Any) -> None:
+            # The draft is opened mid-turn, as the gateway does, and then the
+            # turn dies before anything finalizes it.
+            await adapter.send("chan", "partial", metadata={"expect_edits": True})
+            assert adapter._open_streams == {"91": "chan"}
+            raise RuntimeError("model died")
+
+        adapter.handle_message = boom  # type: ignore[method-assign]
+        await adapter._run_turn("chan", object())
+
+    asyncio.run(scenario())
+    closing = [p for p in adapter.client.patches if p[2].get("done")]
+    assert closing, "the draft must be finalized, not left streaming"
+    assert "failed to generate" in closing[-1][2]["replace"]
+    assert adapter._open_streams == {}
+
+
+def test_disconnect_closes_open_streams() -> None:
+    mod = _load_hermes_module()
+    adapter = _stream_adapter(mod)
+
+    async def scenario() -> None:
+        await adapter.send("chan", "partial", metadata={"expect_edits": True})
+        await adapter.disconnect()
+
+    asyncio.run(scenario())
+    assert any(p[2].get("done") for p in adapter.client.patches)
+    assert adapter._open_streams == {}
+
+
+def test_streamed_body_is_capped_to_the_patch_limit() -> None:
+    mod = _load_hermes_module()
+    adapter = _stream_adapter(mod)
+    result = asyncio.run(adapter.edit_message("chan", "91", "y" * 60_000, finalize=True))
+    assert result.success
+    replaced = adapter.client.patches[-1][2]["replace"]
+    assert len(replaced) <= 40_000, "over the cap the PATCH 422s and the draft never closes"
+    assert replaced.endswith("_(reply truncated)_")
+
+
+def test_long_interim_bubble_is_posted_not_swallowed() -> None:
+    """A real reply that happens to open with the emoji must not vanish."""
+    mod = _load_hermes_module()
+    adapter = _stream_adapter(mod)
+    short = asyncio.run(adapter.send("chan", "💬 checking the logs"))
+    assert short.success and not adapter.client.posts, "a short bubble stays ephemeral"
+
+    long_reply = "💬 " + ("a real answer. " * 100)
+    result = asyncio.run(adapter.send("chan", long_reply))
+    assert adapter.client.posts, "a long message is a reply, not a status bubble"
+    assert result.message_id == "91"
+
+
+def test_activity_label_is_not_clamped_to_the_old_160(monkeypatch) -> None:
+    mod = _load_hermes_module()
+    label = mod.adapter._sanitize_activity("ran " + "x" * 900)
+    assert len(label) > 160, "the server allows 1200; 160 was a reverted regression"
+    assert len(label) <= 1000
+
+
+def test_activity_sanitizer_redacts_secrets() -> None:
+    mod = _load_hermes_module()
+    assert "[redacted]" in mod.adapter._sanitize_activity("using api_key: sk-abc123")
+    assert "sk-abc123" not in mod.adapter._sanitize_activity("using api_key: sk-abc123")
+
+
+def test_unknown_channel_is_not_treated_as_a_dm() -> None:
+    """Otherwise the agent auto-replies to every post in a public room it has
+    not polled yet — which is exactly what happens while discovery is failing."""
+    mod = _load_hermes_module()
+    adapter = _stream_adapter(mod)
+
+    async def scenario() -> None:
+        await adapter._dispatch_realtime_post(
+            {
+                "channel_id": "unseen",
+                "data": {
+                    "post_id": 3,
+                    "channel_id": "unseen",
+                    "created_at": "2026-06-04 12:00:01",
+                    "message": "chatting to someone else",
+                    "human_id": 1,
+                },
+            }
+        )
+        if adapter._turn_tasks:
+            await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert adapter.events == [], "no mention, unknown channel type: not our turn"
+
+
+def test_attention_dispatches_an_attachment_only_post(monkeypatch) -> None:
+    mod = _load_hermes_module()
+    monkeypatch.setattr(
+        sys.modules["hermes_clawbits_test.adapter"],
+        "cache_post_attachments",
+        lambda client, post: (["/cache/a.pdf"], ["application/pdf"], ["[document saved]"]),
+    )
+    adapter = _stream_adapter(mod)
+
+    async def scenario() -> None:
+        await adapter._dispatch_attention(
+            {
+                "channel_id": "chan",
+                "data": {
+                    "post_id": 8,
+                    "created_at": "2026-06-04 12:00:01",
+                    "message": "",
+                    "human_id": 1,
+                    "files": [
+                        {
+                            "file_id": "f1",
+                            "filename": "a.pdf",
+                            "content_type": "application/pdf",
+                            "size_bytes": 4,
+                        }
+                    ],
+                },
+            }
+        )
+        await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert len(adapter.events) == 1
+    assert adapter.events[0].media_urls == ["/cache/a.pdf"]
+
+
+def test_stream_state_is_bounded() -> None:
+    mod = _load_hermes_module()
+    adapter = _stream_adapter(mod)
+    cap = mod.adapter._REPLY_CONTEXT_CAP
+    for index in range(cap + 50):
+        adapter._open_streams[str(index)] = "chan"
+    adapter._trim_stream_state()
+    assert len(adapter._open_streams) == cap, "a crashed turn never pops its entry"
+
+
+def test_a_finishing_turn_does_not_close_a_sibling_turns_stream() -> None:
+    """Two turns can run at once in the same channel; the first to finish must
+    not yank the other's live draft."""
+    mod = _load_hermes_module()
+    adapter = _stream_adapter(mod)
+    ready = asyncio.Event()
+
+    async def scenario() -> None:
+        async def slow_turn(_event: Any) -> None:
+            await adapter.send("chan", "B partial", metadata={"expect_edits": True})
+            ready.set()
+            await asyncio.sleep(0.2)
+
+        async def fast_turn(_event: Any) -> None:
+            await ready.wait()
+
+        adapter.handle_message = slow_turn  # type: ignore[method-assign]
+        slow = asyncio.create_task(adapter._run_turn("chan", object()))
+        await ready.wait()
+        open_id = next(iter(adapter._open_streams))
+
+        adapter.handle_message = fast_turn  # type: ignore[method-assign]
+        await adapter._run_turn("chan", object())
+        assert open_id in adapter._open_streams, "the sibling turn's draft is still live"
+        await slow
+
+    asyncio.run(scenario())
+    assert adapter._open_streams == {}, "each turn still closes its own draft"
+
+
+class _EmailPollClient:
+    def __init__(self, details: dict[int, dict[str, Any]], owner: str | None = "boss@corp.com"):
+        self.details = details
+        self.owner = owner
+        self.posts: list[tuple[Any, ...]] = []
+
+    def email_count(self, agent_id: str) -> dict[str, Any]:
+        return {"total": len(self.details), "unread": 0, "email_address": "snivy@clawbits.ai"}
+
+    def agent_info(self, agent_id: str) -> dict[str, Any]:
+        return {"agent_id": agent_id, "operator_email": self.owner}
+
+    def email_inbox(self, agent_id: str, limit: int, offset: int) -> dict[str, Any]:
+        if offset:
+            return {"emails": []}
+        return {"emails": [{"uid": uid} for uid in sorted(self.details)]}
+
+    def email_get(self, agent_id: str, uid: int) -> dict[str, Any]:
+        return self.details[uid]
+
+    def post_message(self, *args: Any) -> dict[str, Any]:
+        self.posts.append(args)
+        return {"post_id": 1}
+
+    def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
+        pass
+
+
+def _email_adapter(mod, client, tmp_path, monkeypatch, watermark: int | None = 0):
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    monkeypatch.setattr(email_mod, "_watermark_path", lambda: tmp_path / "wm.json")
+    cfg = _FakePlatformConfig(extra={"api_key": "k", "agent_id": "snivy", "channel_id": "chan"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = client
+    adapter._email_watermark = watermark
+    return adapter
+
+
+def test_owner_email_is_resolved_from_agent_info(tmp_path, monkeypatch) -> None:
+    """The mailbox count response carries no operator address; without pulling
+    it from agent-info every message would look third-party and never be
+    answered by email."""
+    mod = _load_hermes_module()
+    client = _EmailPollClient(
+        {
+            1: {"uid": 1, "from_addr": "boss@corp.com", "subject": "hi", "body_text": "hello"},
+            2: {"uid": 2, "from_addr": "stranger@x.com", "subject": "spam", "body_text": "buy"},
+        }
+    )
+    adapter = _email_adapter(mod, client, tmp_path, monkeypatch)
+
+    async def scenario() -> None:
+        await adapter._poll_email_once()
+        await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert adapter._email_owner == "boss@corp.com"
+    assert "email:1" in adapter._email_reply_contexts, "owner mail gets an emailed reply"
+    assert "email:2" not in adapter._email_reply_contexts, "a stranger's mail does not"
+    assert len(adapter.events) == 2, "both still reach the agent as turns"
+
+
+def test_uid_reset_reseeds_the_watermark(tmp_path, monkeypatch) -> None:
+    """A reprovisioned mailbox restarts uids; without this, intake stops dead."""
+    mod = _load_hermes_module()
+    client = _EmailPollClient({1: {"uid": 1, "from_addr": "boss@corp.com", "body_text": "x"}})
+    adapter = _email_adapter(mod, client, tmp_path, monkeypatch, watermark=9_000)
+
+    asyncio.run(adapter._poll_email_once())
+    assert adapter._email_watermark == 1, "reseeded to the mailbox's newest uid"
+
+
+def test_autoresponder_mail_is_not_dispatched(tmp_path, monkeypatch) -> None:
+    mod = _load_hermes_module()
+    client = _EmailPollClient(
+        {
+            1: {
+                "uid": 1,
+                "from_addr": "boss@corp.com",
+                "body_text": "out of office",
+                "headers": {"Auto-Submitted": "auto-replied"},
+            }
+        }
+    )
+    adapter = _email_adapter(mod, client, tmp_path, monkeypatch)
+
+    async def scenario() -> None:
+        await adapter._poll_email_once()
+        if adapter._turn_tasks:
+            await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(scenario())
+    assert adapter.events == [], "answering an autoresponder is how mail loops start"
+    assert adapter._email_watermark == 1
+
+
+def _install_fake_executions(latest: Any) -> None:
+    cron = sys.modules.get("cron") or types.ModuleType("cron")
+    mod = types.ModuleType("cron.executions")
+    mod.latest_execution = lambda job_id: latest
+    cron.executions = mod
+    sys.modules["cron"] = cron
+    sys.modules["cron.executions"] = mod
+
+
+def test_execution_log_is_preferred_over_the_job_record() -> None:
+    """`cron.executions` exists on current Hermes and carries the real run id,
+    both endpoints and the recorded error — better data than the job record."""
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+
+    fake.jobs[0].update({"last_run_at": "2026-08-12T09:00:00+00:00", "last_status": "ok"})
+    _install_fake_executions(
+        {
+            "id": "exec-abc",
+            "status": "failed",
+            "claimed_at": "2026-08-12T09:00:00+00:00",
+            "finished_at": "2026-08-12T09:00:42+00:00",
+            "error": "provider refused",
+        }
+    )
+    try:
+        report = _run_pass(mod, fake, client)
+    finally:
+        sys.modules.pop("cron.executions", None)
+        if "cron" in sys.modules:
+            sys.modules["cron"].__dict__.pop("executions", None)
+
+    runs = [r for r in report["runs"] if r["automation_id"] == "a1"]
+    assert runs[0]["gateway_run_id"] == "exec-abc", "the real execution id, not a synthetic one"
+    assert runs[0]["status"] == "error"
+    assert runs[0]["summary"]["error"] == "provider refused"
+    assert runs[0]["finished_at_ms"] is not None, "the execution log does carry a duration"
+
+
+def test_running_execution_reports_no_terminal_status() -> None:
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+    _install_fake_executions(
+        {"id": "exec-live", "status": "running", "claimed_at": "2026-08-12T09:00:00+00:00"}
+    )
+    try:
+        report = _run_pass(mod, fake, client)
+    finally:
+        sys.modules.pop("cron.executions", None)
+        if "cron" in sys.modules:
+            sys.modules["cron"].__dict__.pop("executions", None)
+
+    runs = [r for r in report["runs"] if r["automation_id"] == "a1"]
+    assert "status" not in runs[0], "an in-flight attempt must not be reported as ok"
+    assert "finished_at_ms" not in runs[0]
+
+
+def test_create_job_does_not_pass_a_string_origin() -> None:
+    """create_job's `origin` is Optional[Dict] and flips its deliver default;
+    a bare string there is a type violation."""
+    mod = _automations_mod()
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec())])
+    _run_pass(mod, fake, client)
+    created = [c for c in fake.calls if c[0] == "create_job"][0][1]
+    assert not isinstance(created.get("origin"), str)

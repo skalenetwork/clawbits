@@ -9,10 +9,13 @@ rest for compatibility:
 
 - :mod:`.manifest`   — ``PLUGIN_VERSION`` read from ``plugin.yaml``
 - :mod:`.messages`   — pure post/channel parsing, cursor keys, 4000-char split
-- :mod:`.media`      — SSRF-guarded image download for native delivery
+- :mod:`.media`      — capped media downloads
+- :mod:`.attachments` — inbound chat/email attachment caching
+- :mod:`.automations` — Clawbits desired-state to Hermes cron reconciliation
+- :mod:`.email_integration` — mailbox polling helpers and native email tool
 - :mod:`.cli_client` — subprocess wrapper around the bundled agent CLI
 - :mod:`.signup`     — ``hermes clawbits signup`` flow + CB_TOKENS minting
-- :mod:`.adapter`    — the ``ClawbitsAdapter`` (poll/WS/liveness loops, sends)
+- :mod:`.adapter`    — the ``ClawbitsAdapter`` lifecycle and delivery surface
 
 The Hermes plugin loader imports this directory as a real package
 (``hermes_cli/plugins.py`` sets ``submodule_search_locations``), so the
@@ -30,7 +33,17 @@ from typing import Any
 
 from gateway.config import PlatformConfig
 
-from . import adapter, cli_client, manifest, media, messages, signup
+from . import (
+    adapter,
+    attachments,
+    automations,
+    cli_client,
+    email_integration,
+    manifest,
+    media,
+    messages,
+    signup,
+)
 from .adapter import (
     _ATTENTION_PREAMBLE,
     _SEEN_CAP,
@@ -43,6 +56,7 @@ from .adapter import (
     _ws_header_kwarg,
 )
 from .cli_client import _ClawbitsCli, _default_cli_path, _run_agent_cli
+from .email_integration import EMAIL_TOOL_SCHEMA, _email_tool_available, _send_email_tool
 from .manifest import _FALLBACK_PLUGIN_VERSION, PLUGIN_VERSION, _read_plugin_version
 from .media import (
     _ALLOW_PRIVATE_HOSTS_ENV,
@@ -87,8 +101,11 @@ __all__ = [
     "GENERATING_HEARTBEAT_INTERVAL_SECONDS",
     "PLUGIN_VERSION",
     "adapter",
+    "attachments",
+    "automations",
     "check_requirements",
     "cli_client",
+    "email_integration",
     "is_connected",
     "manifest",
     "media",
@@ -195,6 +212,16 @@ def is_connected(config: PlatformConfig | None = None) -> bool:
 
 
 def register(ctx: Any) -> None:
+    ctx.register_tool(
+        name="clawbits_send_email",
+        toolset="clawbits",
+        schema=EMAIL_TOOL_SCHEMA,
+        handler=_send_email_tool,
+        check_fn=_email_tool_available,
+        requires_env=["CLAWBITS_API_KEY", "CLAWBITS_AGENT_ID"],
+        description="Send email from the agent's Clawbits mailbox to its owner.",
+        emoji="✉️",
+    )
     ctx.register_cli_command(
         name="clawbits",
         help="Clawbits setup and diagnostics",

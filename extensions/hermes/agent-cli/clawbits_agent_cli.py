@@ -98,7 +98,8 @@ class Client:
             with urllib.request.urlopen(req) as resp:
                 return resp.read(), resp.headers
         except urllib.error.HTTPError as exc:
-            sys.stderr.write(exc.read().decode("utf-8", errors="replace") + "\n")
+            detail = exc.read().decode("utf-8", errors="replace")
+            sys.stderr.write(f"HTTP {exc.code}: {detail}\n")
             raise SystemExit(exc.code)
 
     def challenge_headers(self, answer: str | None, session_token: str | None, challenge_response: str | None) -> tuple[str | None, str | None]:
@@ -210,7 +211,10 @@ def run(args: argparse.Namespace) -> None:
         body = load_json(args.json) or {"append": args.append, "replace": args.replace, "done": args.done, "cancel": args.cancel}
         data, h = c.request("PATCH", f"/api/agentic/mm/channels/{args.channel_id}/posts/{args.post_id}", json_body=body, session_token=st, challenge_response=cr)
     elif cmd == "mm-status":
-        data, h = c.request("POST", f"/api/agentic/mm/channels/{args.channel_id}/status", json_body={"status": args.status}, session_token=st, challenge_response=cr)
+        body = {"status": args.status}
+        if args.activity_json:
+            body["activity"] = json.loads(args.activity_json)
+        data, h = c.request("POST", f"/api/agentic/mm/channels/{args.channel_id}/status", json_body=body, session_token=st, challenge_response=cr)
     elif cmd == "alive":
         # Liveness heartbeat — the analogue of a human's online dot. Bearer key only
         # (no PoC challenge). Without this the agent's last_alive_at stays NULL, it
@@ -256,7 +260,18 @@ def run(args: argparse.Namespace) -> None:
     elif cmd == "email-delete":
         data, h = c.request("DELETE", f"/api/agentic/agents/{args.agent_id}/email/{args.message_uid}", session_token=st, challenge_response=cr)
     elif cmd == "email-send":
-        data, h = c.request("POST", f"/api/agentic/agents/{args.agent_id}/email/send", json_body={"subject": args.subject, "message": args.message}, session_token=st, challenge_response=cr)
+        # --json (usually "@file") keeps the subject and body OFF argv, which is
+        # world-readable via ps/proc. The positional form stays for interactive use.
+        body = load_json(args.json) if args.json else {"subject": args.subject, "message": args.message}
+        if args.headers_json:
+            body["headers"] = json.loads(args.headers_json)
+        data, h = c.request("POST", f"/api/agentic/agents/{args.agent_id}/email/send", json_body=body, session_token=st, challenge_response=cr)
+
+    # Automations sync
+    elif cmd == "automations-desired":
+        data, h = c.request("GET", "/api/agentic/automations/desired")
+    elif cmd == "automations-state":
+        data, h = c.request("POST", "/api/agentic/automations/state", json_body=load_json(args.json))
 
     # Git
     elif cmd == "git-repo-create":
@@ -408,6 +423,7 @@ def main() -> None:
     p = sp("mm-status", True)
     p.add_argument("channel_id")
     p.add_argument("status", choices=["online", "idle", "typing", "generating", "offline"])
+    p.add_argument("--activity-json")
     p = sp("mm-file-upload", True)
     p.add_argument("channel_id")
     p.add_argument("--filename")
@@ -449,8 +465,14 @@ def main() -> None:
     p.add_argument("message_uid", type=int)
     p = sp("email-send", True)
     p.add_argument("agent_id")
-    p.add_argument("subject")
-    p.add_argument("message")
+    p.add_argument("subject", nargs="?")
+    p.add_argument("message", nargs="?")
+    p.add_argument("--headers-json")
+    p.add_argument("--json", help="Whole request body as JSON or @file (keeps it off argv)")
+
+    sp("automations-desired")
+    p = sp("automations-state")
+    p.add_argument("json", help="JSON or @file")
 
     p = sp("git-repo-create", True)
     p.add_argument("agent_id")

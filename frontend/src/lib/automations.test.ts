@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { automationVisualState } from "@/lib/automations";
+import { describe, expect, it } from "vitest";
+
+import {
+  automationVisualState,
+  automationsUnsupportedReason,
+  supportsAutomations,
+} from "@/lib/automations";
 import type { Automation, AutomationReportedState } from "@/lib/api";
 
 const NOW = Date.parse("2026-08-11T12:00:00Z");
@@ -39,6 +44,14 @@ const failing = (consecutiveErrors: number): AutomationReportedState => ({
 });
 
 const state = (a: Automation) => automationVisualState(a, "available", "snivy", NOW);
+
+describe("automation runtime support", () => {
+  it("supports Hermes and still gates IronClaw", () => {
+    expect(supportsAutomations("hermes")).toBe(true);
+    expect(automationsUnsupportedReason("hermes")).toBeNull();
+    expect(supportsAutomations("ironclaw")).toBe(false);
+  });
+});
 
 describe("automationVisualState failure reporting", () => {
   it("surfaces the runtime's error text for a failed run", () => {
@@ -105,5 +118,29 @@ describe("automationVisualState needsAttention", () => {
 
   it("does not flag a healthy automation", () => {
     expect(state(automation()).needsAttention).toBe(false);
+  });
+});
+
+describe("hermes plugin version floor", () => {
+  it("gates a hermes agent below the reconciler version", () => {
+    expect(supportsAutomations("hermes", "0.6.3")).toBe(false);
+    expect(automationsUnsupportedReason("hermes", "0.6.3")).toContain("0.7.0");
+  });
+
+  it("allows 0.7.0 and newer", () => {
+    expect(supportsAutomations("hermes", "0.7.0")).toBe(true);
+    expect(supportsAutomations("hermes", "0.8.1")).toBe(true);
+    expect(supportsAutomations("hermes", "1.0.0")).toBe(true);
+  });
+
+  it("passes an unreported or unparseable version, like the server", () => {
+    expect(supportsAutomations("hermes", null)).toBe(true);
+    expect(supportsAutomations("hermes", undefined)).toBe(true);
+    expect(supportsAutomations("hermes", "dev")).toBe(true);
+  });
+
+  it("does not apply the floor to other runtimes", () => {
+    expect(supportsAutomations("openclaw", "0.1.0")).toBe(true);
+    expect(supportsAutomations("ironclaw", "9.9.9")).toBe(false);
   });
 });

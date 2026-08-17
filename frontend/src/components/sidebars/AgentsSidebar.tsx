@@ -250,7 +250,8 @@ function RosterRow({
     // entry unless stuck rows still exist to clean up (the page then runs in
     // delete-only mode).
     const showAutomations =
-        supportsAutomations(agent.agent_type) || (automationCount ?? 0) > 0;
+        supportsAutomations(agent.agent_type, agent.plugin_version) ||
+        (automationCount ?? 0) > 0;
 
     const openChat = useMutation({
         mutationFn: () => createOrGetMmDirect(orgId, "agent", agent.agent_id),

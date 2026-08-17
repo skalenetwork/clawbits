@@ -1,0 +1,45 @@
+[package]
+name = "clawbits-cli"
+version = "0.1.0"
+edition = "2021"
+# Matches desktop/src-tauri, the only other first-party crate that pins one.
+rust-version = "1.85"
+description = "Terminal client for the Clawbits human messaging API"
+license = "MIT"
+repository = "https://github.com/skalenetwork/clawbits"
+
+# The binary users type is `cbs` — short for Clawbits, and quick to type for
+# a tool used many times a day. (The package also can't be called `clawbits`:
+# desktop/src-tauri already claims that crate name.)
+[[bin]]
+name = "cbs"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6"
+# Blocking-native HTTP. `reqwest::blocking` would spin a tokio runtime on a
+# background thread and pull hyper/tower/h2 — plus aws-lc-rs (cmake + a C
+# toolchain) on 0.13's rustls feature — to serve a binary that makes one
+# request and exits.
+ureq = { version = "3.3", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+toml = "1.1"
+# `clock` is only for converting server UTC into the user's local zone.
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+anyhow = "1.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+# Same shape as ironclaw-channel/Cargo.toml and desktop/src-tauri/Cargo.toml.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+# Standalone crate. There is no root Cargo.toml in this repo today; this stops
+# a future one from silently adopting the CLI into its workspace.
+[workspace]

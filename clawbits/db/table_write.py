@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import secrets
 import uuid as _uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -41,6 +42,7 @@ from clawbits.db.models import (
     Automation,
     AutomationRun,
     ChallengeSession,
+    HumanApiToken,
     HumanChannelState,
     HumanConnector,
     HumanUser,
@@ -360,6 +362,77 @@ class TableWrite:
         session.add(user)
         session.flush()
         return user.id
+
+    # ---------------- human api tokens (PATs) ----------------
+
+    # Ceiling on live tokens per user. High enough that nobody legitimate
+    # hits it, low enough that a leaked minting credential can't spray
+    # thousands of durable footholds.
+    HUMAN_API_TOKEN_CAP = 25
+
+    @staticmethod
+    def create_human_api_token(
+        session: Session,
+        human_id: int,
+        label: str,
+        expires_at: _dt.datetime | None = None,
+    ) -> tuple[int, str]:
+        """Mint a personal access token. Returns ``(token_id, plaintext)``.
+
+        The plaintext exists only in this return value — the row keeps the
+        SHA-256 and a display hint. ``cbp_`` (ClawBits Personal) is the
+        namespace: agent keys are ``fc_`` + 16 alnum, and the human auth
+        resolver only consults this table for bearers carrying this prefix,
+        so neither credential is ever looked up in the other's table.
+        """
+        count = len(
+            session.exec(
+                select(HumanApiToken.id).where(HumanApiToken.human_id == human_id)
+            ).all()
+        )
+        if count >= TableWrite.HUMAN_API_TOKEN_CAP:
+            raise ValueError(
+                f"Token limit reached ({TableWrite.HUMAN_API_TOKEN_CAP}). "
+                "Revoke one you no longer use first."
+            )
+
+        plaintext = "cbp_" + secrets.token_urlsafe(32)
+        row = HumanApiToken(
+            human_id=human_id,
+            token_hash=hashlib.sha256(plaintext.encode()).hexdigest(),
+            token_hint=plaintext[:8],
+            label=label,
+            expires_at=expires_at,
+        )
+        session.add(row)
+        session.flush()
+        return row.id, plaintext
+
+    @staticmethod
+    def delete_human_api_token(session: Session, human_id: int, token_id: int) -> bool:
+        """Revoke one of the caller's own tokens. False if it isn't theirs —
+        the endpoint turns that into a 404, indistinguishable from
+        "no such token" so ids can't be probed across accounts."""
+        row = session.get(HumanApiToken, token_id)
+        if row is None or row.human_id != human_id:
+            return False
+        session.delete(row)
+        session.flush()
+        return True
+
+    @staticmethod
+    def touch_human_api_token_last_used(session: Session, token_id: int) -> None:
+        """Stamp ``last_used_at``, at most once a minute (the resolver runs on
+        every request; a write per request would be pure amplification)."""
+        row = session.get(HumanApiToken, token_id)
+        if row is None:
+            return
+        now = _dt.datetime.now(_dt.UTC)
+        if row.last_used_at is not None and (now - row.last_used_at).total_seconds() < 60:
+            return
+        row.last_used_at = now
+        session.add(row)
+        session.flush()
 
     # ---------------- push devices ----------------
 
@@ -755,9 +828,19 @@ class TableWrite:
 
     @staticmethod
     def delete_agent(
-        session: Session, agent_id: str, *, keep_content: bool = False
-    ) -> None:
+        session: Session,
+        agent_id: str,
+        *,
+        keep_content: bool = False,
+        actor_human_id: int | None = None,
+    ) -> list[dict]:
         """Hard-delete an agent and every row that references it.
+
+        Returns the "left the channel" timeline events emitted on the way out
+        (see :meth:`_emit_agent_departure_events`), one per group channel the
+        agent belonged to, each as
+        ``{"channel_id", "event", "member_human_ids"}`` so the caller can fan
+        them out over SSE after it commits. Empty when the agent didn't exist.
 
         FK constraints on child tables are NOT ON DELETE CASCADE, so we
         clear them manually in dependency order before dropping the
@@ -778,7 +861,14 @@ class TableWrite:
         """
         agent = session.get(Agent, agent_id)
         if agent is None:
-            return
+            return []
+
+        # Leave the departure line behind first: it needs the memberships and
+        # the agent's display name, both of which are gone by the end of this
+        # method.
+        departures = TableWrite._emit_agent_departure_events(
+            session, agent, actor_human_id
+        )
 
         # Contact grants referencing this agent — as the contacted agent
         # (``agent_id``) or as a principal in someone else's allowlist
@@ -820,7 +910,7 @@ class TableWrite:
 
         if keep_content:
             TableWrite._delete_agent_keep_content(session, agent)
-            return
+            return departures
 
         # DMs are private two-party conversations; on a full delete the whole
         # channel goes (its posts, members, files, events, and read state),
@@ -838,15 +928,32 @@ class TableWrite:
         )
         # Two FKs to mm_posts.post_id have neither CASCADE nor SET NULL on
         # them, so the agent's mm_posts can't be deleted while either still
-        # references them. Null those out first:
+        # references them. Clear those first:
         #   - human_channel_state.last_read_post_id (read-pointer cursors)
         #   - mm_posts.parent_post_id (reply chains anchored on this post)
         agent_post_ids_subq = select(MmPost.post_id).where(MmPost.agent_id == agent_id)
-        session.exec(
-            update(HumanChannelState)
-            .where(HumanChannelState.last_read_post_id.in_(agent_post_ids_subq))
-            .values(last_read_post_id=None)
-        )
+        # Read pointers parked on one of the agent's posts get *rewound* to
+        # the newest surviving post before it, not nulled: NULL reads as
+        # "never read anything" (``coalesce(last_read_post_id, 0)`` in the
+        # unread query), which would re-mark the entire history unread for
+        # every member whose last read happened to be the agent's message —
+        # a phantom unread badge in every channel the agent talked in, with
+        # nothing new in it to explain the badge.
+        stale_pointers = session.exec(
+            select(HumanChannelState).where(
+                HumanChannelState.last_read_post_id.in_(agent_post_ids_subq)
+            )
+        ).all()
+        for state in stale_pointers:
+            state.last_read_post_id = session.exec(
+                select(func.max(MmPost.post_id))
+                .where(MmPost.channel_id == state.channel_id)
+                .where(MmPost.post_id < state.last_read_post_id)
+                # Skip the agent's own earlier posts — they're about to go
+                # too, and the FK would reject the pointer.
+                .where(MmPost.agent_id.is_distinct_from(agent_id))
+            ).one()
+            session.add(state)
         session.exec(
             update(MmPost)
             .where(MmPost.parent_post_id.in_(agent_post_ids_subq))
@@ -913,6 +1020,86 @@ class TableWrite:
 
         session.delete(agent)
         session.flush()
+        return departures
+
+    @staticmethod
+    def _emit_agent_departure_events(
+        session: Session, agent: Agent, actor_human_id: int | None
+    ) -> list[dict]:
+        """Leave a "X left the channel" line in every group channel the agent
+        belonged to, before its memberships and identity rows are dropped.
+
+        The point is that a deleted agent shouldn't just evaporate out of
+        other people's channels: without this the only trace of the departure
+        is a member disappearing from the roster, which reads as "something
+        happened, no idea what".
+
+        The event can't name the agent through ``subject_agent_id`` — that FK
+        is plain NO ACTION and the row is about to be deleted, so the event
+        would be deleted right along with it. The id and display name ride in
+        ``payload`` instead (the "carry data an FK can't outlive" slot the
+        column was reserved for), and the renderer prefers it over the
+        subject columns. The actor is the human who asked for the deletion
+        (falling back to the agent's operator) so the row still satisfies the
+        actor NOT NULL check; with neither we skip the line rather than write
+        a row that violates it.
+
+        DMs are skipped by :meth:`create_mm_channel_event` (1:1s carry no
+        membership chrome) — on the default delete path they're torn down
+        whole anyway, and on the keep-content path the conversation survives
+        under the "Deleted agent" placeholder.
+
+        Returns one ``{"channel_id", "event", "member_human_ids"}`` dict per
+        emitted event, hydrated for the SSE fan-out the caller performs after
+        it commits.
+        """
+        from clawbits.db.table_read import TableRead
+
+        actor = actor_human_id if actor_human_id is not None else agent.operator_id
+        if actor is None:
+            return []
+        display = TableRead.resolve_agent_display(session, agent.agent_id)
+        channel_ids = list(
+            session.exec(
+                select(MmChannelMember.channel_id).where(
+                    MmChannelMember.agent_id == agent.agent_id
+                )
+            ).all()
+        )
+        emitted: list[dict] = []
+        for channel_id in channel_ids:
+            event_id = TableWrite.create_mm_channel_event(
+                session,
+                channel_id,
+                "member.removed",
+                actor_human_id=actor,
+                payload={
+                    "subject_kind": "agent",
+                    "subject_agent_id": agent.agent_id,
+                    "subject_display_name": display,
+                    "reason": "agent_deleted",
+                },
+            )
+            if not event_id:  # DM — events suppressed there
+                continue
+            event = TableRead.get_mm_channel_event_by_id(session, event_id)
+            if event is None:
+                continue
+            member_human_ids = list(
+                session.exec(
+                    select(MmChannelMember.human_id)
+                    .where(MmChannelMember.channel_id == channel_id)
+                    .where(MmChannelMember.human_id.is_not(None))
+                ).all()
+            )
+            emitted.append(
+                {
+                    "channel_id": channel_id,
+                    "event": event,
+                    "member_human_ids": member_human_ids,
+                }
+            )
+        return emitted
 
     @staticmethod
     def _agent_dm_channel_ids(session: Session, agent_id: str) -> list[str]:
@@ -1245,6 +1432,9 @@ class TableWrite:
             delete(MmChannelMember).where(MmChannelMember.human_id == human_id)
         )
         session.exec(delete(PushDevice).where(PushDevice.human_id == human_id))
+        session.exec(
+            delete(HumanApiToken).where(HumanApiToken.human_id == human_id)
+        )
         session.exec(
             delete(ChallengeSession).where(ChallengeSession.human_id == human_id)
         )
