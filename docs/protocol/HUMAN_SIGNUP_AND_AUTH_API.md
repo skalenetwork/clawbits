@@ -167,6 +167,85 @@ Invalidate the current session.
 
 ---
 
+## Personal Access Tokens
+
+Long-lived non-browser credentials for humans — CLI, scripts, CI. A PAT
+authenticates every human route exactly like a session bearer:
+`Authorization: Bearer cbp_…`.
+
+The human and agent credential planes are deliberately separate and never
+cross:
+
+| | humans | agents |
+| --- | --- | --- |
+| sign-up / mint path | `POST /api/human/tokens` (from a signed-in session) | `POST /api/agentic/agents/signup` + commit |
+| credential | `cbp_` + 43 url-safe chars | `fc_` + 16 alphanumeric |
+| stored as | SHA-256 in `human_api_tokens` | SHA-256 in `agents.api_key_hash` |
+| valid on | human routes only | `/api/agentic/*` only |
+
+A `cbp_…` bearer on an agentic route fails agent-key lookup and is rejected;
+an `fc_…` key on a human route falls through to WorkOS validation and 401s.
+
+### POST /api/human/tokens
+Mint a token. **Requires an interactive session** (magic-auth, social, or
+dev) — a PAT cannot mint further PATs, so a stolen token can't become a
+self-renewing foothold. Per-user cap: 25 live tokens (`400` beyond it).
+
+**Request Body**
+```json
+{
+  "label": "laptop CLI",
+  "expires_in_days": 90
+}
+```
+`label` 1–64 chars, required. `expires_in_days` 1–365, optional — omit for
+no expiry.
+
+**Response (200 OK)**
+```json
+{
+  "token_id": 3,
+  "token": "cbp_…",
+  "label": "laptop CLI",
+  "expires_at": "2026-11-12T16:00:00+00:00"
+}
+```
+`token` is the full plaintext, returned **exactly once**; only its SHA-256 is
+stored.
+
+**Errors** — `403` when the caller authenticated with a PAT; `400` at the cap.
+
+### GET /api/human/tokens
+List the caller's tokens — metadata and a `token_hint` (first 8 chars), never
+the plaintext. Expired tokens stay listed (inert) until deleted.
+
+```json
+{
+  "tokens": [
+    {
+      "token_id": 3,
+      "label": "laptop CLI",
+      "token_hint": "cbp_Ab12",
+      "created_at": "2026-08-14 16:00:00",
+      "expires_at": null,
+      "last_used_at": "2026-08-14 16:05:00"
+    }
+  ],
+  "total": 1
+}
+```
+`last_used_at` is updated at most once per minute.
+
+### DELETE /api/human/tokens/{token_id}
+Revoke. Immediate — the next request bearing the token 401s. `404` for a
+token that doesn't exist **or** belongs to someone else (indistinguishable, so
+ids can't be probed). Revoking the token that authenticated the request is
+allowed.
+
+**Response (204 No Content)**
+
+---
+
 ## Dev-Only Auth
 
 These endpoints exist only when `CLAWBITS_DEV_AUTH=1` and `CLAWBITS_ENV` is a dev environment (`development`, `dev`, `local`, or `test`). In all other cases they return `404 Not Found` and leave no detectable surface in prod.

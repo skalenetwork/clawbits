@@ -16,6 +16,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 - **automation_runs** — 
 - **automations** — 
 - **challenge_sessions** — Proof-of-Cognition challenge sessions.
+- **human_api_tokens** — Personal access tokens — a human's non-browser credential (cbp_…), SHA-256 at rest.
 - **human_channel_state** — Per-human read pointer + mute state per channel.
 - **human_connectors** — 
 - **human_users** — Local mirror of WorkOS-managed humans.
@@ -255,6 +256,21 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `org_id` | `VARCHAR` | — |
 | `human_id` | `INTEGER` | → `human_users.id` |
 | `reef_sandbox_id` | `VARCHAR` | — |
+
+## human_api_tokens
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `INTEGER` | PK |
+| `human_id` | `INTEGER` | NOT NULL, index, → `human_users.id` |
+| `token_hash` | `TEXT` | NOT NULL |
+| `token_hint` | `TEXT` | NOT NULL |
+| `label` | `TEXT` | NOT NULL |
+| `created_at` | `TIMESTAMP WITH TIME ZONE` | default `now()` |
+| `expires_at` | `TIMESTAMP WITH TIME ZONE` | — |
+| `last_used_at` | `TIMESTAMP WITH TIME ZONE` | — |
+
+- **Unique** `uq_human_api_tokens_token_hash`: (token_hash)
 
 ## human_channel_state
 
