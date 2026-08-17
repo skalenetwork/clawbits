@@ -289,7 +289,132 @@ def test_cannot_remove_last_owner(test_client):
         headers=_auth(h1["access_token"]),
     )
     assert r.status_code == 400
-    assert "last owner" in r.json()["detail"].lower()
+    assert "last admin" in r.json()["detail"].lower()
+
+
+def test_owner_can_promote_and_demote(test_client):
+    """Owner promotes a member to owner, then the new owner demotes them back."""
+    h1 = _register(test_client, "promoter@test.com")
+    h2 = _register(test_client, "promotee@test.com")
+
+    r = test_client.post("/api/human/orgs",
+        json={"name": "role-org"},
+        headers=_auth(h1["access_token"]),
+    )
+    org_id = r.json()["org_id"]
+
+    test_client.post(f"/api/human/orgs/{org_id}/members",
+        json={"email": "promotee@test.com", "role": "member"},
+        headers=_auth(h1["access_token"]),
+    )
+
+    # Promote h2 → owner
+    r = test_client.patch(
+        f"/api/human/orgs/{org_id}/members/{h2['user']['id']}",
+        json={"role": "owner"},
+        headers=_auth(h1["access_token"]),
+    )
+    assert r.status_code == 200
+    roles = {m["email"]: m["role"] for m in r.json()["members"]}
+    assert roles["promotee@test.com"] == "owner"
+
+    # h2's own view of the org now reports the new role
+    r = test_client.get("/api/human/orgs", headers=_auth(h2["access_token"]))
+    org = next(o for o in r.json()["organizations"] if o["org_id"] == org_id)
+    assert org["my_role"] == "owner"
+
+    # h2 (now an owner) demotes h1 back to member
+    r = test_client.patch(
+        f"/api/human/orgs/{org_id}/members/{h1['user']['id']}",
+        json={"role": "member"},
+        headers=_auth(h2["access_token"]),
+    )
+    assert r.status_code == 200
+    roles = {m["email"]: m["role"] for m in r.json()["members"]}
+    assert roles["promoter@test.com"] == "member"
+
+    # ...and h1 has lost the owner-only power
+    r = test_client.patch(
+        f"/api/human/orgs/{org_id}/members/{h2['user']['id']}",
+        json={"role": "member"},
+        headers=_auth(h1["access_token"]),
+    )
+    assert r.status_code == 403
+
+
+def test_non_owner_cannot_change_roles(test_client):
+    """A regular member cannot promote themselves (or anyone else)."""
+    owner = _register(test_client, "role-owner@test.com")
+    member = _register(test_client, "role-member@test.com")
+
+    r = test_client.post("/api/human/orgs",
+        json={"name": "no-selfserve-org"},
+        headers=_auth(owner["access_token"]),
+    )
+    org_id = r.json()["org_id"]
+
+    test_client.post(f"/api/human/orgs/{org_id}/members",
+        json={"email": "role-member@test.com", "role": "member"},
+        headers=_auth(owner["access_token"]),
+    )
+
+    r = test_client.patch(
+        f"/api/human/orgs/{org_id}/members/{member['user']['id']}",
+        json={"role": "owner"},
+        headers=_auth(member["access_token"]),
+    )
+    assert r.status_code == 403
+
+
+def test_cannot_demote_last_owner(test_client):
+    """The last owner can't demote themselves — that would strand the org."""
+    h1 = _register(test_client, "lonely-owner@test.com")
+    h2 = _register(test_client, "plain-member@test.com")
+
+    r = test_client.post("/api/human/orgs",
+        json={"name": "stranded-org"},
+        headers=_auth(h1["access_token"]),
+    )
+    org_id = r.json()["org_id"]
+
+    test_client.post(f"/api/human/orgs/{org_id}/members",
+        json={"email": "plain-member@test.com", "role": "member"},
+        headers=_auth(h1["access_token"]),
+    )
+
+    r = test_client.patch(
+        f"/api/human/orgs/{org_id}/members/{h1['user']['id']}",
+        json={"role": "member"},
+        headers=_auth(h1["access_token"]),
+    )
+    assert r.status_code == 400
+    assert "last admin" in r.json()["detail"].lower()
+
+
+def test_role_change_rejects_unknown_member_and_bad_role(test_client):
+    """404 for someone who isn't in the org; 422 for a role outside the enum."""
+    owner = _register(test_client, "picky-owner@test.com")
+    outsider = _register(test_client, "not-in-org@test.com")
+
+    r = test_client.post("/api/human/orgs",
+        json={"name": "picky-org"},
+        headers=_auth(owner["access_token"]),
+    )
+    org_id = r.json()["org_id"]
+
+    r = test_client.patch(
+        f"/api/human/orgs/{org_id}/members/{outsider['user']['id']}",
+        json={"role": "owner"},
+        headers=_auth(owner["access_token"]),
+    )
+    assert r.status_code == 404
+
+    r = test_client.patch(
+        f"/api/human/orgs/{org_id}/members/{owner['user']['id']}",
+        json={"role": "superuser"},
+        headers=_auth(owner["access_token"]),
+    )
+    assert r.status_code == 422
 
 
 # ---------------------------------------------------------------------------

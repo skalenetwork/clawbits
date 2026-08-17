@@ -3,6 +3,7 @@ import { registerClawBitsCli } from "./cli.js";
 import { clawbitsChannelPlugin } from "./plugin.js";
 import { registerActivitySubscription } from "./activity/subscription.js";
 import { setCronHandle, type CronHandle } from "./automations/cron-handle.js";
+import { setWorkspaceDir } from "./skills/scan.js";
 import { wakeAutomationsReconciler } from "./automations/reconcile.js";
 import { registerUsageHooks } from "./usage/collector.js";
 
@@ -18,7 +19,10 @@ import { registerUsageHooks } from "./usage/collector.js";
 interface GatewayHookApi {
   on?: (
     hook: string,
-    handler: (event: unknown, ctx?: { getCron?: () => CronHandle | undefined }) => void,
+    handler: (
+      event: unknown,
+      ctx?: { getCron?: () => CronHandle | undefined; workspaceDir?: string },
+    ) => void,
   ) => void;
 }
 
@@ -45,6 +49,7 @@ export default defineChannelPluginEntry({
       } catch {
         /* best-effort: leave the reconciler idle if cron access is unavailable */
       }
+      setWorkspaceDir(ctx?.workspaceDir);
     });
     hookApi.on?.("cron_changed", () => {
       wakeAutomationsReconciler();

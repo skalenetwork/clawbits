@@ -1,9 +1,13 @@
+import { useEffect } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
+  type AgentEnv,
   api,
   ApiError,
   type BuildImageIn,
+  type EnvApplyResult,
+  type EnvPatchIn,
   isAuthError,
   type CreateSandboxIn,
   type FleetEntry,
@@ -300,4 +304,52 @@ export function useFleetActions() {
   })
 
   return { start, stop, restart, destroy, setColor, setRestartPolicy }
+}
+
+// ── Guest env (the user layer) ─────────────────────────────────────────────
+// Never polled: a refetch under a half-typed draft would clobber it.
+export function useAgentEnv(id: string | null) {
+  return useQuery({
+    queryKey: ["env", id],
+    queryFn: () => api.env(id!),
+    enabled: id != null,
+    retry: (failureCount, error) => !isAuthError(error) && failureCount < 3,
+  })
+}
+
+const envApplyMessage = (r: EnvApplyResult): string => {
+  if (!r.changed) return "No changes to apply"
+  if (r.takes_effect === "on_next_start")
+    return `Saved - ${r.sandbox_id} picks it up the next time it starts`
+  return r.applied === "recreate"
+    ? `Saved - recreating ${r.sandbox_id}…`
+    : `Saved - restarting ${r.sandbox_id}…`
+}
+
+/** Write an env diff (`PATCH /fleet/{id}/env`) and apply it. */
+export function useEnvActions(id: string) {
+  const qc = useQueryClient()
+
+  // Never optimistic: an onMutate would write plaintext into the query cache.
+  const save = useMutation({
+    mutationFn: (body: EnvPatchIn) => api.patchEnv(id, body),
+    onSuccess: (r) => {
+      toast.success(envApplyMessage(r))
+      // The response omits editable / apply_modes, so merge, don't replace.
+      qc.setQueryData<AgentEnv>(["env", id], (old) =>
+        old ? { ...old, vars: r.vars, state: r.state } : old,
+      )
+      qc.invalidateQueries({ queryKey: ["env", id] })
+      qc.invalidateQueries({ queryKey: ["fleet"] })
+      qc.invalidateQueries({ queryKey: ["detail", id] })
+    },
+    onError: (e) => toast.error(errMsg(e)),
+  })
+
+  // TanStack keeps `variables` on a settled mutation - drop the plaintext.
+  useEffect(() => {
+    if (save.isSuccess || save.isError) save.reset()
+  }, [save])
+
+  return { save }
 }

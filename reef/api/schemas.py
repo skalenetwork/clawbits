@@ -4,11 +4,20 @@ fleet dataclasses. Keeping the wire shape separate from the domain dataclasses
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
 from reef.build_jobs import BuildJob
-from reef.fleet import FleetEntry, Mount, NetworkPolicy, SandboxDetail
+from reef.fleet import (
+    EnvApplyResult,
+    FleetEntry,
+    GuestEnvVar,
+    GuestEnvView,
+    Mount,
+    NetworkPolicy,
+    SandboxDetail,
+)
 from reef.image_ops import BuildImageSpec, ImageInfo
 from reef.profiles import AccessInfo
 from reef.runtime import MetricsSample
@@ -81,6 +90,9 @@ class SandboxDetailOut(BaseModel):
     cpus: float | None = None
     memory_mib: int | None = None
     command: str | None = None
+    # REEF-MANAGED keys only, secret-looking values masked. The operator's own vars
+    # are excluded outright: masking is a key-NAME heuristic, so it would hand back
+    # DATABASE_URL / GH_PAT in full. ``EnvOut`` describes them without values.
     env: dict[str, str]
     network: NetworkOut
     mounts: list[MountOut]
@@ -197,6 +209,86 @@ class SandboxPatchOut(BaseModel):
     color: str | None = None
     restart_policy: str | None = None
     capabilities: list[str] = []
+
+
+# ── The editable user-env overlay (GET/PATCH /fleet/{id}/env) ─────────────────
+class EnvVarOut(BaseModel):
+    """Described WITHOUT its value: there is no value field and no reveal endpoint."""
+
+    key: str
+    value_length: int  # characters; 0 = set-but-empty, a real distinct state
+    source: Literal["file", "container"]
+
+
+class EnvOut(BaseModel):
+    """``apply_modes == ["recreate"]`` means this agent's image predates the
+    in-place env file, so an env change costs it ``~/.openclaw``."""
+
+    sandbox_id: str
+    vars: list[EnvVarOut]
+    editable: bool
+    # "drift" (no store record; permanent, list IS complete) | "unreadable-image"
+    # (baked ENV unreadable; transient, list degrades to the overlay file alone).
+    editable_reason: Literal["drift", "unreadable-image"] | None = None
+    complete: bool = True  # False ⇒ vars is PARTIAL
+    apply_modes: list[str]
+    state: str
+    desired_state: str | None = None
+    pending: bool = False  # forward-compat; always False in v1 (the write IS the apply)
+
+
+class EnvPatchIn(BaseModel):
+    """``set`` carries NO Pydantic constraints on purpose: a ``constr`` or pattern
+    would put the offending VALUE into the 422 body as ``detail[].input``. Value
+    rules live in the service, which names the key and the length only.
+
+    ``set: {"K": ""}`` is present-and-empty, a different state from
+    ``unset: ["K"]``; a key in both is a 422."""
+
+    set: dict[str, str] = {}
+    unset: list[str] = []
+    apply: Literal["restart", "recreate", "none"] = "restart"
+
+
+class EnvApplyOut(BaseModel):
+    """``applied`` is what actually happened, not what was asked: a no-op, or a
+    deliberately-stopped agent, reports ``none``."""
+
+    sandbox_id: str
+    changed: bool
+    applied: Literal["restart", "recreate", "none"]
+    takes_effect: Literal["now", "on_next_start"]
+    state: str
+    vars: list[EnvVarOut]
+
+
+def _env_var_out(v: GuestEnvVar) -> EnvVarOut:
+    return EnvVarOut(key=v.key, value_length=v.value_length, source=v.source)
+
+
+def env_out(view: GuestEnvView) -> EnvOut:
+    return EnvOut(
+        sandbox_id=view.sandbox_id,
+        vars=[_env_var_out(v) for v in view.vars],
+        editable=view.editable,
+        editable_reason=view.editable_reason,
+        complete=view.complete,
+        apply_modes=list(view.apply_modes),
+        state=view.state,
+        desired_state=view.desired_state,
+        pending=view.pending,
+    )
+
+
+def env_apply_out(result: EnvApplyResult) -> EnvApplyOut:
+    return EnvApplyOut(
+        sandbox_id=result.sandbox_id,
+        changed=result.changed,
+        applied=result.applied,
+        takes_effect=result.takes_effect,
+        state=result.state,
+        vars=[_env_var_out(v) for v in result.vars],
+    )
 
 
 class LogsOut(BaseModel):

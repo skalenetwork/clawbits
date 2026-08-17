@@ -1,4 +1,5 @@
 /** Shared presentational primitives for the create-agent wizard. */
+import { useState } from "react"
 import {
   ArrowRight01Icon,
   Cancel01Icon,
@@ -7,6 +8,8 @@ import {
   PlusSignIcon,
   TerminalIcon,
   Tick01Icon,
+  ViewIcon,
+  ViewOffIcon,
 } from "@hugeicons/core-free-icons"
 import type { AccessInfo, SandboxState } from "@/lib/api"
 import { agentMeta } from "@/lib/agentTypes"
@@ -21,6 +24,9 @@ import openclawUi from "@/assets/openclaw-ui.webp"
 /** POSIX env-var name; mirrors reef's server-side rule (reserved keys etc. come
  *  back as a readable 422 toast). */
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+// Mirror of reef's `_SECRET_KEY` (fleet.py): drives masking only.
+const SECRET_KEY_RE = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PRIVATE|CRED)/i
 
 /** One of the wizard's big option cards: icon-led, one-line description max,
  *  selection = ring + corner check. The WHOLE card is the click target. `tile`
@@ -133,16 +139,23 @@ export function IconField({
 export function EnvVarRow({
   row,
   disabled,
+  lockKey = false,
+  valuePlaceholder = "value",
   onChange,
   onRemove,
 }: {
   row: { key: string; value: string }
   disabled: boolean
+  /** Freeze the NAME field: an existing variable can't be renamed in place. */
+  lockKey?: boolean
+  valuePlaceholder?: string
   onChange: (next: { key: string; value: string }) => void
   onRemove: () => void
 }) {
   const k = row.key.trim()
   const invalid = k.length > 0 && !ENV_KEY_RE.test(k)
+  const isSecret = SECRET_KEY_RE.test(k)
+  const [show, setShow] = useState(false)
   return (
     <div className="flex items-center gap-2">
       <Input
@@ -154,20 +167,46 @@ export function EnvVarRow({
         autoComplete="off"
         spellCheck={false}
         disabled={disabled}
+        readOnly={lockKey}
         aria-invalid={invalid}
-        className={cn("flex-1 font-mono text-[13px]", invalid && "border-destructive/60")}
+        className={cn(
+          "flex-1 font-mono text-[13px]",
+          invalid && "border-destructive/60",
+          lockKey && "bg-transparent text-muted-foreground",
+        )}
       />
-      <Input
-        value={row.value}
-        onChange={(e) => {
-          onChange({ ...row, value: e.target.value })
-        }}
-        placeholder="value"
-        autoComplete="off"
-        spellCheck={false}
-        disabled={disabled}
-        className="flex-[1.4] font-mono text-[13px]"
-      />
+      <div className="relative flex-[1.4]">
+        <Input
+          type={isSecret && !show ? "password" : "text"}
+          value={row.value}
+          onChange={(e) => {
+            onChange({ ...row, value: e.target.value })
+          }}
+          placeholder={valuePlaceholder}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={disabled}
+          // autoComplete="off" is widely ignored; these are the opt-outs
+          // password managers actually honour.
+          data-1p-ignore={isSecret ? "" : undefined}
+          data-lpignore={isSecret ? "true" : undefined}
+          data-bwignore={isSecret ? "" : undefined}
+          className={cn("font-mono text-[13px]", isSecret && "pr-9")}
+        />
+        {isSecret && (
+          <button
+            type="button"
+            onClick={() => {
+              setShow((s) => !s)
+            }}
+            disabled={disabled}
+            aria-label={show ? "Hide value" : "Show value"}
+            className="absolute top-1/2 right-1 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          >
+            <Icon icon={show ? ViewOffIcon : ViewIcon} className="size-4" />
+          </button>
+        )}
+      </div>
       <button
         type="button"
         onClick={onRemove}

@@ -21,7 +21,9 @@ export async function getStaticPaths() {
     if (!doc) {
       throw new Error(`docs allowlist names ${entry.file}, but it was not loaded.`);
     }
-    return { params: { slug: entry.slug }, props: { entry, body: doc.body ?? "" } };
+    // Same incremental-build opt-in as [slug].astro: skip re-rendering when
+    // the body digest and module graph are unchanged.
+    return { params: { slug: entry.slug }, props: { entry, body: doc.body ?? "" }, cacheKey: doc.digest };
   });
 }
 

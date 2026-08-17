@@ -97,6 +97,19 @@
   --border: oklch(0.8500 0.0200 84.5889);
   --input: oklch(0.8434 0.0231 87.1621);
   --ring: oklch(0.3012 0 0);
+  /* ── Code surfaces ────────────────────────────────────────────────────
+   * Fenced code blocks (components/CodeBlock.tsx) paint a panel rather than
+   * a tinted paragraph: a fill, a header rail one step off it, and a hairline
+   * that carries both the outer ring and the header divider. Opaque, not an
+   * alpha wash, so a block reads identically on --card, --panel, and inside a
+   * message bubble instead of picking up whatever is underneath it.
+   *
+   * Light sits a step BELOW --background (0.9437) - code recedes into the
+   * paper. Dark sits BELOW --card (0.2264) - code reads as a terminal cut
+   * into the surface, which is the direction every editor takes it. */
+  --code-bg: oklch(0.9310 0.0125 88.5000);
+  --code-header-bg: oklch(0.9130 0.0140 88.5000);
+  --code-border: oklch(0.8620 0.0180 86.0000);
   --sidebar: oklch(0.9160 0.0112 89.7274 / var(--app-bg-opacity, 1));
   --sidebar-foreground: oklch(0.2350 0 0);
   --sidebar-primary: oklch(0.3012 0 0);
@@ -334,6 +347,10 @@ html[data-tauri-platform="linux"] body {
   --border: oklch(0.2931 0 0);
   --input: oklch(0.2931 0 0);
   --ring: oklch(0.8520 0.0205 100.6306);
+  /* Code surfaces — see the light-mode note. */
+  --code-bg: oklch(0.1880 0 0);
+  --code-header-bg: oklch(0.2180 0 0);
+  --code-border: oklch(0.2850 0 0);
   --sidebar: oklch(0.1822 0 0 / var(--app-bg-opacity, 1));
   --sidebar-foreground: oklch(0.9173 0.0133 82.4015);
   --sidebar-primary: oklch(0.8520 0.0205 100.6306);
@@ -426,6 +443,9 @@ html[data-tauri-platform="linux"] body {
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-code: var(--code-bg);
+  --color-code-header: var(--code-header-bg);
+  --color-code-border: var(--code-border);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
@@ -822,6 +842,63 @@ html[data-tauri-platform="linux"] body {
 }
 .dark .code-block-shiki .shiki,
 .dark .code-block-shiki .shiki span {
+  color: var(--shiki-dark);
+}
+
+/* Own message bubbles (bubble mode) paint on a FIXED blue fill in both
+ * themes, so their body has to be forced white: the markdown root's
+ * ``text-foreground``, the mention tint, and the list ``::marker`` would
+ * otherwise flip dark in light mode and disappear into the accent. The
+ * ``::marker`` was the visible bug — Tailwind's ``marker:`` variant sets
+ * ``color`` on the pseudo-element explicitly, so ordered-list numbers stayed
+ * warm gray on blue while the text beside them went white.
+ *
+ * These rules sit outside ``@layer`` deliberately: unlayered CSS beats every
+ * Tailwind utility regardless of specificity, so the bubble no longer needs a
+ * wall of ``!``-prefixed arbitrary variants to win.
+ */
+.msg-on-accent,
+.msg-on-accent *,
+.msg-on-accent *::marker {
+  color: #fff;
+}
+.msg-on-accent a {
+  text-decoration-color: rgb(255 255 255 / 0.55);
+}
+.msg-on-accent hr,
+.msg-on-accent blockquote {
+  border-color: rgb(255 255 255 / 0.35);
+}
+.msg-on-accent th,
+.msg-on-accent td {
+  border-color: rgb(255 255 255 / 0.22);
+}
+.msg-on-accent thead {
+  background-color: rgb(255 255 255 / 0.1);
+}
+.msg-on-accent .inline-code {
+  background-color: rgb(0 0 0 / 0.24);
+  box-shadow: none;
+}
+
+/* Code KEEPS its syntax colors inside an own bubble. The panel takes a dark
+ * inset instead of --code-bg (a light paper that would glare on the blue),
+ * and its tokens run the DARK palette in both themes so they read against it.
+ * Without these two rules the ``*`` selector above flattens every token to
+ * white and the highlighting is simply gone. */
+.msg-on-accent .code-block {
+  background-color: rgb(0 0 0 / 0.26);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.13);
+}
+.msg-on-accent .code-block-header {
+  background-color: rgb(255 255 255 / 0.06);
+  border-color: rgb(255 255 255 / 0.11);
+}
+.msg-on-accent .code-block-header .code-block-lang {
+  color: rgb(255 255 255 / 0.6);
+}
+.msg-on-accent .code-block-shiki .shiki,
+.msg-on-accent .code-block-shiki .shiki span {
   color: var(--shiki-dark);
 }
 

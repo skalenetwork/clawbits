@@ -34,15 +34,25 @@ def _fake_docker(images_out: str, inspect_out: str, rc: int = 0):
     return run
 
 
-def _inspect_line(image_id, created, size, repo_tags, labels):
-    return "\t".join([image_id, created, str(size), json.dumps(repo_tags), json.dumps(labels)])
+def _inspect_entry(image_id, created, size, repo_tags, labels):
+    """One `docker image inspect` object. ``labels=None`` omits Config.Labels
+    entirely, which is what a real image can do and what used to abort the
+    whole listing when this was parsed with a Go template."""
+    config = {} if labels is None else {"Labels": labels}
+    return {
+        "Id": image_id,
+        "Created": created,
+        "Size": size,
+        "RepoTags": repo_tags,
+        "Config": config,
+    }
 
 
 def test_list_local_images_parses_tags_labels_and_active():
     ids = "sha256:aaa\nsha256:aaa\nsha256:bbb\n"  # plugin+0.6.1 share aaa (dedupe)
-    inspect = "\n".join(
+    inspect = json.dumps(
         [
-            _inspect_line(
+            _inspect_entry(
                 "sha256:aaa",
                 "2026-06-22T15:23:43.7Z",
                 1067589514,
@@ -53,7 +63,7 @@ def test_list_local_images_parses_tags_labels_and_active():
                     "org.reef.clawbits-plugin.version": "1.2.3",
                 },
             ),
-            _inspect_line(
+            _inspect_entry(
                 "sha256:bbb",
                 "2026-06-01T00:00:00Z",
                 999,
@@ -80,9 +90,39 @@ def test_list_local_images_empty():
     assert asyncio.run(list_local_images(docker_bin="docker", runner=_fake_docker("", ""))) == []
 
 
+def test_list_local_images_survives_an_image_with_no_labels_key():
+    """An image whose Config carries no Labels key at all. The Go template this
+    used to use aborted the ENTIRE listing on one such image."""
+    inspect = json.dumps(
+        [
+            _inspect_entry("sha256:aaa", "2026-06-22T00:00:00Z", 1, ["reef-oc:plugin"], None),
+            _inspect_entry(
+                "sha256:bbb",
+                "2026-06-01T00:00:00Z",
+                2,
+                ["reef-oc:0.5.0"],
+                {"org.reef.openclaw.version": "2026.6.9"},
+            ),
+        ]
+    )
+    runner = _fake_docker("sha256:aaa\nsha256:bbb\n", inspect)
+    by_tag = {i.tag: i for i in asyncio.run(list_local_images(docker_bin="docker", runner=runner))}
+    assert set(by_tag) == {"reef-oc:plugin", "reef-oc:0.5.0"}
+    assert by_tag["reef-oc:plugin"].runtime_version is None
+    assert by_tag["reef-oc:0.5.0"].runtime_version == "2026.6.9"
+
+
 def test_list_local_images_ignores_foreign_tags():
-    inspect = _inspect_line("sha256:aaa", "2026-06-22T00:00:00Z", 1, ["reef-oc:plugin", "other:latest"], {})
-    imgs = asyncio.run(list_local_images(docker_bin="docker", runner=_fake_docker("sha256:aaa\n", inspect)))
+    inspect = json.dumps(
+        [
+            _inspect_entry(
+                "sha256:aaa", "2026-06-22T00:00:00Z", 1, ["reef-oc:plugin", "other:latest"], {}
+            )
+        ]
+    )
+    imgs = asyncio.run(
+        list_local_images(docker_bin="docker", runner=_fake_docker("sha256:aaa\n", inspect))
+    )
     assert [i.tag for i in imgs] == ["reef-oc:plugin"]
 
 
@@ -102,14 +142,20 @@ def _fake_docker_repos(repo_ids: dict[str, str], inspect_out: str):
 def test_list_local_images_tags_agent_type_across_repos():
     # reef-oc:* ⇒ openclaw, reef-ic:* ⇒ ironclaw; each repo's floating tag is
     # active for ITS OWN type (reef-oc:plugin / reef-ic:channel).
-    inspect = "\n".join(
+    inspect = json.dumps(
         [
-            _inspect_line(
-                "sha256:oc", "2026-06-22T00:00:00Z", 1, ["reef-oc:plugin"],
+            _inspect_entry(
+                "sha256:oc",
+                "2026-06-22T00:00:00Z",
+                1,
+                ["reef-oc:plugin"],
                 {"org.reef.openclaw.version": "2026.6.9"},
             ),
-            _inspect_line(
-                "sha256:ic", "2026-06-23T00:00:00Z", 1, ["reef-ic:channel"],
+            _inspect_entry(
+                "sha256:ic",
+                "2026-06-23T00:00:00Z",
+                1,
+                ["reef-ic:channel"],
                 {"org.opencontainers.image.version": "0.2.3"},
             ),
         ]

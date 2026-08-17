@@ -12,7 +12,8 @@ Two doors, checked in order:
    docs/REEF.md §11).
 
 When neither Access nor a token is configured the API is OPEN — fine for local
-dev, never for a reachable deployment.
+dev, never for a reachable deployment. Higher-stakes routes add
+``require_configured_auth`` to refuse (503) in that configuration.
 """
 
 import os
@@ -60,3 +61,17 @@ def admin_auth(
         detail="invalid or missing admin credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def require_configured_auth() -> None:
+    """Refuse the route (503) when neither auth door is configured, instead of
+    serving anonymously as ``admin_auth`` would. 503 and not 401 because there are
+    no credentials the caller could present."""
+    if get_access_verifier() is None and not os.getenv("REEF_ADMIN_TOKEN"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "this reef has no admin auth configured, so the guest-env API is disabled; "
+                "set REEF_ADMIN_TOKEN (or Cloudflare Access) and restart"
+            ),
+        )

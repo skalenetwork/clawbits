@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from eth_utils import to_hex
-from sqlalchemy import and_, case, func, not_, or_, text
+from sqlalchemy import and_, case, func, literal, not_, or_, text, true
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -27,12 +27,15 @@ from clawbits.datastructures.agent import Agent as AgentDS
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.mm_models import agent_liveness_status
 from clawbits.db.models import (
+    SKILL_SCHEMA_VERSION,
     Agent,
     AgentAction,
     AgentContactPermission,
     AgentPost,
     AgentProfile,
     AgentSignupRequest,
+    AgentSkillInstall,
+    AgentSkillSyncState,
     AgentUsageDaily,
     Automation,
     AutomationRun,
@@ -53,6 +56,8 @@ from clawbits.db.models import (
     PushDevice,
     Repository,
     ShareRecord,
+    Skill,
+    SkillVersion,
 )
 from clawbits.utils.parse import (
     format_db_timestamp as _iso,
@@ -60,6 +65,14 @@ from clawbits.utils.parse import (
 from clawbits.utils.parse import (
     parse_32b_hex_private_key,
 )
+
+# Ceiling on every unread/mention count the read path computes. The clients all
+# render anything above 99 as "99+" (sidebar, rail, mobile list, tab title, dock
+# badge), so an exact count past this point is invisible work — and it is the
+# expensive kind, since the pathological case is a busy channel with no read
+# pointer, where "count the unread" means "count the channel". Counting stops
+# at the cap, so a returned 100 means "at least 100".
+UNREAD_COUNT_CAP = 100
 
 
 def _privacy_last_seen(row: HumanUser) -> str | None:
@@ -1194,20 +1207,14 @@ class TableRead:
           round-trip.
         """
         # Per-channel correlated unread count, same shape as the one in
-        # ``get_mm_channels_for_human``: count published posts newer than
-        # the user's read marker that the user didn't author themselves.
+        # ``get_mm_channels_for_human``, and capped the same way — this list
+        # is fetched on boot too (the auth bootstrap resolves the personal org
+        # through it), so it sits directly in front of the chat list on a cold
+        # load and an uncapped scan here delays the sidebar just as surely.
+        # Per-org totals are therefore sums of capped per-channel counts.
         unread_count_sq = (
-            select(func.count(MmPost.post_id))
-            .where(MmPost.channel_id == MmChannel.channel_id)
-            .where(MmPost.status == "published")
-            .where(
-                MmPost.post_id
-                > func.coalesce(HumanChannelState.last_read_post_id, 0)
-            )
-            .where(
-                (MmPost.human_id != human_id) | (MmPost.human_id.is_(None))
-            )
-            .correlate(MmChannel, HumanChannelState)
+            select(func.count())
+            .select_from(TableRead._unread_window(human_id))
             .scalar_subquery()
         )
         # Per-(org, channel) unread for channels this user is a member of
@@ -2326,64 +2333,102 @@ class TableRead:
         return TableRead._channel_to_dict(row, session) if row else None
 
     @staticmethod
+    def _unread_window(human_id: int, *, mention_regex: str | None = None):
+        """Correlated SELECT over the viewer's unread posts in the outer
+        ``MmChannel``, capped at :data:`UNREAD_COUNT_CAP` rows.
+
+        "Unread" is: published, newer than this human's read pointer, and not
+        authored by them (your own messages are never homework). The ``human_id
+        IS NULL`` arm is load-bearing — agent posts carry a NULL ``human_id``
+        and ``NULL != n`` is NULL, not true, so they would drop out of the
+        count without it.
+
+        Pass ``mention_regex`` for the subset that addresses this viewer.
+
+        The LIMIT is the point. The UI renders anything past 99 as "99+", so
+        counting an unbounded backlog is work nobody can see — and it is worst
+        exactly where it hurts most, on the first load of a busy channel the
+        user has never opened (no read pointer, so every post counts).
+        """
+        stmt = (
+            select(literal(1))
+            .where(MmPost.channel_id == MmChannel.channel_id)
+            .where(MmPost.status == "published")
+            .where(
+                MmPost.post_id
+                > func.coalesce(HumanChannelState.last_read_post_id, 0)
+            )
+            .where((MmPost.human_id != human_id) | (MmPost.human_id.is_(None)))
+        )
+        if mention_regex is not None:
+            stmt = stmt.where(MmPost.message.op("~*")(mention_regex))
+        return (
+            stmt.limit(UNREAD_COUNT_CAP)
+            .correlate(MmChannel, HumanChannelState)
+            .subquery()
+        )
+
+    @staticmethod
     def get_mm_channels_for_human(
         session: Session,
         human_id: int,
         org_id: str | None = None,
     ) -> list[dict]:
-        # Subquery: latest published post (for last_message_at + latest_post_id)
+        # THE sidebar query. Everything the chat list shows for every
+        # conversation the viewer is in, in one round-trip. It runs on every
+        # app boot, on every SSE reconnect, and on a 30s poll, so its shape
+        # matters more than almost anything else in the read path — see
+        # migration ``c4e1b9a7f2d5`` for what it cost when it was wrong.
+        #
+        # Latest published post, as a LATERAL rather than an aggregate. The
+        # obvious ``GROUP BY channel_id`` over ``mm_posts`` has to touch every
+        # post in the deployment to answer for sixty channels — a cost that
+        # grows with total volume and is identical for every user in the org.
+        # A per-channel ``ORDER BY post_id DESC LIMIT 1`` rides
+        # ``ix_mm_posts_channel_post`` and touches one row per channel instead.
+        #
+        # Ordering by ``post_id`` (not ``created_at``) also fixes a latent
+        # correctness wrinkle: the aggregate took ``max(created_at)`` and
+        # ``max(post_id)`` independently, so two posts written in the same
+        # instant could hand back a timestamp from one row and an id from
+        # another. ``post_id`` is a serial, so newest id IS newest post, and
+        # both values now come from the same row.
         latest_post = (
             select(
-                MmPost.channel_id,
-                func.max(MmPost.created_at).label("last_message_at"),
-                func.max(MmPost.post_id).label("latest_post_id"),
+                MmPost.post_id.label("post_id"),
+                MmPost.created_at.label("created_at"),
             )
-            .where(MmPost.status == "published")
-            .group_by(MmPost.channel_id)
-            .subquery()
-        )
-        # Correlated unread count: published posts with id > last_read_post_id
-        # and NOT authored by this human (their own posts shouldn't count).
-        unread_count_sq = (
-            select(func.count(MmPost.post_id))
             .where(MmPost.channel_id == MmChannel.channel_id)
             .where(MmPost.status == "published")
-            .where(
-                MmPost.post_id
-                > func.coalesce(HumanChannelState.last_read_post_id, 0)
-            )
-            .where(
-                (MmPost.human_id != human_id) | (MmPost.human_id.is_(None))
-            )
-            .correlate(MmChannel, HumanChannelState)
+            .order_by(MmPost.post_id.desc())
+            .limit(1)
+            .correlate(MmChannel)
+            .lateral("latest_post")
+        )
+        unread_count_sq = (
+            select(func.count())
+            .select_from(TableRead._unread_window(human_id))
             .scalar_subquery()
         )
-        # Correlated mention count: the subset of unread posts that address
-        # this viewer — directly (``@<their handle>``) or channel-wide
-        # (``@here``). Drives the sidebar's accent "mentioned" badge, which
-        # pierces mute. Same unread predicate as above, plus a regex match
-        # on the body (see ``_human_mention_match_regex``).
+        # The subset of unread posts that address this viewer — directly
+        # (``@<their handle>``) or channel-wide (``@here``). Drives the
+        # sidebar's accent "mentioned" badge, which pierces mute. Same unread
+        # predicate as above plus a regex match on the body (see
+        # ``_human_mention_match_regex``); the regex rides the trigram index
+        # from the search migration.
         mention_regex = TableRead._human_mention_match_regex(session, human_id)
         unread_mention_count_sq = (
-            select(func.count(MmPost.post_id))
-            .where(MmPost.channel_id == MmChannel.channel_id)
-            .where(MmPost.status == "published")
-            .where(
-                MmPost.post_id
-                > func.coalesce(HumanChannelState.last_read_post_id, 0)
+            select(func.count())
+            .select_from(
+                TableRead._unread_window(human_id, mention_regex=mention_regex)
             )
-            .where(
-                (MmPost.human_id != human_id) | (MmPost.human_id.is_(None))
-            )
-            .where(MmPost.message.op("~*")(mention_regex))
-            .correlate(MmChannel, HumanChannelState)
             .scalar_subquery()
         )
         stmt = (
             select(
                 MmChannel,
-                latest_post.c.last_message_at,
-                latest_post.c.latest_post_id,
+                latest_post.c.created_at.label("last_message_at"),
+                latest_post.c.post_id.label("latest_post_id"),
                 HumanChannelState.last_read_post_id,
                 HumanChannelState.muted_at,
                 HumanChannelState.pinned_at,
@@ -2391,20 +2436,20 @@ class TableRead:
                 unread_mention_count_sq.label("unread_mention_count"),
             )
             .join(MmChannelMember, MmChannelMember.channel_id == MmChannel.channel_id)
-            .join(latest_post, latest_post.c.channel_id == MmChannel.channel_id, isouter=True)
             .join(
                 HumanChannelState,
                 (HumanChannelState.channel_id == MmChannel.channel_id)
                 & (HumanChannelState.human_id == human_id),
                 isouter=True,
             )
+            .join(latest_post, true(), isouter=True)
             .where(MmChannelMember.human_id == human_id)
         )
         if org_id is not None:
             stmt = stmt.where(MmChannel.org_id == org_id)
         rows = session.exec(
             stmt.order_by(
-                func.coalesce(latest_post.c.last_message_at, MmChannel.created_at).desc()
+                func.coalesce(latest_post.c.created_at, MmChannel.created_at).desc()
             )
         ).all()
 
@@ -3357,3 +3402,282 @@ class TableRead:
         stmt = stmt.limit(limit)
         return list(session.exec(stmt).all())
 
+
+    # ------------------------------------------------------------------
+    # Skills catalog
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _skill_to_dict(row: Skill, latest: SkillVersion | None = None) -> dict:
+        """Operator/UI projection of a catalog row."""
+        return {
+            "skill_id": row.skill_id,
+            "org_id": row.org_id,
+            "slug": row.slug,
+            "display_name": row.display_name,
+            "summary": row.summary,
+            "icon_emoji": row.icon_emoji,
+            "visibility": row.visibility,
+            "origin": row.origin,
+            "runtimes": row.runtimes or ["openclaw"],
+            "forked_from_skill_id": row.forked_from_skill_id,
+            "forked_from_version_id": row.forked_from_version_id,
+            "latest_version_id": row.latest_version_id,
+            "latest_version": latest.version if latest is not None else None,
+            "content_hash": latest.content_hash if latest is not None else None,
+            "has_executable": bool(latest.has_executable) if latest is not None else False,
+            "is_draft": row.latest_version_id is None,
+            "archived_at": _iso(row.archived_at),
+            "created_by": row.created_by,
+            "created_at": _iso(row.created_at),
+            "updated_at": _iso(row.updated_at),
+        }
+
+    @staticmethod
+    def _skill_version_to_dict(row: SkillVersion, *, include_content: bool = False) -> dict:
+        """One version. ``include_content`` is off for timeline listings."""
+        out = {
+            "version_id": row.version_id,
+            "skill_id": row.skill_id,
+            "version": row.version,
+            "content_hash": row.content_hash,
+            "total_bytes": row.total_bytes,
+            "has_executable": bool(row.has_executable),
+            "changelog": row.changelog,
+            "schema_version": row.schema_version,
+            "published_by": row.published_by,
+            "created_at": _iso(row.created_at),
+        }
+        if include_content:
+            out["manifest"] = row.manifest
+            out["body_md"] = row.body_md
+            out["files"] = row.files or []
+        return out
+
+    @staticmethod
+    def list_org_skills(session: Session, org_id: str) -> list[dict]:
+        """Every live skill in the org's library, newest first.
+
+        Gated on org membership by the caller, not agent operatorship: an owner
+        who operates no agents must still see the shared library.
+        """
+        rows = session.exec(
+            select(Skill)
+            .where(Skill.org_id == org_id, Skill.deleted_at.is_(None))
+            .order_by(Skill.updated_at.desc())
+        ).all()
+        if not rows:
+            return []
+        version_ids = [r.latest_version_id for r in rows if r.latest_version_id]
+        latest_by_id: dict[str, SkillVersion] = {}
+        if version_ids:
+            latest_by_id = {
+                v.version_id: v
+                for v in session.exec(
+                    select(SkillVersion).where(SkillVersion.version_id.in_(version_ids))
+                ).all()
+            }
+        return [
+            TableRead._skill_to_dict(r, latest_by_id.get(r.latest_version_id or ""))
+            for r in rows
+        ]
+
+    @staticmethod
+    def get_skill_for_org(session: Session, skill_id: str, org_id: str) -> Skill | None:
+        """A live skill, re-deriving org from the row itself.
+
+        Every by-id route must use this rather than a bare ``session.get`` —
+        org isolation here is convention, not row-level security.
+        """
+        row = session.get(Skill, skill_id)
+        if row is None or row.deleted_at is not None or row.org_id != org_id:
+            return None
+        return row
+
+    @staticmethod
+    def get_skill_detail(session: Session, skill_id: str, org_id: str) -> dict | None:
+        """Full projection of one skill, including its current version content."""
+        row = TableRead.get_skill_for_org(session, skill_id, org_id)
+        if row is None:
+            return None
+        latest = (
+            session.get(SkillVersion, row.latest_version_id)
+            if row.latest_version_id
+            else None
+        )
+        out = TableRead._skill_to_dict(row, latest)
+        out["current_version"] = (
+            TableRead._skill_version_to_dict(latest, include_content=True)
+            if latest is not None
+            else None
+        )
+        return out
+
+    @staticmethod
+    def list_skill_versions(session: Session, skill_id: str) -> list[dict]:
+        """The version timeline, newest first. Spine only — no bodies."""
+        rows = session.exec(
+            select(SkillVersion)
+            .where(SkillVersion.skill_id == skill_id)
+            .order_by(SkillVersion.created_at.desc())
+        ).all()
+        return [TableRead._skill_version_to_dict(r) for r in rows]
+
+    @staticmethod
+    def get_skill_version(
+        session: Session, version_id: str, skill_id: str
+    ) -> SkillVersion | None:
+        """One version, asserting it belongs to ``skill_id``.
+
+        ``skill_versions`` carries no ``org_id``, so this scoping IS the check.
+        """
+        row = session.get(SkillVersion, version_id)
+        if row is None or row.skill_id != skill_id:
+            return None
+        return row
+
+    @staticmethod
+    def get_org_skill_slugs(session: Session, org_id: str) -> set[str]:
+        """Live slugs already taken in this org (for fork slug derivation)."""
+        rows = session.exec(
+            select(Skill.slug).where(Skill.org_id == org_id, Skill.deleted_at.is_(None))
+        ).all()
+        return {r for r in rows}
+
+    @staticmethod
+    def _install_to_dict(row: AgentSkillInstall) -> dict:
+        state = row.reported_state or {}
+        manifest = row.reported_manifest or {}
+        return {
+            "install_id": row.install_id,
+            "agent_id": row.agent_id,
+            "skill_id": row.skill_id,
+            "slug": row.slug,
+            "managed_by": row.managed_by,
+            "name": manifest.get("name") or row.slug,
+            "description": manifest.get("description"),
+            "sync_status": row.sync_status,
+            "sync_error": row.sync_error,
+            "enabled": row.enabled,
+            "reported_version": row.reported_version,
+            "reported_path": row.reported_path,
+            "reported_root": row.reported_root,
+            "reported_source": row.reported_source,
+            # A skill can be present and still unused (missing requirement).
+            "eligible": state.get("eligible"),
+            "model_visible": state.get("modelVisible"),
+            "missing": state.get("missing"),
+            "last_seen_at": _iso(row.last_seen_at),
+            "updated_at": _iso(row.updated_at),
+        }
+
+    @staticmethod
+    def list_agent_skills(session: Session, agent_id: str) -> dict:
+        # Tombstones stay visible on purpose: a removal is not done until the
+        # agent confirms the directory is gone, and hiding the row immediately
+        # would paint success we cannot vouch for.
+        rows = session.exec(
+            select(AgentSkillInstall)
+            .where(
+                AgentSkillInstall.agent_id == agent_id,
+                or_(
+                    AgentSkillInstall.deleted_at.is_(None),
+                    AgentSkillInstall.sync_status == "removing",
+                ),
+            )
+            .order_by(AgentSkillInstall.slug)
+        ).all()
+        state = session.get(AgentSkillSyncState, agent_id)
+        return {
+            "skills": [TableRead._install_to_dict(r) for r in rows],
+            "sync": {
+                "report_mode": state.report_mode if state else None,
+                "skills_root": state.skills_root if state else None,
+                "scanned_roots": state.scanned_roots if state else None,
+                "apply_mode": state.apply_mode if state else None,
+                "prompt_chars_observed": state.prompt_chars_observed if state else None,
+                "prompt_budget_observed": state.prompt_budget_observed if state else None,
+                "truncated": state.report_truncated if state else False,
+                "plugin_version": state.plugin_version if state else None,
+                "last_reported_at": _iso(state.last_reported_at) if state else None,
+            },
+        }
+
+    @staticmethod
+    def _resolve_install_version(
+        session: Session, row: AgentSkillInstall
+    ) -> SkillVersion | None:
+        """The version this install should be on, resolved live.
+
+        Deliberately not stored. 'latest' reads the skill's current pointer at
+        feed time, so publishing a new version needs no fan-out write across
+        every install — the content hash simply changes and the plugin's drift
+        gate picks it up on its next pass.
+        """
+        if row.channel == "pinned" and row.pinned_version_id:
+            return session.get(SkillVersion, row.pinned_version_id)
+        if row.skill_id is None:
+            return None
+        skill = session.get(Skill, row.skill_id)
+        if skill is None or skill.latest_version_id is None:
+            return None
+        return session.get(SkillVersion, skill.latest_version_id)
+
+    @staticmethod
+    def get_desired_skills(session: Session, agent_id: str) -> dict:
+        """The desired set the plugin reconciles to. Index only, never bodies."""
+        state = session.get(AgentSkillSyncState, agent_id)
+        rows = session.exec(
+            select(AgentSkillInstall).where(
+                AgentSkillInstall.agent_id == agent_id,
+                AgentSkillInstall.managed_by == "clawbits",
+            )
+        ).all()
+
+        items = []
+        for row in rows:
+            absent = row.deleted_at is not None or not row.enabled
+            version = None if absent else TableRead._resolve_install_version(session, row)
+            # A managed row whose skill has no published version yet has nothing
+            # to apply; skip rather than emit an item the client cannot satisfy.
+            if not absent and version is None:
+                continue
+            items.append(
+                {
+                    "install_id": row.install_id,
+                    "slug": row.slug,
+                    "intent": "absent" if absent else "present",
+                    "desired_generation": row.desired_generation,
+                    "version_id": version.version_id if version else None,
+                    "version": version.version if version else None,
+                    "content_hash": version.content_hash if version else None,
+                }
+            )
+        return {
+            "schema_version": SKILL_SCHEMA_VERSION,
+            "paused": bool(state.paused) if state else False,
+            "desired_generation": state.desired_generation if state else 0,
+            "skills": items,
+        }
+
+    @staticmethod
+    def get_agent_skill_version(
+        session: Session, agent_id: str, version_id: str
+    ) -> SkillVersion | None:
+        """A version the agent is entitled to fetch.
+
+        Entitlement is having a live managed install that resolves to it — the
+        agent can never pull arbitrary catalog content by guessing an id.
+        """
+        rows = session.exec(
+            select(AgentSkillInstall).where(
+                AgentSkillInstall.agent_id == agent_id,
+                AgentSkillInstall.managed_by == "clawbits",
+                AgentSkillInstall.deleted_at.is_(None),
+            )
+        ).all()
+        for row in rows:
+            version = TableRead._resolve_install_version(session, row)
+            if version is not None and version.version_id == version_id:
+                return version
+        return None

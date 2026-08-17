@@ -536,6 +536,24 @@ async def publish_org_added(
     )
 
 
+async def publish_org_updated(
+    bus: EventBus, human_id: int, org: dict[str, Any]
+) -> None:
+    """Tell this human's tabs that an org they already have changed.
+
+    Today this fires on a role change, where ``my_role`` in the payload is
+    rendered from the *recipient's* perspective — an owner who demotes
+    themselves, or a member who was just promoted, sees the admin surfaces
+    appear/disappear without a reload. Clients merge by ``org_id`` and
+    ignore orgs they don't hold, so this never doubles as an invite.
+
+    Same envelope shape as :func:`publish_org_added`."""
+    await bus.publish(
+        human_topic(human_id),
+        _envelope("org.updated", "", org),
+    )
+
+
 async def publish_member_status(
     bus: EventBus,
     channel_id: str,

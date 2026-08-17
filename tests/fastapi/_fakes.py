@@ -254,6 +254,23 @@ class _FakeUserManagement:
         ]
         return _FakePage(data=matches)
 
+    def update_organization_membership(
+        self, id: str, *, role: Any = None, **_: Any
+    ) -> Any:
+        """Mirror WorkOS ``update_organization_membership(id, role=...)``.
+
+        Positional ``id``, keyword-only ``role`` — matches the v6 SDK, so a
+        call-site that drifts from that signature fails here instead of being
+        swallowed by the best-effort ``except`` in ``update_membership_role``.
+        """
+        slug = getattr(role, "role_slug", None) or (role if isinstance(role, str) else None)
+        for m in self._p.memberships:
+            if m.id == id:
+                if slug is not None:
+                    m.role = slug
+                return m
+        return None
+
     def delete_organization_membership(self, id: str, **_: Any) -> None:
         self._p.memberships = [m for m in self._p.memberships if m.id != id]
 

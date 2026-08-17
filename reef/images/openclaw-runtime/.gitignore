@@ -1,0 +1,3 @@
+# staged by build.sh for CLAWBITS_PLUGIN_LOCAL=1; must stay in the docker build
+# context, so gitignored rather than dockerignored.
+.plugin-src/

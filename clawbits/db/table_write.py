@@ -16,6 +16,7 @@ from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from eth_utils import to_hex
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, delete, select, update
 
@@ -33,6 +34,8 @@ from clawbits.db.models import (
     AgentPost,
     AgentProfile,
     AgentSignupRequest,
+    AgentSkillInstall,
+    AgentSkillSyncState,
     AgentUsageDaily,
     AgentUsageEvent,
     Automation,
@@ -54,7 +57,17 @@ from clawbits.db.models import (
     PushDevice,
     Repository,
     ShareRecord,
+    Skill,
+    SkillVersion,
 )
+
+
+def _as_str(value: object, *, limit: int = 1000) -> str | None:
+    """Bounded coercion for agent-reported fields (untrusted, UI-rendered)."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value[:limit] if value else None
 
 
 class UserDeletionBlocked(Exception):
@@ -3459,3 +3472,468 @@ class TableWrite:
         row.deleted_at = _dt.datetime.now(_dt.UTC)
         session.flush()
         return row
+
+    # ------------------------------------------------------------------
+    # Skills catalog
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _publish_version(
+        session: Session,
+        *,
+        skill: Skill,
+        manifest: dict,
+        body_md: str,
+        files: list[dict],
+        changelog: str | None,
+        published_by: int | None,
+    ) -> SkillVersion:
+        """Insert an immutable version and point the skill at it.
+
+        Callers pass already-normalized manifest + files. The hash is recomputed
+        here rather than trusted from the caller.
+        """
+        from clawbits.skills.spec import content_hash, next_patch_version
+
+        current = (
+            session.get(SkillVersion, skill.latest_version_id)
+            if skill.latest_version_id
+            else None
+        )
+        version = next_patch_version(current.version if current is not None else None)
+        row = SkillVersion(
+            version_id=f"skillver-{_uuid.uuid4().hex}",
+            skill_id=skill.skill_id,
+            version=version,
+            content_hash=content_hash(manifest, body_md, files),
+            manifest=manifest,
+            body_md=body_md,
+            files=files,
+            total_bytes=len(body_md.encode("utf-8"))
+            + sum(f["size_bytes"] for f in files),
+            # v1 stores markdown references only; the column exists so the
+            # install-time affordance is ready before executables are allowed.
+            has_executable=False,
+            changelog=changelog,
+            published_by=published_by,
+        )
+        session.add(row)
+        session.flush()
+
+        skill.latest_version_id = row.version_id
+        # Keep the card fields in step with the manifest that is actually live,
+        # so a list view never disagrees with the published content.
+        skill.summary = manifest["description"]
+        if emoji := manifest.get("emoji"):
+            skill.icon_emoji = emoji
+        skill.runtimes = manifest.get("runtimes") or ["openclaw"]
+        skill.updated_at = _dt.datetime.now(_dt.UTC)
+        session.add(skill)
+        session.flush()
+        return row
+
+    @staticmethod
+    def create_skill(
+        session: Session,
+        *,
+        org_id: str,
+        slug: str,
+        display_name: str,
+        manifest: dict,
+        body_md: str,
+        files: list[dict] | None = None,
+        created_by: int | None = None,
+    ) -> Skill:
+        """Create a skill and publish its first version. Assumes normalized input."""
+        skill = Skill(
+            skill_id=f"skill-{_uuid.uuid4().hex}",
+            org_id=org_id,
+            slug=slug,
+            display_name=display_name,
+            summary=manifest["description"],
+            icon_emoji=manifest.get("emoji"),
+            visibility="org",
+            origin="authored",
+            runtimes=manifest.get("runtimes") or ["openclaw"],
+            created_by=created_by,
+        )
+        session.add(skill)
+        session.flush()
+        TableWrite._publish_version(
+            session,
+            skill=skill,
+            manifest=manifest,
+            body_md=body_md,
+            files=files or [],
+            changelog=None,
+            published_by=created_by,
+        )
+        return skill
+
+    @staticmethod
+    def publish_skill_version(
+        session: Session,
+        *,
+        skill: Skill,
+        manifest: dict,
+        body_md: str,
+        files: list[dict] | None = None,
+        changelog: str | None = None,
+        published_by: int | None = None,
+    ) -> SkillVersion:
+        """Publish an edit as a new immutable version (implicit patch bump)."""
+        return TableWrite._publish_version(
+            session,
+            skill=skill,
+            manifest=manifest,
+            body_md=body_md,
+            files=files or [],
+            changelog=changelog,
+            published_by=published_by,
+        )
+
+    @staticmethod
+    def update_skill_meta(
+        session: Session,
+        *,
+        skill: Skill,
+        display_name: str | None = None,
+        visibility: str | None = None,
+    ) -> Skill:
+        """Edit catalog metadata. ``slug`` is not editable: it is the on-disk
+        directory name every installed agent already uses."""
+        if display_name is not None:
+            skill.display_name = display_name
+        if visibility is not None:
+            skill.visibility = visibility
+        skill.updated_at = _dt.datetime.now(_dt.UTC)
+        session.add(skill)
+        session.flush()
+        return skill
+
+    @staticmethod
+    def fork_skill(
+        session: Session,
+        *,
+        source: Skill,
+        source_version: SkillVersion,
+        target_org_id: str,
+        slug: str,
+        display_name: str,
+        created_by: int | None = None,
+    ) -> Skill:
+        """Copy a skill into ``target_org_id``, recording lineage.
+
+        The fork starts its own timeline at 1.0.0. ``name`` is rewritten to the
+        new slug, since OpenClaw requires it to equal the directory name.
+        """
+        manifest = dict(source_version.manifest or {})
+        manifest["name"] = slug
+
+        fork = Skill(
+            skill_id=f"skill-{_uuid.uuid4().hex}",
+            org_id=target_org_id,
+            slug=slug,
+            display_name=display_name,
+            summary=manifest["description"],
+            icon_emoji=manifest.get("emoji"),
+            visibility="org",
+            origin="forked",
+            runtimes=manifest.get("runtimes") or ["openclaw"],
+            forked_from_skill_id=source.skill_id,
+            forked_from_version_id=source_version.version_id,
+            created_by=created_by,
+        )
+        session.add(fork)
+        session.flush()
+        TableWrite._publish_version(
+            session,
+            skill=fork,
+            manifest=manifest,
+            body_md=source_version.body_md,
+            files=list(source_version.files or []),
+            changelog=f"Forked from {source.slug} v{source_version.version}",
+            published_by=created_by,
+        )
+        return fork
+
+    @staticmethod
+    def delete_skill(session: Session, *, skill: Skill) -> Skill:
+        """Soft-delete a catalog row. Versions stay: forks reference them."""
+        skill.deleted_at = _dt.datetime.now(_dt.UTC)
+        skill.updated_at = skill.deleted_at
+        session.add(skill)
+        session.flush()
+        return skill
+
+    # ------------------------------------------------------------------
+    # Skills sync plane (agent self-report)
+    # ------------------------------------------------------------------
+
+    # The server truncates past this and says so in the ack.
+    SKILL_REPORT_MAX_ITEMS = 500
+
+    @staticmethod
+    def apply_skill_state_report(
+        session: Session,
+        agent_id: str,
+        *,
+        skills: list[dict] | None = None,
+        report_mode: str | None = None,
+        skills_root: str | None = None,
+        scanned_roots: list[str] | None = None,
+        apply_mode: str | None = None,
+        prompt_chars_observed: int | None = None,
+        prompt_budget_observed: int | None = None,
+        truncated: bool = False,
+        plugin_version: str | None = None,
+        agent_runtime_version: str | None = None,
+    ) -> tuple[int, int]:
+        """Apply an agent's skills self-report. Returns ``(seen, mirrored)``.
+
+        Items are keyed by slug. Anything not matching a managed row is
+        materialized as ``managed_by='external'`` so skills that arrived some
+        other way are still visible.
+
+        ``report_mode='observe'`` updates the mirror only: an observing client
+        has no write path, so it cannot have applied anything.
+
+        Everything in ``reported_*`` is agent-controlled display text, never an
+        authorization input.
+        """
+        items = (skills or [])[: TableWrite.SKILL_REPORT_MAX_ITEMS]
+        now = _dt.datetime.now(_dt.UTC)
+        agent = session.get(Agent, agent_id)
+        org_id = agent.org_id if agent is not None else None
+        observing = report_mode == "observe"
+
+        rows = session.exec(
+            select(AgentSkillInstall).where(AgentSkillInstall.agent_id == agent_id)
+        ).all()
+        by_slug = {r.slug: r for r in rows}
+        seen_slugs: set[str] = set()
+        removed_slugs: set[str] = set()
+        mirrored = 0
+
+        for item in items:
+            slug = item.get("slug")
+            if not isinstance(slug, str) or not slug.strip():
+                continue
+            slug = slug.strip()
+            row = by_slug.get(slug)
+
+            # A verified removal: the client deleted the directory and stat'd to
+            # confirm. It is NOT on disk, so it must not count as seen.
+            if item.get("status") == "removed":
+                if row is not None and row.deleted_at is not None and not observing:
+                    removed_slugs.add(slug)
+                continue
+
+            seen_slugs.add(slug)
+
+            if row is None:
+                row = AgentSkillInstall(
+                    install_id=f"install-{_uuid.uuid4().hex}",
+                    agent_id=agent_id,
+                    org_id=org_id,
+                    skill_id=None,
+                    slug=slug,
+                    managed_by="external",
+                    sync_status="applied",
+                )
+                session.add(row)
+                by_slug[slug] = row
+                mirrored += 1
+
+            row.reported_version = _as_str(item.get("version"))
+            row.reported_content_hash = _as_str(item.get("content_hash"))
+            row.reported_path = _as_str(item.get("path"))
+            row.reported_root = _as_str(item.get("root"))
+            # openclaw-bundled / -extra / -workspace / clawhub, computed by
+            # OpenClaw itself rather than inferred from the path.
+            row.reported_source = _as_str(item.get("source"))
+            manifest = item.get("manifest")
+            row.reported_manifest = manifest if isinstance(manifest, dict) else None
+            state = item.get("state")
+            row.reported_state = state if isinstance(state, dict) else None
+            row.apply_mode = apply_mode
+            row.plugin_version = plugin_version
+            row.agent_runtime_version = agent_runtime_version
+            row.last_seen_at = now
+            row.last_reported_at = now
+            row.missing_since = None
+            row.missing_streak = 0
+            row.updated_at = now
+
+            if row.managed_by == "clawbits" and not observing:
+                obs = item.get("observed_generation")
+                error = item.get("error")
+                is_current = isinstance(obs, int) and obs >= row.desired_generation
+                if isinstance(obs, int):
+                    row.observed_generation = obs
+                if is_current:
+                    if error:
+                        row.sync_status = "failed"
+                        row.sync_error = str(error)[:2000]
+                    else:
+                        row.sync_status = "applied"
+                        row.sync_error = None
+
+        # Drift only means something from a client that can write.
+        if not observing:
+            for row in rows:
+                if row.slug in seen_slugs or row.deleted_at is not None:
+                    continue
+                if row.managed_by != "clawbits" or row.sync_status != "applied":
+                    continue
+                row.missing_streak = (row.missing_streak or 0) + 1
+                if row.missing_since is None:
+                    row.missing_since = now
+                # Actionable, unlike automations: re-request rather than nag.
+                if row.missing_streak >= 3:
+                    row.sync_status = "requested"
+                row.updated_at = now
+
+        # The agent is the source of truth for skills we do not manage.
+        for row in rows:
+            if (
+                row.managed_by == "external"
+                and row.slug not in seen_slugs
+                and row.last_reported_at is not None
+            ):
+                session.delete(row)
+
+        # Tombstones the agent confirmed gone.
+        for row in rows:
+            if row.slug in removed_slugs and row.deleted_at is not None:
+                session.delete(row)
+
+        state_row = session.get(AgentSkillSyncState, agent_id)
+        if state_row is None:
+            state_row = AgentSkillSyncState(agent_id=agent_id)
+            session.add(state_row)
+        state_row.report_mode = report_mode
+        state_row.skills_root = skills_root
+        state_row.scanned_roots = scanned_roots
+        state_row.apply_mode = apply_mode
+        state_row.prompt_chars_observed = prompt_chars_observed
+        state_row.prompt_budget_observed = prompt_budget_observed
+        state_row.report_truncated = bool(truncated) or len(skills or []) > len(items)
+        state_row.plugin_version = plugin_version
+        state_row.agent_runtime_version = agent_runtime_version
+        state_row.last_reported_at = now
+        state_row.updated_at = now
+
+        session.flush()
+        return len(items), mirrored
+
+    @staticmethod
+    def _bump_skill_generation(session: Session, agent_id: str) -> int:
+        """Raise the agent-wide desired generation and return it.
+
+        Atomic UPDATE ... RETURNING rather than SELECT max()+1: two concurrent
+        installs would otherwise read the same value and both stamp it.
+        """
+        session.execute(
+            pg_insert(AgentSkillSyncState)
+            .values(agent_id=agent_id, desired_generation=1)
+            .on_conflict_do_update(
+                index_elements=["agent_id"],
+                set_={
+                    "desired_generation": AgentSkillSyncState.__table__.c.desired_generation
+                    + 1
+                },
+            )
+        )
+        row = session.get(AgentSkillSyncState, agent_id)
+        if row is not None:
+            session.refresh(row)
+            return row.desired_generation
+        return 1
+
+    @staticmethod
+    def install_skill(
+        session: Session,
+        *,
+        agent_id: str,
+        org_id: str | None,
+        skill: Skill,
+        installed_by: int | None = None,
+    ) -> AgentSkillInstall:
+        """Install a catalog skill onto an agent, or revive a removed one.
+
+        Reviving rather than inserting matters: UNIQUE(agent_id, slug) is not
+        partial, so a tombstone still occupies the slug.
+        """
+        row = session.exec(
+            select(AgentSkillInstall).where(
+                AgentSkillInstall.agent_id == agent_id,
+                AgentSkillInstall.slug == skill.slug,
+            )
+        ).first()
+        now = _dt.datetime.now(_dt.UTC)
+        generation = TableWrite._bump_skill_generation(session, agent_id)
+
+        if row is None:
+            row = AgentSkillInstall(
+                install_id=f"install-{_uuid.uuid4().hex}",
+                agent_id=agent_id,
+                org_id=org_id,
+                skill_id=skill.skill_id,
+                slug=skill.slug,
+                managed_by="clawbits",
+                installed_by=installed_by,
+            )
+            session.add(row)
+        row.skill_id = skill.skill_id
+        row.managed_by = "clawbits"
+        row.enabled = True
+        row.deleted_at = None
+        row.desired_generation = generation
+        row.sync_status = "requested"
+        row.sync_error = None
+        row.missing_streak = 0
+        row.missing_since = None
+        row.updated_at = now
+        session.flush()
+        return row
+
+    @staticmethod
+    def set_skill_install_enabled(
+        session: Session, *, row: AgentSkillInstall, enabled: bool
+    ) -> AgentSkillInstall:
+        """Enable/disable. Presence of the directory is the mechanism, so a
+        disable is an ordinary 'absent' intent rather than a config toggle."""
+        row.enabled = enabled
+        row.desired_generation = TableWrite._bump_skill_generation(session, row.agent_id)
+        row.sync_status = "requested"
+        row.sync_error = None
+        row.updated_at = _dt.datetime.now(_dt.UTC)
+        session.add(row)
+        session.flush()
+        return row
+
+    @staticmethod
+    def uninstall_skill(
+        session: Session, *, row: AgentSkillInstall
+    ) -> AgentSkillInstall:
+        """Soft-delete: the row survives as a tombstone until the agent confirms
+        the directory is gone, then the report handler removes it."""
+        now = _dt.datetime.now(_dt.UTC)
+        row.deleted_at = now
+        row.sync_status = "removing"
+        row.desired_generation = TableWrite._bump_skill_generation(session, row.agent_id)
+        row.updated_at = now
+        session.add(row)
+        session.flush()
+        return row
+
+    @staticmethod
+    def forget_skill_install(session: Session, *, row: AgentSkillInstall) -> None:
+        """Operator escape hatch: drop the row without agent confirmation.
+
+        Needed because the unique constraint is not partial — a permanently
+        offline agent would otherwise lock its slug forever.
+        """
+        session.delete(row)
+        session.flush()

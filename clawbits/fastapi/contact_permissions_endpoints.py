@@ -62,7 +62,7 @@ def _require_manage_authority(db: Session, agent_id: str, human_id: int) -> None
     if not TableRead.can_manage_agent_contacts(db, agent_id, human_id):
         raise HTTPException(
             status_code=403,
-            detail="Only the agent's operator or an org owner may manage its contacts",
+            detail="Only the agent's operator or an org admin may manage its contacts",
         )
 
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { Copy01Icon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 
 // Languages we want highlighting for. Keep the set tight — each one is a
 // few KB of grammar. Add more here as new use cases come up.
@@ -36,11 +36,39 @@ const LANG_ALIASES: Record<string, SupportedLang> = {
   rs: "rust",
 };
 
+/** Pretty header labels. Falls back to the raw fence token title-cased, so an
+ *  unknown language still reads as a deliberate label rather than raw input. */
+const LANG_LABELS: Record<string, string> = {
+  javascript: "JavaScript",
+  typescript: "TypeScript",
+  jsx: "JSX",
+  tsx: "TSX",
+  python: "Python",
+  bash: "Bash",
+  shell: "Shell",
+  json: "JSON",
+  yaml: "YAML",
+  sql: "SQL",
+  html: "HTML",
+  css: "CSS",
+  markdown: "Markdown",
+  rust: "Rust",
+  go: "Go",
+  diff: "Diff",
+};
+
 function normalizeLang(raw: string | null): SupportedLang | null {
   if (!raw) return null;
   const lower = raw.toLowerCase();
   if ((LANGS as readonly string[]).includes(lower)) return lower as SupportedLang;
   return LANG_ALIASES[lower] ?? null;
+}
+
+function labelFor(raw: string | null, normalized: SupportedLang | null): string {
+  if (normalized) return LANG_LABELS[normalized] ?? normalized;
+  if (!raw) return "Text";
+  // Unknown fence token: title-case it rather than shouting the raw string.
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
 // Lazy-loaded singleton highlighter. Uses shiki's fine-grained core API
@@ -57,9 +85,12 @@ function getHighlighter(): Promise<ShikiHighlighter> {
       import("shiki/engine/oniguruma"),
     ]);
     return createHighlighterCore({
+      // Vitesse rather than GitHub: its palette is warm and low-saturation
+      // (terracotta strings, moss keywords), which sits inside this app's
+      // cream/rust theme instead of dropping a cold blue IDE box into it.
       themes: [
-        import("@shikijs/themes/github-light"),
-        import("@shikijs/themes/github-dark"),
+        import("@shikijs/themes/vitesse-light"),
+        import("@shikijs/themes/vitesse-dark"),
       ],
       langs: [
         import("@shikijs/langs/javascript"),
@@ -85,6 +116,8 @@ function getHighlighter(): Promise<ShikiHighlighter> {
   return highlighterPromise;
 }
 
+const SHIKI_THEMES = { light: "vitesse-light", dark: "vitesse-dark" } as const;
+
 interface CodeBlockProps {
   code: string;
   /** Raw language hint from the markdown fence (e.g. "ts", "python"). */
@@ -106,40 +139,35 @@ void getHighlighter().then((h) => { highlighterReady = h; });
 // Code-block reserved box height (in px). The fallback `<pre>` and the
 // shiki-rendered `<div>` both render at the same font-size/line-height
 // with `overflow-x-auto` (no wrap), so the box is exactly:
-//   header + verticalPadding + lineCount × lineHeight + borders.
+//   header + verticalPadding + lineCount × lineHeight.
 // Locking `min-height` to this value means the async shiki swap (if it
 // happens at all — see `highlighterReady` above) changes only token
 // colors, never the row height. Constants match the className below:
-// `text-[0.875em]` of a 15px parent = ~13.125px, `leading-relaxed` =
-// 1.625, so each rendered line is ~21.33px. Header is `pt-2` (8px) + the
-// ~16px label/button row → 24px. Body padding is `pt-1.5` + `pb-3` = 18px.
-// The card outline is now an inset `ring` (box-shadow), which adds no layout
-// height, so the border term is 0.
-const CODE_LINE_HEIGHT_PX = 21.33;
-const CODE_HEADER_PX = 24;
-const CODE_PADDING_Y_PX = 18;
-const CODE_BORDER_PX = 0;
+// code is `text-[12.5px]` with `leading-[1.7]` → 21.25px per line. The
+// header is `h-8` (32px) plus its 1px bottom hairline. Body padding is
+// `py-3` = 24px. The card outline is an inset `ring` (box-shadow), which
+// adds no layout height.
+const CODE_LINE_HEIGHT_PX = 21.25;
+const CODE_HEADER_PX = 33;
+const CODE_PADDING_Y_PX = 24;
 
 function reservedCodeHeight(code: string): number {
   // ``\n``-terminated buffers count an extra empty line — the wrapper
   // strips the trailing newline before passing here so this is the
   // visible line count.
   const lines = code.length === 0 ? 1 : code.split("\n").length;
-  return Math.ceil(
-    CODE_HEADER_PX + CODE_PADDING_Y_PX + lines * CODE_LINE_HEIGHT_PX + CODE_BORDER_PX,
-  );
+  return Math.ceil(CODE_HEADER_PX + CODE_PADDING_Y_PX + lines * CODE_LINE_HEIGHT_PX);
 }
 
 export function CodeBlock({ code, lang, bare = false }: CodeBlockProps) {
   const normalized = normalizeLang(lang);
-  const displayLang = lang ?? "text";
   // Try sync render via the warm-cache highlighter. After the first
   // code block in a session, every subsequent one renders highlighted
   // HTML on first paint — no swap, no shift.
   const initialHtml = normalized && highlighterReady
     ? highlighterReady.codeToHtml(code, {
         lang: normalized,
-        themes: { light: "github-light", dark: "github-dark" },
+        themes: SHIKI_THEMES,
         defaultColor: false,
       })
     : null;
@@ -160,7 +188,7 @@ export function CodeBlock({ code, lang, bare = false }: CodeBlockProps) {
       if (cancelled) return;
       const out = h.codeToHtml(code, {
         lang: normalized,
-        themes: { light: "github-light", dark: "github-dark" },
+        themes: SHIKI_THEMES,
         // defaultColor:false emits CSS vars (--shiki-light / --shiki-dark)
         // per token, so the page's existing class-based dark switch
         // (html.dark) toggles colors with zero extra JS.
@@ -183,7 +211,7 @@ export function CodeBlock({ code, lang, bare = false }: CodeBlockProps) {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
-      window.setTimeout(() => { setCopied(false); }, 1500);
+      window.setTimeout(() => { setCopied(false); }, 1600);
     } catch {
       // Clipboard may be blocked (insecure context, denied permission) —
       // silent failure is fine here; the user can still select+copy.
@@ -206,35 +234,43 @@ export function CodeBlock({ code, lang, bare = false }: CodeBlockProps) {
     );
   }
 
+  // Body classes are shared by the highlighted and plain-text paths so the
+  // two render at identical metrics (see `reservedCodeHeight`).
+  const bodyCls =
+    "overflow-x-auto px-4 py-3 font-mono text-[12.5px] leading-[1.7]";
+
   return (
     <div
-      className="code-block group relative my-2 overflow-hidden rounded-xl bg-muted/40 ring-1 ring-inset ring-border/50 dark:bg-white/[0.04]"
+      className="code-block group/code relative my-2.5 overflow-hidden rounded-xl bg-code ring-1 ring-inset ring-code-border"
       style={{ minHeight: `${String(minHeightPx)}px` }}
     >
-      <div className="flex items-center justify-between gap-2 px-3.5 pt-2">
-        <span className="font-mono text-[10px] lowercase tracking-wider text-muted-foreground/50">
-          {displayLang}
+      {/* Header rail: language on the left, copy on the right. The hairline
+          under it is what makes the block read as a panel rather than a tinted
+          paragraph — the single biggest cue that this is code. */}
+      <div className="code-block-header flex h-8 items-center justify-between gap-2 border-b border-code-border bg-code-header pl-3.5 pr-1.5">
+        <span className="code-block-lang select-none font-mono text-[11px] font-medium tracking-wide text-muted-foreground/70">
+          {labelFor(lang, normalized)}
         </span>
         <button
           type="button"
           onClick={() => { void onCopy(); }}
-          className="flex items-center gap-1 rounded text-[11px] text-muted-foreground/70 opacity-70 transition-[color,opacity] duration-150 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+          title={copied ? "Copied" : "Copy code"}
           aria-label={copied ? "Copied" : "Copy code"}
+          className="flex size-6 items-center justify-center rounded-md text-muted-foreground/70 opacity-0 transition-[color,opacity,background-color] duration-150 hover:bg-foreground/[0.07] hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none group-hover/code:opacity-100 max-[767px]:opacity-100"
         >
           <Icon
-            icon={copied ? CheckmarkCircle02Icon : Copy01Icon}
-            className="size-3"
+            icon={copied ? Tick02Icon : Copy01Icon}
+            className={copied ? "size-3.5 text-foreground" : "size-3.5"}
           />
-          {copied ? "Copied" : "Copy"}
         </button>
       </div>
       {html ? (
         <div
-          className="code-block-shiki overflow-x-auto px-3.5 pb-3 pt-1.5 font-mono text-[0.875em] leading-relaxed"
+          className={`code-block-shiki ${bodyCls}`}
           dangerouslySetInnerHTML={{ __html: html }}
         />
       ) : (
-        <pre className="overflow-x-auto px-3.5 pb-3 pt-1.5 font-mono text-[0.875em] leading-relaxed">
+        <pre className={bodyCls}>
           <code>{code}</code>
         </pre>
       )}

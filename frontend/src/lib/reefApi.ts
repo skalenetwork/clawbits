@@ -68,6 +68,14 @@ export class ReefBuildInProgressError extends Error {
   }
 }
 
+/** A 409 from a per-agent `/fleet/{id}/…` route. */
+export class ReefSandboxBusyError extends Error {
+  constructor(message = "This agent is busy with another operation") {
+    super(message)
+    this.name = "ReefSandboxBusyError"
+  }
+}
+
 /** Any other non-OK Reef response, carrying the HTTP status so callers can map
  *  it to friendly copy (e.g. 404/422 ⇒ "no longer managed", 502 ⇒ "runtime
  *  unavailable"). `message` is reef's own `detail` when present. Extends Error,
@@ -107,6 +115,8 @@ export interface ReefFleetEntry {
   /** Operator-chosen dashboard accent (reef AGENT_COLORS); null ⇒ default. */
   color?: string | null
   restart_policy?: string | null
+  /** "running" | "stopped", independent of the current state; absent on an older reef. */
+  desired_state?: string | null
   /** Version-based upgrade signal (server-computed): the agent's reported running
    *  versions vs the active image's baked versions for its runtime. `image_version`
    *  is the truthful "what's running" stack string (oc<oc>-pl<pl> / ic<ic>-ch<ch>),
@@ -196,9 +206,12 @@ async function reefReq<T>(
     } catch {
       /* non-JSON body */
     }
-    // The only 409 in the reef API is "a build is already running" — surface it
-    // distinctly so the build UI can attach to the live job rather than error.
-    if (res.status === 409) throw new ReefBuildInProgressError(detail)
+    // 409 means a build is already running, or a sandbox is already busy.
+    if (res.status === 409) {
+      throw path.startsWith("/images/builds")
+        ? new ReefBuildInProgressError(detail)
+        : new ReefSandboxBusyError(detail)
+    }
     throw new ReefRequestError(res.status, detail)
   }
   if (res.status === 204) return undefined as T
@@ -227,6 +240,93 @@ export const reefReveal = (baseUrl: string, id: string) =>
   reefReq<ReefAccessInfo>(baseUrl, `/fleet/${encodeURIComponent(id)}/reveal`, {
     auth: true,
     method: "POST",
+  })
+
+// ── Lifecycle ────────────────────────────────────────────────────────────────
+
+/** Reef's `ActionOut`. `state` is a literal, not a runtime read - never seed a
+ *  cache from it. */
+export interface ReefActionResult {
+  sandbox_id: string
+  state: ReefState
+}
+
+/** Start a stopped/failed agent VM; writes `desired_state=running`. */
+export const reefStart = (baseUrl: string, id: string) =>
+  reefReq<ReefActionResult>(baseUrl, `/fleet/${encodeURIComponent(id)}/start`, {
+    auth: true,
+    method: "POST",
+  })
+
+/** Stop an agent VM. Writes `desired_state=stopped`, the only thing that makes
+ *  reef's reconciler stand down. */
+export const reefStop = (baseUrl: string, id: string) =>
+  reefReq<ReefActionResult>(baseUrl, `/fleet/${encodeURIComponent(id)}/stop`, {
+    auth: true,
+    method: "POST",
+  })
+
+/** Restart an agent VM in place - the same container, nothing on disk destroyed. */
+export const reefRestart = (baseUrl: string, id: string) =>
+  reefReq<ReefActionResult>(baseUrl, `/fleet/${encodeURIComponent(id)}/restart`, {
+    auth: true,
+    method: "POST",
+  })
+
+/** Remove the VM and reef's record of it (204). The named volumes are left on
+ *  the host but forgotten; the guest env overlay is deleted. Works with no
+ *  container - the only control that does. */
+export const reefDestroy = (baseUrl: string, id: string) =>
+  reefReq<undefined>(baseUrl, `/fleet/${encodeURIComponent(id)}`, { auth: true, method: "DELETE" })
+
+// ── Per-agent guest env ──────────────────────────────────────────────────────
+// A typed value goes browser → the operator's own reef and nowhere else: never
+// proxy one, never log one, never put one in a URL or a query cache.
+
+export interface ReefEnvVar {
+  key: string
+  /** Characters in the stored value; 0 is set-but-empty, not absent. */
+  value_length: number
+  source: string
+}
+
+/** `GET /fleet/{id}/env`. Key names + value lengths only. */
+export interface ReefAgentEnvView {
+  sandbox_id: string
+  vars: ReefEnvVar[]
+  editable: boolean
+  apply_modes: string[]
+  state: ReefState
+  desired_state?: string | null
+}
+
+export type ReefEnvApplyMode = "restart" | "recreate" | "none"
+
+/** `PATCH /fleet/{id}/env`. A diff, never a whole-map replace. */
+export interface ReefEnvPatchBody {
+  set: Record<string, string>
+  unset: string[]
+  apply: ReefEnvApplyMode
+}
+
+export interface ReefEnvApplyResult {
+  sandbox_id: string
+  changed: boolean
+  applied: ReefEnvApplyMode
+  takes_effect: "now" | "on_next_start"
+  state: ReefState
+  vars: ReefEnvVar[]
+}
+
+export const reefAgentEnv = (baseUrl: string, id: string) =>
+  reefReq<ReefAgentEnvView>(baseUrl, `/fleet/${encodeURIComponent(id)}/env`, { auth: true })
+
+/** Values go in the BODY only - reef's access logs record request lines. */
+export const reefPatchEnv = (baseUrl: string, id: string, body: ReefEnvPatchBody) =>
+  reefReq<ReefEnvApplyResult>(baseUrl, `/fleet/${encodeURIComponent(id)}/env`, {
+    auth: true,
+    method: "PATCH",
+    body,
   })
 
 export interface ReefCreateBody {
@@ -508,14 +608,13 @@ export const reefBuildJob = (baseUrl: string, id: string) =>
 export const reefActivateImage = (baseUrl: string, tag: string) =>
   reefReq<void>(baseUrl, "/images/activate", { auth: true, method: "POST", body: { tag } })
 
-/** Recreate one agent VM on the active image in place (lossless: workspace,
- *  clawbits identity, and access password are preserved). */
+/** Recreate one agent VM on the active image. The named volumes survive, the
+ *  container rootfs does not. */
 export const reefUpgrade = (baseUrl: string, id: string) =>
-  reefReq<{ sandbox_id: string; state: ReefState }>(
-    baseUrl,
-    `/fleet/${encodeURIComponent(id)}/upgrade`,
-    { auth: true, method: "POST" },
-  )
+  reefReq<ReefActionResult>(baseUrl, `/fleet/${encodeURIComponent(id)}/upgrade`, {
+    auth: true,
+    method: "POST",
+  })
 
 /** Latest available versions (unauthenticated, best-effort). */
 export const reefLatestVersions = (baseUrl: string) =>

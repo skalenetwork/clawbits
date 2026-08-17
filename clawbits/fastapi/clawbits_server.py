@@ -89,6 +89,10 @@ from clawbits.datastructures.mm_models import (
     MmPostRequest,
     MmPostResponse,
     MmReactionRequest,
+    SkillDesiredResponse,
+    SkillStateReportRequest,
+    SkillStateReportResponse,
+    SkillVersionContentResponse,
     UsageReportRequest,
     UsageReportResponse,
     agent_liveness_status,
@@ -147,6 +151,7 @@ class ClawBitsServer(FastAPI):
             "/api/agentic/auth/challenge_response",
             "/api/agentic/alive",
             "/api/agentic/automations/state",
+            "/api/agentic/skills/state",
             "/api/agentic/usage/report",
         }
     )
@@ -754,6 +759,45 @@ class ClawBitsServer(FastAPI):
                 "(mirror-only), and recent run-log entries. Billing-exempt and "
                 "size-capped. The agent is identified by its bearer API key; any "
                 "agent id in the body is ignored."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/skills/desired",
+            self.mm_agent_skills_desired,
+            methods=["GET"],
+            response_model=SkillDesiredResponse,
+            tags=["Mattermost"],
+            summary="Fetch the desired skill set",
+            description=(
+                "The skills Clawbits wants installed on this agent. Index only: "
+                "each entry carries a content hash, and the agent fetches a "
+                "version's files only when its local copy differs."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/skills/versions/{version_id}",
+            self.mm_agent_skill_version,
+            methods=["GET"],
+            response_model=SkillVersionContentResponse,
+            tags=["Mattermost"],
+            summary="Fetch one skill version's files",
+            description=(
+                "The files to write, with SKILL.md rendered for the caller's "
+                "runtime. Requires a live install resolving to this version."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/skills/state",
+            self.mm_agent_skills_state,
+            methods=["POST"],
+            response_model=SkillStateReportResponse,
+            tags=["Mattermost"],
+            summary="Self-report the skills present on the agent",
+            description=(
+                "Telemetry-class self-report from the agent's plugin: every "
+                "skill it found on disk, with provenance. Billing-exempt and "
+                "size-capped. The agent is identified by its bearer API key; "
+                "any agent id in the body is ignored."
             ),
         )
         self.add_api_route(
@@ -3117,6 +3161,96 @@ class ClawBitsServer(FastAPI):
         with Session(self._engine) as db:
             desired = TableRead.get_desired_automations(db, agent_id)
         return AutomationDesiredResponse(**desired)
+
+    # ----------------------------------------------------------------------
+    # Skills sync (agent surface)
+    # ----------------------------------------------------------------------
+
+    async def mm_agent_skills_state(
+        self,
+        body: SkillStateReportRequest,
+        api_key: str = Security(api_key_header),
+    ) -> SkillStateReportResponse:
+        """Self-report of the skills present on the agent's disk.
+
+        Telemetry-class and billing-exempt. ``report_mode='observe'`` means the
+        client has no write path, so the server updates the mirror only.
+        """
+        from clawbits.db.models import SKILL_SCHEMA_VERSION
+
+        agent = self._mm_extract_agent(api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            seen, mirrored = TableWrite.apply_skill_state_report(
+                db,
+                agent_id,
+                skills=body.skills,
+                report_mode=body.report_mode,
+                skills_root=body.skills_root,
+                scanned_roots=body.scanned_roots,
+                apply_mode=body.apply_mode,
+                prompt_chars_observed=body.prompt_chars_observed,
+                prompt_budget_observed=body.prompt_budget_observed,
+                truncated=body.truncated,
+                plugin_version=body.plugin_version,
+                agent_runtime_version=body.runtime_version,
+            )
+            db.commit()
+        return SkillStateReportResponse(
+            schema_version=SKILL_SCHEMA_VERSION,
+            seen=seen,
+            mirrored=mirrored,
+            truncated=body.truncated or seen < len(body.skills),
+        )
+
+    async def mm_agent_skills_desired(
+        self,
+        api_key: str = Security(api_key_header),
+    ) -> SkillDesiredResponse:
+        """The desired skill set for this agent."""
+        agent = self._mm_extract_agent(api_key)
+        with Session(self._engine) as db:
+            return SkillDesiredResponse(
+                **TableRead.get_desired_skills(db, agent.agent_id.value)
+            )
+
+    async def mm_agent_skill_version(
+        self,
+        version_id: str,
+        api_key: str = Security(api_key_header),
+    ) -> SkillVersionContentResponse:
+        """One version's content, rendered for the caller's runtime.
+
+        Entitlement is having a live install that resolves to this version, so
+        an agent cannot pull arbitrary catalog content by guessing an id.
+        """
+        from clawbits.db.models import Agent as _AgentRow
+        from clawbits.skills.render import render_skill, resolve_runtime
+
+        agent = self._mm_extract_agent(api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            version = TableRead.get_agent_skill_version(db, agent_id, version_id)
+            if version is None:
+                raise HTTPException(status_code=404, detail="Version not found")
+            row = db.get(_AgentRow, agent_id)
+            runtime = resolve_runtime(row.agent_type if row else None)
+            files = [
+                {
+                    "path": "SKILL.md",
+                    "content": render_skill(
+                        version.manifest, version.body_md, runtime=runtime.name
+                    ),
+                }
+            ] + [
+                {"path": f["path"], "content": f["content"]}
+                for f in (version.files or [])
+            ]
+        return SkillVersionContentResponse(
+            version_id=version.version_id,
+            content_hash=version.content_hash,
+            files=files,
+        )
 
     # ----------------------------------------------------------------------
     # AI-usage self-report (agent surface)

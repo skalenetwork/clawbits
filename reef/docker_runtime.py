@@ -19,10 +19,12 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Sequence
 from datetime import datetime
 
 from reef._subprocess import Runner, _default_runner, _redact
 from reef.errors import RuntimeUnavailable
+from reef.guest_env import EnvRecord, ensure_env_dir, read_env_file, write_env_file
 from reef.image_ops import (
     BuildImageSpec,
     ImageInfo,
@@ -184,6 +186,12 @@ class DockerRuntime:
         """Host dir bind-mounted into the agent for its volunteered status file."""
         return os.path.join(self._state_dir, "agents", handle)
 
+    def _env_host_dir(self, handle: str) -> str:
+        """NOT under ``_status_host_dir``: ``destroy`` rmtree's that path and an
+        in-place upgrade goes through ``destroy``, so an env dir there would be
+        wiped on every upgrade."""
+        return os.path.join(self._state_dir, "env", handle)
+
     async def create(self, spec: SandboxSpec) -> str:
         await self._ensure_volume(spec.volume)
         for extra_name, _ in spec.extra_volumes:
@@ -220,6 +228,11 @@ class DockerRuntime:
             host_dir = self._status_host_dir(spec.sandbox_id)
             os.makedirs(host_dir, exist_ok=True)
             argv += ["-v", f"{host_dir}:{spec.status_dest}"]
+        if spec.env_dest:
+            # Read-only: the agent must not be able to rewrite its own environ.
+            env_dir = self._env_host_dir(spec.sandbox_id)
+            ensure_env_dir(env_dir)
+            argv += ["-v", f"{env_dir}:{spec.env_dest}:ro"]
         for key, value in spec.env.items():
             argv += ["-e", f"{key}={value}"]
         for forward in spec.ports:
@@ -243,6 +256,7 @@ class DockerRuntime:
         if rc != 0 and "no such container" not in (err + out).lower():
             raise RuntimeUnavailable(f"`docker rm {handle}` failed: {err.strip() or out.strip()}")
         # Drop the per-agent status dir so a recreated id starts fresh (no stale versions).
+        # NOT the env dir: an in-place upgrade goes through this same destroy.
         shutil.rmtree(self._status_host_dir(handle), ignore_errors=True)
 
     async def status(self, handle: str) -> SandboxState:
@@ -349,6 +363,15 @@ class DockerRuntime:
     async def read_status(self, handle: str) -> dict | None:
         # Reads the host side of the bind mount — no container interaction.
         return read_status_file(self._status_host_dir(handle))
+
+    async def read_guest_env(self, handle: str) -> list[EnvRecord] | None:
+        return read_env_file(self._env_host_dir(handle))
+
+    async def write_guest_env(self, handle: str, records: Sequence[EnvRecord]) -> None:
+        write_env_file(self._env_host_dir(handle), records)
+
+    async def remove_guest_env(self, handle: str) -> None:
+        shutil.rmtree(self._env_host_dir(handle), ignore_errors=True)
 
     async def used_host_ports(self) -> set[int]:
         # Every running container (not only Reef's) — any of them holding a host

@@ -4,6 +4,7 @@ Every route is guarded by ``admin_auth``. Errors map via app-level handlers:
 ``SandboxNotFound`` -> 404, ``RuntimeUnavailable`` -> 503 (see ``app.py``).
 """
 
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -16,6 +17,9 @@ from reef.api.schemas import (
     BuildJobOut,
     CreateSandboxIn,
     CreateSandboxOut,
+    EnvApplyOut,
+    EnvOut,
+    EnvPatchIn,
     FleetEntryOut,
     ImageOut,
     ImageStatusOut,
@@ -26,16 +30,20 @@ from reef.api.schemas import (
     access_out,
     build_image_spec,
     build_job_out,
+    env_apply_out,
+    env_out,
     fleet_entry_out,
     image_out,
     sandbox_detail_out,
 )
-from reef.api.security import admin_auth
+from reef.api.security import admin_auth, require_configured_auth
 from reef.build_jobs import BuildJobManager
-from reef.errors import BuildInProgress, RuntimeUnavailable
+from reef.errors import BuildInProgress, RuntimeUnavailable, SandboxBusy
 from reef.fleet import FleetService
 from reef.runtime import SandboxState
 from reef.settings import effective_public_url
+
+logger = logging.getLogger("reef.api.fleet")
 
 router = APIRouter(prefix="/fleet", tags=["fleet"], dependencies=[Depends(admin_auth)])
 
@@ -175,7 +183,12 @@ async def get_logs(
 
 @router.post("/{sandbox_id}/start", response_model=ActionOut)
 async def start_sandbox(sandbox_id: str, service: FleetService = Depends(get_service)) -> ActionOut:
-    state = await service.start(sandbox_id)
+    """Start the agent - or, when reef holds its record but its container is gone,
+    rebuild it on its CURRENT image, reusing its volumes and port forwards."""
+    try:
+        state = await service.start(sandbox_id)
+    except SandboxBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     return ActionOut(sandbox_id=sandbox_id, state=state.value)
 
 
@@ -189,7 +202,10 @@ async def stop_sandbox(sandbox_id: str, service: FleetService = Depends(get_serv
 async def restart_sandbox(
     sandbox_id: str, service: FleetService = Depends(get_service)
 ) -> ActionOut:
-    state = await service.restart(sandbox_id)
+    try:
+        state = await service.restart(sandbox_id)
+    except SandboxBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     return ActionOut(sandbox_id=sandbox_id, state=state.value)
 
 
@@ -197,14 +213,68 @@ async def restart_sandbox(
 async def upgrade_sandbox(
     sandbox_id: str, service: FleetService = Depends(get_service)
 ) -> ActionOut:
-    """Recreate the agent on the newest image (the active tag) in place — lossless
-    (workspace, clawbits identity, and access password are preserved). No password
-    re-reveal: the old one still works."""
+    """Recreate the agent on the newest image (the active tag) in place.
+
+    The named volumes, the public URL and the access password carry over. The
+    container rootfs does not: ``~/.openclaw`` (config, sessions, sqlite, device
+    identity) and any post-boot-installed skill are lost, and a fresh onboard
+    re-pins the model. Not lossless."""
     try:
         rec = await service.upgrade(sandbox_id)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
+    except SandboxBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     return ActionOut(sandbox_id=sandbox_id, state=rec.state.value)
+
+
+@router.get(
+    "/{sandbox_id}/env",
+    response_model=EnvOut,
+    dependencies=[Depends(require_configured_auth)],
+)
+async def get_env(sandbox_id: str, service: FleetService = Depends(get_service)) -> EnvOut:
+    """The agent's own guest env vars: key names + value LENGTHS, never values.
+
+    There is deliberately no reveal counterpart: it would make one stolen admin
+    token yield every credential in the fleet in a single request."""
+    return env_out(await service.get_env(sandbox_id))
+
+
+@router.patch(
+    "/{sandbox_id}/env",
+    response_model=EnvApplyOut,
+    dependencies=[Depends(require_configured_auth)],
+)
+async def patch_env(
+    sandbox_id: str,
+    body: EnvPatchIn,
+    request: Request,
+    service: FleetService = Depends(get_service),
+) -> EnvApplyOut:
+    """Set/unset the agent's own guest env vars and apply the change.
+
+    Keys and values ride in the BODY, never the path or a query string, which the
+    uvicorn access log and the admin-ui proxy log both keep a copy of."""
+    try:
+        result = await service.set_env(
+            sandbox_id, set_vars=body.set, unset_keys=body.unset, apply=body.apply
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    except SandboxBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    # Key names and value LENGTHS only, never a value.
+    logger.info(
+        "env update %s by %s: set=%s unset=%s lengths=%s applied=%s",
+        sandbox_id,
+        getattr(request.state, "operator", "anonymous"),
+        sorted(body.set),
+        sorted(body.unset),
+        {k: len(v) for k, v in sorted(body.set.items())},
+        result.applied,
+    )
+    return env_apply_out(result)
 
 
 @router.patch("/{sandbox_id}", response_model=SandboxPatchOut)

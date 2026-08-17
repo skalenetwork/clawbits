@@ -1,6 +1,8 @@
 // Typed client for the Reef admin/fleet API. Shapes mirror reef/api/schemas.py.
 // In dev the Vite proxy forwards /api/* -> the Reef API (see vite.config.ts).
 
+import type { EnvApplyMode } from "@/lib/envApply"
+
 export type SandboxState = "creating" | "running" | "stopped" | "failed" | "destroyed"
 
 export interface Metrics {
@@ -95,6 +97,44 @@ export interface SandboxDetail {
    *  which is a real answer, not missing data. Reflects reef's RECORD, so it can
    *  differ from what the RUNNING container booted with until the next upgrade. */
   capabilities: string[]
+}
+
+/** A guest env var without its value: `value_length` counts characters, and 0
+ *  is set-but-empty. */
+export interface EnvVar {
+  key: string
+  value_length: number
+  /** "file" = reef's editable per-agent overlay; "container" = baked in at create time. */
+  source: "file" | "container"
+}
+
+export type { EnvApplyMode }
+
+/** `GET /fleet/{id}/env` - the agent's user env layer, values excluded. */
+export interface AgentEnv {
+  sandbox_id: string
+  vars: EnvVar[]
+  editable: boolean
+  /** Apply modes the running IMAGE supports. */
+  apply_modes: EnvApplyMode[]
+  state: SandboxState
+  desired_state: string | null
+}
+
+/** `PATCH /fleet/{id}/env`. Only keys the operator actually typed appear in `set`. */
+export interface EnvPatchIn {
+  set: Record<string, string>
+  unset: string[]
+  apply: EnvApplyMode
+}
+
+export interface EnvApplyResult {
+  sandbox_id: string
+  changed: boolean
+  applied: EnvApplyMode
+  takes_effect: "now" | "on_next_start"
+  state: SandboxState
+  vars: EnvVar[]
 }
 
 /** Reconciler restart policies (mirrors reef.runtime.RestartPolicy). */
@@ -412,6 +452,14 @@ export const api = {
         body: JSON.stringify({ restart_policy }),
       },
     ),
+  // ── Guest env (the user layer) ──
+  env: (id: string) => req<AgentEnv>(`/fleet/${enc(id)}/env`),
+  patchEnv: (id: string, body: EnvPatchIn) =>
+    req<EnvApplyResult>(`/fleet/${enc(id)}/env`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   // ── Images ──
   images: () => req<ImageInfo[]>("/images"),
   imageStatus: () => req<ImageStatus>("/images/status"),

@@ -1,4 +1,5 @@
 import {
+    BookOpen01Icon,
     BubbleChatIcon,
     Home03Icon,
     Robot02Icon,
@@ -9,7 +10,7 @@ import type {IconSvgElement} from "@hugeicons/react";
 
 /** The top-level navigation sections, one per rail icon. Each owns a
  *  contextual sidebar inside the content card. (Chats was merged into Home.) */
-export type SectionId = "home" | "agents" | "settings";
+export type SectionId = "home" | "agents" | "skills" | "settings";
 
 export interface NavSection {
     id: SectionId;
@@ -24,6 +25,7 @@ export interface NavSection {
 export const NAV_SECTIONS: NavSection[] = [
     {id: "home", label: "Home", icon: Home03Icon, landingPath: "/home"},
     {id: "agents", label: "Agents", icon: Robot02Icon, landingPath: "/agents"},
+    {id: "skills", label: "Skills", icon: BookOpen01Icon, landingPath: "/skills"},
 ];
 
 /** Bottom-pinned rail icon. */
@@ -42,12 +44,13 @@ export const SETTINGS_SECTION: NavSection = {
  */
 export function deriveSection(pathname: string): SectionId {
     if (pathname.startsWith("/agents")) return "agents";
+    if (pathname.startsWith("/skills")) return "skills";
     if (pathname.startsWith("/settings")) return "settings";
     return "home";
 }
 
-/** Every section renders a contextual sidebar inside the card: Home shows the
- *  chat list, Agents the roster, Settings the nav. */
+/** Home shows the chat list, Agents the roster, Settings the nav. Skills is a
+ *  full-width library grid with nothing to put in a sidebar. */
 export function sectionHasSidebar(section: SectionId): boolean {
     return ["home", "agents", "settings"].includes(section);
 }
@@ -100,6 +103,7 @@ export const MOBILE_TABS: MobileTab[] = [
  *  (``/settings``) is a tab root, not a pushed route. */
 export function isPushedMobileRoute(pathname: string): boolean {
     return (
+        /^\/skills(\/|$)/.test(pathname) ||
         /^\/channels\/[^/]+/.test(pathname) ||
         /^\/agents\/[^/]+/.test(pathname) ||
         /^\/settings\/.+/.test(pathname)

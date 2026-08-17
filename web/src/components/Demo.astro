@@ -1,0 +1,132 @@
+---
+import demos from "../data/demos.json";
+
+/**
+ * A recorded product demo: the real app, in a rounded frame, looping in place.
+ *
+ * The counterpart to the hand-drawn visuals on this page (MailboxVisual and
+ * friends). Those are CSS reconstructions that stay sharp at any size and cost
+ * no bytes; this one is footage, for the moments where the claim is "watch it
+ * actually happen". Both are held at their first frame until PlayOnView marks
+ * them, so nothing on the page is mid-cycle when it is first seen.
+ *
+ * SOURCES AND SIZE
+ *
+ * scripts/make-demo.mjs produces every file this reads, plus the entry in
+ * src/data/demos.json that carries the intrinsic width/height. Those land on
+ * the <video> as width/height attributes, which is what gives the box an
+ * aspect-ratio before a single byte of video arrives - without them the page
+ * reflows around this component as it loads. A name with no manifest entry
+ * throws at build time rather than shipping that reflow.
+ *
+ * The encode is 2x the display size on purpose (see the script header: h.264
+ * is yuv420p-only on the web and half-resolution chroma is visible on UI text).
+ * Keep the rendered width at half of meta.width - the default max-width does
+ * this on its own.
+ *
+ * NO AUTOPLAY ATTRIBUTE
+ *
+ * Deliberate, and it does double duty. PlayOnView starts playback when the
+ * demo is actually on screen, and it skips that call under prefers-reduced-
+ * motion - at which point `preload="none"` means the video bytes are never
+ * fetched at all and the poster is what the visitor gets. An `autoplay`
+ * attribute here would download and play before either check.
+ *
+ * CSP NOTE: no style attributes - the production build ships style-src hashes
+ * with no 'unsafe-inline' and drops them. Everything below is in the sheet.
+ */
+
+interface DemoMeta {
+  width: number;
+  height: number;
+  duration: number;
+  fps: number;
+  webm: boolean;
+  gif: boolean;
+  poster: string;
+}
+
+interface Props {
+  /** Manifest slug, i.e. the --name given to make-demo.mjs. */
+  name: string;
+  class?: string;
+  /** Describe the demo to hand it to assistive tech; omitted = decorative. */
+  alt?: string;
+  /** Above the fold. Fetches the video up front instead of on approach. */
+  eager?: boolean;
+}
+
+const { name, class: className = "", alt, eager = false } = Astro.props;
+
+const meta = (demos as Record<string, DemoMeta>)[name];
+if (!meta) {
+  throw new Error(
+    `<Demo name="${name}" /> has no entry in src/data/demos.json.\n` +
+      `Record the master, then: bun run demo <master.mov> --name ${name}`,
+  );
+}
+
+const base = `/demos/${name}`;
+---
+
+<div class:list={["demo", className]} data-play-on-view>
+  <video
+    class="demo-video"
+    width={meta.width}
+    height={meta.height}
+    poster={`${base}.poster.${meta.poster}`}
+    preload={eager ? "auto" : "none"}
+    muted
+    loop
+    playsinline
+    disablepictureinpicture
+    aria-label={alt}
+    aria-hidden={alt ? undefined : "true"}
+  >
+    {meta.webm && <source src={`${base}.webm`} type="video/webm" />}
+    <source src={`${base}.mp4`} type="video/mp4" />
+  </video>
+</div>
+
+<style>
+  .demo {
+    position: relative;
+    /* Half the encode width, so the 2x master lands at 1:1 on a retina panel
+     * and the yuv420p chroma error stays under a display pixel. */
+    width: 100%;
+    margin-inline: auto;
+    isolation: isolate;
+    overflow: hidden;
+    /* AppWindow's radius, so a recorded demo and the hero window read as the
+     * same object at the same viewport width. */
+    border-radius: clamp(0.75rem, 1.7vw, 1.375rem);
+    /* AppWindow's stack minus the inset highlight, which has to move to the
+     * layer above - see ::after. */
+    box-shadow:
+      0 0 0 0.5px rgb(12 13 14 / 0.2),
+      0 20px 25px -5px rgb(0 0 0 / 0.1),
+      0 8px 10px -6px rgb(0 0 0 / 0.1);
+  }
+
+  /* The white inset ring cannot live on .demo: an inset shadow paints behind
+   * child content, and the video is a child, so it would be covered edge to
+   * edge. This is the same ring, one layer up. */
+  .demo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.8);
+    pointer-events: none;
+  }
+
+  .demo-video {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* Radius on the video too, not just the clipping parent: Safari leaks
+     * square corners out of an overflow-hidden box when the child is on its
+     * own compositing layer, which a playing video always is. */
+    border-radius: inherit;
+  }
+</style>

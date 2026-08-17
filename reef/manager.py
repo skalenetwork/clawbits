@@ -2,12 +2,15 @@
 ``AgentRuntime`` + a ``SandboxStore``, building specs from an ``AgentProfile``.
 """
 
+import json
 import secrets
 from collections.abc import Sequence
+from dataclasses import asdict, fields, replace
 from datetime import UTC, datetime
 
 from reef.errors import RuntimeUnavailable, SandboxNotFound
 from reef.exposure import DirectPortExposure, Exposure, ExposureStrategy
+from reef.guest_env import decode_blob, encode_blob, pending_handle
 from reef.models import Sandbox
 from reef.ports import PortAllocator
 from reef.profiles import AgentProfile
@@ -30,6 +33,21 @@ def _default_volume(sandbox_id: str) -> str:
     return f"reef-{sandbox_id}"
 
 
+def _spec_from_dict(data: dict) -> SandboxSpec:
+    """Inverse of ``asdict``; JSON has no tuples, so every sequence field is
+    re-frozen here."""
+    names = {f.name for f in fields(SandboxSpec)}
+    kwargs = {k: v for k, v in data.items() if k in names}
+    kwargs["env"] = dict(kwargs["env"])
+    kwargs["extra_volumes"] = tuple((str(n), str(d)) for n, d in kwargs["extra_volumes"])
+    kwargs["net_allow"] = tuple(str(v) for v in kwargs["net_allow"])
+    kwargs["ports"] = tuple(str(v) for v in kwargs["ports"])
+    kwargs["limits"] = Limits(
+        cpus=float(kwargs["limits"]["cpus"]), memory_mb=int(kwargs["limits"]["memory_mb"])
+    )
+    return SandboxSpec(**kwargs)
+
+
 class SandboxManager:
     def __init__(
         self,
@@ -45,6 +63,41 @@ class SandboxManager:
         self._backend = backend
         self._exposure = exposure or DirectPortExposure()
         self._ports = port_allocator or PortAllocator()
+        # sandbox_id -> the spec of a recreate whose destroy succeeded and whose
+        # create failed, so ``rebuild`` can finish it. Write-through cache over
+        # ``pending_handle``'s host dir.
+        self._pending: dict[str, SandboxSpec] = {}
+
+    async def _stash_pending(self, sandbox_id: str, spec: SandboxSpec) -> None:
+        """Park the spec an interrupted recreate must be finished from, in memory AND
+        on the host - it has to outlive this process, or a reef restart strands the
+        agent with no container and no control that can bring it back. Beside the
+        overlay rather than in sqlite, which is declared secret-free."""
+        self._pending[sandbox_id] = spec
+        try:
+            await self._runtime.write_guest_env(
+                pending_handle(sandbox_id), encode_blob(json.dumps(asdict(spec)))
+            )
+        except Exception:  # noqa: BLE001 - never mask the failure that created the stash
+            pass
+
+    async def _clear_pending(self, sandbox_id: str) -> None:
+        self._pending.pop(sandbox_id, None)
+        try:
+            await self._runtime.remove_guest_env(pending_handle(sandbox_id))
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            pass
+
+    async def pending_spec(self, sandbox_id: str) -> SandboxSpec | None:
+        """The parked spec, from memory or from the host dir after a reef restart."""
+        spec = self._pending.get(sandbox_id)
+        if spec is not None:
+            return spec
+        try:
+            blob = decode_blob(await self._runtime.read_guest_env(pending_handle(sandbox_id)))
+            return None if blob is None else _spec_from_dict(json.loads(blob))
+        except Exception:  # noqa: BLE001 - an unreadable stash is no stash
+            return None
 
     @property
     def backend(self) -> str:
@@ -103,6 +156,8 @@ class SandboxManager:
                 net_allow=tuple(net_allow),
                 ports=tuple(ports),
                 status_dest=profile.status_dir,
+                # Must exist from the first create, or gaining it costs a recreate.
+                env_dest=getattr(profile, "env_dir", None),
                 limits=limits or Limits(),
             )
             handle = await self._runtime.create(spec)
@@ -261,21 +316,31 @@ class SandboxManager:
         *,
         limits: Limits | None = None,
         net_allow: Sequence[str] = (),
+        rollback_env: dict[str, str] | None = None,
+        rollback_net_allow: Sequence[str] = (),
     ) -> Sandbox:
         """Upgrade in place: destroy the sandbox and recreate it under the SAME id +
         SAME named volumes against ``profile.image`` (the now-newer active tag),
         replaying ``env`` verbatim.
 
-        Lossless by construction: the per-agent volumes survive destroy, so the
-        agent's workspace AND config volume (where the entrypoint persists the
-        clawbits identity) carry over; and replaying ``OPENCLAW_GATEWAY_TOKEN``
-        reproduces the working access password — reef never had to store it.
+        Survives: the per-agent named volumes (workspace + the config volume
+        holding the clawbits identity) and the access password, since replaying
+        ``OPENCLAW_GATEWAY_TOKEN`` reproduces it. Does NOT survive: the container
+        rootfs - ``~/.openclaw``, sqlite state, sessions, device identity, skills
+        installed post-boot - and a fresh onboard re-pins the model. Not lossless.
+
         ``env`` MUST be the reef-injected env only (the caller subtracts the old
         image's baked ENV so a stale ``REEF_IMAGE_VERSION`` doesn't ride along).
         Preserves ports, ``desired_state``, color, restart_policy, tenant.
+
+        ``rollback_env``/``rollback_net_allow`` are what recovery rebuilds from when
+        the destroy lands and the create does not, for callers whose ``env`` is a
+        CHANGE: the attempt is reported as failed, so recovery must restore the env
+        the destroyed container had. ``upgrade`` replays unchanged env and omits them.
         """
         rec = await self._require(sandbox_id)
         desired = rec.desired_state
+        previous_state = rec.state
 
         # Re-mint the port forwards from the RECORD: inspect carries no host ports
         # on msb, and the record is reef's source of truth for them.
@@ -300,6 +365,7 @@ class SandboxManager:
             net_allow=tuple(net_allow),
             ports=tuple(forwards),
             status_dest=profile.status_dir,
+            env_dest=getattr(profile, "env_dir", None),
             limits=limits or Limits(),
         )
 
@@ -310,9 +376,41 @@ class SandboxManager:
         rec.updated_at = _now()
         await self._store.put(rec)
 
-        if rec.handle is not None:
-            await self._runtime.destroy(rec.handle)  # named volumes survive
-        handle = await self._runtime.create(spec)
+        destroyed = False
+        try:
+            if rec.handle is not None:
+                await self._runtime.destroy(rec.handle)  # named volumes survive
+                destroyed = True
+            handle = await self._runtime.create(spec)
+        except BaseException:
+            if destroyed:
+                # Leaving the record at CREATING makes it invisible and unreachable:
+                # the reconciler skips CREATING, and ``list_fleet`` only surfaces an
+                # absent container through a FAILED record.
+                rec.handle = None
+                rec.state = SandboxState.FAILED
+                # Retry material for ``rebuild``, pinned to the image the record
+                # still names and the env that container actually had.
+                recovery = (
+                    spec
+                    if rollback_env is None
+                    else replace(
+                        spec,
+                        env={**rollback_env, "REEF_STATUS_DIR": profile.status_dir},
+                        net_allow=tuple(rollback_net_allow),
+                    )
+                )
+                await self._stash_pending(
+                    sandbox_id, replace(recovery, image=rec.image or spec.image)
+                )
+            else:
+                # Destroy refused: the old container is untouched and ``rec.handle``
+                # still describes it.
+                rec.state = previous_state
+            rec.updated_at = _now()
+            await self._store.put(rec)
+            raise
+        await self._clear_pending(sandbox_id)
         rec.handle = handle
         rec.image = profile.image
         rec.updated_at = _now()
@@ -322,6 +420,39 @@ class SandboxManager:
             rec.state = SandboxState.RUNNING
         else:
             rec.state = SandboxState.STOPPED
+        await self._store.put(rec)
+        return rec
+
+    async def rebuild(self, sandbox_id: str) -> Sandbox:
+        """Finish a ``recreate_with_image`` whose destroy landed and whose create did
+        not: re-run create from the SAME spec - same image, volumes and port
+        forwards - and start it.
+
+        With no parked spec this raises rather than booting the agent without the
+        env (creds + access secret) it had, which reef cannot reconstruct.
+        """
+        rec = await self._require(sandbox_id)
+        spec = await self.pending_spec(sandbox_id)
+        if spec is None:
+            raise RuntimeUnavailable(
+                f"{sandbox_id} has no container and reef holds no rebuild spec for it, so it "
+                "cannot be brought back as it was: the env it ran with - its credentials and "
+                "its access secret - lived in the container that is gone. `upgrade` cannot "
+                "recover it either. Delete this agent and create it again."
+            )
+        handle = await self._runtime.create(spec)
+        await self._clear_pending(sandbox_id)
+        # Persist the handle BEFORE starting: a failed start would otherwise leave a
+        # live container no record points at, and ``destroy`` skips a None handle.
+        rec.handle = handle
+        rec.image = spec.image
+        rec.state = SandboxState.STOPPED
+        rec.updated_at = _now()
+        await self._store.put(rec)
+        await self._runtime.start(handle)
+        rec.state = SandboxState.RUNNING
+        rec.desired_state = DesiredState.RUNNING
+        rec.updated_at = _now()
         await self._store.put(rec)
         return rec
 
@@ -335,6 +466,7 @@ class SandboxManager:
         return sandbox
 
     async def destroy(self, sandbox_id: str) -> None:
+        await self._clear_pending(sandbox_id)  # or the next agent to take this name inherits it
         sandbox = await self._store.get(sandbox_id)
         if sandbox is None:
             return

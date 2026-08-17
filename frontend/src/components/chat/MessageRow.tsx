@@ -1412,21 +1412,12 @@ export function MessageRow({
           </span>
         )}
         {/* Own bubbles paint on a fixed accent fill, so their body must read as
-            white in BOTH themes - override MessageMarkdown's ``text-foreground``
-            root and the ``text-mention`` tint (both otherwise flip dark in light
-            mode and wash out on the accent). Scoped to the body group so the
-            colored author name and the meta line keep their own colors. */}
-        <div
-          className={cn(
-            "min-w-0",
-            // Own bubbles paint on a fixed blue fill, so force the body white
-            // in both themes. Code surfaces then need a dark inset — otherwise
-            // the muted/light fill washes out over blue and the forced-white
-            // code/inline-code has nothing to read against.
-            own &&
-              "[&_*]:!text-white [&_.code-block]:!bg-black/25 [&_.code-block]:!ring-white/15 [&_.inline-code]:!bg-black/25",
-          )}
-        >
+            white in BOTH themes. ``.msg-on-accent`` (index.css) does that whole
+            job: text, links, list ``::marker``s, rules and table borders go
+            white, while fenced code takes a dark inset and KEEPS its syntax
+            colors. Scoped to the body group so the colored author name and the
+            meta line keep their own colors. */}
+        <div className={cn("min-w-0", own && "msg-on-accent")}>
           {quoteBlock}
           {bodyText}
           {queuedMarker}

@@ -49,6 +49,8 @@ from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -163,8 +165,8 @@ def _cors_config() -> tuple[list[str], str | None]:
         "https://app.clawbits.ai",
         "https://app.freeclaws.ai",  # staging web app
         "https://clawbits.ai",
-        "https://freeclaws.ai",    # staging web app
-        "tauri://localhost",       # Tauri macOS/Windows webview origin
+        "https://freeclaws.ai",  # staging web app
+        "tauri://localhost",  # Tauri macOS/Windows webview origin
         "http://tauri.localhost",  # Tauri Linux webview origin
     ], r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 
@@ -314,7 +316,9 @@ def create_app(service: FleetService | None = None) -> FastAPI:
             # CreateSandboxIn.model. Rides the authed pre-create probe both
             # pickers already call, so a newer clawbits UI can hide a control
             # against an older reef (whose Pydantic would silently drop the field).
-            features=["env", "model", "capabilities"],
+            # "env-edit": GET/PATCH /fleet/{id}/env exist. Whether a given AGENT
+            # can take a restart apply is ``apply_modes`` on GET /env.
+            features=["env", "model", "capabilities", "env-edit"],
         )
 
     @app.get(
@@ -392,6 +396,16 @@ def create_app(service: FleetService | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="public_url must be an http(s) URL")
         set_public_url_override(url or None)
         return _settings_out()
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_failed(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        """Strip ``input``/``ctx`` from the 422 body: FastAPI echoes the offending
+        INPUT back, and both UIs render ``detail`` into a toast - so a mistyped env
+        map would put the operator's API key on screen."""
+        errors = [
+            {k: v for k, v in err.items() if k not in ("input", "ctx")} for err in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content=jsonable_encoder({"detail": errors}))
 
     @app.exception_handler(SandboxNotFound)
     async def _not_found(_request: Request, exc: SandboxNotFound) -> JSONResponse:

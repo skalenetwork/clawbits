@@ -61,6 +61,7 @@ from clawbits.datastructures.org_models import (
     SetOrgLobstertalkChannelRequest,
     SetOrgLobstertalkRequest,
     SetReefConnectionRequest,
+    UpdateOrgMemberRoleRequest,
 )
 from clawbits.db.models import DISPLAY_NAME_MAX_LENGTH
 from clawbits.db.table_read import TableRead
@@ -94,6 +95,7 @@ from clawbits.realtime import (
     get_bus,
     publish_automation_sync,
     publish_org_added,
+    publish_org_updated,
 )
 from clawbits.ssrf import HostResolutionError, PrivateAddressError, arun_guarded
 
@@ -645,7 +647,7 @@ async def get_agent_usage(
         if not is_owner and not TableRead.is_agent_operator(db, agent_id, user["id"]):
             raise HTTPException(
                 status_code=403,
-                detail="Only org owners or the agent's operator can view its usage",
+                detail="Only org admins or the agent's operator can view its usage",
             )
         rows = TableRead.get_agent_usage_rows(db, agent_id, since)
         total = _usage_zero_totals()
@@ -1515,7 +1517,7 @@ async def regenerate_agent_description(
         if not (is_operator or is_org_owner):
             raise HTTPException(
                 status_code=403,
-                detail="Only the agent's operator or an org owner can regenerate its description",
+                detail="Only the agent's operator or an org admin can regenerate its description",
             )
         TableWrite.request_agent_description_regen(db, agent_id)
         db.commit()
@@ -1542,7 +1544,7 @@ async def set_agent_description_manual(
         if not (is_operator or is_org_owner):
             raise HTTPException(
                 status_code=403,
-                detail="Only the agent's operator or an org owner can set its description",
+                detail="Only the agent's operator or an org admin can set its description",
             )
         text = body.description.strip()
         if not text:
@@ -1805,7 +1807,7 @@ async def set_reef_connection(
     with _get_db(request) as db:
         if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
             raise HTTPException(
-                status_code=403, detail="Only organization owners can change the Reef connection"
+                status_code=403, detail="Only organization admins can change the Reef connection"
             )
         if not TableWrite.set_org_reef_api_url(db, org_id, body.api_url):
             raise HTTPException(status_code=404, detail="Organization not found")
@@ -1823,7 +1825,7 @@ async def delete_reef_connection(
     with _get_db(request) as db:
         if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
             raise HTTPException(
-                status_code=403, detail="Only organization owners can change the Reef connection"
+                status_code=403, detail="Only organization admins can change the Reef connection"
             )
         if not TableWrite.set_org_reef_api_url(db, org_id, None):
             raise HTTPException(status_code=404, detail="Organization not found")
@@ -1861,7 +1863,7 @@ async def set_org_attention(
     with _get_db(request) as db:
         if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
             raise HTTPException(
-                status_code=403, detail="Only organization owners can change LobsterTalk attention"
+                status_code=403, detail="Only organization admins can change LobsterTalk attention"
             )
         if not TableWrite.set_org_attention_enabled(db, org_id, body.enabled):
             raise HTTPException(status_code=404, detail="Organization not found")
@@ -1932,7 +1934,7 @@ async def set_org_lobstertalk(
     with _get_db(request) as db:
         if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
             raise HTTPException(
-                status_code=403, detail="Only organization owners can change LobsterTalk settings"
+                status_code=403, detail="Only organization admins can change LobsterTalk settings"
             )
     # Owner-only, but self-service: cap how fast one org can drive the DNS
     # resolution below (a caller-chosen, possibly-slow nameserver).
@@ -1966,7 +1968,7 @@ async def set_org_lobstertalk(
         # just-removed owner could still land the write (a classic TOCTOU).
         if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
             raise HTTPException(
-                status_code=403, detail="Only organization owners can change LobsterTalk settings"
+                status_code=403, detail="Only organization admins can change LobsterTalk settings"
             )
         update_api_key = body.api_key is not None or body.clear_api_key
         try:
@@ -2033,7 +2035,7 @@ async def lobstertalk_healthcheck(
     with _get_db(request) as db:
         if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
             raise HTTPException(
-                status_code=403, detail="Only organization owners can test LobsterTalk settings"
+                status_code=403, detail="Only organization admins can test LobsterTalk settings"
             )
         cfg = TableRead.get_org_lobstertalk_config(db, org_id)
     # Each probe spends a metered LLM call against the org's key — cap the rate
@@ -2094,7 +2096,7 @@ async def set_org_lobstertalk_channel(
     with _get_db(request) as db:
         if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
             raise HTTPException(
-                status_code=403, detail="Only organization owners can change LobsterTalk settings"
+                status_code=403, detail="Only organization admins can change LobsterTalk settings"
             )
         channel = TableRead.get_mm_channel(db, channel_id)
         if channel is None or channel.get("org_id") != org_id:
@@ -2189,7 +2191,7 @@ async def add_org_member(
     with _get_db(request) as db:
         role = TableRead.get_org_member_role(db, org_id, user["id"])
         if role != "owner":
-            raise HTTPException(status_code=403, detail="Only organization owners can add members")
+            raise HTTPException(status_code=403, detail="Only organization admins can add members")
         # Look up target user by email
         target = TableRead.get_human_user_by_email(db, body.email)
         if target is None:
@@ -2248,6 +2250,83 @@ async def add_org_member(
     )
 
 
+@human_router.patch(
+    "/api/human/orgs/{org_id}/members/{member_id}", response_model=OrgMembersListResponse
+)
+async def update_org_member_role(
+    org_id: str,
+    member_id: int,
+    body: UpdateOrgMemberRoleRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Promote a member to owner, or demote an owner to member. Caller must be
+    an owner. Cannot demote the last owner — the same floor
+    :func:`remove_org_member` enforces, so an org can never end up with
+    nobody able to manage it."""
+    with _get_db(request) as db:
+        caller_role = TableRead.get_org_member_role(db, org_id, user["id"])
+        if caller_role != "owner":
+            raise HTTPException(
+                status_code=403, detail="Only organization admins can change roles"
+            )
+        old_role = TableRead.get_org_member_role(db, org_id, member_id)
+        if old_role is None:
+            raise HTTPException(
+                status_code=404, detail="Member not found in this organization"
+            )
+        if old_role == body.role:
+            # No-op: return the current list rather than burning a WorkOS
+            # round-trip and an audit event on a double-click.
+            members = TableRead.get_org_members(db, org_id)
+            return OrgMembersListResponse(members=[OrgMemberResponse(**m) for m in members], total=len(members))
+        if old_role == "owner":
+            members = TableRead.get_org_members(db, org_id)
+            owner_count = sum(1 for m in members if m["role"] == "owner")
+            if owner_count <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot demote the last admin of an organization",
+                )
+        target = TableRead.get_human_user_by_id(db, member_id)
+        TableWrite.update_org_member_role(db, org_id, member_id, body.role)
+        org = TableRead.get_organization(db, org_id)
+        # Rendered from the target's perspective so the ``my_role`` in the
+        # SSE payload is theirs, not the acting owner's.
+        target_org = TableRead.get_organization(db, org_id, viewer_human_id=member_id)
+        members = TableRead.get_org_members(db, org_id)
+        db.commit()
+
+    if org is not None and target is not None:
+        from clawbits.fastapi.workos_auth import update_membership_role
+
+        update_membership_role(
+            request.app.state.workos,
+            workos_user_id=target["workos_user_id"],
+            workos_org_id=org["workos_org_id"],
+            role=body.role,
+        )
+        audit.organization_member_role_updated(
+            request,
+            actor_user=user,
+            target_user=target,
+            workos_org_id=org["workos_org_id"],
+            old_role=old_role,
+            new_role=body.role,
+        )
+        # Flip the target's own admin surfaces live — including the acting
+        # owner's other tabs when they demoted themselves.
+        if target_org is not None:
+            fire_and_forget(
+                publish_org_updated(
+                    get_bus(),
+                    member_id,
+                    OrgResponse(**target_org).model_dump(),
+                )
+            )
+    return OrgMembersListResponse(members=[OrgMemberResponse(**m) for m in members], total=len(members))
+
+
 @human_router.delete("/api/human/orgs/{org_id}/members/{member_id}", response_model=OrgMembersListResponse)
 async def remove_org_member(
     org_id: str,
@@ -2259,7 +2338,7 @@ async def remove_org_member(
     with _get_db(request) as db:
         caller_role = TableRead.get_org_member_role(db, org_id, user["id"])
         if caller_role != "owner":
-            raise HTTPException(status_code=403, detail="Only organization owners can remove members")
+            raise HTTPException(status_code=403, detail="Only organization admins can remove members")
         # Prevent removing the last owner
         target_role = TableRead.get_org_member_role(db, org_id, member_id)
         if target_role is None:
@@ -2269,7 +2348,7 @@ async def remove_org_member(
             members = TableRead.get_org_members(db, org_id)
             owner_count = sum(1 for m in members if m["role"] == "owner")
             if owner_count <= 1:
-                raise HTTPException(status_code=400, detail="Cannot remove the last owner of an organization")
+                raise HTTPException(status_code=400, detail="Cannot remove the last admin of an organization")
         target = TableRead.get_human_user_by_id(db, member_id)
         TableWrite.remove_org_member(db, org_id, member_id)
         org = TableRead.get_organization(db, org_id)
@@ -2479,3 +2558,467 @@ def human_agents_signup(
             challenge_question=question,
         )
 
+
+
+# ---------------------------------------------------------------------------
+# Skills library (org catalog)
+#
+# An org authors versioned skills here; installing them onto agents is a
+# separate plane that lands later. Catalog routes are gated on org MEMBERSHIP
+# (not agent operatorship): an org owner who operates no agents must still see
+# the shared library. See docs/protocol/SKILLS_LIBRARY_PLAN.md.
+# ---------------------------------------------------------------------------
+
+# The human lane has no CB_TOKENS backstop.
+_SKILL_WRITE_LIMIT = 30
+
+
+class CreateSkillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    slug: str
+    display_name: str
+    manifest: dict
+    body_md: str
+    files: list[dict] | None = None
+
+
+class PublishSkillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    manifest: dict
+    body_md: str
+    files: list[dict] | None = None
+    changelog: str | None = None
+
+
+class UpdateSkillMetaRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str | None = None
+
+
+class ForkSkillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    slug: str | None = None
+    display_name: str | None = None
+
+
+def _skill_or_404(db, org_id: str, skill_id: str):
+    """Fetch a skill, re-deriving its org from the row itself."""
+    row = TableRead.get_skill_for_org(db, skill_id, org_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return row
+
+
+def _prepare_skill_content(
+    *, slug: str, manifest: dict, body_md: str, files: list[dict] | None
+) -> tuple[dict, list[dict]]:
+    """Validate then normalize authored content, mapping errors to 400.
+
+    Validation runs before normalization so a missing field is named in the 400
+    rather than silently dropped.
+    """
+    from clawbits.skills.spec import (
+        SkillValidationError,
+        normalize_files,
+        normalize_manifest,
+        validate_bundle,
+        validate_manifest,
+    )
+
+    try:
+        validate_manifest(manifest, slug=slug)
+        normalized = normalize_manifest(manifest)
+        normalized_files = normalize_files(files)
+        validate_bundle(body_md, normalized_files)
+    except SkillValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return normalized, normalized_files
+
+
+@human_router.get("/api/human/orgs/{org_id}/skills")
+async def list_org_skills(
+    org_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """The org's skill library."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        skills = TableRead.list_org_skills(db, org_id)
+    return {"skills": skills}
+
+
+@human_router.post("/api/human/orgs/{org_id}/skills")
+async def create_org_skill(
+    org_id: str,
+    body: CreateSkillRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Create a skill and publish its first version."""
+    from clawbits.skills.spec import SkillValidationError, validate_slug
+
+    _rate_limit(f"skill-write:{org_id}", limit=_SKILL_WRITE_LIMIT)
+    slug = (body.slug or "").strip().lower()
+    try:
+        validate_slug(slug)
+    except SkillValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    manifest, files = _prepare_skill_content(
+        slug=slug, manifest=body.manifest, body_md=body.body_md, files=body.files
+    )
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        if slug in TableRead.get_org_skill_slugs(db, org_id):
+            raise HTTPException(
+                status_code=409, detail=f"A skill named '{slug}' already exists"
+            )
+        row = TableWrite.create_skill(
+            db,
+            org_id=org_id,
+            slug=slug,
+            display_name=(body.display_name or slug).strip(),
+            manifest=manifest,
+            body_md=body.body_md,
+            files=files,
+            created_by=user["id"],
+        )
+        result = TableRead.get_skill_detail(db, row.skill_id, org_id)
+        db.commit()
+    return result
+
+
+@human_router.get("/api/human/orgs/{org_id}/skills/{skill_id}")
+async def get_org_skill(
+    org_id: str,
+    skill_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """One skill with its current version content."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        result = TableRead.get_skill_detail(db, skill_id, org_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Skill not found")
+    return result
+
+
+@human_router.patch("/api/human/orgs/{org_id}/skills/{skill_id}")
+async def update_org_skill(
+    org_id: str,
+    skill_id: str,
+    body: UpdateSkillMetaRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Edit catalog metadata. Content edits go through publish."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        skill = _skill_or_404(db, org_id, skill_id)
+        TableWrite.update_skill_meta(
+            db,
+            skill=skill,
+            display_name=(body.display_name.strip() if body.display_name else None),
+        )
+        result = TableRead.get_skill_detail(db, skill_id, org_id)
+        db.commit()
+    return result
+
+
+@human_router.post("/api/human/orgs/{org_id}/skills/{skill_id}/versions")
+async def publish_org_skill_version(
+    org_id: str,
+    skill_id: str,
+    body: PublishSkillRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Publish an edit as a new immutable version (implicit patch bump)."""
+    _rate_limit(f"skill-write:{org_id}", limit=_SKILL_WRITE_LIMIT)
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        skill = _skill_or_404(db, org_id, skill_id)
+        manifest, files = _prepare_skill_content(
+            slug=skill.slug,
+            manifest=body.manifest,
+            body_md=body.body_md,
+            files=body.files,
+        )
+        version = TableWrite.publish_skill_version(
+            db,
+            skill=skill,
+            manifest=manifest,
+            body_md=body.body_md,
+            files=files,
+            changelog=(body.changelog.strip() if body.changelog else None),
+            published_by=user["id"],
+        )
+        result = TableRead._skill_version_to_dict(version, include_content=True)
+        db.commit()
+    return result
+
+
+@human_router.get("/api/human/orgs/{org_id}/skills/{skill_id}/versions")
+async def list_org_skill_versions(
+    org_id: str,
+    skill_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """The version timeline for one skill."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        _skill_or_404(db, org_id, skill_id)
+        versions = TableRead.list_skill_versions(db, skill_id)
+    return {"versions": versions}
+
+
+@human_router.get(
+    "/api/human/orgs/{org_id}/skills/{skill_id}/versions/{version_id}/render"
+)
+async def render_org_skill_version(
+    org_id: str,
+    skill_id: str,
+    version_id: str,
+    request: Request,
+    runtime: str = "openclaw",
+    user: dict = Depends(get_current_human_user),
+):
+    """The exact ``SKILL.md`` bytes that would land on disk for ``runtime``."""
+    from clawbits.skills.render import SKILL_RUNTIMES, render_skill
+
+    if runtime not in SKILL_RUNTIMES:
+        raise HTTPException(status_code=400, detail=f"Unknown runtime: {runtime}")
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        skill = _skill_or_404(db, org_id, skill_id)
+        version = TableRead.get_skill_version(db, version_id, skill_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="Version not found")
+        content = render_skill(version.manifest, version.body_md, runtime=runtime)
+        path = f"{skill.slug}/SKILL.md"
+        content_hash = version.content_hash
+    return {
+        "runtime": runtime,
+        "path": path,
+        "content": content,
+        "content_hash": content_hash,
+    }
+
+
+@human_router.post("/api/human/orgs/{org_id}/skills/{skill_id}/fork")
+async def fork_org_skill(
+    org_id: str,
+    skill_id: str,
+    body: ForkSkillRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Fork a skill into this org, recording lineage. ``org_id`` is the forking org."""
+    from clawbits.skills.spec import SkillValidationError, validate_slug
+
+    _rate_limit(f"skill-write:{org_id}", limit=_SKILL_WRITE_LIMIT)
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        source = _skill_or_404(db, org_id, skill_id)
+        if source.latest_version_id is None:
+            raise HTTPException(
+                status_code=409, detail="Cannot fork a skill with no published version"
+            )
+        source_version = TableRead.get_skill_version(
+            db, source.latest_version_id, source.skill_id
+        )
+        if source_version is None:
+            raise HTTPException(status_code=404, detail="Source version not found")
+
+        taken = TableRead.get_org_skill_slugs(db, org_id)
+        slug = (body.slug or "").strip().lower()
+        if not slug:
+            # Same-org forks always collide, so derive a free slug.
+            slug = f"{source.slug}-fork"
+            suffix = 2
+            while slug in taken:
+                slug = f"{source.slug}-fork-{suffix}"
+                suffix += 1
+        try:
+            validate_slug(slug)
+        except SkillValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if slug in taken:
+            raise HTTPException(
+                status_code=409, detail=f"A skill named '{slug}' already exists"
+            )
+
+        fork = TableWrite.fork_skill(
+            db,
+            source=source,
+            source_version=source_version,
+            target_org_id=org_id,
+            slug=slug,
+            display_name=(body.display_name or f"{source.display_name} (fork)").strip(),
+            created_by=user["id"],
+        )
+        result = TableRead.get_skill_detail(db, fork.skill_id, org_id)
+        db.commit()
+    return result
+
+
+@human_router.delete("/api/human/orgs/{org_id}/skills/{skill_id}")
+async def delete_org_skill(
+    org_id: str,
+    skill_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Soft-delete a skill from the library."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        skill = _skill_or_404(db, org_id, skill_id)
+        TableWrite.delete_skill(db, skill=skill)
+        db.commit()
+    return {"skill_id": skill_id, "deleted": True}
+
+
+@human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/skills")
+async def list_agent_skills(
+    org_id: str,
+    agent_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Skills actually present on the agent, as it last reported them."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        _verify_agent_in_org(db, org_id, agent_id)
+        if not TableRead.can_manage_agent_contacts(db, agent_id, user["id"]):
+            raise HTTPException(
+                status_code=403, detail="Only the agent's operator or an org admin can view its skills"
+            )
+        return TableRead.list_agent_skills(db, agent_id)
+
+
+class InstallSkillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    skill_id: str
+
+
+class UpdateInstallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+def _authorize_agent_skills(db, org_id: str, agent_id: str, user: dict) -> None:
+    _verify_org_membership(db, org_id, user)
+    _verify_agent_in_org(db, org_id, agent_id)
+    if not TableRead.can_manage_agent_contacts(db, agent_id, user["id"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's operator or an org admin can manage its skills",
+        )
+
+
+def _install_or_404(db, agent_id: str, install_id: str):
+    from clawbits.db.models import AgentSkillInstall
+
+    row = db.get(AgentSkillInstall, install_id)
+    if row is None or row.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Skill install not found")
+    return row
+
+
+@human_router.post("/api/human/orgs/{org_id}/agents/{agent_id}/skills")
+async def install_agent_skill(
+    org_id: str,
+    agent_id: str,
+    body: InstallSkillRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Install an org skill onto an agent."""
+    from clawbits.db.models import Agent as _AgentRow
+    from clawbits.skills.render import resolve_runtime
+
+    with _get_db(request) as db:
+        _authorize_agent_skills(db, org_id, agent_id, user)
+
+        agent = db.get(_AgentRow, agent_id)
+        runtime = resolve_runtime(agent.agent_type if agent else None)
+        if not runtime.can_receive:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Skills require an OpenClaw runtime; this agent runs {runtime.name}",
+            )
+
+        # Cross-org attach is forbidden — fork first. One rule closes both the
+        # by-id read of another org's private skill and the supply chain where
+        # an upstream edit reaches an agent that never opted in.
+        skill = _skill_or_404(db, org_id, body.skill_id)
+        if skill.latest_version_id is None:
+            raise HTTPException(
+                status_code=409, detail="This skill has no published version yet"
+            )
+        if runtime.name not in (skill.runtimes or ["openclaw"]):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{skill.slug}' does not declare support for {runtime.name}",
+            )
+
+        TableWrite.install_skill(
+            db, agent_id=agent_id, org_id=org_id, skill=skill, installed_by=user["id"]
+        )
+        result = TableRead.list_agent_skills(db, agent_id)
+        db.commit()
+    return result
+
+
+@human_router.patch("/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}")
+async def update_agent_skill_install(
+    org_id: str,
+    agent_id: str,
+    install_id: str,
+    body: UpdateInstallRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Enable or disable an installed skill."""
+    with _get_db(request) as db:
+        _authorize_agent_skills(db, org_id, agent_id, user)
+        row = _install_or_404(db, agent_id, install_id)
+        if row.managed_by != "clawbits":
+            raise HTTPException(
+                status_code=409, detail="Clawbits doesn't manage this skill"
+            )
+        TableWrite.set_skill_install_enabled(db, row=row, enabled=body.enabled)
+        result = TableRead.list_agent_skills(db, agent_id)
+        db.commit()
+    return result
+
+
+@human_router.delete("/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}")
+async def uninstall_agent_skill(
+    org_id: str,
+    agent_id: str,
+    install_id: str,
+    request: Request,
+    force: bool = False,
+    user: dict = Depends(get_current_human_user),
+):
+    """Uninstall a skill. The row survives as a tombstone until the agent
+    confirms the directory is gone; ``force`` drops it without waiting, for an
+    agent that will never report again."""
+    with _get_db(request) as db:
+        _authorize_agent_skills(db, org_id, agent_id, user)
+        row = _install_or_404(db, agent_id, install_id)
+        if row.managed_by != "clawbits":
+            raise HTTPException(
+                status_code=409, detail="Clawbits doesn't manage this skill"
+            )
+        if force:
+            TableWrite.forget_skill_install(db, row=row)
+        else:
+            TableWrite.uninstall_skill(db, row=row)
+        result = TableRead.list_agent_skills(db, agent_id)
+        db.commit()
+    return result

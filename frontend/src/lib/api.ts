@@ -166,7 +166,15 @@ export interface AgentProfile {
   plugin_version?: string | null;
 }
 
+/** Wire slug for an org role. ``owner`` is surfaced to users as "Admin"
+ *  (and mirrors to WorkOS as ``admin``) — see ``orgRoleLabel``. */
 export type OrgRole = "owner" | "member";
+
+/** User-facing name for a role slug. Keep every badge, picker and copy
+ *  string going through this so the UI vocabulary stays in one place. */
+export function orgRoleLabel(role: OrgRole): string {
+  return role === "owner" ? "Admin" : "Member";
+}
 
 export interface Org {
   org_id: string;
@@ -467,6 +475,27 @@ export async function addOrgMember(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, role }),
   });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<{ members: OrgMember[]; total: number }>;
+}
+
+/** Promote a member to admin, or demote an admin to member. Admin-only on
+ *  the server, which also refuses to demote the last admin. */
+export async function updateOrgMemberRole(
+  orgId: string,
+  memberId: number,
+  role: OrgRole,
+): Promise<{ members: OrgMember[]; total: number }> {
+  if (!orgId) throw new Error("orgId is required");
+  const res = await fetch(
+    `/api/human/orgs/${encodeURIComponent(orgId)}/members/${String(memberId)}`,
+    {
+      credentials: "include",
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role }),
+    },
+  );
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<{ members: OrgMember[]; total: number }>;
 }
@@ -2512,4 +2541,324 @@ export async function listAgentChannels(
   );
   if (!res.ok) throw new Error(await extractError(res));
   return res.json() as Promise<{ channels: AgentDeliveryChannel[] }>;
+}
+
+// ---------------------------------------------------------------------------
+// Skills library (org catalog)
+//
+// An org authors versioned skills here. Installing them onto agents is a
+// separate plane that lands later, so nothing in this section talks to an
+// agent. Reads and writes are org-membership-gated (not operator-gated): an
+// org owner who operates no agents must still see the shared library.
+// See docs/protocol/SKILLS_LIBRARY_PLAN.md.
+// ---------------------------------------------------------------------------
+
+export type SkillVisibility = "private" | "org" | "public";
+export type SkillOrigin = "authored" | "forked" | "imported";
+/** Runtimes we can render a SKILL.md for. Only `openclaw` can receive one today. */
+export type SkillRuntime = "openclaw" | "hermes" | "ironclaw";
+
+/** One support file inside a skill bundle. Markdown references only in v1. */
+export interface SkillFile {
+  path: string;
+  content?: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+/** The normalized, neutralized frontmatter. NOT a raw SKILL.md — the
+ *  per-runtime document is rendered from this server-side. */
+export interface SkillManifest {
+  name: string;
+  description: string;
+  version?: string;
+  homepage?: string;
+  emoji?: string;
+  user_invocable?: boolean;
+  disable_model_invocation?: boolean;
+  runtimes?: SkillRuntime[];
+  requires?: { bins?: string[]; anyBins?: string[]; env?: string[]; os?: string[] };
+  env_declarations?: { name: string; required: boolean; description?: string }[];
+}
+
+export interface SkillVersion {
+  version_id: string;
+  skill_id: string;
+  version: string;
+  content_hash: string;
+  total_bytes: number;
+  has_executable: boolean;
+  changelog: string | null;
+  schema_version: string;
+  published_by: number | null;
+  created_at: string | null;
+  /** Present only on detail/publish responses, not on timeline listings. */
+  manifest?: SkillManifest;
+  body_md?: string;
+  files?: SkillFile[];
+}
+
+export interface Skill {
+  skill_id: string;
+  org_id: string;
+  /** The on-disk directory name AND the frontmatter `name` — OpenClaw requires
+   *  them to match, so this is not editable after create. */
+  slug: string;
+  display_name: string;
+  summary: string;
+  icon_emoji: string | null;
+  visibility: SkillVisibility;
+  origin: SkillOrigin;
+  runtimes: SkillRuntime[];
+  forked_from_skill_id: string | null;
+  forked_from_version_id: string | null;
+  latest_version_id: string | null;
+  latest_version: string | null;
+  content_hash: string | null;
+  has_executable: boolean;
+  /** No published version yet ⇒ not installable anywhere. */
+  is_draft: boolean;
+  archived_at: string | null;
+  created_by: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Detail responses only. */
+  current_version?: SkillVersion | null;
+}
+
+export interface RenderedSkill {
+  runtime: SkillRuntime;
+  /** Path relative to the runtime's skills root, e.g. `my-skill/SKILL.md`. */
+  path: string;
+  content: string;
+  content_hash: string;
+}
+
+function skillsBase(orgId: string): string {
+  if (!orgId) throw new Error("orgId is required");
+  return `/api/human/orgs/${encodeURIComponent(orgId)}/skills`;
+}
+
+/** The org's skill library. */
+export async function listOrgSkills(orgId: string): Promise<{ skills: Skill[] }> {
+  const res = await fetch(skillsBase(orgId), { credentials: "include" });
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<{ skills: Skill[] }>;
+}
+
+/** One skill with its current version's content. */
+export async function getSkill(orgId: string, skillId: string): Promise<Skill> {
+  const res = await fetch(
+    `${skillsBase(orgId)}/${encodeURIComponent(skillId)}`,
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<Skill>;
+}
+
+export async function createSkill(
+  orgId: string,
+  body: {
+    slug: string;
+    display_name: string;
+    manifest: SkillManifest;
+    body_md: string;
+    files?: { path: string; content: string }[];
+  },
+): Promise<Skill> {
+  const res = await fetch(skillsBase(orgId), {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<Skill>;
+}
+
+/** Edit catalog metadata. Content edits go through publishSkillVersion. */
+export async function updateSkillMeta(
+  orgId: string,
+  skillId: string,
+  body: { display_name?: string },
+): Promise<Skill> {
+  const res = await fetch(
+    `${skillsBase(orgId)}/${encodeURIComponent(skillId)}`,
+    {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<Skill>;
+}
+
+/** Publish an edit as a new immutable version (implicit patch bump). */
+export async function publishSkillVersion(
+  orgId: string,
+  skillId: string,
+  body: {
+    manifest: SkillManifest;
+    body_md: string;
+    files?: { path: string; content: string }[];
+    changelog?: string;
+  },
+): Promise<SkillVersion> {
+  const res = await fetch(
+    `${skillsBase(orgId)}/${encodeURIComponent(skillId)}/versions`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<SkillVersion>;
+}
+
+/** The version timeline (spine only — no bodies). */
+export async function listSkillVersions(
+  orgId: string,
+  skillId: string,
+): Promise<{ versions: SkillVersion[] }> {
+  const res = await fetch(
+    `${skillsBase(orgId)}/${encodeURIComponent(skillId)}/versions`,
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<{ versions: SkillVersion[] }>;
+}
+
+/** The exact SKILL.md bytes that would land on disk for `runtime`.
+ *  Per-runtime frontmatter is derived, not stored, so this is the only way an
+ *  author can see what their skill actually becomes on the agent. */
+export async function renderSkillVersion(
+  orgId: string,
+  skillId: string,
+  versionId: string,
+  runtime: SkillRuntime = "openclaw",
+): Promise<RenderedSkill> {
+  const res = await fetch(
+    `${skillsBase(orgId)}/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(versionId)}/render?runtime=${encodeURIComponent(runtime)}`,
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<RenderedSkill>;
+}
+
+/** Fork a skill into this org, recording lineage. Omit `slug` to let the
+ *  server derive a free one (the common case when forking in-org). */
+export async function forkSkill(
+  orgId: string,
+  skillId: string,
+  body: { slug?: string; display_name?: string } = {},
+): Promise<Skill> {
+  const res = await fetch(
+    `${skillsBase(orgId)}/${encodeURIComponent(skillId)}/fork`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<Skill>;
+}
+
+export async function deleteSkill(
+  orgId: string,
+  skillId: string,
+): Promise<{ skill_id: string; deleted: boolean }> {
+  const res = await fetch(
+    `${skillsBase(orgId)}/${encodeURIComponent(skillId)}`,
+    { method: "DELETE", credentials: "include" },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<{ skill_id: string; deleted: boolean }>;
+}
+
+/** One skill the agent reported as present on disk. Mirror-only in M2. */
+export interface AgentSkill {
+  install_id: string;
+  agent_id: string;
+  skill_id: string | null;
+  slug: string;
+  managed_by: "clawbits" | "external";
+  name: string;
+  description: string | null;
+  sync_status: string;
+  sync_error: string | null;
+  enabled: boolean;
+  reported_version: string | null;
+  reported_path: string | null;
+  reported_root: string | null;
+  reported_source: string | null;
+  /** Loader verdict: false means a requirement is missing, so it is never used. */
+  eligible: boolean | null;
+  model_visible: boolean | null;
+  missing: { bins?: string[]; anyBins?: string[]; env?: string[]; os?: string[] } | null;
+  last_seen_at: string | null;
+  updated_at: string | null;
+}
+
+export interface AgentSkillsResponse {
+  skills: AgentSkill[];
+  sync: {
+    report_mode: string | null;
+    skills_root: string | null;
+    scanned_roots: string[] | null;
+    apply_mode: string | null;
+    prompt_chars_observed: number | null;
+    prompt_budget_observed: number | null;
+    truncated: boolean;
+    plugin_version: string | null;
+    last_reported_at: string | null;
+  };
+}
+
+export async function listAgentSkills(
+  orgId: string,
+  agentId: string,
+): Promise<AgentSkillsResponse> {
+  const res = await fetch(
+    `/api/human/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/skills`,
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<AgentSkillsResponse>;
+}
+
+export async function installAgentSkill(
+  orgId: string,
+  agentId: string,
+  skillId: string,
+): Promise<AgentSkillsResponse> {
+  const res = await fetch(
+    `/api/human/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/skills`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skill_id: skillId }),
+    },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<AgentSkillsResponse>;
+}
+
+export async function uninstallAgentSkill(
+  orgId: string,
+  agentId: string,
+  installId: string,
+): Promise<AgentSkillsResponse> {
+  const res = await fetch(
+    `/api/human/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(installId)}`,
+    { method: "DELETE", credentials: "include" },
+  );
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<AgentSkillsResponse>;
 }

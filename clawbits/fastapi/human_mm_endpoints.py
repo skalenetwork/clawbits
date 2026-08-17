@@ -618,7 +618,7 @@ async def admin_list_org_channels(
         if role != "owner":
             raise HTTPException(
                 status_code=403,
-                detail="Only organization owners can list all channels",
+                detail="Only organization admins can list all channels",
             )
         channels = TableRead.list_all_mm_channels_in_org(db, org_id, user["id"])
         return MmAdminChannelListResponse(
@@ -765,7 +765,7 @@ async def admin_delete_channel(
         if not is_creator and role != "owner":
             raise HTTPException(
                 status_code=403,
-                detail="Only the channel creator or an organization owner can delete it",
+                detail="Only the channel creator or an organization admin can delete it",
             )
 
         # Snapshot agent members before the delete so their plugins also get

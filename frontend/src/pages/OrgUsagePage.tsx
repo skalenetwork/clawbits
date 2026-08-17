@@ -867,7 +867,7 @@ export default function OrgUsagePage() {
                         <span>
                             Self-reported by each agent&apos;s plugin - informational only, never used for
                             billing. Turns that deliver no reply may not be counted yet
-                            {data.role === "member" ? "; per-agent detail is visible to org owners" : ""}.
+                            {data.role === "member" ? "; per-agent detail is visible to org admins" : ""}.
                         </span>
                     </p>
 
