@@ -304,12 +304,15 @@ class GitEndpoints:
                         )
 
             files = [{"path": f.path, "content": f.content, "action": f.action} for f in body.files]
-            result = repo_manager.create_commit(
-                base_path, repo["org_id"], repo_name,
-                body.message, files,
-                author_name=agent_id, author_email=author_email,
-                branch=body.branch,
-            )
+            try:
+                result = repo_manager.create_commit(
+                    base_path, repo["org_id"], repo_name,
+                    body.message, files,
+                    author_name=agent_id, author_email=author_email,
+                    branch=body.branch,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid file path: {e}")
             if result is None:
                 raise HTTPException(status_code=500, detail="Failed to create commit")
 
