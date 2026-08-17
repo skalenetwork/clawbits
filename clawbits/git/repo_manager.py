@@ -3,7 +3,8 @@
 Repos are stored on disk at ``{base_path}/{org_id}/{repo_name}``.
 
 Environment variable:
-    GIT_REPOS_BASE_PATH  – root directory for all repos (default: ./git_repos)
+    GIT_REPOS_BASE_PATH  – root directory for all repos
+                           (default: ~/.local/share/clawbits/git_repos)
 """
 import logging
 import os
@@ -14,7 +15,13 @@ from clawbits.domain import SYSTEM_EMAIL
 
 logger = logging.getLogger(__name__)
 
-GIT_REPOS_BASE_PATH = os.getenv("GIT_REPOS_BASE_PATH", os.path.join(os.getcwd(), "git_repos"))
+# The default must live outside the application directory: repo contents are
+# agent-supplied, and a repo root under the source tree turns any containment
+# bug into writes next to importable code.
+GIT_REPOS_BASE_PATH = os.getenv(
+    "GIT_REPOS_BASE_PATH",
+    os.path.join(os.path.expanduser("~"), ".local", "share", "clawbits", "git_repos"),
+)
 
 
 def _run_git(args: list[str], cwd: str, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -36,6 +43,62 @@ def _run_git(args: list[str], cwd: str, env: dict | None = None) -> subprocess.C
 def repo_path(base_path: str, org_id: str, repo_name: str) -> str:
     """Return the on-disk path for a repository."""
     return os.path.join(base_path, org_id, repo_name)
+
+
+def _validate_rel_path(rel_path: str) -> list[str]:
+    """Lexically validate a repo-relative path and return its components.
+
+    Raises ValueError if ``rel_path`` is absolute or has an empty / ``.`` /
+    ``..`` / ``.git`` component. ``.git`` is rejected because a write there
+    (hooks, config) executes on the next git invocation.
+    """
+    if os.path.isabs(rel_path) or rel_path.startswith(("/", "\\")):
+        raise ValueError(f"absolute path not allowed: {rel_path!r}")
+    parts = rel_path.replace("\\", "/").split("/")
+    if any(part in ("", ".", "..") or part.lower() == ".git" for part in parts):
+        raise ValueError(f"invalid path component in: {rel_path!r}")
+    return parts
+
+
+def _write_repo_file(rpath: str, parts: list[str], content: str) -> None:
+    """Write a file at ``parts`` under ``rpath`` without following any symlink.
+
+    Walks component-by-component with ``dir_fd`` + ``O_NOFOLLOW``, so a symlink
+    in the working tree (including one materialized by checkout, or one that
+    appears mid-walk) can never redirect the write outside the repository or
+    into ``.git``. Raises ValueError if any component is a symlink or not a
+    plain directory / regular file.
+    """
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(rpath, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in parts[:-1]:
+            try:
+                try:
+                    nfd = os.open(part, dir_flags, dir_fd=fd)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(part, dir_fd=fd)
+                    except FileExistsError:
+                        pass
+                    nfd = os.open(part, dir_flags, dir_fd=fd)
+            except OSError as e:
+                raise ValueError(f"unsafe path component {part!r} in {'/'.join(parts)!r}") from e
+            os.close(fd)
+            fd = nfd
+        try:
+            ffd = os.open(
+                parts[-1],
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o644,
+                dir_fd=fd,
+            )
+        except OSError as e:
+            raise ValueError(f"unsafe path {'/'.join(parts)!r}") from e
+        with os.fdopen(ffd, "wb") as fh:
+            fh.write(content.encode("utf-8"))
+    finally:
+        os.close(fd)
 
 
 def init_repo(
@@ -207,6 +270,10 @@ def create_commit(
     if not os.path.isdir(rpath):
         return None
 
+    # Validate every path before mutating anything: paths are agent-supplied,
+    # and the write below happens before git sees them.
+    parts_by_path = {f["path"]: _validate_rel_path(f["path"]) for f in files}
+
     env = {
         "GIT_AUTHOR_NAME": author_name,
         "GIT_AUTHOR_EMAIL": author_email,
@@ -214,21 +281,22 @@ def create_commit(
         "GIT_COMMITTER_EMAIL": author_email,
     }
 
-    # Checkout the branch
-    _run_git(["checkout", branch], cwd=rpath, env=env)
+    # Checkout the branch; on failure abort rather than commit elsewhere.
+    if _run_git(["checkout", branch], cwd=rpath, env=env).returncode != 0:
+        return None
 
-    # Apply file changes
+    # Apply file changes. Physical (symlink) checks happen inside
+    # _write_repo_file, necessarily after checkout has settled the tree.
     for f in files:
-        file_path = os.path.join(rpath, f["path"])
         action = f["action"]
 
         if action in ("create", "update"):
-            # Ensure parent directory exists
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            Path(file_path).write_text(f.get("content", ""), encoding="utf-8")
-            _run_git(["add", f["path"]], cwd=rpath)
+            _write_repo_file(rpath, parts_by_path[f["path"]], f.get("content") or "")
+            if _run_git(["add", "--", f["path"]], cwd=rpath).returncode != 0:
+                return None
         elif action == "delete":
-            _run_git(["rm", "-f", f["path"]], cwd=rpath)
+            if _run_git(["rm", "-f", "--", f["path"]], cwd=rpath).returncode != 0:
+                return None
 
     # Commit
     result = _run_git(["commit", "-m", message, "--allow-empty"], cwd=rpath, env=env)

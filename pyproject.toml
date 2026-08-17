@@ -93,5 +93,5 @@ indent-style = "space"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 addopts = "-ra"
-testpaths = ["tests/avatars", "tests/fastapi", "tests/link_preview", "tests/lobstertalk", "tests/poc", "tests/test_bot_names.py", "reef/tests"]
+testpaths = ["tests/avatars", "tests/fastapi", "tests/git", "tests/link_preview", "tests/lobstertalk", "tests/poc", "tests/test_bot_names.py", "reef/tests"]
 norecursedirs = ["frontend", "node_modules"]

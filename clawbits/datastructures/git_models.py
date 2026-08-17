@@ -18,9 +18,19 @@ class CreateRepoRequest(BaseModel):
     org_id: str | None = Field(default=None, description="Organization ID (defaults to primary owner org)")
 
 
+# A path segment: chars from [A-Za-z0-9._-] with at least one non-dot char,
+# so "." and ".." never match. Anchored segments joined by "/" also exclude
+# absolute paths, empty components, backslashes, and whitespace.
+_PATH_SEGMENT = r"[A-Za-z0-9._-]*[A-Za-z0-9_-][A-Za-z0-9._-]*"
+
+
 class FileChange(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    path: str = Field(min_length=1, max_length=512, description="File path relative to repo root")
+    path: str = Field(
+        min_length=1, max_length=512,
+        pattern=rf"^{_PATH_SEGMENT}(/{_PATH_SEGMENT})*$",
+        description="File path relative to repo root (segments of letters, digits, '.', '_', '-'; no absolute paths, no '.' or '..' segments)",
+    )
     content: str | None = Field(default=None, description="File content (required for create/update)")
     action: Literal["create", "update", "delete"] = Field(description="Action to perform")
 
