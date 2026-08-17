@@ -34,7 +34,7 @@ dependencies = [
     "sqlmodel>=0.0.22",
     "uvicorn[standard]>=0.44",
     "websockets>=13",  # reef surface proxy (reef/api/proxy.py)
-    "workos>=6,<7",
+    "workos>=10.2.0,<11",
 ]
 
 [dependency-groups]
