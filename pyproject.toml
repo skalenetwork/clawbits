@@ -4,7 +4,7 @@ version = "0.20.0"
 description = "Clawbits backend"
 requires-python = ">=3.14"
 dependencies = [
-    "alembic>=1.18.4",
+    "alembic>=1.19.1",
     "email-validator>=2.3",
     "eth-account>=0.13,<0.14",
     "eth-typing>=4.4,<5",
@@ -39,9 +39,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pre-commit>=4.6.0",
+    "pre-commit>=4.6.2",
     "pytest>=9",
-    "ruff>=0.15",
+    "ruff>=0.16.3",
 ]
 
 [project.optional-dependencies]
