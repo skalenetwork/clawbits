@@ -8,16 +8,21 @@
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import {fireEvent, render, screen, waitFor} from "@testing-library/react";
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
+import {ReefAuthError} from "@/lib/reefApi";
 import type {ReefAgentEnvView, ReefEnvApplyResult, ReefEnvPatchBody} from "@/lib/reefApi";
 import {EnvSection} from "./EnvSection";
 
 const reefAgentEnv = vi.fn();
 const reefPatchEnv = vi.fn();
+const setReefToken = vi.fn();
+// Unlocked by default; the token gate flips this to exercise the locked branch.
+let tokenHeld = true;
 vi.mock("@/lib/reefApi", async (importOriginal) => {
     const actual = await importOriginal<typeof import("@/lib/reefApi")>();
     return {
         ...actual,
-        hasReefToken: () => true, // unlocked; the locked branch is covered in-browser
+        hasReefToken: () => tokenHeld,
+        setReefToken: (...a: unknown[]) => { setReefToken(...a); },
         reefAgentEnv: (...a: unknown[]) => reefAgentEnv(...a) as Promise<ReefAgentEnvView>,
         reefPatchEnv: (...a: unknown[]) => reefPatchEnv(...a) as Promise<ReefEnvApplyResult>,
     };
@@ -60,6 +65,7 @@ function mount(view: ReefAgentEnvView) {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    tokenHeld = true;
     reefPatchEnv.mockResolvedValue({
         sandbox_id: "oc1",
         changed: true,
@@ -284,5 +290,83 @@ describe("EnvSection reading vs editing", () => {
         // Amending it enables the save.
         fireEvent.change(screen.getByPlaceholderText("value"), {target: {value: "https://y.test"}});
         expect((screen.getByText("Save").closest("button"))?.disabled).toBe(false);
+    });
+});
+
+/**
+ * The token gate. It sits in front of the list, so its whole job is to not read
+ * as a *variable named* "Reef admin token" - which is what the old row-shaped
+ * version did.
+ */
+describe("EnvSection token gate", () => {
+    function mountLocked() {
+        tokenHeld = false;
+        reefAgentEnv.mockResolvedValue(envView());
+        const qc = new QueryClient({defaultOptions: {queries: {retry: false}}});
+        return render(
+            <QueryClientProvider client={qc}>
+                <EnvSection orgId="org-1" sandboxId="oc1"/>
+            </QueryClientProvider>,
+        );
+    }
+
+    it("says what unlocking gets you, not just the name of a token", async () => {
+        mountLocked();
+        expect(await screen.findByText(/unlock environment variables/i)).toBeTruthy();
+    });
+
+    it("answers where the token comes from and where it goes", async () => {
+        mountLocked();
+        // Where to get it: the same token as the operator panel, named in-app
+        // rather than as a file on the reef box.
+        expect(await screen.findByText(/settings . reef/i)).toBeTruthy();
+        // Where it goes: the reassurance that makes pasting a credential ok.
+        expect(screen.getByText(/never sent to clawbits/i)).toBeTruthy();
+    });
+
+    it("labels the field, so the copy does not vanish on first keystroke", async () => {
+        mountLocked();
+        // A real label, not a placeholder doing double duty as one.
+        const field = await screen.findByLabelText("Reef admin token");
+        expect(field.getAttribute("type")).toBe("password");
+        expect(field.getAttribute("placeholder")).toBeNull();
+    });
+
+    it("does not fetch until unlocked, then submits the trimmed token", async () => {
+        mountLocked();
+        const field = await screen.findByLabelText("Reef admin token");
+        expect(reefAgentEnv).not.toHaveBeenCalled();
+
+        // Nothing to submit yet.
+        expect((screen.getByText("Unlock").closest("button"))?.disabled).toBe(true);
+
+        fireEvent.change(field, {target: {value: "  tok-abc  "}});
+        expect((screen.getByText("Unlock").closest("button"))?.disabled).toBe(false);
+        fireEvent.click(screen.getByText("Unlock"));
+
+        expect(setReefToken).toHaveBeenCalledWith("tok-abc");
+        // Unlocking runs the query that was gated on the token.
+        await waitFor(() => { expect(reefAgentEnv).toHaveBeenCalled(); });
+    });
+
+    it("reports a rejected token as a live error that survives typing", async () => {
+        tokenHeld = true; // held, but reef refuses it
+        reefAgentEnv.mockRejectedValue(new ReefAuthError());
+        const qc = new QueryClient({defaultOptions: {queries: {retry: false}}});
+        render(
+            <QueryClientProvider client={qc}>
+                <EnvSection orgId="org-1" sandboxId="oc1"/>
+            </QueryClientProvider>,
+        );
+
+        const err = await screen.findByRole("alert");
+        expect(err.textContent).toMatch(/rejected/i);
+
+        const field = screen.getByLabelText("Reef admin token");
+        expect(field.getAttribute("aria-invalid")).toBe("true");
+        // The old version put this in the placeholder, so it disappeared exactly
+        // when the user started fixing it.
+        fireEvent.change(field, {target: {value: "retry"}});
+        expect(screen.getByRole("alert").textContent).toMatch(/rejected/i);
     });
 });

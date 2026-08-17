@@ -20,7 +20,7 @@
  * The draft/diff logic is shared with the operator panel via ``envKeys`` so the
  * two cannot disagree about what a given edit means on the wire.
  */
-import {useMemo, useRef, useState} from "react";
+import {useId, useMemo, useRef, useState} from "react";
 import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
 import {
     Alert02Icon,
@@ -61,6 +61,7 @@ import {Icon} from "@/components/Icon";
 import {SectionHeader} from "@/components/automations/SectionHeader";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
+import {Label} from "@/components/ui/label";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -86,6 +87,86 @@ function EnvNotice({
             <p className="min-w-0 flex-1 text-caption text-muted-foreground">{children}</p>
             {action}
         </div>
+    );
+}
+
+/** The locked state. Deliberately NOT an ``EnvNotice``/row-shaped box: the old
+ *  version was a framed strip with a lock, the words "Reef admin token" and a
+ *  button, which is exactly the shape of a variable row - so it read as a
+ *  *variable named* "Reef admin token" rather than as a gate standing in front
+ *  of the list. Hence the dashed frame (the app's existing "nothing here yet,
+ *  act on me" language), a heading that names what unlocking gets you, and a
+ *  real label instead of a placeholder carrying the only copy on screen.
+ *
+ *  The three questions a credential prompt has to answer without being asked:
+ *  what is it for, where do I get it, and where does it go. */
+function TokenGate({
+    rejected,
+    value,
+    onChange,
+    onSubmit,
+}: {
+    rejected: boolean;
+    value: string;
+    onChange: (v: string) => void;
+    onSubmit: () => void;
+}) {
+    const id = useId();
+    const errorId = `${id}-error`;
+    const empty = value.trim().length === 0;
+    return (
+        <form
+            className="space-y-3 rounded-xl border border-dashed border-border/70 bg-card px-4 py-4"
+            onSubmit={(e) => {
+                e.preventDefault();
+                if (empty) return;
+                onSubmit();
+            }}
+        >
+            <div className="flex items-start gap-3">
+                <Icon icon={LockIcon} className="mt-0.5 size-4 shrink-0 text-muted-foreground"/>
+                <div className="min-w-0 space-y-1">
+                    <p className="text-sm font-medium text-foreground">
+                        Unlock environment variables
+                    </p>
+                    <p className="text-caption text-muted-foreground">
+                        Reef holds this agent&apos;s variables, and asks for its admin token before
+                        showing them. It&apos;s the same token as in Settings → Reef, and stays in
+                        this browser tab only - never stored, never sent to Clawbits.
+                    </p>
+                </div>
+            </div>
+            <div className="space-y-1.5 sm:pl-7">
+                <Label htmlFor={id} className="text-caption font-normal text-muted-foreground">
+                    Reef admin token
+                </Label>
+                <div className="flex items-center gap-2">
+                    <Input
+                        id={id}
+                        type="password"
+                        value={value}
+                        onChange={(e) => { onChange(e.target.value); }}
+                        autoComplete="off"
+                        spellCheck={false}
+                        aria-invalid={rejected}
+                        aria-describedby={rejected ? errorId : undefined}
+                        className="h-9 flex-1 font-mono text-sm"
+                    />
+                    <Button type="submit" size="sm" disabled={empty}>
+                        Unlock
+                    </Button>
+                </div>
+                {/* Not a placeholder: the old copy put "Token rejected" *in* the
+                    field, so it vanished on the first keystroke - i.e. exactly
+                    when the user was acting on it - and told a screen reader
+                    nothing. */}
+                {rejected && (
+                    <p id={errorId} role="alert" className="text-caption text-destructive">
+                        That token was rejected. Check it and try again.
+                    </p>
+                )}
+            </div>
+        </form>
     );
 }
 
@@ -214,30 +295,16 @@ export function EnvSection({orgId, sandboxId}: {orgId: string; sandboxId: string
         );
     } else if (!tokenSet || authRejected) {
         body = (
-            <form
-                className="flex items-center gap-2 rounded-xl border border-border/60 bg-card px-4 py-3"
-                onSubmit={(e) => {
-                    e.preventDefault();
-                    const t = tokenInput.trim();
-                    if (t.length === 0) return;
-                    setReefToken(t);
+            <TokenGate
+                rejected={authRejected}
+                value={tokenInput}
+                onChange={setTokenInput}
+                onSubmit={() => {
+                    setReefToken(tokenInput.trim());
                     setTokenInput("");
                     setTokenSet(true);
                 }}
-            >
-                <Icon icon={LockIcon} className="size-4 shrink-0 text-muted-foreground"/>
-                <Input
-                    type="password"
-                    value={tokenInput}
-                    onChange={(e) => { setTokenInput(e.target.value); }}
-                    placeholder={authRejected ? "Token rejected, try again" : "Reef admin token"}
-                    autoComplete="off"
-                    className="h-8 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
-                />
-                <Button type="submit" size="sm" disabled={tokenInput.trim().length === 0}>
-                    Unlock
-                </Button>
-            </form>
+            />
         );
     } else if (envQuery.isLoading) {
         body = (
