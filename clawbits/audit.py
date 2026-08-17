@@ -33,6 +33,7 @@ USER_SIGNED_OUT = "user.signed_out"
 ORGANIZATION_CREATED = "organization.created"
 ORGANIZATION_MEMBER_ADDED = "organization.member_added"
 ORGANIZATION_MEMBER_REMOVED = "organization.member_removed"
+ORGANIZATION_MEMBER_ROLE_UPDATED = "organization.member_role_updated"
 ORGANIZATION_LOBSTERTALK_UPDATED = "organization.lobstertalk_updated"
 ORGANIZATION_LOBSTERTALK_CHANNEL_UPDATED = "organization.lobstertalk_channel_updated"
 
@@ -116,6 +117,28 @@ def organization_member_added(
         actor=_user_actor(actor_user),
         target=_user_target(target_user),
         metadata={"role": role},
+    )
+
+
+def organization_member_role_updated(
+    request: Request,
+    *,
+    actor_user: dict,
+    target_user: dict,
+    workos_org_id: str,
+    old_role: str,
+    new_role: str,
+) -> None:
+    """A member was promoted to owner or demoted to member. Privilege changes
+    are the kind of thing an auditor asks about, so this carries both the
+    before and after slug rather than just the result."""
+    _emit(
+        request,
+        action=ORGANIZATION_MEMBER_ROLE_UPDATED,
+        organization_id=workos_org_id,
+        actor=_user_actor(actor_user),
+        target=_user_target(target_user),
+        metadata={"old_role": old_role, "new_role": new_role},
     )
 
 

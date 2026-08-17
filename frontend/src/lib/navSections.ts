@@ -9,7 +9,7 @@ import type {IconSvgElement} from "@hugeicons/react";
 
 /** The top-level navigation sections, one per rail icon. Each owns a
  *  contextual sidebar inside the content card. (Chats was merged into Home.) */
-export type SectionId = "home" | "agents" | "settings";
+export type SectionId = "home" | "agents" | "skills" | "settings";
 
 export interface NavSection {
     id: SectionId;
@@ -20,7 +20,10 @@ export interface NavSection {
 }
 
 /** Primary rail cluster, top → bottom. The org switcher sits above these
- *  (rendered separately at the very top); Settings is pinned at the bottom. */
+ *  (rendered separately at the very top); Settings is pinned at the bottom.
+ *
+ *  Skills is hidden for now: the section and its routes still exist, they just
+ *  have no rail icon (re-add the entry to bring it back). */
 export const NAV_SECTIONS: NavSection[] = [
     {id: "home", label: "Home", icon: Home03Icon, landingPath: "/home"},
     {id: "agents", label: "Agents", icon: Robot02Icon, landingPath: "/agents"},
@@ -42,14 +45,15 @@ export const SETTINGS_SECTION: NavSection = {
  */
 export function deriveSection(pathname: string): SectionId {
     if (pathname.startsWith("/agents")) return "agents";
+    if (pathname.startsWith("/skills")) return "skills";
     if (pathname.startsWith("/settings")) return "settings";
     return "home";
 }
 
-/** Every section renders a contextual sidebar inside the card: Home shows the
- *  chat list, Agents the roster, Settings the nav. */
+/** Home shows the chat list, Agents the roster, Settings the nav, Skills the
+ *  org's library (the selected skill opens in the pane beside it). */
 export function sectionHasSidebar(section: SectionId): boolean {
-    return ["home", "agents", "settings"].includes(section);
+    return ["home", "agents", "skills", "settings"].includes(section);
 }
 
 // ── Mobile navigation ─────────────────────────────────────────────────────
@@ -100,6 +104,7 @@ export const MOBILE_TABS: MobileTab[] = [
  *  (``/settings``) is a tab root, not a pushed route. */
 export function isPushedMobileRoute(pathname: string): boolean {
     return (
+        /^\/skills(\/|$)/.test(pathname) ||
         /^\/channels\/[^/]+/.test(pathname) ||
         /^\/agents\/[^/]+/.test(pathname) ||
         /^\/settings\/.+/.test(pathname)

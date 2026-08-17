@@ -1,6 +1,8 @@
 // Typed client for the Reef admin/fleet API. Shapes mirror reef/api/schemas.py.
 // In dev the Vite proxy forwards /api/* -> the Reef API (see vite.config.ts).
 
+import type { EnvApplyMode } from "@/lib/envApply"
+
 export type SandboxState = "creating" | "running" | "stopped" | "failed" | "destroyed"
 
 export interface Metrics {
@@ -95,6 +97,56 @@ export interface SandboxDetail {
    *  which is a real answer, not missing data. Reflects reef's RECORD, so it can
    *  differ from what the RUNNING container booted with until the next upgrade. */
   capabilities: string[]
+}
+
+/** A guest env var without its value: `value_length` counts characters, and 0
+ *  is set-but-empty. */
+/** "secret" is write-only: reef holds the plaintext but no surface hands it back.
+ *  "regular" can be read again. Tier is READ-PATH policy - the agent is handed the
+ *  same env either way and never learns the tier. */
+export type EnvTier = "secret" | "regular"
+
+export interface EnvVar {
+  key: string
+  value_length: number
+  /** "file" = reef's editable per-agent overlay; "container" = baked in at create time. */
+  source: "file" | "container"
+  tier: EnvTier
+  /** Present only for ``tier: "regular"``; always null for a secret. */
+  value: string | null
+}
+
+export type { EnvApplyMode }
+
+/** `GET /fleet/{id}/env` - the agent's user env layer, values excluded. */
+export interface AgentEnv {
+  sandbox_id: string
+  vars: EnvVar[]
+  editable: boolean
+  /** Apply modes the running IMAGE supports. */
+  apply_modes: EnvApplyMode[]
+  state: SandboxState
+  desired_state: string | null
+}
+
+/** `PATCH /fleet/{id}/env`. Only keys the operator actually typed appear in `set`. */
+export interface EnvPatchIn {
+  set: Record<string, string>
+  unset: string[]
+  apply: EnvApplyMode
+  /** Per-key tier. A key omitted here keeps the tier it already had, or - if reef
+   *  has never seen it - gets reef's name-based default. Sending secret -> regular
+   *  without also re-sending the value is a 422 by design. */
+  tiers?: Record<string, EnvTier>
+}
+
+export interface EnvApplyResult {
+  sandbox_id: string
+  changed: boolean
+  applied: EnvApplyMode
+  takes_effect: "now" | "on_next_start"
+  state: SandboxState
+  vars: EnvVar[]
 }
 
 /** Reconciler restart policies (mirrors reef.runtime.RestartPolicy). */
@@ -302,7 +354,8 @@ const BASE = import.meta.env.VITE_REEF_API_URL ?? "/api"
 // into the auth dialog (App.tsx). It's kept per-tab in sessionStorage so a
 // reload doesn't re-prompt, and only ever leaves the browser as the
 // Authorization header to the Reef itself. A build-time VITE_REEF_ADMIN_TOKEN
-// still works as a seed for kiosk-style deployments.
+// still works as a seed for kiosk-style deployments. A held token is only
+// treated as WRONG once the rejection policy below says so — never on one 401.
 const TOKEN_KEY = "reef-admin-token"
 
 const _seed =
@@ -314,6 +367,8 @@ let _token: string | null = _seed.trim().length > 0 ? _seed.trim() : null
 export function setAdminToken(token: string | null): void {
   const t = (token ?? "").trim()
   _token = t.length > 0 ? t : null
+  _rejectionRounds = 0
+  _lastRejectionAt = 0
   try {
     if (_token) sessionStorage.setItem(TOKEN_KEY, _token)
     else sessionStorage.removeItem(TOKEN_KEY)
@@ -327,6 +382,32 @@ export const hasAdminToken = (): boolean => _token !== null
 /** Reef rejected (or is missing) the admin token — the UI shows the auth dialog. */
 export const isAuthError = (e: unknown): e is ApiError =>
   e instanceof ApiError && (e.status === 401 || e.status === 403)
+
+// ── Rejection policy ────────────────────────────────────────────────────────
+// A 401 is NOT proof the stored token is wrong: the API restarting under the
+// admin-ui proxy answers 401 for a moment. Popping the blocking, non-dismissable
+// auth dialog on the first one made a blip look like a rejected token, and the
+// only way out was re-pasting a token that was fine all along. So a held token
+// has to be rejected in ROUNDS_BEFORE_FINAL *separate* rounds before the UI
+// believes it; any accepted response resets the count.
+//
+// Rounds, not requests: the dashboard runs several polls in parallel, so
+// rejections landing within ROUND_WINDOW_MS of each other count once.
+const ROUNDS_BEFORE_FINAL = 2
+const ROUND_WINDOW_MS = 400
+
+/** Retry delay for the auth retry in `lib/queries`. Comfortably wider than
+ *  ROUND_WINDOW_MS so the retry always lands as a genuinely new round. */
+export const AUTH_RETRY_DELAY_MS = 1_200
+
+let _rejectionRounds = 0
+let _lastRejectionAt = 0
+
+/** Reef has rejected the held token in enough separate rounds that it's the
+ *  token, not a blip. Always final when no token is held — there is nothing to
+ *  retry with, so the dialog should open immediately. */
+export const authRejectionIsFinal = (): boolean =>
+  _token === null || _rejectionRounds >= ROUNDS_BEFORE_FINAL
 
 export class ApiError extends Error {
   constructor(
@@ -347,6 +428,18 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     res = await fetch(`${BASE}${path}`, { ...init, headers })
   } catch {
     throw new ApiError(0, "Can't reach the Reef API — is it running? (uv run python -m reef.api)")
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    if (_token) {
+      const now = Date.now()
+      if (now - _lastRejectionAt > ROUND_WINDOW_MS) _rejectionRounds += 1
+      _lastRejectionAt = now
+    }
+  } else if (res.ok && _token) {
+    // Accepted — whatever rejections preceded this were a blip.
+    _rejectionRounds = 0
+    _lastRejectionAt = 0
   }
 
   if (!res.ok) {
@@ -412,6 +505,14 @@ export const api = {
         body: JSON.stringify({ restart_policy }),
       },
     ),
+  // ── Guest env (the user layer) ──
+  env: (id: string) => req<AgentEnv>(`/fleet/${enc(id)}/env`),
+  patchEnv: (id: string, body: EnvPatchIn) =>
+    req<EnvApplyResult>(`/fleet/${enc(id)}/env`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   // ── Images ──
   images: () => req<ImageInfo[]>("/images"),
   imageStatus: () => req<ImageStatus>("/images/status"),

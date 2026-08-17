@@ -6,11 +6,13 @@ import {
   devLogin,
   getMe,
   getPersonalOrgId,
+  listMmChannels,
   logout as apiLogout,
   sendMagicCode,
   verifyMagicCode,
   verifySocialEmail,
 } from "../lib/api";
+import { queryKeys } from "../lib/queryKeys";
 
 const ACTIVE_ORG_KEY = "fc_active_org_id";
 
@@ -70,6 +72,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       };
 
+      // Warm the chat list IN PARALLEL with the auth handshake. The shell
+      // renders a spinner until ``loading`` clears, so nothing downstream can
+      // even mount a query until ``getMe`` resolves — which used to make the
+      // sidebar's fetch the third request in a strict chain (me -> orgs ->
+      // channels) on every cold load. A returning user's active org is already
+      // in localStorage, so the biggest request of the three doesn't have to
+      // wait to learn something we know. If the cookie turns out to be dead
+      // the prefetch 401s into a discarded cache entry and we land on /login
+      // regardless; the stored id only exists after a previous sign-in.
+      // Read the jar directly rather than the state mirror: this effect runs
+      // once on mount and must not re-run when the user switches org later.
+      const bootOrgId = localStorage.getItem(ACTIVE_ORG_KEY);
+      if (bootOrgId) {
+        void queryClient.prefetchQuery({
+          queryKey: queryKeys.mm.channels(bootOrgId),
+          queryFn: () => listMmChannels(bootOrgId),
+        });
+      }
+
       try {
         let me = await tryGetMe();
         if (me === null) {
@@ -86,16 +107,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
         setUser(me);
-        try {
-          const orgId = await getPersonalOrgId();
-          if (!cancelled) setPersonalOrgId(orgId);
-        } catch { /* personal org may not exist yet - ignore */ }
+        // The personal org is only load-bearing as the fallback for
+        // ``activeOrgId`` when nothing is stored — i.e. first login. When we
+        // do have a stored org, resolving it is not on the critical path, so
+        // it runs in the background instead of holding the whole app behind a
+        // second round-trip.
+        const resolvePersonalOrg = (async () => {
+          try {
+            const orgId = await getPersonalOrgId();
+            if (!cancelled) setPersonalOrgId(orgId);
+          } catch { /* personal org may not exist yet - ignore */ }
+        })();
+        if (!bootOrgId) await resolvePersonalOrg;
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+    // Mount-only. ``queryClient`` is a stable singleton; the boot org is read
+    // from localStorage inside the effect so an org switch never re-runs it.
+  }, [queryClient]);
 
   const setActiveOrgId = (orgId: string) => {
     localStorage.setItem(ACTIVE_ORG_KEY, orgId);

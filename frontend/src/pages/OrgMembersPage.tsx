@@ -10,6 +10,8 @@ import {
     LockIcon as Lock,
     MoreVerticalIcon as More,
     Logout01Icon as LogOut,
+    ShieldKeyIcon as Shield,
+    UserIcon as UserSingle,
 } from "@hugeicons/core-free-icons";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
@@ -27,12 +29,13 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
+    DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {useAuth} from "@/context/AuthContext";
 import {useActiveOrg} from "@/hooks/useActiveOrg";
 import {
-    addOrgMember, listOrgMembers, removeOrgMember,
+    addOrgMember, listOrgMembers, orgRoleLabel, removeOrgMember, updateOrgMemberRole,
     type OrgMember, type OrgRole,
 } from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
@@ -40,16 +43,16 @@ import {formatRelativeShort} from "@/lib/formatting";
 import {toast} from "@/lib/toast";
 
 function RoleBadge({role}: {role: OrgRole}) {
-    const isOwner = role === "owner";
+    const isAdmin = role === "owner";
     return (
         <span
             className={
-                isOwner
+                isAdmin
                     ? "inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400"
                     : "inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
             }
         >
-            {role}
+            {orgRoleLabel(role)}
         </span>
     );
 }
@@ -95,6 +98,25 @@ export default function OrgMembersPage() {
         },
     });
 
+    const roleMutation = useMutation({
+        mutationFn: (vars: {memberId: number; role: OrgRole}) =>
+            updateOrgMemberRole(activeOrgId ?? "", vars.memberId, vars.role),
+        onSuccess: (_data, vars) => {
+            if (activeOrgId) {
+                void queryClient.invalidateQueries({queryKey: queryKeys.orgMembers(activeOrgId)});
+            }
+            // ``my_role`` lives on the orgs query, and an admin can demote
+            // themselves — refetch so this tab's own admin surfaces settle.
+            void queryClient.invalidateQueries({queryKey: queryKeys.orgs});
+            toast.success(
+                vars.role === "owner" ? "Now an admin" : "Now a member",
+            );
+        },
+        onError: (err: unknown) => {
+            toast.error(err instanceof Error ? err.message : "Couldn't change role");
+        },
+    });
+
     const removeMutation = useMutation({
         mutationFn: (memberId: number) =>
             removeOrgMember(activeOrgId ?? "", memberId),
@@ -133,8 +155,8 @@ export default function OrgMembersPage() {
                 <PageHeader icon={MembersIcon} title="Members"/>
                 <EmptyState
                     icon={Lock}
-                    title="Owner-only"
-                    description="Member management is restricted to organization owners. Ask an owner if you need to invite or remove people."
+                    title="Admins only"
+                    description="Member management is restricted to organization admins. Ask an admin if you need to invite or remove people."
                 />
             </div>
         );
@@ -186,8 +208,12 @@ export default function OrgMembersPage() {
                 <ul className="space-y-0.5">
                     {members.map((m: OrgMember) => {
                         const isMe = m.human_id === user?.id;
-                        const isLastOwner = m.role === "owner" && ownerCount <= 1;
-                        const canRemove = canManage && !isLastOwner;
+                        // The last admin is frozen: demoting or removing them
+                        // would leave the org with nobody who can manage it,
+                        // and the server refuses both. No menu, no dead items.
+                        const isLastAdmin = m.role === "owner" && ownerCount <= 1;
+                        const hasActions = canManage && !isLastAdmin;
+                        const nextRole: OrgRole = m.role === "owner" ? "member" : "owner";
                         return (
                             <li
                                 key={m.human_id}
@@ -211,15 +237,27 @@ export default function OrgMembersPage() {
                                     </p>
                                 </div>
                                 <RoleBadge role={m.role}/>
-                                {canRemove && (
+                                {hasActions && (
                                     <DropdownMenu>
                                         <DropdownMenuTrigger
                                             className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                                            aria-label={isMe ? "Leave organization" : `Actions for ${m.display_name ?? m.email}`}
+                                            aria-label={`Actions for ${isMe ? "you" : (m.display_name ?? m.email)}`}
                                         >
                                             <Icon icon={More} className="size-4"/>
                                         </DropdownMenuTrigger>
                                         <DropdownMenuContent align="end">
+                                            <DropdownMenuItem
+                                                disabled={roleMutation.isPending}
+                                                onClick={() => {
+                                                    roleMutation.mutate({memberId: m.human_id, role: nextRole});
+                                                }}
+                                            >
+                                                <Icon icon={nextRole === "owner" ? Shield : UserSingle}/>
+                                                {nextRole === "owner"
+                                                    ? "Make admin"
+                                                    : (isMe ? "Step down to member" : "Change to member")}
+                                            </DropdownMenuItem>
+                                            <DropdownMenuSeparator/>
                                             <DropdownMenuItem
                                                 variant="destructive"
                                                 onClick={() => { setMemberToRemove(m); }}
@@ -275,7 +313,7 @@ export default function OrgMembersPage() {
                                 className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                             >
                                 <option value="member">Member</option>
-                                <option value="owner">Owner</option>
+                                <option value="owner">Admin</option>
                             </select>
                         </div>
                         <DialogFooter>

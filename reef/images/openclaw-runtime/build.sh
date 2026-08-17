@@ -10,6 +10,7 @@
 #   ./build.sh                                  # build latest (cached base, fresh plugin)
 #   OPENCLAW_VERSION=2026.7.0 ./build.sh        # override the base openclaw tag
 #   CLAWBITS_PLUGIN_VERSION=0.8.1 ./build.sh    # pin the plugin (deterministic, cacheable)
+#   CLAWBITS_PLUGIN_LOCAL=1 ./build.sh          # bake the WORKING-TREE ./plugin (own tag: reef-oc:local-plugin)
 #   REEF_NO_CACHE=1 ./build.sh                  # full clean rebuild (force fresh)
 #   REEF_MSB_LOAD=1 ./build.sh                  # build, then load into microsandbox
 set -euo pipefail
@@ -22,6 +23,25 @@ image="${REEF_OPENCLAW_IMAGE:-reef-oc:plugin}"
 # openclaw"); empty ⇒ the Dockerfile default.
 openclaw_version="${OPENCLAW_VERSION:-}"
 
+# Own tag + `-local` stack suffix, so a working-tree image can never overwrite a
+# clawhub build's tag.
+plugin_stage="plugin-clawhub"
+stack_suffix=""
+if [ -n "${CLAWBITS_PLUGIN_LOCAL:-}" ]; then
+  plugin_dir="$(cd "${here}/../../.." && pwd)/plugin"
+  if command -v bun >/dev/null; then pm=bun; else pm=npm; fi
+  echo "reef: building ${plugin_dir} with ${pm}…"
+  (cd "${plugin_dir}" && "${pm}" run build)
+  stage_dir="${here}/.plugin-src"
+  trap 'rm -rf "${stage_dir}"' EXIT
+  rm -rf "${stage_dir}"
+  mkdir -p "${stage_dir}"
+  cp -R "${plugin_dir}"/{package.json,openclaw.plugin.json,clawbits.config.example.json,dist,src,skills,docs} "${stage_dir}/"
+  plugin_stage="plugin-local"
+  stack_suffix="-local"
+  image="reef-oc:local-plugin"
+fi
+
 # Smart cache for the clawbits plugin layer. The Dockerfile's CLAWBITS_PLUGIN_CACHE_KEY
 # ARG sits right before `openclaw plugins install … --pin`, which ALWAYS resolves
 # clawhub's latest at build time. Derive the key so:
@@ -30,7 +50,9 @@ openclaw_version="${OPENCLAW_VERSION:-}"
 #   - otherwise ⇒ a timestamp nonce that busts ONLY the plugin layer + everything
 #     after it, so the expensive base image / ttyd layers stay cached while every
 #     default build still re-resolves the latest plugin.
-if [ -n "${CLAWBITS_PLUGIN_VERSION:-}" ]; then
+if [ -n "${CLAWBITS_PLUGIN_LOCAL:-}" ]; then
+  cache_key="local"
+elif [ -n "${CLAWBITS_PLUGIN_VERSION:-}" ]; then
   cache_key="${CLAWBITS_PLUGIN_VERSION}"
 elif [ -n "${REEF_NO_CACHE:-}" ]; then
   cache_key="nocache"
@@ -41,13 +63,14 @@ fi
 args=(
   build
   --build-arg "CLAWBITS_PLUGIN_CACHE_KEY=${cache_key}"
+  --build-arg "CLAWBITS_PLUGIN_STAGE=${plugin_stage}"
 )
 [ -n "${openclaw_version}" ] && args+=(--build-arg "OPENCLAW_VERSION=${openclaw_version}")
 args+=(-t "${image}")
 [ -n "${REEF_NO_CACHE:-}" ] && args+=(--no-cache)
 args+=("${here}")
 
-echo "reef: building ${image} (openclaw=${openclaw_version:-<pinned>} plugin-cache-key=${cache_key})…"
+echo "reef: building ${image} (openclaw=${openclaw_version:-<pinned>} plugin-source=${plugin_stage#plugin-} plugin-cache-key=${cache_key})…"
 "${docker_bin}" "${args[@]}"
 
 # --- Derive the truthful, self-describing identity (post-build) ---------------
@@ -66,7 +89,7 @@ installed_plugin="$(
 )" || installed_plugin=""
 
 stack=""
-[ -n "${installed_oc}" ] && [ -n "${installed_plugin}" ] && stack="oc${installed_oc}-pl${installed_plugin}"
+[ -n "${installed_oc}" ] && [ -n "${installed_plugin}" ] && stack="oc${installed_oc}-pl${installed_plugin}${stack_suffix}"
 
 # Re-stamp truthful labels + REEF_IMAGE_VERSION onto a one-line layer and re-point
 # the floating tag (and the immutable stack tag, when derivable) at it. A rebuild
@@ -78,7 +101,7 @@ printf 'FROM %s\nENV REEF_IMAGE_VERSION=%s\nLABEL org.opencontainers.image.versi
   | "${docker_bin}" build "${restamp[@]}" -
 
 if [ -n "${stack}" ]; then
-  echo "reef: done → ${image} + reef-oc:${stack} (openclaw=${installed_oc} plugin=${installed_plugin})"
+  echo "reef: done → ${image} + reef-oc:${stack} (openclaw=${installed_oc} plugin=${installed_plugin} from ${plugin_stage#plugin-})"
 else
   echo "reef: done → ${image} (WARNING: could not probe versions; no stack tag)" >&2
 fi

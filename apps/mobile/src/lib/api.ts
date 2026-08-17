@@ -820,6 +820,7 @@ export async function fetchLinkPreview(
 // Org members + agents (used by quick-action picker sheets).
 // ---------------------------------------------------------------------------
 
+/** Wire slug for an org role. ``owner`` is surfaced to users as "Admin". */
 export type OrgRole = 'owner' | 'member';
 
 export interface OrgMember {

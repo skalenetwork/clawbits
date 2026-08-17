@@ -6,9 +6,11 @@ data, and records lifecycle calls for assertions.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from reef.errors import RuntimeUnavailable
+from reef.guest_env import EnvRecord
 from reef.image_ops import BuildImageSpec, ImageInfo, active_tag
 from reef.runtime import MetricsSample, SandboxInfo, SandboxSpec, SandboxState
 
@@ -22,6 +24,7 @@ class FakeAdminRuntime:
         self.inspect_data: dict[str, dict] = {}
         self.logs_data: dict[str, str] = {}
         self.status_data: dict[str, dict] = {}
+        self.guest_env_data: dict[str, list[EnvRecord]] = {}
         self.calls: list[tuple[str, str]] = []  # (op, handle)
         self.created: list[SandboxSpec] = []  # specs passed to create()
         self.host_ports: set[int] = set()  # seed to simulate ports already bound on the host
@@ -66,17 +69,12 @@ class FakeAdminRuntime:
         # backend below) reports env as ``{"key","value"}`` objects, NOT the
         # ``[[k, v]]`` pairs docker emits; use the object shape here so create()-based
         # detail/access tests stay honest against prod (`_env_dict` accepts both).
-        # `setdefault` keeps any explicitly seeded inspect.
-        self.inspect_data.setdefault(
-            spec.sandbox_id,
-            {
-                "config": {
-                    "name": spec.sandbox_id,
-                    "image": {"Oci": {"reference": spec.image}},
-                    "env": [{"key": k, "value": v} for k, v in spec.env.items()],
-                }
-            },
-        )
+        # `env` is overwritten, not defaulted: a recreate under the same id must
+        # report the env it was just created with.
+        config = self.inspect_data.setdefault(spec.sandbox_id, {}).setdefault("config", {})
+        config.setdefault("name", spec.sandbox_id)
+        config.setdefault("image", {"Oci": {"reference": spec.image}})
+        config["env"] = [{"key": k, "value": v} for k, v in spec.env.items()]
         return spec.sandbox_id
 
     async def start(self, handle: str) -> None:
@@ -125,6 +123,16 @@ class FakeAdminRuntime:
 
     async def read_status(self, handle: str) -> dict | None:
         return self.status_data.get(handle)
+
+    async def read_guest_env(self, handle: str) -> list[EnvRecord] | None:
+        records = self.guest_env_data.get(handle)
+        return list(records) if records is not None else None
+
+    async def write_guest_env(self, handle: str, records: Sequence[EnvRecord]) -> None:
+        self.guest_env_data[handle] = list(records)
+
+    async def remove_guest_env(self, handle: str) -> None:
+        self.guest_env_data.pop(handle, None)
 
     async def used_host_ports(self) -> set[int]:
         return set(self.host_ports)

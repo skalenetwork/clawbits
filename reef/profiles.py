@@ -5,8 +5,16 @@ profiles; adding another is a new profile, not a change anywhere else.
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from reef.capabilities import CAPS_ENV
 from reef.capabilities import to_env as _caps_to_env
 from reef.providers import KIND_OAUTH, PROVIDERS
+
+
+def _provider_env_keys(profile_name: str) -> frozenset[str]:
+    """Derived, so a new ``PROVIDERS`` entry can never be left out of
+    ``managed_env_keys``."""
+    keys = {p.guest_env for p in PROVIDERS if p.kind != KIND_OAUTH and profile_name in p.runtimes}
+    return frozenset(keys | {"REEF_DEFAULT_MODEL"})
 
 
 def _provider_env(profile_name: str, creds: dict[str, str]) -> dict[str, str]:
@@ -68,6 +76,11 @@ class AgentProfile(Protocol):
         int | None
     )  # in-guest port for the scoped web terminal (ttyd); None ⇒ no terminal
     status_dir: str  # guest dir the agent writes its volunteered status.json to (telemetry)
+    # Guest dir where reef mounts the user-env overlay read-only; None ⇒ no mount.
+    env_dir: str | None
+    # Every env key ``build_env``/``exposure_env`` can EVER emit. A key missing
+    # here is one an operator can overwrite reef's own value for.
+    managed_env_keys: frozenset[str]
 
     def build_env(self, creds: dict[str, str]) -> dict[str, str]:
         """Map opaque caller creds to the agent's runtime env vars."""
@@ -145,6 +158,28 @@ class OpenClawProfile:
     # survive a destroy+recreate under the same name. The Dockerfile pre-creates
     # the dir node-owned so docker seeds a writable volume root (msb: §11.2).
     extra_mounts = (("config", "/home/node/.config/openclaw"),)
+    # Must match REEF_ENV_DIR in reef/images/openclaw-runtime/Dockerfile.
+    env_dir = "/home/node/.reef-env"
+    managed_env_keys = frozenset(
+        {
+            "CLAWBITS_ENDPOINT",
+            "CLAWBITS_ORG_ID",
+            "CLAWBITS_SIGNUP_TOKEN",
+            "CLAWBITS_AGENT_ID",
+            "CLAWBITS_API_KEY",
+            "CLAWBITS_CHANNEL_ID",
+            "REEF_OPENAI_AUTH",
+            "REEF_TERMINAL_SHELL",
+            "OPENCLAW_GATEWAY_TOKEN",
+            CAPS_ENV,
+            "OPENCLAW_GATEWAY_BIND",
+            "OPENCLAW_GATEWAY_AUTH",
+            "OPENCLAW_PUBLIC_URL",
+            "REEF_TERMINAL_ENABLE",
+            "REEF_TERMINAL_PASSWORD",
+            "REEF_TERMINAL_PORT",
+        }
+    ) | _provider_env_keys("openclaw")
 
     def __init__(self, image: str) -> None:
         self.image = image
@@ -300,6 +335,30 @@ class IronClawProfile:
     # IronClaw keeps its DB, .env, and channels under ~/.ironclaw (baked); no
     # extra XDG secret dir like OpenClaw's auth-profile volume.
     extra_mounts: tuple[tuple[str, str], ...] = ()
+    # No ``REEF_FEATURES=env-file`` marker baked: this entrypoint does not parse
+    # the file yet, so reef offers ``recreate`` only.
+    env_dir = "/home/ironclaw/.reef-env"
+    managed_env_keys = frozenset(
+        {
+            "CLAWBITS_ENDPOINT",
+            "CLAWBITS_ORG_ID",
+            "CLAWBITS_SIGNUP_TOKEN",
+            "CLAWBITS_AGENT_ID",
+            "CLAWBITS_API_KEY",
+            "CLAWBITS_CHANNEL_ID",
+            "OLLAMA_BASE_URL",
+            "LLM_BACKEND",
+            "SECRETS_MASTER_KEY",
+            "GATEWAY_AUTH_TOKEN",
+            "GATEWAY_ENABLED",
+            "GATEWAY_HOST",
+            "GATEWAY_PORT",
+            "IRONCLAW_PUBLIC_URL",
+            "REEF_TERMINAL_ENABLE",
+            "REEF_TERMINAL_PASSWORD",
+            "REEF_TERMINAL_PORT",
+        }
+    ) | _provider_env_keys("ironclaw")
 
     def __init__(self, image: str) -> None:
         self.image = image
@@ -445,6 +504,32 @@ class HermesProfile:
     exposure_password = True  # the proxy's basic-auth secret (reef mints it)
     status_dir = "/opt/data/.reef"
     volume_dest = "/opt/data"
+    # Like IronClaw, this entrypoint does not parse the file yet.
+    env_dir = "/opt/data/.reef-env"
+    managed_env_keys = frozenset(
+        {
+            "HERMES_ACCEPT_HOOKS",
+            "GATEWAY_ALLOW_ALL_USERS",
+            "CLAWBITS_BASE_URL",
+            "CLAWBITS_ORG_ID",
+            "CLAWBITS_SIGNUP_TOKEN",
+            "CLAWBITS_AGENT_ID",
+            "CLAWBITS_API_KEY",
+            "CLAWBITS_CHANNEL_ID",
+            "REEF_OPENAI_AUTH",
+            "REEF_HERMES_DASHBOARD",
+            "HERMES_DASHBOARD_HOST",
+            "HERMES_DASHBOARD_PORT",
+            "HERMES_DASHBOARD_TUI",
+            "REEF_HERMES_PROXY_PORT",
+            "REEF_HERMES_DASHBOARD_USER",
+            "REEF_HERMES_DASHBOARD_PASSWORD",
+            "REEF_HERMES_PUBLIC_URL",
+            "REEF_TERMINAL_ENABLE",
+            "REEF_TERMINAL_PASSWORD",
+            "REEF_TERMINAL_PORT",
+        }
+    ) | _provider_env_keys("hermes")
     # Basic-auth user for the dashboard proxy. The password is the reef secret.
     dashboard_user = "reef"
 

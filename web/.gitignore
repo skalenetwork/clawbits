@@ -15,3 +15,7 @@ node_modules/
 # misc
 .DS_Store
 *.log
+
+# Social/marketing exports from scripts/record-visual.mjs - regenerable, and
+# 34 MB of video does not belong in the repo. Site assets live in public/demos.
+demo-exports/

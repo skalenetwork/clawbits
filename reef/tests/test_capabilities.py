@@ -45,13 +45,10 @@ def test_capability_names_are_the_two_that_leave_the_vm():
     assert set(CAPABILITIES) == {"gh", "cron"}
 
 
-def test_defaults_are_gh_only():
-    """`gh` defaults ON because a second gate sits under it (reef injects no
-    GitHub token, so the grant is inert until a human supplies one). `cron` has
-    no such backstop — granting it immediately buys the agent persistence — so it
-    stays a deliberate act. Both frontends mirror this list; changing it here
-    means changing DEFAULT_CAPABILITIES in the two wizards too."""
-    assert DEFAULT_CAPABILITIES == ("gh",)
+def test_defaults_are_gh_and_cron():
+    """Both frontends mirror this list; changing it here means changing
+    DEFAULT_CAPABILITIES in the two wizards too."""
+    assert DEFAULT_CAPABILITIES == ("gh", "cron")
     assert set(DEFAULT_CAPABILITIES) <= set(CAPABILITIES)
     assert normalize(DEFAULT_CAPABILITIES) == DEFAULT_CAPABILITIES  # already canonical
 
@@ -102,15 +99,14 @@ def test_create_persists_and_injects_capabilities():
 
 def test_omitting_capabilities_applies_the_defaults():
     """OMITTED is not the same as []. A caller that never heard of capabilities
-    (an old script, a curl) gets the defaults; see DEFAULT_CAPABILITIES for why
-    `gh` is in that set and `cron` is not."""
+    (an old script, a curl) gets the defaults."""
     from reef.tests.test_fleet import _svc_with_manager
 
     svc, rt, store = _svc_with_manager()
     sandbox, _ = asyncio.run(svc.create("openclaw", name="oc-default"))
-    assert rt.created[-1].env["REEF_CAPS"] == "gh"
-    assert sandbox.capabilities == ("gh",)
-    assert asyncio.run(store.get("oc-default")).capabilities == ("gh",)
+    assert rt.created[-1].env["REEF_CAPS"] == "gh,cron"
+    assert sandbox.capabilities == ("gh", "cron")
+    assert asyncio.run(store.get("oc-default")).capabilities == ("gh", "cron")
 
 
 def test_explicit_empty_capabilities_grants_nothing():

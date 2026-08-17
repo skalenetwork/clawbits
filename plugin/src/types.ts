@@ -82,6 +82,12 @@ export interface ClawBitsAccountConfig {
   /** Milliseconds an inbound post may wait in the local dispatch queue before it is dropped. */
   inboundQueueTtlMs?: number;
   /**
+   * Run the one-shot catch-up pass at gateway start, so messages that arrived
+   * while the agent was down (a reef restart, an image upgrade, a crash) are
+   * answered instead of silently skipped. Default ``true``.
+   */
+  catchUpEnabled?: boolean;
+  /**
    * Pre-open the streaming "shimmer" draft for inbound posts in group /
    * public / private channels (not just DMs). Default ``true`` — set to
    * ``false`` if the host runtime double-posts in non-direct channels,

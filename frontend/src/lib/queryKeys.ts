@@ -29,6 +29,21 @@ export const queryKeys = {
   /** Run history for one automation. */
   automationRuns: (orgId: string, agentId: string, automationId: string) =>
     ["automations", orgId, agentId, automationId, "runs"] as const,
+  /** The org's skill library. Shares a prefix with the per-skill keys so one
+   *  invalidateQueries({queryKey: queryKeys.skills(orgId)}) refreshes the list,
+   *  every detail, and every version timeline — the automations discipline. */
+  skills: (orgId: string) => ["skills", orgId] as const,
+  /** One skill (with its current version's content). */
+  skill: (orgId: string, skillId: string) => ["skills", orgId, skillId] as const,
+  /** One skill's version timeline. */
+  skillVersions: (orgId: string, skillId: string) =>
+    ["skills", orgId, skillId, "versions"] as const,
+  /** The rendered SKILL.md for one version on one runtime. */
+  skillRender: (orgId: string, skillId: string, versionId: string, runtime: string) =>
+    ["skills", orgId, skillId, versionId, "render", runtime] as const,
+  /** Skills one agent reported as present on disk. */
+  agentSkills: (orgId: string, agentId: string) =>
+    ["skills", orgId, "agent", agentId] as const,
   /** Channels/DMs an agent is in — the automation delivery-target picker. */
   agentChannels: (orgId: string, agentId: string) =>
     ["agentChannels", orgId, agentId] as const,
@@ -46,6 +61,10 @@ export const queryKeys = {
   reefFleet: (orgId: string) => ["org", orgId, "reef-fleet"] as const,
   /** Browser-direct Reef provider availability (presence booleans only). */
   reefProviders: (orgId: string) => ["org", orgId, "reef-providers"] as const,
+  /** One agent's Reef env (key names + lengths, never values). Keyed by
+   *  sandbox id, so the agent Manage section and Settings → Reef share a cache. */
+  reefAgentEnv: (orgId: string, sandboxId: string) =>
+    ["org", orgId, "reef-agent-env", sandboxId] as const,
   /** Operator-only agent email inbox (Stalwart). */
   agentInbox: {
     /** Prefix to invalidate every cache for one agent's inbox at once. */

@@ -26,6 +26,12 @@ class AddOrgMemberRequest(BaseModel):
     role: Literal["owner", "member"] = Field(default="member", description="Role in the organization")
 
 
+class UpdateOrgMemberRoleRequest(BaseModel):
+    """Promote/demote an existing org member. Owner-only on the server."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    role: Literal["owner", "member"] = Field(description="New role in the organization")
+
+
 class SetReefConnectionRequest(BaseModel):
     """Connect (or re-point) the org's self-hosted Reef. We persist ONLY this URL."""
     model_config = ConfigDict(extra="forbid", frozen=True)

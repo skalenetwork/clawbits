@@ -4,6 +4,7 @@ import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
 import {useStore} from "@tanstack/react-store";
 import {
     ArrowDown01Icon,
+    BookOpen01Icon,
     Cancel01Icon,
     Clock01Icon,
     HashtagIcon,
@@ -97,6 +98,7 @@ const ACTION_TINTS = {
     rose: {square: "bg-rose-500/15", color: "var(--color-rose-500)"},
     sky: {square: "bg-sky-500/15", color: "var(--color-sky-500)"},
     slate: {square: "bg-slate-500/15", color: "var(--color-slate-500)"},
+    amber: {square: "bg-amber-500/15", color: "var(--color-amber-500)"},
 } as const;
 type ActionTint = keyof typeof ACTION_TINTS;
 
@@ -473,6 +475,7 @@ function CommandPaletteInner() {
             {key: "action:new-agent", kind: "action", title: "New agent", searchText: ["New agent", "agent", "bot", "clawbot", "add"], icon: Robot02Icon, tint: "violet", onSelect: () => { runCreate("agent"); }},
             {key: "action:invite", kind: "action", title: "Invite people", searchText: ["Invite people", "invite", "members", "add people"], icon: UserAdd01Icon, tint: "rose", onSelect: () => { runAction("/settings/members"); }},
             {key: "action:home", kind: "action", title: "Go to Home", searchText: ["Go to Home", "home"], icon: Home03Icon, tint: "sky", onSelect: () => { runAction("/home"); }},
+            {key: "action:skills", kind: "action", title: "Go to Skills", searchText: ["Go to Skills", "skills", "library", "skill"], icon: BookOpen01Icon, tint: "amber", onSelect: () => { runAction("/skills"); }},
             {key: "action:settings", kind: "action", title: "Open settings", searchText: ["Open settings", "settings", "preferences"], icon: Settings01Icon, tint: "slate", onSelect: () => { runAction("/settings"); }},
         ],
         [runAction, runCreate],

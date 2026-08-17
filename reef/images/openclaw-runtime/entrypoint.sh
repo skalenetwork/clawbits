@@ -23,6 +23,42 @@ if [ "$(id -u)" = "0" ]; then
   exec setpriv --reuid node --regid node --init-groups "$0" "$@"
 fi
 
+# KEEP IN SYNC with reef/fleet.py: the case arms below mirror _GUEST_DROPPED_ENV_PREFIXES / _GUEST_DROPPED_ENV_KEYS / _DANGEROUS_ENV_KEYS.
+reef_apply_env_file() {
+  _f="${REEF_ENV_DIR:-}/env"
+  [ -n "${REEF_ENV_DIR:-}" ] && [ -r "${_f}" ] || return 0
+  while IFS=' ' read -r _op _k _v || [ -n "${_op:-}" ]; do
+    case "${_op}" in s | u) ;; *) continue ;; esac
+    case "${_k}" in
+      "" | [0-9]*) continue ;;
+      *[!A-Za-z0-9_]*) continue ;;
+      REEF_* | CLAWBITS_* | OPENCLAW_GATEWAY_* | OPENCLAW_PUBLIC_URL) continue ;;
+      GATEWAY_* | HERMES_* | IRONCLAW_* | SECRETS_MASTER_KEY) continue ;;
+      PATH | HOME | SHELL | USER | LOGNAME | IFS) continue ;;
+      LD_PRELOAD | LD_LIBRARY_PATH | LD_AUDIT) continue ;;
+      NODE_OPTIONS | NODE_PATH) continue ;;
+      PYTHONPATH | PYTHONHOME | PYTHONSTARTUP) continue ;;
+      PERL5LIB | PERLLIB | PERL5OPT) continue ;;
+      BASH_ENV | ENV | SHELLOPTS | BASHOPTS) continue ;;
+      GIT_SSH_COMMAND | GIT_SSH | GIT_EXEC_PATH | GIT_EXTERNAL_DIFF) continue ;;
+      GIT_PROXY_COMMAND | GIT_TEMPLATE_DIR) continue ;;
+      GIT_CONFIG_GLOBAL | GIT_CONFIG_SYSTEM | GIT_CONFIG_COUNT) continue ;;
+      NODE_EXTRA_CA_CERTS | NODE_TLS_REJECT_UNAUTHORIZED) continue ;;
+      SSL_CERT_FILE | SSL_CERT_DIR | CURL_CA_BUNDLE | REQUESTS_CA_BUNDLE) continue ;;
+      GIT_SSL_CAINFO | GIT_SSL_NO_VERIFY) continue ;;
+    esac
+    if [ "${_op}" = "u" ]; then
+      unset "${_k}" 2>/dev/null || true
+      continue
+    fi
+    _dv=$(printf %s "${_v}" | base64 -d 2>/dev/null) || continue
+    export "${_k}=${_dv}"
+  done < "${_f}"
+  unset _f _op _k _v _dv
+  return 0
+}
+reef_apply_env_file
+
 # The gateway needs an auth token for its loopback control plane. Reef's model
 # is outbound-only — nothing connects IN — so when Reef hasn't pinned one,
 # generate an ephemeral token instead of refusing to boot.
@@ -115,33 +151,8 @@ if [ "$(openclaw config get gateway.mode 2>/dev/null)" != "local" ]; then
   fi
 fi
 
-# Plugin loader policy.
-#
-# We used to pin `plugins.allow` to '["clawbits"]' to silence a boot warning about
-# discovered plugins that "may auto-load". That was a bad trade: `plugins.allow` is
-# an EXCLUSIVE allowlist ("when set, only listed plugins are eligible to load"), so
-# it disabled 95 of OpenClaw's 96 BUNDLED extensions — measured in the image:
-#   allow=["clawbits"]  -> 1 loaded / 95 disabled
-#   no allow at all     -> 66 loaded / 30 disabled
-# Among the casualties: `browser` (the browser tool), `document-extract` (PDF
-# reading), `web-readability` (what makes web_fetch readable), `canvas`, and every
-# bundled provider extension. Two things that do NOT work around it, both tested:
-# `plugins.bundledDiscovery=compat`, and setting a root `browser.*` key — neither
-# re-enables a plugin the allowlist excluded.
-#
-# So: do NOT set an allowlist. `unset` (not just "don't set") because existing
-# agents have it PERSISTED in ~/.openclaw from an earlier boot, and this script must
-# clear it for them on restart. The boot warning comes back; that is the cheap half
-# of the trade. `plugins.deny` is the right tool if a specific plugin ever needs
-# blocking — note it is a default, not a control, since the agent can rewrite its
-# own config (see the exec-policy note below).
-#
-# This SUPERSEDES the per-plugin allowlist entries that used to be added here one
-# trap at a time (`codex` for subscription agents, then `openrouter` once its
-# bundled PROVIDER plugin turned out to be blocked the same way, which surfaced as
-# "model is unavailable from the provider" at run time). With no allowlist, every
-# bundled plugin — openrouter included — loads on its own, so a new bundled
-# provider no longer needs a matching entry here to work.
+# `plugins.allow` is an EXCLUSIVE allowlist: setting one disables every bundled
+# plugin not listed. Never set it; unset it so agents carrying an old value recover.
 openclaw config unset plugins.allow >/dev/null 2>&1 || true
 
 # ChatGPT-subscription agents run through the bundled Codex harness (plugin id

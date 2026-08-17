@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
+  ArrowUpRight01Icon,
+  Copy01Icon,
   Download01Icon,
   File01Icon,
   FileAudioIcon,
@@ -8,14 +10,22 @@ import {
 
 import { Icon } from "@/components/Icon";
 import { AttachmentViewer } from "@/components/AttachmentViewer";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { getMmFileDownloadUrl, type MmFile } from "@/lib/api";
 import {
   stableDownloadUrl,
   stableThumbnailUrl,
 } from "@/lib/attachmentUrlCache";
+import { canCopyImages, copyImageToClipboard } from "@/lib/clipboardImage";
 import { fileDescriptor, isInlinePreviewable } from "@/lib/fileTypes";
 import { humanSize } from "@/lib/formatting";
-import { toast } from "@/lib/toast";
+import { errMsg, toast } from "@/lib/toast";
 import { openExternal } from "@/lib/desktop";
 import {
   closeMediaWithTransition,
@@ -128,6 +138,119 @@ export function MessageAttachments({ files, onImageLoaded }: MessageAttachmentsP
 const MIN_PREVIEW_RATIO = 3 / 4;
 const MAX_PREVIEW_RATIO = 2 / 1;
 
+/**
+ * Right-click (desktop) / long-press (touch) menu for an image tile.
+ *
+ * Two propagation guards make it coexist with the message row's own menu,
+ * which wraps the whole post:
+ *
+ *  - ``contextmenu`` is stopped ABOVE this menu's trigger, so the event
+ *    reaches the image's trigger first and never bubbles on to the row.
+ *  - touch ``pointerdown`` is stopped for the same reason: Base UI opens this
+ *    menu on a 500 ms hold while the row's ``useLongPress`` fires at 450 ms,
+ *    so without the guard a long press would open both at once.
+ *
+ * Every action works on the ORIGINAL upload (not the 1024px thumbnail the tile
+ * displays) via a freshly minted presigned URL - the cached one may be minutes
+ * from expiry.
+ */
+function ImageContextMenu({
+  file,
+  children,
+}: {
+  file: MmFile;
+  children: ReactElement;
+}) {
+  const freshUrl = () => getMmFileDownloadUrl(file.file_id).then((r) => r.url);
+
+  const onCopy = () => {
+    // NOT awaited before the call: copyImageToClipboard has to build its
+    // ClipboardItem inside this click, so it takes the URL promise itself.
+    copyImageToClipboard(freshUrl()).then(
+      () => { toast.success("Image copied"); },
+      (e: unknown) => { toast.error(errMsg(e, "Could not copy image")); },
+    );
+  };
+
+  // A real save, not a navigation: the presigned URL is cross-origin, where
+  // the ``download`` attribute is ignored, so the bytes go through a
+  // same-origin blob URL to keep both the download AND the original filename.
+  // If the bucket's CORS policy refuses that read we hand the URL to the
+  // browser instead — the AttachmentViewer's Download button has always worked
+  // that way, so the action never dead-ends, it just loses the filename.
+  const onSave = () => {
+    void (async () => {
+      let url: string;
+      try {
+        url = await freshUrl();
+      } catch (e) {
+        toast.error(errMsg(e, "Download failed"));
+        return;
+      }
+      let objectUrl: string | null = null;
+      try {
+        const res = await fetch(url, { mode: "cors", credentials: "omit" });
+        if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
+        objectUrl = URL.createObjectURL(await res.blob());
+        const a = document.createElement("a");
+        a.href = objectUrl;
+        a.download = file.filename;
+        a.click();
+      } catch {
+        await openExternal(url);
+      } finally {
+        // Revoke late — immediately would race the click.
+        if (objectUrl) {
+          const revoke = objectUrl;
+          window.setTimeout(() => { URL.revokeObjectURL(revoke); }, 10_000);
+        }
+      }
+    })();
+  };
+
+  const onOpen = () => {
+    void (async () => {
+      try {
+        await openExternal(await freshUrl());
+      } catch (e) {
+        toast.error(errMsg(e, "Could not open image"));
+      }
+    })();
+  };
+
+  return (
+    <div
+      className="contents"
+      onContextMenu={(e) => { e.stopPropagation(); }}
+      onPointerDown={(e) => { if (e.pointerType === "touch") e.stopPropagation(); }}
+    >
+      <ContextMenu>
+        <ContextMenuTrigger render={children} />
+        <ContextMenuContent className="min-w-44">
+          {/* Hidden rather than disabled where the browser can't do it at all
+              (no ClipboardItem, or an insecure context) - a permanently dead
+              row reads as a bug. */}
+          {canCopyImages() && (
+            <ContextMenuItem onClick={onCopy}>
+              <Icon icon={Copy01Icon} className="size-4" />
+              Copy image
+            </ContextMenuItem>
+          )}
+          <ContextMenuItem onClick={onSave}>
+            <Icon icon={Download01Icon} className="size-4" />
+            Save image
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={onOpen}>
+            <Icon icon={ArrowUpRight01Icon} className="size-4" />
+            Open original
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    </div>
+  );
+}
+
 function ImageGrid({
   images,
   onOpen,
@@ -166,40 +289,43 @@ function ImageGrid({
     );
     const maxWidthRem = Math.min(28, 24 * ratio);
     return (
-      <button
-        type="button"
-        style={{ maxWidth: `${String(maxWidthRem)}rem` }}
-        onClick={(e) => { onOpen(0, e.currentTarget.querySelector("img")); }}
-        className="group block w-full outline-none"
-      >
-        <div
-          style={{ aspectRatio: ratio }}
-          className={`relative w-full overflow-hidden bg-muted/30 ${imgRadius}`}
+      <ImageContextMenu file={f}>
+        <button
+          type="button"
+          style={{ maxWidth: `${String(maxWidthRem)}rem` }}
+          onClick={(e) => { onOpen(0, e.currentTarget.querySelector("img")); }}
+          className="group block w-full outline-none"
         >
-          <ImageThumb
-            file={f}
-            className={`absolute inset-0 size-full object-cover ${imgRadius}`}
-            onLoaded={onImageLoaded}
-          />
-        </div>
-      </button>
+          <div
+            style={{ aspectRatio: ratio }}
+            className={`relative w-full overflow-hidden bg-muted/30 ${imgRadius}`}
+          >
+            <ImageThumb
+              file={f}
+              className={`absolute inset-0 size-full object-cover ${imgRadius}`}
+              onLoaded={onImageLoaded}
+            />
+          </div>
+        </button>
+      </ImageContextMenu>
     );
   }
   return (
     <div className="grid max-w-md grid-cols-2 gap-1.5">
       {images.map((f, idx) => (
-        <button
-          key={f.file_id}
-          type="button"
-          onClick={(e) => { onOpen(idx, e.currentTarget.querySelector("img")); }}
-          className="group relative aspect-square outline-none"
-        >
-          <ImageThumb
-            file={f}
-            className={`size-full object-cover ${imgRadius}`}
-            onLoaded={onImageLoaded}
-          />
-        </button>
+        <ImageContextMenu key={f.file_id} file={f}>
+          <button
+            type="button"
+            onClick={(e) => { onOpen(idx, e.currentTarget.querySelector("img")); }}
+            className="group relative aspect-square outline-none"
+          >
+            <ImageThumb
+              file={f}
+              className={`size-full object-cover ${imgRadius}`}
+              onLoaded={onImageLoaded}
+            />
+          </button>
+        </ImageContextMenu>
       ))}
     </div>
   );

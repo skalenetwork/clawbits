@@ -12,7 +12,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Add01Icon,
   AtIcon,
   Cancel01Icon,
   LockIcon,
@@ -38,6 +37,7 @@ import { cn } from "@/lib/utils";
 import { Icon } from "@/components/Icon";
 import { Avatar } from "@/components/Avatar";
 import { SectionHeader } from "@/components/automations/SectionHeader";
+import { ManageAddButton } from "./ManageAddButton";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -280,16 +280,11 @@ export function AccessSection({
             </span>
           )}
         </SectionHeader>
-        <Button
-          variant="outline"
-          size="xs"
+        <ManageAddButton
           onClick={() => {
             setAdding(true);
           }}
-        >
-          <Icon icon={Add01Icon} className="size-3.5" />
-          Add
-        </Button>
+        />
       </div>
 
       <div className="overflow-hidden rounded-xl border border-border/60 bg-card">

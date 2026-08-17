@@ -3,14 +3,13 @@
 import {
     Copy01Icon as Copy,
     Tick01Icon as Check,
-    Cancel01Icon as Cross,
-    PlusSignIcon as Plus,
 } from "@hugeicons/core-free-icons";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
 import {Icon} from "@/components/Icon";
 import {cn} from "@/lib/utils";
-import {ENV_KEY_RE} from "./prompts";
+
+export {AddEnvRowButton, EnvVarRow} from "@/components/reef/envRows";
 
 /** A monochrome SVG silhouette painted with the CURRENT text colour (CSS mask,
  *  not `<img>`). Use this for single-colour glyphs — an `<img>` would freeze them
@@ -134,68 +133,6 @@ export function IconField({
             </span>
             <Input className="h-12 pl-11 text-base" autoComplete="off" {...props}/>
         </div>
-    );
-}
-
-/** One editable NAME=value row of the custom-env editor. */
-export function EnvVarRow({
-    row,
-    disabled,
-    onChange,
-    onRemove,
-}: {
-    row: {key: string; value: string};
-    disabled: boolean;
-    onChange: (next: {key: string; value: string}) => void;
-    onRemove: () => void;
-}) {
-    const k = row.key.trim();
-    const invalid = k.length > 0 && !ENV_KEY_RE.test(k);
-    return (
-        <div className="flex items-center gap-2">
-            <Input
-                value={row.key}
-                onChange={(e) => { onChange({...row, key: e.target.value}); }}
-                placeholder="NAME"
-                autoComplete="off"
-                spellCheck={false}
-                disabled={disabled}
-                aria-invalid={invalid}
-                className={cn("flex-1 font-mono text-[13px]", invalid && "border-destructive/60")}
-            />
-            <Input
-                value={row.value}
-                onChange={(e) => { onChange({...row, value: e.target.value}); }}
-                placeholder="value"
-                autoComplete="off"
-                spellCheck={false}
-                disabled={disabled}
-                className="flex-[1.4] font-mono text-[13px]"
-            />
-            <button
-                type="button"
-                onClick={onRemove}
-                disabled={disabled}
-                aria-label="Remove variable"
-                className="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-            >
-                <Icon icon={Cross} className="size-4"/>
-            </button>
-        </div>
-    );
-}
-
-export function AddEnvRowButton({disabled, onClick}: {disabled: boolean; onClick: () => void}) {
-    return (
-        <button
-            type="button"
-            disabled={disabled}
-            onClick={onClick}
-            className="flex items-center gap-1.5 self-start py-0.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-        >
-            <Icon icon={Plus} className="size-3.5"/>
-            Add variable
-        </button>
     );
 }
 

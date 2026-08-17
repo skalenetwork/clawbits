@@ -143,6 +143,51 @@ def test_workos_role_change_syncs_on_next_login(test_client):
     assert matching["my_role"] == "owner"
 
 
+def test_local_role_change_mirrors_to_workos(test_client):
+    """A local promotion must reach WorkOS, or the on-login reconcile — which
+    copies WorkOS roles *back* into ``org_members`` — would silently undo it
+    the next time the promoted user signs in."""
+    bob_email = "bob@mirror.example.com"
+    _, bob_user = login_human(test_client, bob_email)
+    test_client.cookies.clear()
+    adapter = test_client.app.state.workos
+    bob_workos_id = adapter.users_by_email[bob_email].id
+
+    owner_token, _ = login_human(test_client, "owner@mirror.example.com")
+    org_id = test_client.post(
+        "/api/human/orgs", json={"name": "mirror-team"},
+        headers=auth_headers(owner_token),
+    ).json()["org_id"]
+    test_client.post(
+        f"/api/human/orgs/{org_id}/members",
+        json={"email": bob_email, "role": "member"},
+        headers=auth_headers(owner_token),
+    )
+
+    r = test_client.patch(
+        f"/api/human/orgs/{org_id}/members/{bob_user['id']}",
+        json={"role": "owner"},
+        headers=auth_headers(owner_token),
+    )
+    assert r.status_code == 200, r.text
+    test_client.cookies.clear()
+
+    # WorkOS side carries the mapped ``admin`` slug...
+    workos_org_id = _workos_org_id_for(test_client, org_id=org_id)
+    mirrored = [
+        m for m in adapter.memberships
+        if m.user_id == bob_workos_id and m.organization_id == workos_org_id
+    ]
+    assert [m.role for m in mirrored] == ["admin"]
+
+    # ...so Bob's next login reconciles to ``owner``, not back to ``member``.
+    bob_token, _ = login_human(test_client, bob_email)
+    orgs = test_client.get(
+        "/api/human/orgs", headers=auth_headers(bob_token),
+    ).json()["organizations"]
+    assert [o for o in orgs if o["org_id"] == org_id][0]["my_role"] == "owner"
+
+
 # ---------------------------------------------------------------------------
 # Safety: orgs that don't exist locally are skipped, not auto-imported
 # ---------------------------------------------------------------------------

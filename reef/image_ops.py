@@ -178,30 +178,28 @@ async def _list_repo_images(
     ids = sorted({line.strip() for line in out.splitlines() if line.strip()})
     if not ids:
         return []
-    # One inspect over all unique images; tab-delimited so the JSON fields (which
-    # never contain raw tabs) parse cleanly.
-    fmt = "{{.Id}}\t{{.Created}}\t{{.Size}}\t{{json .RepoTags}}\t{{json .Config.Labels}}"
-    rc, out, err = await runner([docker_bin, "image", "inspect", "--format", fmt, *ids])
+    # No --format: a Go template errors out entirely on an image whose Config
+    # carries no Labels key, taking the whole listing with it. Plain inspect
+    # returns a JSON array and missing keys are just absent.
+    rc, out, err = await runner([docker_bin, "image", "inspect", *ids])
     if rc != 0:
         raise RuntimeUnavailable(f"`docker image inspect` failed (rc={rc}): {err.strip()}")
+    try:
+        entries = json.loads(out) or []
+    except json.JSONDecodeError:
+        raise RuntimeUnavailable("`docker image inspect` returned unparseable JSON") from None
 
     want = active_tag(agent_type)
     active_id: str | None = None
     rows: list[tuple[str, datetime | None, int, list[str], dict]] = []
-    for line in out.splitlines():
-        if not line.strip():
+    for entry in entries:
+        image_id = entry.get("Id") or ""
+        if not image_id:
             continue
-        parts = line.split("\t")
-        if len(parts) < 5:
-            continue
-        image_id, created_s, size_s, repotags_s, labels_s = parts[:5]
-        try:
-            repo_tags = json.loads(repotags_s) or []
-            labels = json.loads(labels_s) or {}
-        except json.JSONDecodeError:
-            continue
-        created = _parse_created(created_s)
-        size = int(size_s) if size_s.isdigit() else 0
+        repo_tags = entry.get("RepoTags") or []
+        labels = (entry.get("Config") or {}).get("Labels") or {}
+        created = _parse_created(entry.get("Created") or "")
+        size = entry.get("Size") if isinstance(entry.get("Size"), int) else 0
         rows.append((image_id, created, size, repo_tags, labels))
         if want in repo_tags:
             active_id = image_id

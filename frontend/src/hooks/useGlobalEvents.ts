@@ -24,6 +24,7 @@ type GlobalEvent =
   | { type: "channel.added"; channel_id: string; data: MmChannel }
   | { type: "channel.removed"; channel_id: string; data: { channel_id: string } }
   | { type: "org.added"; channel_id: string; data: Org }
+  | { type: "org.updated"; channel_id: string; data: Org }
   | {
       type: "user.status";
       channel_id: string;
@@ -124,6 +125,10 @@ export function useGlobalEvents({
   // from re-opening the SSE connection on every render.
   const onChannelRemovedRef = useRef(onChannelRemoved);
   onChannelRemovedRef.current = onChannelRemoved;
+  // Distinguishes the initial connect from a reconnect — see ``onOpen``.
+  // Lives outside the effect so a re-subscribe (org switch, auth change)
+  // does not reset it back to "first".
+  const firstOpenRef = useRef(true);
   // Same trick for the presence updater so context churn doesn't
   // reconnect the SSE pump.
   const presenceRef = useRef(presence);
@@ -319,6 +324,23 @@ export function useGlobalEvents({
             total: prev.total + 1,
           };
         });
+      } else if (evt.type === "org.updated") {
+        // An org the user already has changed under them — today that's a
+        // role change, where ``my_role`` is rendered server-side from this
+        // recipient's perspective. Merge only: unlike ``org.added`` we never
+        // append, so this can't hand someone an org they aren't in.
+        const incoming = evt.data;
+        qc.setQueryData<OrgsCache>(queryKeys.orgs, (prev) => {
+          if (!prev) return prev;
+          const idx = prev.organizations.findIndex((o) => o.org_id === incoming.org_id);
+          if (idx < 0) return prev;
+          const next = prev.organizations.slice();
+          next[idx] = { ...next[idx], ...incoming };
+          return { ...prev, organizations: next };
+        });
+        // The members list carries roles too — refetch it for whoever has
+        // the Members page open.
+        void qc.invalidateQueries({ queryKey: queryKeys.orgMembers(incoming.org_id) });
       } else if (evt.type === "user.status") {
         // Cross-tab sync of the current user's own status, and a feed
         // of presence changes for anyone the user shares a channel
@@ -369,12 +391,24 @@ export function useGlobalEvents({
       }
     }, {
       onOpen: () => {
-        // (Re)connect is the moment to reconcile: the per-user stream
-        // carries no initial snapshot and Redis pub/sub has no replay, so
-        // anything fanned out to this user while the stream was down is
-        // gone. Refetch the sidebar channel lists and the org switcher so a
-        // dropped/restarted stream self-heals instead of leaving the
-        // sidebar stale until a manual reload.
+        // RE-connect is the moment to reconcile: the per-user stream carries
+        // no initial snapshot and Redis pub/sub has no replay, so anything
+        // fanned out to this user while the stream was down is gone.
+        // Refetching the sidebar channel lists and the org switcher lets a
+        // dropped/restarted stream self-heal instead of leaving the sidebar
+        // stale until a manual reload.
+        //
+        // The FIRST open is the exception, and skipping it matters: the
+        // stream comes up a beat after the shell mounts and issues its own
+        // fetch, so reconciling here used to run both lists a second time
+        // before the first pair had even painted — the two heaviest queries
+        // in the read path, doubled, at the exact moment the user is waiting
+        // on them. There is nothing to heal on a connection that has never
+        // dropped.
+        if (firstOpenRef.current) {
+          firstOpenRef.current = false;
+          return;
+        }
         void qc.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
         void qc.invalidateQueries({ queryKey: queryKeys.orgs });
       },

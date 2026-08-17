@@ -49,7 +49,11 @@ export function Breadcrumbs({ items, className }: { items: Crumb[]; className?: 
           return (
             <Fragment key={`${crumb.label}-${String(i)}`}>
               {i > 0 && <BreadcrumbSeparator />}
-              <BreadcrumbItem>
+              {/* Leading crumbs give up their width first, down to their icon;
+                  the current page is the last thing to be truncated. Without
+                  this the trail shrinks evenly and "Skills › Long name" becomes
+                  "S. › Long na…", losing the context AND the name. */}
+              <BreadcrumbItem className={last ? undefined : "shrink-[999]"}>
                 {crumb.to && !last ? (
                   <BreadcrumbLink render={<Link to={crumb.to} viewTransition onClick={crumb.onNavigate} />}>{inner}</BreadcrumbLink>
                 ) : (

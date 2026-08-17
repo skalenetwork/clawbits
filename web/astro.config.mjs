@@ -58,6 +58,22 @@ export default defineConfig({
   // the page in the dev server and the toolbar reads as part of the layout.
   devToolbar: { enabled: false },
 
+  experimental: {
+    // Astro 7.2 incremental static builds: pages whose module graph and data
+    // are unchanged since the last build are copied from the cache in
+    // node_modules/.astro instead of re-rendered. Deploys run from this
+    // machine (deploy:staging / deploy:production), so the cache persists
+    // between builds and this is a straight win - the Satori OG images are the
+    // slow part and they rarely change. `astro build --force` bypasses it.
+    incrementalBuild: true,
+
+    // Editor-only: generates JSON schemas for the content collections
+    // (protocol docs + changelog) so frontmatter autocompletes and misspelled
+    // keys get flagged in place. Zero effect on the build output. VS Code
+    // additionally needs the `astro.content-intellisense` setting on.
+    contentIntellisense: true,
+  },
+
   markdown: {
     // Syntax highlighting OFF, for two independent reasons.
     //

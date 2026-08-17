@@ -92,10 +92,8 @@ export function agentLabel(a: AgentUser): string {
 }
 
 /** Capabilities ticked when the wizard opens. MIRRORS
- *  reef/capabilities.py DEFAULT_CAPABILITIES — keep the two in sync. `gh` is on
- *  because reef injects no GitHub token, so the grant is inert until a human
- *  supplies one; `cron` is not, because nothing gates it a second time. */
-export const DEFAULT_CAPABILITIES = ["gh"];
+ *  reef/capabilities.py DEFAULT_CAPABILITIES - keep the two in sync. */
+export const DEFAULT_CAPABILITIES = ["gh", "cron"];
 
 export const INITIAL: WizardState = {
     step: "deploy",

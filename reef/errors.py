@@ -16,3 +16,7 @@ class RuntimeUnavailable(ReefError):
 class BuildInProgress(ReefError):
     """An image build is already running — only one runs at a time (concurrent
     builds of the same tag would race)."""
+
+
+class SandboxBusy(ReefError):
+    """Another mutating operation already holds this sandbox. Retriable."""

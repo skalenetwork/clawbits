@@ -59,6 +59,25 @@ reef/images/openclaw-runtime/build.sh     # REEF_NO_CACHE=1 re-resolves the pinn
 Re-run after changing the image's Dockerfile / entrypoint, or to pick up a new
 OpenClaw release. Point Reef at a different tag with `REEF_OPENCLAW_IMAGE`.
 
+#### Testing the working-tree plugin
+
+By default the image installs the published plugin from clawhub. To bake the
+repo's `plugin/` instead (it gets built first, no need to pre-build):
+
+```bash
+CLAWBITS_PLUGIN_LOCAL=1 reef/images/openclaw-runtime/build.sh
+export REEF_OPENCLAW_IMAGE=reef-oc:local-plugin      # then restart the API
+```
+
+It always tags `reef-oc:local-plugin` + `reef-oc:oc<oc>-pl<plugin>-local`, never
+the clawhub tags. Confirm what landed:
+
+```bash
+docker inspect --format '{{.Config.Labels}}' reef-oc:local-plugin | tr ' ' '\n' | grep reef
+docker run --rm --entrypoint sh reef-oc:local-plugin -lc \
+  'sha256sum /home/node/.openclaw/extensions/clawbits/dist/index.js'   # == plugin/dist/index.js
+```
+
 ### 3. Run the API
 
 ```bash

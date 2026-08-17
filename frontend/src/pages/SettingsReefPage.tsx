@@ -18,11 +18,23 @@ import {
     ArrowDown01Icon as ChevronDown,
     ArrowRight01Icon as ArrowRight,
     Cancel01Icon as Close,
+    MoreHorizontalIcon as More,
+    PlayIcon as Play,
+    StopIcon as Stop,
+    SourceCodeIcon as SourceCode,
+    Delete02Icon as Trash,
 } from "@hugeicons/core-free-icons";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
 import {Switch} from "@/components/ui/switch";
 import {Tooltip, TooltipContent, TooltipTrigger} from "@/components/ui/tooltip";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
     Dialog,
     DialogContent,
@@ -40,12 +52,19 @@ import {getReefConnection, setReefConnection, deleteReefConnection, getAgents, t
 import {AgentFaceAvatar} from "@/components/AgentFaceAvatar";
 import {
     reefHealth, reefFleet, reefDetail, setReefToken, hasReefToken,
-    ReefAuthError, ReefRequestError, ReefBuildInProgressError,
+    forgetTokenIfRejected, authRejectionIsFinal,
+    retryReefAuthOnce, REEF_AUTH_RETRY_DELAY_MS,
+    ReefAuthError, ReefAuthRejected, ReefBuildInProgressError,
     reefImages, reefImageStatus, reefStartBuild, reefBuildJob, reefBuildJobs, reefActivateImage, reefUpgrade,
+    reefProviders, reefStart, reefStop, reefRestart, reefDestroy,
     type ReefFleetEntry, type ReefState, type ReefImage, type ReefBuildBody,
     type ReefImageStatus, type ReefRuntimeImageStatus, type ReefBuildJob,
 } from "@/lib/reefApi";
 import {OpenSurfaceDialog} from "@/components/reef/OpenSurfaceDialog";
+import {ManageEnvDialog} from "@/components/reef/ManageEnvDialog";
+import {
+    upgradeErrorMessage, lifecycleErrorMessage, UPGRADE_TIP, REINSTALL_TIP,
+} from "@/components/reef/lifecycleCopy";
 import {queryKeys} from "@/lib/queryKeys";
 import {toast} from "@/lib/toast";
 import {cn} from "@/lib/utils";
@@ -128,18 +147,6 @@ function relativeTime(iso: string | null | undefined): string | null {
 
 function agentLabel(a: AgentUser): string {
     return a.display_name?.trim() || a.nickname?.trim() || a.agent_id;
-}
-
-/** Friendly copy for an upgrade failure (auth is handled separately by the
- *  caller). 404 ⇒ reef forgot this VM; 422 ⇒ this agent can't be upgraded;
- *  503 (or a 502 from the tunnel) ⇒ reef/runtime unavailable. */
-function upgradeErrorMessage(e: unknown): string {
-    if (e instanceof ReefRequestError) {
-        if (e.status === 404) return "Reef no longer manages this VM";
-        if (e.status === 422) return "This agent can't be upgraded";
-        if (e.status === 502 || e.status === 503) return "Reef runtime unavailable";
-    }
-    return e instanceof Error ? e.message : "Couldn't upgrade this agent";
 }
 
 const CONNECT_STEPS: {text: string; code?: string}[] = [
@@ -295,7 +302,11 @@ export default function SettingsReefPage() {
         // Gated on the health probe: when the Reef is unreachable the fleet section
         // shows an offline state instead of firing a request that can't succeed.
         enabled: Boolean(apiUrl) && tokenSet && !offline,
-        retry: false,
+        // Retry a 401 once (~1.2s) so a reef restart or an edge hiccup is absorbed
+        // here rather than surfacing as "your token is wrong". Everything else
+        // still fails fast.
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         // Live state + metrics (CPU/mem/uptime) without a manual refresh — the
         // list is cheap and only polls while the tab is focused.
         refetchInterval: 8_000,
@@ -332,14 +343,28 @@ export default function SettingsReefPage() {
         refetchOnWindowFocus: false,
     });
 
-    // A rejected token (401/403) → drop it and re-prompt rather than show "down".
-    const authRejected = fleetQuery.error instanceof ReefAuthError;
+    // Older reef drops unknown fields silently, so an ungated env panel would
+    // show an empty list and swallow every edit.
+    const providersQuery = useQuery({
+        queryKey: queryKeys.reefProviders(orgId),
+        queryFn: () => reefProviders(apiUrl ?? ""),
+        enabled: Boolean(apiUrl) && tokenSet && !offline,
+        retry: false,
+        staleTime: 30 * 60_000,
+        refetchOnWindowFocus: false,
+    });
+    const envEditSupported = providersQuery.data?.features?.includes("env-edit") ?? false;
+
+    // A rejected token → drop it and re-prompt rather than show "down". Gated on
+    // the rejection policy (lib/reefApi): reef has to reject the token in two
+    // separate rounds, so a single blip no longer logs the operator out. The
+    // query's own auth retry supplies the second round, which is why by the time
+    // `isError` flips the verdict is already final.
+    const authRejected =
+        fleetQuery.error instanceof ReefAuthRejected && authRejectionIsFinal();
     useEffect(() => {
-        if (authRejected) {
-            setReefToken(null);
-            setTokenSet(false);
-        }
-    }, [authRejected]);
+        if (forgetTokenIfRejected(fleetQuery.error)) setTokenSet(false);
+    }, [fleetQuery.error]);
 
     const submitToken = (e: React.SyntheticEvent) => {
         e.preventDefault();
@@ -351,10 +376,21 @@ export default function SettingsReefPage() {
         void queryClient.invalidateQueries({queryKey: queryKeys.reefFleet(orgId)});
     };
 
+    /** The explicit operator gesture ("Forget token") — always drops it. */
     const forgetToken = () => {
         setReefToken(null);
         setTokenSet(false);
         queryClient.removeQueries({queryKey: queryKeys.reefFleet(orgId)});
+    };
+
+    /** What child dialogs report a failed reef call to. Drops the token only when
+     *  the rejection policy says it's final; returns that verdict so the caller
+     *  can decide whether to close itself or stay open and retry. */
+    const handleAuthReject = (e: unknown): boolean => {
+        if (!forgetTokenIfRejected(e)) return false;
+        setTokenSet(false);
+        queryClient.removeQueries({queryKey: queryKeys.reefFleet(orgId)});
+        return true;
     };
 
     // Opening a surface needs the one-time access password (reef no longer reveals
@@ -362,6 +398,32 @@ export default function SettingsReefPage() {
     // Driven by state — the actual window.open fires on the dialog's submit
     // gesture, which also dodges the popup blocker (no preceding await).
     const [openTarget, setOpenTarget] = useState<{id: string; surface: "ui" | "terminal"} | null>(null);
+
+    // Only the target id lives here - typed values never leave the dialog.
+    const [envTarget, setEnvTarget] = useState<{id: string; managed: boolean} | null>(null);
+
+    // Lifted out of the card: a dialog inside it would bubble clicks into the
+    // card's own click-through handler.
+    const [destroyTarget, setDestroyTarget] = useState<{id: string; agentName: string | null} | null>(null);
+    const destroy = useMutation({
+        mutationFn: (id: string) => reefDestroy(apiUrl ?? "", id),
+        onSuccess: (_r, id) => {
+            setDestroyTarget(null);
+            void queryClient.invalidateQueries({queryKey: queryKeys.reefFleet(orgId)});
+            toast.success(`Destroyed ${id}`);
+        },
+        onError: (e) => {
+            if (e instanceof ReefAuthRejected) {
+                const dropped = handleAuthReject(e);
+                toast.error(dropped
+                    ? "Reef rejected the token - re-enter it"
+                    : "Reef didn't accept that request - try again");
+                setDestroyTarget(null);
+                return;
+            }
+            toast.error(e instanceof Error ? e.message : "Couldn't destroy this agent");
+        },
+    });
 
     if (!activeOrgId) {
         return <div className="text-sm text-muted-foreground">Select an organization.</div>;
@@ -540,7 +602,7 @@ export default function SettingsReefPage() {
                             className="py-8"
                             icon={CloudServer}
                             title="No Reef connected"
-                            description="Ask an organization owner to connect your Reef instance."
+                            description="Ask an organization admin to connect your Reef instance."
                         />
                     )}
                 </section>
@@ -560,7 +622,7 @@ export default function SettingsReefPage() {
                             orgId={orgId}
                             imageStatus={imageStatusQuery.data}
                             fleet={fleet}
-                            onAuthReject={forgetToken}
+                            onAuthReject={handleAuthReject}
                         />
                     </section>
                 )}
@@ -679,8 +741,14 @@ export default function SettingsReefPage() {
                                         apiUrl={apiUrl}
                                         orgId={orgId}
                                         linkedAgent={agentBySandbox.get(vm.sandbox_id) ?? null}
+                                        envEditSupported={envEditSupported}
                                         onOpen={(surface) => { setOpenTarget({id: vm.sandbox_id, surface}); }}
-                                        onAuthReject={forgetToken}
+                                        onManageEnv={() => { setEnvTarget({id: vm.sandbox_id, managed: vm.managed}); }}
+                                        onDestroy={() => {
+                                            const a = agentBySandbox.get(vm.sandbox_id);
+                                            setDestroyTarget({id: vm.sandbox_id, agentName: a ? agentLabel(a) : null});
+                                        }}
+                                        onAuthReject={handleAuthReject}
                                     />
                                 ))}
                             </div>
@@ -694,10 +762,74 @@ export default function SettingsReefPage() {
                     target={openTarget}
                     apiUrl={apiUrl}
                     onClose={() => { setOpenTarget(null); }}
-                    onAuthReject={forgetToken}
+                    onAuthReject={handleAuthReject}
+                />
+            )}
+
+            {envTarget !== null && (
+                <ManageEnvDialog
+                    sandboxId={envTarget.id}
+                    managed={envTarget.managed}
+                    apiUrl={apiUrl}
+                    orgId={orgId}
+                    onClose={() => { setEnvTarget(null); }}
+                    onAuthReject={handleAuthReject}
+                />
+            )}
+
+            {destroyTarget && (
+                <ConfirmDestroyDialog
+                    sandboxId={destroyTarget.id}
+                    agentName={destroyTarget.agentName}
+                    pending={destroy.isPending}
+                    onCancel={() => { setDestroyTarget(null); }}
+                    onConfirm={() => { destroy.mutate(destroyTarget.id); }}
                 />
             )}
         </div>
+    );
+}
+
+function ConfirmDestroyDialog({
+    sandboxId,
+    agentName,
+    pending,
+    onCancel,
+    onConfirm,
+}: {
+    sandboxId: string;
+    agentName: string | null;
+    pending: boolean;
+    onCancel: () => void;
+    onConfirm: () => void;
+}) {
+    return (
+        <Dialog open onOpenChange={(next) => { if (!next) onCancel(); }}>
+            <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                    <DialogTitle>
+                        <Icon icon={Trash} className="text-destructive"/>
+                        Destroy this VM?
+                    </DialogTitle>
+                    <DialogDescription>
+                        Reef removes <span className="font-mono text-foreground">{sandboxId}</span>,
+                        its record, its web address and the environment variables you set on it.
+                        Its persistent volume is left intact on the host, but nothing points at it
+                        any more. This can't be undone.
+                        {agentName !== null && ` ${agentName} isn't deleted - it just stops having a VM.`}
+                    </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                    <Button type="button" variant="ghost" onClick={onCancel} disabled={pending}>
+                        Cancel
+                    </Button>
+                    <Button type="button" variant="destructive" onClick={onConfirm} disabled={pending}>
+                        <Icon icon={Trash} className="size-4"/>
+                        {pending ? "Destroying…" : "Destroy"}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }
 
@@ -711,15 +843,23 @@ function FleetCard({
     apiUrl,
     orgId,
     linkedAgent,
+    envEditSupported,
     onOpen,
+    onManageEnv,
+    onDestroy,
     onAuthReject,
 }: {
     vm: ReefFleetEntry;
     apiUrl: string | null;
     orgId: string;
     linkedAgent: AgentUser | null;
+    envEditSupported: boolean;
     onOpen: (surface: "ui" | "terminal") => void;
-    onAuthReject: () => void;
+    onManageEnv: () => void;
+    onDestroy: () => void;
+    /** Report a failed reef call; true ⇒ the token was dropped and the page
+     *  re-prompts, false ⇒ the rejection policy says this may be a blip. */
+    onAuthReject: (e: unknown) => boolean;
 }) {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
@@ -727,7 +867,8 @@ function FleetCard({
         queryKey: ["reef-surface-detail", apiUrl, vm.sandbox_id],
         queryFn: () => reefDetail(apiUrl ?? "", vm.sandbox_id),
         enabled: Boolean(apiUrl),
-        retry: false,
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         staleTime: 15_000,
         // Versions/resources change rarely — refresh on a slow cadence so an
         // in-place upgrade surfaces without a manual reload.
@@ -739,28 +880,84 @@ function FleetCard({
     // Version-based signal (server-computed): the agent's reported versions vs the
     // active image's baked versions for its runtime. Only managed, non-creating
     // agents can actually be upgraded (reef owns their volumes + ports).
-    const canUpgrade = Boolean(vm.upgrade_available) && vm.managed && vm.state !== "creating";
+    const behind = Boolean(vm.upgrade_available) && vm.managed && vm.state !== "creating";
+    const showRecreate =
+        behind ||
+        (vm.managed && vm.state !== "creating" && !detailQuery.isLoading && versions === null);
 
     const upgrade = useMutation({
         mutationFn: () => reefUpgrade(apiUrl ?? "", vm.sandbox_id),
         onSuccess: () => {
-            toast.success(`Upgrading ${vm.sandbox_id}…`);
+            toast.success(`${behind ? "Upgrading" : "Reinstalling"} ${vm.sandbox_id}…`);
             // State flips creating→running and the digests converge on the next
             // poll; nudge both caches so the strip disappears promptly.
             void queryClient.invalidateQueries({queryKey: queryKeys.reefFleet(orgId)});
             void queryClient.invalidateQueries({queryKey: ["reef-surface-detail", apiUrl, vm.sandbox_id]});
         },
         onError: (e) => {
-            if (e instanceof ReefAuthError) {
-                onAuthReject();
-                toast.error("Reef rejected the token - re-enter it");
+            if (e instanceof ReefAuthRejected) {
+                toast.error(onAuthReject(e)
+                    ? "Reef rejected the token - re-enter it"
+                    : "Reef didn't accept that request - try again");
                 return;
             }
             toast.error(upgradeErrorMessage(e));
         },
     });
 
+    const invalidateAfterLifecycle = () => {
+        void queryClient.invalidateQueries({queryKey: queryKeys.reefFleet(orgId)});
+        void queryClient.invalidateQueries({queryKey: ["reef-surface-detail", apiUrl, vm.sandbox_id]});
+    };
+    // Its own auth branch: the page-level effect only watches fleetQuery.error.
+    const onLifecycleError = (e: unknown) => {
+        if (e instanceof ReefAuthRejected) {
+            toast.error(onAuthReject(e)
+                ? "Reef rejected the token - re-enter it"
+                : "Reef didn't accept that request - try again");
+            return;
+        }
+        toast.error(lifecycleErrorMessage(e, vm.managed));
+    };
+
+    const start = useMutation({
+        mutationFn: () => reefStart(apiUrl ?? "", vm.sandbox_id),
+        onSuccess: () => {
+            toast.success(`Starting ${vm.sandbox_id}…`);
+            invalidateAfterLifecycle();
+        },
+        onError: onLifecycleError,
+    });
+
+    const stop = useMutation({
+        mutationFn: () => reefStop(apiUrl ?? "", vm.sandbox_id),
+        onSuccess: () => {
+            toast.success(`Stopped ${vm.sandbox_id} - it stays down until you start it.`);
+            invalidateAfterLifecycle();
+        },
+        onError: onLifecycleError,
+    });
+
+    const restart = useMutation({
+        mutationFn: () => reefRestart(apiUrl ?? "", vm.sandbox_id),
+        onSuccess: () => {
+            toast.success(`Restarting ${vm.sandbox_id}…`);
+            invalidateAfterLifecycle();
+        },
+        onError: onLifecycleError,
+    });
+
     const running = vm.state === "running";
+    // `creating` is mid-recreate: start/stop would 404 or race the rebuild.
+    const lifecyclePending = start.isPending || stop.isPending || restart.isPending;
+    const lifecycleReady = vm.managed && vm.state !== "creating" && !lifecyclePending;
+    const showRestart = running;
+    const showStart = vm.state === "stopped" || vm.state === "failed";
+    // Stop on `failed` is the only way out of the reconciler's restart loop.
+    const showStop = running || vm.state === "failed";
+    const recreating = vm.state === "creating";
+    const hasLifecycleItems = showRestart || showStart || showStop || recreating;
+    const menuVisible = vm.managed;
     const m = vm.metrics;
     const memFrac = m && m.memory_limit_bytes > 0 ? m.memory_bytes / m.memory_limit_bytes : 0;
 
@@ -769,6 +966,9 @@ function FleetCard({
     if (detail?.memory_mib) meta.push(`${formatBytes(detail.memory_mib * MIB)} RAM`);
     const created = formatDate(vm.created_at);
     if (created) meta.push(`created ${created}`);
+    if (!running && vm.desired_state) {
+        meta.push(vm.desired_state === "stopped" ? "stays down until you start it" : "reef wants this running");
+    }
     // The truthful "what's running" stack string (server-derived from the agent's
     // reported versions) over the floating tag reef records.
     const image = vm.image_version ?? detail?.image ?? vm.image;
@@ -857,13 +1057,17 @@ function FleetCard({
                     </p>
                 )}
 
-                {/* Upgrade affordance — shown when this VM's reported versions are
-                    behind the active image's baked versions (server-computed). */}
-                {canUpgrade && (
-                    <div className="flex items-center justify-between gap-3 rounded-xl bg-amber-500/[0.07] px-3 py-2.5">
-                        <span className="inline-flex min-w-0 items-center gap-2 text-xs font-medium text-amber-700 dark:text-amber-400">
-                            <span className="size-1.5 shrink-0 rounded-full bg-amber-500"/>
-                            Newer image available
+                {showRecreate && (
+                    <div className={cn(
+                        "flex items-center justify-between gap-3 rounded-xl px-3 py-2.5",
+                        behind ? "bg-amber-500/[0.07]" : "border border-border/60 bg-muted/30",
+                    )}>
+                        <span className={cn(
+                            "inline-flex min-w-0 items-center gap-2 text-xs font-medium",
+                            behind ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
+                        )}>
+                            {behind && <span className="size-1.5 shrink-0 rounded-full bg-amber-500"/>}
+                            {behind ? "Newer image available" : "Version not reported"}
                         </span>
                         <Tooltip>
                             <TooltipTrigger
@@ -872,18 +1076,22 @@ function FleetCard({
                                         type="button"
                                         size="sm"
                                         variant="outline"
-                                        className="shrink-0 border-amber-500/30 text-amber-700 hover:bg-amber-500/10 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300"
+                                        className={cn(
+                                            "shrink-0",
+                                            behind && "border-amber-500/30 text-amber-700 hover:bg-amber-500/10 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300",
+                                        )}
                                         disabled={upgrade.isPending}
                                         onClick={(e) => { e.stopPropagation(); upgrade.mutate(); }}
                                     >
                                         <Icon icon={Refresh} className={cn("size-3.5", upgrade.isPending && "animate-spin")}/>
-                                        {upgrade.isPending ? "Upgrading…" : "Upgrade"}
+                                        {behind
+                                            ? (upgrade.isPending ? "Upgrading…" : "Upgrade")
+                                            : (upgrade.isPending ? "Reinstalling…" : "Reinstall")}
                                     </Button>
                                 }
                             />
                             <TooltipContent className="max-w-xs text-xs">
-                                Recreate this agent on the newest image. Workspace, clawbits identity,
-                                and access password are preserved; brief downtime.
+                                {behind ? UPGRADE_TIP : REINSTALL_TIP}
                             </TooltipContent>
                         </Tooltip>
                     </div>
@@ -930,6 +1138,77 @@ function FleetCard({
                             />
                             <TooltipContent className="text-xs">Open terminal</TooltipContent>
                         </Tooltip>
+
+                        {/* Every handler stops propagation: React events bubble
+                            through the portal by component tree, not by DOM. */}
+                        {menuVisible && (
+                            <DropdownMenu>
+                                <DropdownMenuTrigger
+                                    aria-label={`More actions for ${vm.sandbox_id}`}
+                                    onClick={(e) => { e.stopPropagation(); }}
+                                    className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                >
+                                    <Icon icon={More} className="size-4"/>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                    {recreating && (
+                                        <DropdownMenuItem disabled onClick={(e) => { e.stopPropagation(); }}>
+                                            <Icon icon={Refresh} className="animate-spin"/>
+                                            Being recreated…
+                                        </DropdownMenuItem>
+                                    )}
+                                    {showRestart && (
+                                        <DropdownMenuItem
+                                            disabled={!lifecycleReady}
+                                            onClick={(e) => { e.stopPropagation(); restart.mutate(); }}
+                                        >
+                                            <Icon icon={Refresh}/>
+                                            {restart.isPending ? "Restarting…" : "Restart"}
+                                        </DropdownMenuItem>
+                                    )}
+                                    {showStart && (
+                                        <DropdownMenuItem
+                                            disabled={!lifecycleReady}
+                                            onClick={(e) => { e.stopPropagation(); start.mutate(); }}
+                                        >
+                                            <Icon icon={Play}/>
+                                            {start.isPending ? "Starting…" : "Start"}
+                                        </DropdownMenuItem>
+                                    )}
+                                    {showStop && (
+                                        <DropdownMenuItem
+                                            disabled={!lifecycleReady}
+                                            onClick={(e) => { e.stopPropagation(); stop.mutate(); }}
+                                        >
+                                            <Icon icon={Stop}/>
+                                            {stop.isPending ? "Stopping…" : "Stop"}
+                                        </DropdownMenuItem>
+                                    )}
+                                    {envEditSupported && (
+                                        <>
+                                            {hasLifecycleItems && <DropdownMenuSeparator/>}
+                                            <DropdownMenuItem
+                                                disabled={recreating}
+                                                onClick={(e) => { e.stopPropagation(); onManageEnv(); }}
+                                            >
+                                                <Icon icon={SourceCode}/>
+                                                Environment variables…
+                                            </DropdownMenuItem>
+                                        </>
+                                    )}
+                                    {(hasLifecycleItems || envEditSupported) && <DropdownMenuSeparator/>}
+                                    {/* Never state-gated: a record stuck mid-recreate is
+                                        exactly when the exit is needed. */}
+                                    <DropdownMenuItem
+                                        variant="destructive"
+                                        onClick={(e) => { e.stopPropagation(); onDestroy(); }}
+                                    >
+                                        <Icon icon={Trash}/>
+                                        Destroy…
+                                    </DropdownMenuItem>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+                        )}
                     </div>
                 </div>
             </div>
@@ -961,7 +1240,9 @@ function ReefImagePanel({
     orgId: string;
     imageStatus: ReefImageStatus | undefined;
     fleet: ReefFleetEntry[];
-    onAuthReject: () => void;
+    /** Report a failed reef call; true ⇒ the token was dropped and the page
+     *  re-prompts, false ⇒ the rejection policy says this may be a blip. */
+    onAuthReject: (e: unknown) => boolean;
 }) {
     const queryClient = useQueryClient();
     const [jobId, setJobId] = useState<string | null>(null);
@@ -974,7 +1255,8 @@ function ReefImagePanel({
         queryKey: ["reef-images", apiUrl],
         queryFn: () => reefImages(apiUrl),
         enabled: Boolean(apiUrl),
-        retry: false,
+        retry: retryReefAuthOnce,
+        retryDelay: REEF_AUTH_RETRY_DELAY_MS,
         // The set only changes on a build or activate — a slow poll keeps it fresh.
         refetchInterval: 15_000,
     });
@@ -1013,9 +1295,10 @@ function ReefImagePanel({
         onError: (e) => {
             // A rejected token must clear it + re-prompt (the page only watches the
             // fleet query for auth, so a mutation auth error has to do it itself).
-            if (e instanceof ReefAuthError) {
-                onAuthReject();
-                toast.error("Reef rejected the token - re-enter it");
+            if (e instanceof ReefAuthRejected) {
+                toast.error(onAuthReject(e)
+                    ? "Reef rejected the token - re-enter it"
+                    : "Reef didn't accept that request - try again");
                 return;
             }
             // One build at a time — on a 409, attach to the running job instead of
@@ -1033,9 +1316,10 @@ function ReefImagePanel({
                     } catch (err) {
                         // A token rejected mid-attach must re-prompt, not masquerade
                         // as "a build is already running".
-                        if (err instanceof ReefAuthError) {
-                            onAuthReject();
-                            toast.error("Reef rejected the token - re-enter it");
+                        if (err instanceof ReefAuthRejected) {
+                            toast.error(onAuthReject(err)
+                                ? "Reef rejected the token - re-enter it"
+                                : "Reef didn't accept that request - try again");
                             return;
                         }
                         /* otherwise fall through to the generic message */
@@ -1072,9 +1356,10 @@ function ReefImagePanel({
             void queryClient.invalidateQueries({queryKey: queryKeys.reefFleet(orgId)});
         },
         onError: (e) => {
-            if (e instanceof ReefAuthError) {
-                onAuthReject();
-                toast.error("Reef rejected the token - re-enter it");
+            if (e instanceof ReefAuthRejected) {
+                toast.error(onAuthReject(e)
+                    ? "Reef rejected the token - re-enter it"
+                    : "Reef didn't accept that request - try again");
                 return;
             }
             toast.error(e instanceof Error ? e.message : "Couldn't set the active image");

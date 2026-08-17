@@ -24,7 +24,10 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/Icon";
 import { toast } from "@/lib/toast";
-import { reefDetail, reefReveal, surfaceAuthUrl, terminalAuthUrl, ReefAuthError } from "@/lib/reefApi";
+import {
+  reefDetail, reefReveal, surfaceAuthUrl, terminalAuthUrl,
+  ReefAuthRejected, retryReefAuthOnce, REEF_AUTH_RETRY_DELAY_MS,
+} from "@/lib/reefApi";
 
 export function OpenSurfaceDialog({
   target,
@@ -35,7 +38,9 @@ export function OpenSurfaceDialog({
   target: { id: string; surface: "ui" | "terminal" };
   apiUrl: string | null;
   onClose: () => void;
-  onAuthReject: () => void;
+  /** Report a failed reef call; true ⇒ the token was dropped (so this dialog
+   *  closes and the page re-prompts), false ⇒ possibly a blip, stay open. */
+  onAuthReject: (e: unknown) => boolean;
 }) {
   // Mounted only while open (the parent gates on `openTarget`), so password
   // state is fresh per open — no reset effect needed.
@@ -46,15 +51,19 @@ export function OpenSurfaceDialog({
     queryKey: ["reef-surface-detail", apiUrl, target.id],
     queryFn: () => reefDetail(apiUrl ?? "", target.id),
     enabled: Boolean(apiUrl),
-    retry: false,
+    // One shot, so it carries its own auth retry — without a second round the
+    // rejection policy could never reach a verdict for this dialog.
+    retry: retryReefAuthOnce,
+    retryDelay: REEF_AUTH_RETRY_DELAY_MS,
   });
 
+  // Close only when the rejection is FINAL — a blip leaves the dialog open with
+  // its own error state instead of slamming shut on the operator.
   useEffect(() => {
-    if (detailQuery.error instanceof ReefAuthError) {
-      onAuthReject();
-      toast.error("Reef rejected the token - re-enter it");
-      onClose();
-    }
+    if (!(detailQuery.error instanceof ReefAuthRejected)) return;
+    if (!onAuthReject(detailQuery.error)) return;
+    toast.error("Reef rejected the token - re-enter it");
+    onClose();
   }, [detailQuery.error, onAuthReject, onClose]);
 
   // Recover the one-time access password from the running guest (Reef doesn't
@@ -71,9 +80,10 @@ export function OpenSurfaceDialog({
       }
     },
     onError: (e) => {
-      if (e instanceof ReefAuthError) {
-        onAuthReject();
+      if (e instanceof ReefAuthRejected && onAuthReject(e)) {
+        toast.error("Reef rejected the token - re-enter it");
         onClose();
+        return;
       }
       toast.error("Couldn't reveal the saved password");
     },

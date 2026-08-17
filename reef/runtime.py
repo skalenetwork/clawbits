@@ -8,11 +8,13 @@ fallbacks. Reef code depends only on this Protocol, never a concrete VMM.
 minimal. `MicrosandboxRuntime` satisfies both.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
+
+from reef.guest_env import EnvRecord
 
 if TYPE_CHECKING:
     from reef.image_ops import BuildImageSpec, ImageInfo
@@ -85,6 +87,7 @@ class SandboxSpec:
     net_allow: tuple[str, ...] = ()  # egress allowlist; empty ⇒ no restriction
     ports: tuple[str, ...] = ()  # inbound forwards, each "[BIND:]HOST:GUEST" (-p); empty ⇒ none
     status_dest: str | None = None  # guest path for the agent-volunteered status mount; None ⇒ none
+    env_dest: str | None = None  # guest path for the user-env overlay (read-only); None ⇒ none
     limits: Limits = field(default_factory=Limits)
 
 
@@ -174,6 +177,19 @@ class FleetRuntime(Protocol):
         the sandbox's status mount. ``None`` if the agent hasn't written one or it's
         unreadable. Never executes anything inside the guest — Reef only reads the
         shared dir the agent writes to."""
+        ...
+
+    async def read_guest_env(self, handle: str) -> list[EnvRecord] | None:
+        """The user-env overlay, read host-side. ``None`` if the agent has none."""
+        ...
+
+    async def write_guest_env(self, handle: str, records: Sequence[EnvRecord]) -> None:
+        """Replace the overlay atomically, host-side; effective on the next boot."""
+        ...
+
+    async def remove_guest_env(self, handle: str) -> None:
+        """For a TRUE destroy only - an in-place upgrade also goes through
+        ``destroy``+``create``, and wiping there would lose the operator's vars."""
         ...
 
     async def used_host_ports(self) -> set[int]:

@@ -152,8 +152,9 @@ def test_providers_reports_presence_only(monkeypatch):
              "kind": "endpoint", "runtimes": both},
         ],
         # Create-API capability flags: lets a newer clawbits UI detect that this
-        # reef accepts CreateSandboxIn.env / .model (older reefs omit them).
-        "features": ["env", "model", "capabilities"],
+        # reef accepts CreateSandboxIn.env / .model (older reefs omit them), and
+        # "env-edit" that GET/PATCH /fleet/{id}/env exist.
+        "features": ["env", "model", "capabilities", "env-edit"],
     }
     assert "srv-ant" not in r.text  # api_key values never cross the wire
     # The ollama host VALUE is presence-only here too — the picker shows
@@ -297,20 +298,33 @@ def test_create_with_env_via_api():
     client = _client_with_manager()
     r = client.post("/fleet", json={"type": "openclaw", "name": "oc-env", "env": {"MY_FLAG": "on"}})
     assert r.status_code == 201, r.text
-    # Non-secret-named custom env stays visible in the detail view.
-    assert client.get("/fleet/oc-env").json()["env"]["MY_FLAG"] == "on"
+    detail = client.get("/fleet/oc-env").json()
+    # The custom env reached the container, but the detail view carries REEF'S
+    # layer only - see the next test.
+    assert "MY_FLAG" not in detail["env"]
+    assert detail["env"]["REEF_STATUS_DIR"]  # non-vacuous: reef's own layer is there
 
 
-def test_create_env_secret_named_is_redacted_in_detail():
+def test_create_env_is_not_in_the_detail_view_at_any_value():
+    """A user var is EXCLUDED from ``GET /fleet/{id}``, never merely masked: the
+    mask is a key-NAME heuristic, so ``MY_WEBHOOK_TOKEN`` matched but
+    ``DATABASE_URL=postgres://u:pw@host`` came back in full."""
     client = _client_with_manager()
     r = client.post(
         "/fleet",
-        json={"type": "openclaw", "name": "oc-sec", "env": {"MY_WEBHOOK_TOKEN": "tok-123"}},
+        json={
+            "type": "openclaw",
+            "name": "oc-sec",
+            "env": {"MY_WEBHOOK_TOKEN": "tok-123", "DATABASE_URL": "postgres://u:hunter2@db/x"},
+        },
     )
     assert r.status_code == 201, r.text
     detail = client.get("/fleet/oc-sec")
-    assert detail.json()["env"]["MY_WEBHOOK_TOKEN"] == "***"
-    assert "tok-123" not in detail.text
+    body = detail.json()["env"]
+    assert "MY_WEBHOOK_TOKEN" not in body and "DATABASE_URL" not in body
+    assert "tok-123" not in detail.text and "hunter2" not in detail.text
+    # Non-vacuous: reef's own layer is still there, still masked by name.
+    assert body["OPENCLAW_GATEWAY_TOKEN"] == "***"
 
 
 def test_create_with_reserved_env_is_422():

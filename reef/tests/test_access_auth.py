@@ -144,3 +144,39 @@ def test_service_token_still_works_when_access_enabled(monkeypatch, keypair):
     r = _client().get("/x", headers={"Authorization": "Bearer s3cret"})
     assert r.status_code == 200
     assert r.json()["operator"] == "service-token"
+
+
+def test_expired_access_assertion_does_not_shadow_the_service_token(monkeypatch, keypair):
+    """A stale Access assertion riding along must not veto a valid bearer token.
+
+    Access assertions are short-lived; the old code 401'd on the first door and
+    never reached the second, which the operator experiences as "my admin token
+    stopped working" — unfixable by re-pasting the (correct) token.
+    """
+    priv, pub = keypair
+    monkeypatch.setenv("REEF_ADMIN_TOKEN", "s3cret")
+    monkeypatch.setattr(security, "get_access_verifier", lambda: _verifier(pub))
+    r = _client().get(
+        "/x",
+        headers={
+            "Cf-Access-Jwt-Assertion": _mint(priv, aud="bad"),
+            "Authorization": "Bearer s3cret",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["operator"] == "service-token"
+
+
+def test_bad_access_assertion_with_bad_token_still_401s(monkeypatch, keypair):
+    """Falling through must not become a bypass — both doors have to actually fail."""
+    priv, pub = keypair
+    monkeypatch.setenv("REEF_ADMIN_TOKEN", "s3cret")
+    monkeypatch.setattr(security, "get_access_verifier", lambda: _verifier(pub))
+    r = _client().get(
+        "/x",
+        headers={
+            "Cf-Access-Jwt-Assertion": _mint(priv, aud="bad"),
+            "Authorization": "Bearer wrong",
+        },
+    )
+    assert r.status_code == 401

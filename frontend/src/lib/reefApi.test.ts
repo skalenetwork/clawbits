@@ -1,6 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { controlUiAuthUrl, surfaceAuthUrl, terminalAuthUrl } from "./reefApi";
+import { buildEnvPatch, type EnvDraftRow } from "@/components/reef/envKeys";
+import {
+  controlUiAuthUrl,
+  reefAgentEnv,
+  reefBuildJobs,
+  reefDestroy,
+  reefPatchEnv,
+  reefRestart,
+  reefStart,
+  reefStop,
+  ReefAuthRejected,
+  ReefAuthRequired,
+  ReefBuildInProgressError,
+  ReefSandboxBusyError,
+  authRejectionIsFinal,
+  forgetTokenIfRejected,
+  hasReefToken,
+  reefFleet,
+  setReefToken,
+  surfaceAuthUrl,
+  terminalAuthUrl,
+} from "./reefApi";
 
 // These are pure string builders — no network, no live agent. All values below
 // are placeholders; never put a real gateway token / terminal password here.
@@ -75,5 +96,248 @@ describe("surfaceAuthUrl", () => {
   it("returns the URL unchanged when there is no secret", () => {
     expect(surfaceAuthUrl("hermes", "https://host/s/d/", null)).toBe("https://host/s/d/");
     expect(surfaceAuthUrl("openclaw", "https://host/s/d/", null)).toBe("https://host/s/d/");
+  });
+});
+
+// ── Transport ────────────────────────────────────────────────────────────────
+// These stub `fetch`. Every value below is a placeholder.
+
+const BASE = "https://reef.example.test";
+const TEST_TOKEN = "test-admin-token-000";
+
+function stubFetch(status = 200, body: unknown = {}) {
+  const spy = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  vi.stubGlobal("fetch", spy);
+  return spy;
+}
+
+function sentRequest(spy: ReturnType<typeof stubFetch>) {
+  const [url, init] = spy.mock.calls[0] as [string, RequestInit];
+  return {
+    url,
+    method: init.method,
+    body: typeof init.body === "string" ? init.body : null,
+  };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  setReefToken(null);
+});
+
+describe("lifecycle actions", () => {
+  it("POSTs to the per-agent lifecycle routes with the id encoded", async () => {
+    setReefToken(TEST_TOKEN);
+    for (const [fn, suffix] of [
+      [reefStart, "start"],
+      [reefStop, "stop"],
+      [reefRestart, "restart"],
+    ] as const) {
+      const spy = stubFetch(200, { sandbox_id: "a/b", state: "running" });
+      await fn(BASE, "a/b");
+      expect(sentRequest(spy)).toMatchObject({
+        url: `${BASE}/fleet/a%2Fb/${suffix}`,
+        method: "POST",
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("DELETEs the fleet row itself to destroy an agent, and takes reef's 204", async () => {
+    setReefToken(TEST_TOKEN);
+    const spy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", spy);
+    await expect(reefDestroy(BASE, "a/b")).resolves.toBeUndefined();
+    expect(sentRequest(spy)).toMatchObject({ url: `${BASE}/fleet/a%2Fb`, method: "DELETE" });
+  });
+});
+
+describe("409 mapping", () => {
+  it("keeps build-in-progress for the image-build routes", async () => {
+    setReefToken(TEST_TOKEN);
+    stubFetch(409, { detail: "A build is already running" });
+    await expect(reefBuildJobs(BASE)).rejects.toBeInstanceOf(ReefBuildInProgressError);
+  });
+
+  it("reports a per-agent 409 as a busy sandbox, not a build", async () => {
+    setReefToken(TEST_TOKEN);
+    stubFetch(409, { detail: "sandbox busy" });
+    await expect(reefRestart(BASE, "agent-1")).rejects.toBeInstanceOf(ReefSandboxBusyError);
+  });
+});
+
+describe("guest env", () => {
+  it("reads env over GET with no key or value in the URL", async () => {
+    setReefToken(TEST_TOKEN);
+    const spy = stubFetch(200, {
+      sandbox_id: "agent-1",
+      vars: [],
+      editable: true,
+      apply_modes: ["restart"],
+      state: "running",
+    });
+    await reefAgentEnv(BASE, "agent-1");
+    const req = sentRequest(spy);
+    expect(req).toMatchObject({ url: `${BASE}/fleet/agent-1/env`, method: "GET" });
+    expect(req.body).toBeNull();
+  });
+
+  it("PATCHes the diff in the body - never the path or a query string", async () => {
+    setReefToken(TEST_TOKEN);
+    const spy = stubFetch(200, {
+      sandbox_id: "agent-1",
+      changed: true,
+      applied: "restart",
+      takes_effect: "now",
+      state: "running",
+      vars: [],
+    });
+    await reefPatchEnv(BASE, "agent-1", {
+      set: { NEW_VAR: "typed-placeholder-value" },
+      unset: ["OLD_VAR"],
+      apply: "restart",
+    });
+    const req = sentRequest(spy);
+    expect(req.url).toBe(`${BASE}/fleet/agent-1/env`);
+    expect(req.method).toBe("PATCH");
+    expect(req.url).not.toContain("NEW_VAR");
+    expect(req.url).not.toContain("typed-placeholder-value");
+    expect(JSON.parse(req.body ?? "null")).toEqual({
+      set: { NEW_VAR: "typed-placeholder-value" },
+      unset: ["OLD_VAR"],
+      apply: "restart",
+    });
+  });
+
+  it("never sends a value for a key the operator did not retype", async () => {
+    setReefToken(TEST_TOKEN);
+    const rows: EnvDraftRow[] = [
+      { id: "srv:UNTOUCHED_KEY", key: "UNTOUCHED_KEY", value: null, storedLength: 40, removed: false, existing: true, tier: null },
+      { id: "srv:RETYPED_KEY", key: "RETYPED_KEY", value: "typed-placeholder-value", storedLength: 12, removed: false, existing: true, tier: null },
+      { id: "srv:DROPPED_KEY", key: "DROPPED_KEY", value: null, storedLength: 8, removed: true, existing: true, tier: null },
+      { id: "new:1", key: "ABANDONED_KEY", value: "abandoned", storedLength: null, removed: true, existing: false, tier: null },
+    ];
+    const patch = buildEnvPatch(rows, "restart");
+    expect(patch).toEqual({
+      set: { RETYPED_KEY: "typed-placeholder-value" },
+      unset: ["DROPPED_KEY"],
+      apply: "restart",
+    });
+
+    const spy = stubFetch(200, {
+      sandbox_id: "agent-1",
+      changed: true,
+      applied: "restart",
+      takes_effect: "now",
+      state: "running",
+      vars: [],
+    });
+    await reefPatchEnv(BASE, "agent-1", patch);
+    const body = sentRequest(spy).body ?? "";
+    expect(body).not.toContain("UNTOUCHED_KEY");
+    expect(body).not.toContain("ABANDONED_KEY");
+    expect(body).not.toContain("abandoned");
+  });
+});
+
+// The reason the operator kept getting re-prompted: a lone 401 (reef restarting
+// behind the tunnel, an edge hiccup) used to drop the token. It now takes two
+// SEPARATE rounds — see the rejection policy in reefApi.
+describe("rejection policy", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Drive one failed authed call and hand back the error. */
+  async function rejectOnce(status = 401): Promise<unknown> {
+    stubFetch(status, { detail: "invalid or missing admin credentials" });
+    return await reefFleet(BASE).then(
+      () => null,
+      (e: unknown) => e,
+    );
+  }
+
+  it("keeps the token after a single rejection - one 401 is not a verdict", async () => {
+    setReefToken(TEST_TOKEN);
+    const e = await rejectOnce();
+    expect(e).toBeInstanceOf(ReefAuthRejected);
+    expect(authRejectionIsFinal()).toBe(false);
+    expect(forgetTokenIfRejected(e)).toBe(false);
+    expect(hasReefToken()).toBe(true);
+  });
+
+  it("drops the token once reef rejects it in two separate rounds", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    await rejectOnce();
+    vi.advanceTimersByTime(1_200); // the retry delay — a genuinely new round
+    const e = await rejectOnce();
+    expect(authRejectionIsFinal()).toBe(true);
+    expect(forgetTokenIfRejected(e)).toBe(true);
+    expect(hasReefToken()).toBe(false);
+  });
+
+  it("counts rejections from parallel polls as ONE round", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    // Several queries poll at once; a single bad instant must not burn the budget.
+    const e1 = await rejectOnce();
+    const e2 = await rejectOnce();
+    const e3 = await rejectOnce();
+    expect([e1, e2, e3].every((e) => e instanceof ReefAuthRejected)).toBe(true);
+    expect(authRejectionIsFinal()).toBe(false);
+    expect(hasReefToken()).toBe(true);
+  });
+
+  it("resets the count when reef accepts the token again (the blip case)", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    await rejectOnce();
+    stubFetch(200, []);
+    await reefFleet(BASE);
+    vi.advanceTimersByTime(1_200);
+    const e = await rejectOnce();
+    // Back to round 1, so the recovered blip didn't leave the token half-condemned.
+    expect(authRejectionIsFinal()).toBe(false);
+    expect(forgetTokenIfRejected(e)).toBe(false);
+    expect(hasReefToken()).toBe(true);
+  });
+
+  it("treats a 403 the same as a 401", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    await rejectOnce(403);
+    vi.advanceTimersByTime(1_200);
+    expect(forgetTokenIfRejected(await rejectOnce(403))).toBe(true);
+    expect(hasReefToken()).toBe(false);
+  });
+
+  it("never counts 'no token held' as a rejection - reef said nothing", async () => {
+    setReefToken(null);
+    const spy = stubFetch(200, []);
+    const e = await reefFleet(BASE).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(e).toBeInstanceOf(ReefAuthRequired);
+    expect(spy).not.toHaveBeenCalled(); // it never left the browser
+    expect(forgetTokenIfRejected(e)).toBe(false);
+  });
+
+  it("does not clear on a non-auth failure", async () => {
+    vi.useFakeTimers();
+    setReefToken(TEST_TOKEN);
+    stubFetch(500, { detail: "boom" });
+    const e = await reefFleet(BASE).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(forgetTokenIfRejected(e)).toBe(false);
+    expect(hasReefToken()).toBe(true);
   });
 });

@@ -488,3 +488,19 @@ declare module "openclaw/plugin-sdk/outbound-media" {
     options?: OutboundMediaLoadOptions,
   ): Promise<OutboundMediaLoadResult>;
 }
+
+declare module "openclaw/plugin-sdk/skills-runtime" {
+  /** Fires on every committed skill create/update/removal, including ones the
+   *  agent made itself. Returns an unsubscribe. */
+  export function registerSkillsChangeListener(
+    listener: (event: { workspaceDir?: string; reason?: string; changedPath?: string }) => void,
+  ): () => void;
+  export function getSkillsSnapshotVersion(workspaceDir?: string): number;
+  /** Force a snapshot refresh after our own write, instead of waiting on the
+   *  file watcher. */
+  export function bumpSkillsSnapshotVersion(params: {
+    workspaceDir?: string;
+    reason?: string;
+    changedPath?: string;
+  }): number;
+}

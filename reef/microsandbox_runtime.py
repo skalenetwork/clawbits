@@ -16,10 +16,12 @@ natively (``--net-default-egress deny`` + ``--net-rule allow@<target>``). Empty
 import json
 import os
 import shutil
+from collections.abc import Sequence
 from datetime import datetime
 
 from reef._subprocess import Runner, _default_runner, _redact
 from reef.errors import RuntimeUnavailable
+from reef.guest_env import EnvRecord, ensure_env_dir, read_env_file, write_env_file
 from reef.image_ops import (
     BuildImageSpec,
     ImageInfo,
@@ -76,6 +78,7 @@ class MicrosandboxRuntime:
         msb_bin: str | None = None,
         runner: Runner | None = None,
         volumes_dir: str | None = None,
+        state_dir: str | None = None,
     ) -> None:
         self._msb = msb_bin or os.getenv("REEF_MSB_BIN") or shutil.which("msb") or "msb"
         # Docker is the image BUILDER even on an msb host (build.sh `docker build`
@@ -92,6 +95,9 @@ class MicrosandboxRuntime:
             or os.getenv("REEF_MSB_VOLUMES_DIR")
             or os.path.expanduser("~/.microsandbox/volumes")
         )
+        # The user-env overlay lives here and not in an msb named volume: the
+        # volumes root above is world-traversable 0755, <state_dir> is 0750.
+        self._state_dir = state_dir or os.getenv("REEF_STATE_DIR") or os.path.expanduser("~/.reef")
         self._sandboxes_dir = os.getenv("REEF_MSB_SANDBOXES_DIR") or os.path.join(
             os.path.dirname(self._vol_dir), "sandboxes"
         )
@@ -99,6 +105,11 @@ class MicrosandboxRuntime:
     @staticmethod
     def _status_volume(handle: str) -> str:
         return f"reef-status-{handle}"
+
+    def _env_host_dir(self, handle: str) -> str:
+        """Reef owns this outright, so it survives the destroy+create of an in-place
+        upgrade (``msb remove`` never sees it)."""
+        return os.path.join(self._state_dir, "env", handle)
 
     async def _call(self, *args: str) -> str:
         rc, out, err = await self._run([self._msb, *args])
@@ -138,6 +149,11 @@ class MicrosandboxRuntime:
             status_vol = self._status_volume(spec.sandbox_id)
             await self._ensure_volume(status_vol)
             argv += ["-v", f"{status_vol}:{spec.status_dest}"]
+        if spec.env_dest:
+            # Read-only: the agent must not be able to rewrite its own environ.
+            env_dir = self._env_host_dir(spec.sandbox_id)
+            ensure_env_dir(env_dir)
+            argv += ["-v", f"{env_dir}:{spec.env_dest}:ro"]
         for key, value in spec.env.items():
             argv += ["-e", f"{key}={value}"]
         if spec.net_allow:
@@ -252,6 +268,15 @@ class MicrosandboxRuntime:
     async def read_status(self, handle: str) -> dict | None:
         # Host-side read of the status volume's dir — no guest interaction.
         return read_status_file(os.path.join(self._vol_dir, self._status_volume(handle)))
+
+    async def read_guest_env(self, handle: str) -> list[EnvRecord] | None:
+        return read_env_file(self._env_host_dir(handle))
+
+    async def write_guest_env(self, handle: str, records: Sequence[EnvRecord]) -> None:
+        write_env_file(self._env_host_dir(handle), records)
+
+    async def remove_guest_env(self, handle: str) -> None:
+        shutil.rmtree(self._env_host_dir(handle), ignore_errors=True)
 
     async def used_host_ports(self) -> set[int]:
         # TODO(prod): parse `-p` host ports from `msb inspect` once its port shape is

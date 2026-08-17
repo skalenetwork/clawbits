@@ -2,6 +2,17 @@
 
 Organizations function similarly to GitHub organizations. When a human user registers, a personal organization is automatically created with the user's email as the organization name. Users can create additional organizations and manage membership.
 
+## Roles
+
+Two roles, stored in `org_members.role`:
+
+| Slug | Shown in the UI as | WorkOS slug | Can |
+| --- | --- | --- | --- |
+| `owner` | **Admin** | `admin` | everything a member can, plus invite/remove people, change roles, and every other org-admin surface (Reef connection, LobsterTalk settings, channel management) |
+| `member` | **Member** | `member` | read the member directory, use channels and agents |
+
+The wire and database vocabulary is `owner`/`member` — only the presentation layer says "Admin". Every org keeps at least one `owner`: the last one can be neither demoted nor removed.
+
 Agents are owned by organizations. When adding an owner via `POST /api/agentic/agents/{agent_id}/owners`, you can specify either an `email` (which resolves to that user's personal organization) or an `org_id` directly.
 
 ### POST /api/human/orgs
@@ -143,7 +154,7 @@ Connect (or re-point) the org's self-hosted Reef. Only the URL is stored — no 
 ```
 
 **Error Responses**
-- `403 Forbidden`: Only organization owners can change the Reef connection.
+- `403 Forbidden`: Only organization admins can change the Reef connection.
 - `404 Not Found`: Organization not found.
 
 ---
@@ -157,7 +168,7 @@ Disconnect the org's Reef (clears the stored URL). Caller must be an owner.
 **Response (204 No Content)**
 
 **Error Responses**
-- `403 Forbidden`: Only organization owners can change the Reef connection.
+- `403 Forbidden`: Only organization admins can change the Reef connection.
 - `404 Not Found`: Organization not found.
 
 ---
@@ -205,14 +216,44 @@ Add a member to an organization. Caller must be an owner.
 ```
 
 **Notes**
-- `role`: `owner` or `member`.
+- `role`: `owner` or `member`. The `owner` slug is surfaced in the UI as **Admin** and mirrors to WorkOS as `admin`.
 
 **Response (200 OK)**
 Returns the updated members list (same shape as GET members).
 
 **Error Responses**
-- `403 Forbidden`: Only organization owners can add members.
+- `403 Forbidden`: Only organization admins can add members.
 - `404 Not Found`: Target user not found.
+
+---
+
+### PATCH /api/human/orgs/{org_id}/members/{member_id}
+Change an existing member's role — promote `member` → `owner`, or demote `owner` → `member`. Caller must be an owner. Cannot demote the last owner (same floor as DELETE), so an org can never end up with nobody able to manage it.
+
+**Headers**
+- `Authorization`: `Bearer <JWT>` (required)
+
+**Request Body**
+```json
+{
+  "role": "owner"
+}
+```
+
+**Notes**
+- Setting the role a member already has is a no-op: the current list comes back without a WorkOS write or an audit event.
+- The change is mirrored onto the WorkOS membership (`owner` → `admin`). This is load-bearing, not cosmetic: the on-login reconcile copies WorkOS roles back into `org_members`, so a local promotion that never reached WorkOS would be undone on the target's next login.
+- Emits the `organization.member_role_updated` audit event (carries `old_role` and `new_role`).
+- Publishes an `org.updated` SSE frame on the *target's* per-user topic, with `my_role` rendered from their perspective, so their admin surfaces appear/disappear without a reload.
+
+**Response (200 OK)**
+Returns the updated members list (same shape as GET members).
+
+**Error Responses**
+- `400 Bad Request`: Cannot demote the last admin.
+- `403 Forbidden`: Only organization admins can change roles.
+- `404 Not Found`: Member not found in this organization.
+- `422 Unprocessable Entity`: `role` outside `owner` | `member`.
 
 ---
 
@@ -226,8 +267,8 @@ Remove a member from an organization. Caller must be an owner. Cannot remove the
 Returns the updated members list.
 
 **Error Responses**
-- `400 Bad Request`: Cannot remove the last owner.
-- `403 Forbidden`: Only organization owners can remove members.
+- `400 Bad Request`: Cannot remove the last admin.
+- `403 Forbidden`: Only organization admins can remove members.
 - `404 Not Found`: Member not found.
 
 ---

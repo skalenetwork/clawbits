@@ -182,6 +182,84 @@ surface as `failed`).
 **One reconciler only:** this box runs `REEF_RECONCILE=1`; any additional API
 process ever pointed at the same fleet must set `=0` - two reconcilers fight.
 
+## Per-agent env vars
+
+Set in reef admin-ui → **Environment** or on the clawbits Reef page
+(`GET`/`PATCH /fleet/{id}/env`). No surface ever hands a value back.
+
+**At rest.** Two plaintext files per agent under `/var/lib/reef`
+(`$REEF_STATE_DIR`):
+
+* `env/<agent>/env` - the overlay, mounted read-only into the guest at
+  `/home/node/.reef-env`. Dropped only by `DELETE /fleet/{id}`.
+* `env/<agent>+pending/env` - the agent's whole spec env, provider key and
+  gateway token included. Parked while a recreate has destroyed the container
+  and not built the new one, so `start` can rebuild it across a reef restart;
+  dropped on the next successful create or on `DELETE`.
+
+Leaf dirs are `0755` and files `0644` deliberately - the guest sees them as
+`root:root` and its non-root uid needs the world bits, so do not tighten them.
+Confidentiality is the parent chain: `/var/lib/reef` `0750` reef-owned
+(`install.sh` + `StateDirectoryMode`), `env/` `0700`.
+
+> Reef chmods `env/` only when it creates it - one that already exists with
+> looser modes, hand-made or restored from a backup or inherited by a relocated
+> `REEF_STATE_DIR`, is never re-permissioned. After any move or restore:
+> `sudo stat -c '%a %U' /var/lib/reef /var/lib/reef/env` → want `750 reef` and
+> `700 reef`.
+
+**Apply modes.** `restart` writes the overlay and restarts in place, keeping
+values off argv; it needs an image with `REEF_FEATURES=env-file` (per agent:
+`apply_modes` on `GET /fleet/{id}/env`). Older agents take env changes only via
+`recreate`, which passes values on `msb create -e` - world-readable in
+`/proc/<pid>/cmdline` - destroys `~/.openclaw`, and writes no overlay file at
+all. One `upgrade` moves an agent onto in-place restarts for good.
+
+**Assumed**: no untrusted local users on this box (`reef` is in the `docker`
+group and creates pass provider keys on argv - remount `/proc` with `hidepid=2`
+if that ever changes), and the agent is trusted with its own secrets (they sit
+in its `process.env`, readable from its web terminal), so keep the credentials
+scoped and revocable. Reef masks known values out of `GET /fleet/{id}/logs`,
+rotated-away ones included, until `reef-api` restarts - pull the logs you need
+before restarting it.
+
+### When a save or a recreate half-fails
+
+An env save applies by restarting the agent or by destroying and rebuilding it
+(`apply=recreate`, and every `upgrade`). Three outcomes, and the response names
+which one you got:
+
+* **422** - nothing was written; fix the named key and resend. The two
+  surprising rules: a value may not *end* in a newline, checked against the
+  whole resulting env, so an agent already carrying one refuses every save until
+  that key is fixed; and keys that control how the guest loads code or which TLS
+  roots it trusts (`LD_PRELOAD`, `NODE_OPTIONS`, `PATH`, `NODE_EXTRA_CA_CERTS`,
+  …, full list `fleet._DANGEROUS_ENV_KEYS`) can be neither set nor unset - proxy
+  vars are allowed.
+* **The container survived** - a failed `restart` apply, or a destroy the
+  runtime refused. Reef restores the previous overlay before returning and the
+  agent goes on running the old env. Retry the same request; a `GET` on `/env`
+  confirms what it actually has.
+* **The destroy landed and the create did not** - the container is gone and the
+  record sits at `failed` with no handle.
+
+A `failed`, handle-less agent still lists, and `GET /fleet/{id}` answers `200`
+off the record; `/env` returns `503` on read and write alike, there being no
+container to read the env off; `stop` returns `404`. `start` is the fix: `200`,
+rebuilding from the parked spec on the same image with the same volumes and port
+forwards, running again - `upgrade` does the same onto the active image. Both
+`503` when the parked spec is gone too (the container was removed outside reef,
+or the stash could not be written); then only `DELETE /fleet/{id}` and a fresh
+create are left.
+
+After a failed env save the 503 wording says what the rebuilt agent will carry.
+"**NOT applied - it has been rolled back in full**": the overlay is back as it
+was, so `start` returns the agent with its pre-save env. "**It is now PENDING -
+it will take effect when the agent comes back**": reef could not undo the
+overlay it had already written, so the new values go live the moment the agent
+starts, despite the error. Do not just retry - `start` it, re-read `/env`, then
+set what you want.
+
 ## Troubleshooting
 
 | Symptom | Fix |

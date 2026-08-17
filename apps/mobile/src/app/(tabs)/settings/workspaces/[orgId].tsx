@@ -252,7 +252,7 @@ export default function WorkspaceDetailScreen() {
                             <Text
                               style={[styles.rowSubtitle, { color: theme.textSecondary }]}
                               numberOfLines={1}>
-                              {m.role === 'owner' ? 'Owner · ' : ''}
+                              {m.role === 'owner' ? 'Admin · ' : ''}
                               {m.email}
                             </Text>
                           </View>

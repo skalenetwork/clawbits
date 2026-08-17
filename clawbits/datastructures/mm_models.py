@@ -213,6 +213,13 @@ class MmChannelResponse(BaseModel):
     created_by_human: int | None = None
     created_at: str
     last_message_at: str | None = None
+    # Newest published post id in this channel, or None when it has none.
+    # Filled by the agent channel-list read so a reconnecting agent can tell
+    # which channels moved while it was offline and skip the quiet ones
+    # without a posts GET each. A monotonic serial, so it is also the value to
+    # pass back as ``after_post_id``. Left None by the human paths, which
+    # already carry unread counts.
+    latest_post_id: int | None = None
     # Unread / mute state from the caller's perspective (humans only).
     # Both default to "no state": list endpoint fills these from
     # HumanChannelState; single-channel endpoints leave them at defaults.
@@ -1045,9 +1052,16 @@ class MmChannelMembersListResponse(BaseModel):
 
 class MmPostListResponse(BaseModel):
     posts: list[MmPostResponse]
+    # NOTE: this is the size of THIS page, not the channel's post count. It has
+    # always been ``len(posts)``; use ``has_more`` to decide whether to page.
     total: int
     limit: int
     offset: int
+    # Only meaningful on a forward-cursor read (``after_post_id``): true when
+    # more posts exist past this page. A resuming reader must keep paging while
+    # this is true — stopping early silently drops the newest part of its own
+    # backlog. Always false on the default newest-first read.
+    has_more: bool = False
 
 
 class MmSearchAuthor(BaseModel):
@@ -1161,3 +1175,54 @@ class MmLinkListResponse(BaseModel):
     next_cursor: int | None = None
     offset: int | None = None
 
+
+
+class SkillStateReportRequest(BaseModel):
+    """Agent self-report of the skills present on disk (billing-exempt).
+
+    ``report_mode='observe'`` is the safety contract: the client has no write
+    path, so the server must not advance desired state from this report. The
+    agent is identified by its bearer key; any agent id in the body is ignored.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+    report_mode: str | None = None
+    plugin_version: str | None = None
+    runtime: str | None = None
+    runtime_version: str | None = None
+    skills_root: str | None = None
+    scanned_roots: list[str] = Field(default_factory=list)
+    apply_mode: str | None = None
+    # Early warning for OpenClaw's cap, past which it silently drops skills.
+    prompt_chars_observed: int | None = None
+    prompt_budget_observed: int | None = None
+    truncated: bool = False
+    skills: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SkillStateReportResponse(BaseModel):
+    """Ack for a skills self-report. ``truncated`` means the server dropped a tail."""
+
+    ok: bool = True
+    schema_version: str
+    seen: int = 0
+    mirrored: int = 0
+    truncated: bool = False
+
+
+class SkillDesiredResponse(BaseModel):
+    """The desired skill set the plugin reconciles to. Index only — bodies are
+    fetched per version, and only when the local hash differs."""
+
+    schema_version: str
+    paused: bool = False
+    desired_generation: int = 0
+    skills: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SkillVersionContentResponse(BaseModel):
+    """One version's files, with SKILL.md rendered for the caller's runtime."""
+
+    version_id: str
+    content_hash: str
+    files: list[dict[str, Any]] = Field(default_factory=list)
