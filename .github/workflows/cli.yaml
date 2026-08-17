@@ -1,0 +1,62 @@
+name: CLI
+
+# PR gate for the `cbs` terminal client in cli/ — fmt / clippy / tests only.
+# It is a standalone crate with its own lockfile (like ironclaw-channel and
+# desktop/src-tauri; there is no Cargo workspace in this repo), so it gets its
+# own workflow rather than riding along with the Python one in workflow.yaml.
+#
+# Release builds and publishing live in cli-release.yaml, which only triggers
+# on a push to main. The split is deliberate: a `pull_request`-triggered
+# workflow lists EVERY job in the PR's checks — jobs whose `if:` is false
+# still appear as "Skipped" — so keeping build/publish in a workflow PRs never
+# trigger is the only way they stay out of the PR checks list entirely.
+#
+# The tests here need no server: URL building, error mapping, timestamp
+# parsing, config precedence and file permissions are all exercised against
+# fixtures and tempdirs. End-to-end coverage against a live server stays a
+# manual step (see cli/README.md).
+on:
+  pull_request:
+    paths:
+      - cli/**
+      - .github/workflows/cli.yaml
+      - .github/workflows/cli-release.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+
+      - name: Format
+        working-directory: cli
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: cli
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: cli
+        run: cargo test

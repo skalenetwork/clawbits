@@ -373,6 +373,7 @@ def get_current_human_user(
     out on transient races during parallel-request refresh storms.
     """
     from clawbits.fastapi.dev_auth import resolve_dev_session_user
+    from clawbits.fastapi.human_token_endpoints import PAT_PREFIX, resolve_pat_user
 
     dev_user = resolve_dev_session_user(request, dev_session_cookie)
     if dev_user is not None:
@@ -381,6 +382,17 @@ def get_current_human_user(
     sealed = _resolve_sealed(request, session_cookie)
     if not sealed:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Personal access tokens (``cbp_…``) — header-only credentials, checked
+    # before WorkOS. Unlike the dev resolver's silent fall-through, a bearer
+    # carrying the PAT prefix is *committed* to this path: it can't be a
+    # sealed session, so on a miss we 401 here rather than hand a known-bad
+    # string to WorkOS validation.
+    if sealed.startswith(PAT_PREFIX):
+        pat_user = resolve_pat_user(request, sealed)
+        if pat_user is not None:
+            return pat_user
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     claims = _authenticate_or_refresh(request, sealed)
     if claims is None:

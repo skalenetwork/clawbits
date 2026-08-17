@@ -275,6 +275,52 @@ class HumanUser(SQLModel, table=True):
     )
 
 
+class HumanApiToken(SQLModel, table=True):
+    """A personal access token — a human's non-browser credential.
+
+    The human analogue of ``agents.api_key_hash``, deliberately in its own
+    table so the two credential planes can never be confused: agent keys
+    (``fc_…``) resolve only on ``/api/agentic/*`` via the agents table, and
+    these (``cbp_…``) resolve only on human routes via
+    ``resolve_pat_user``. Plaintext is shown once at mint time and only the
+    SHA-256 lands here; ``token_hint`` keeps the first few characters so a
+    user can tell their tokens apart in a list without us retaining anything
+    recoverable.
+    """
+
+    __tablename__ = "human_api_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_human_api_tokens_token_hash"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    human_id: int = Field(foreign_key="human_users.id", nullable=False, index=True)
+    # Explicit TEXT (not a bare ``str``, which SQLModel maps to VARCHAR):
+    # the migration creates these as TEXT — the repo's house type for
+    # strings — and ``alembic check`` compares column types, so the model
+    # must say TEXT too or every check run reports modify_type drift.
+    # SHA-256 hex of the full plaintext token, same at-rest scheme as
+    # ``agents.api_key_hash``.
+    token_hash: str = Field(sa_column=SAColumn(Text, nullable=False))
+    # First characters of the plaintext (``cbp_`` + 4), for display only.
+    token_hint: str = Field(sa_column=SAColumn(Text, nullable=False))
+    label: str = Field(sa_column=SAColumn(Text, nullable=False))
+    created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+    # NULL = does not expire. Enforced at resolve time, not by a sweeper —
+    # an expired row is inert either way, and keeping it lets the owner see
+    # (and delete) it in the list.
+    expires_at: datetime | None = Field(
+        default=None,
+        sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
+    )
+    # Updated at most once a minute by the resolver — enough to answer "is
+    # this token still in use anywhere?" before revoking it.
+    last_used_at: datetime | None = Field(
+        default=None,
+        sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
+    )
+
+
 class HumanConnector(SQLModel, table=True):
     """Third-party identity link for a human (GitHub, Notion, …).
 

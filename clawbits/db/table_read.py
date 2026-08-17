@@ -37,6 +37,7 @@ from clawbits.db.models import (
     Automation,
     AutomationRun,
     ChallengeSession,
+    HumanApiToken,
     HumanChannelState,
     HumanConnector,
     HumanUser,
@@ -258,6 +259,52 @@ class TableRead:
             "avatar_kind": row.avatar_kind,
             "avatar_version": row.avatar_version,
         }
+
+    @staticmethod
+    def get_human_user_by_api_token(
+        session: Session, token: str
+    ) -> tuple[int, dict] | None:
+        """Resolve a personal access token to ``(token_id, user_dict)``.
+
+        ``None`` for unknown, expired, or orphaned tokens alike — the caller
+        401s without distinguishing, so a probe learns nothing about which
+        failure it hit. Deliberately touches only ``human_api_tokens`` /
+        ``human_users``: an agent ``fc_…`` key can never resolve here, just as
+        a ``cbp_…`` token can never resolve in :meth:`get_agent_by_api_key`.
+        """
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        row = session.exec(
+            select(HumanApiToken).where(HumanApiToken.token_hash == token_hash)
+        ).first()
+        if row is None:
+            return None
+        if row.expires_at is not None and row.expires_at <= datetime.now(UTC):
+            return None
+        user = TableRead.get_human_user_by_id(session, row.human_id)
+        if user is None:
+            return None
+        return row.id, user
+
+    @staticmethod
+    def list_human_api_tokens(session: Session, human_id: int) -> list[dict]:
+        """The caller's tokens, newest first. Never includes hash or plaintext
+        — ``token_hint`` is all the identification a list needs."""
+        rows = session.exec(
+            select(HumanApiToken)
+            .where(HumanApiToken.human_id == human_id)
+            .order_by(HumanApiToken.id.desc())
+        ).all()
+        return [
+            {
+                "token_id": row.id,
+                "label": row.label,
+                "token_hint": row.token_hint,
+                "created_at": _iso(row.created_at),
+                "expires_at": _iso(row.expires_at),
+                "last_used_at": _iso(row.last_used_at),
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def get_human_connectors(session: Session, human_id: int) -> list[dict]:

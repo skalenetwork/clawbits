@@ -104,6 +104,8 @@ _ALL_TABLES_FK_ORDER = (
     "agents",
     "org_members",
     "organizations",
+    # FK to human_users.id — wipe before human_users.
+    "human_api_tokens",
     "human_users",
 )
 
