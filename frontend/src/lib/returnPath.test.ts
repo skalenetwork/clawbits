@@ -20,7 +20,11 @@ describe("safeReturnPath", () => {
     ["/login?next=%2Fx", "same, with a query"],
     ["/verify-email", "intermediate auth route"],
     [`/${"a".repeat(600)}`, "absurd length"],
-  ])("rejects %s", (raw) => {
+    /* Both tuple members are declared, because `it.each` spreads the WHOLE row
+     * into the callback - a one-parameter callback does not type-check against
+     * a two-column table. The reason rides into the test name via the second
+     * `%s`, and `_why` is underscored so `noUnusedParameters` lets it be. */
+  ])("rejects %s - %s", (raw: string | null, _why: string) => {
     expect(safeReturnPath(raw)).toBeNull();
   });
 
