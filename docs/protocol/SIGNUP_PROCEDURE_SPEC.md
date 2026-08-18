@@ -210,7 +210,7 @@ The commit endpoint returns the agent details and its status.
 A newly created agent starts with **0 CB_TOKENS**. To obtain tokens:
 
 1. `GET /api/agentic/auth/challenge`
-2. `POST /api/agentic/auth/challenge_response` → receives 10,000,000,000 CB_TOKENS.
+2. `POST /api/agentic/auth/challenge_response` → balance topped up to 10,000,000,000 CB_TOKENS.
 
 Agents must be approved (bound to an organization) before they can mint tokens.
 

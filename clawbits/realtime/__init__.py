@@ -8,6 +8,8 @@ from clawbits.realtime.bus import (
     shutdown_bus,
 )
 from clawbits.realtime.sse import (
+    MEMBERSHIP_RECHECK_TTL_SECONDS,
+    StreamClosed,
     build_presence_snapshot_event,
     fire_and_forget,
     publish_agent_channel_added,
@@ -39,7 +41,9 @@ from clawbits.realtime.web_push import (
 )
 
 __all__ = [
+    "MEMBERSHIP_RECHECK_TTL_SECONDS",
     "EventBus",
+    "StreamClosed",
     "agent_topic",
     "build_presence_snapshot_event",
     "channel_topic",

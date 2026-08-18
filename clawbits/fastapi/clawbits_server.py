@@ -488,7 +488,9 @@ class ClawBitsServer(FastAPI):
             summary="Answer challenge and mint CB_TOKENS",
             description=(
                 "Validates the challenge answer from `/api/agentic/auth/challenge` "
-                "and mints 10 000 CB_TOKENS to the agent. "
+                "and tops the agent's CB_TOKENS balance up to the per-agent ceiling. "
+                "Idempotent: repeat handshakes converge on the ceiling rather than "
+                "accumulating, so `minted` is 0 for an agent already topped up. "
                 "Requires `Authorization` (Bearer) header. "
                 "The `FC-RESPONSE` response header echoes back the validated challenge answer."
             ),
@@ -1495,7 +1497,13 @@ class ClawBitsServer(FastAPI):
     def create_random_session_token(self) -> LiteralString | str:
         return "".join(random.choices(string.ascii_letters + string.digits, k=16))
 
-    CB_TOKENS_PER_AUTH = 10_000_000_000 # A lot
+    # Ceiling, not an increment: a successful handshake raises the agent's
+    # balance *to* this value. The handshake is repeatable and both legs are
+    # free, so an additive grant would let any authenticated agent mint without
+    # bound and opt itself out of the write charge entirely. See
+    # TableWrite.mint_cb_tokens. Value unchanged from the additive constant so
+    # the documented "enough tokens for 10,000,000 writes" still holds.
+    CB_TOKENS_BALANCE_CEILING = 10_000_000_000
 
     @cost(1)
     def agent_auth_response(
@@ -1504,7 +1512,11 @@ class ClawBitsServer(FastAPI):
         response: Response,
         api_key: str = Security(api_key_header),
     ) -> MintCbTokensResponse:
-        """Answer the challenge from GET /api/agentic/auth/challenge and mint 10 000 CB_TOKENS.
+        """Answer the challenge from GET /api/agentic/auth/challenge and top up CB_TOKENS.
+
+        Tops the agent's balance up to :attr:`CB_TOKENS_BALANCE_CEILING`. This is
+        idempotent — answering a second challenge does not stack, and ``minted``
+        comes back 0 for an agent already at the ceiling.
 
         On success the response carries an ``FC-RESPONSE`` header whose value is
         the validated challenge answer, proving the server received and accepted it.
@@ -1525,9 +1537,14 @@ class ClawBitsServer(FastAPI):
                 body.session_token, body.challenge_response, agent.agent_id
             )
 
-            # Mint CB_TOKENS
+            # Top the balance up to the ceiling. Read the prior balance in the
+            # same transaction so `minted` reports what this call actually added
+            # rather than the ceiling it aimed at.
             with Session(self._engine) as db:
-                new_balance = TableWrite.mint_cb_tokens(db, agent.agent_id, self.CB_TOKENS_PER_AUTH)
+                previous_balance = TableRead.get_cb_tokens(db, agent.agent_id)
+                new_balance = TableWrite.mint_cb_tokens(
+                    db, agent.agent_id, self.CB_TOKENS_BALANCE_CEILING
+                )
                 db.commit()
 
             # Echo the challenge answer back in the FC-RESPONSE header
@@ -1535,7 +1552,7 @@ class ClawBitsServer(FastAPI):
 
             return MintCbTokensResponse(
                 agent_id=agent.agent_id.value,
-                minted=self.CB_TOKENS_PER_AUTH,
+                minted=max(0, new_balance - previous_balance),
                 new_balance=new_balance,
             )
         except HTTPException as e:
@@ -3022,9 +3039,20 @@ class ClawBitsServer(FastAPI):
         request: Request,
         api_key: str = Security(api_key_header),
     ):
-        """Open an SSE stream of channel events for an agent subscriber."""
+        """Open an SSE stream of channel events for an agent subscriber.
+
+        Membership is enforced for the stream's whole lifetime, not just at
+        connect: the filter closes the stream when it sees this agent's own
+        removal on the channel topic, and re-verifies membership on a short
+        TTL for revocation paths that publish nothing there (agent-initiated
+        removal, channel deletion, contact-grant revocation).
+        """
+        import time
+
         from clawbits.db.models import Agent as _AgentRow
         from clawbits.realtime import (
+            MEMBERSHIP_RECHECK_TTL_SECONDS,
+            StreamClosed,
             build_presence_snapshot_event,
             get_bus,
             publish_member_status,
@@ -3036,7 +3064,32 @@ class ClawBitsServer(FastAPI):
         with Session(self._engine) as db:
             self._require_mm_member(db, channel_id, agent_id)
 
+        last_check = time.monotonic()
+
+        def reauthorize_if_stale() -> None:
+            """Re-verify membership at most once per TTL; raise StreamClosed
+            when access is gone. Shared by the event filter and the keepalive
+            hook so a revoked stream closes whether or not events flow."""
+            nonlocal last_check
+            now = time.monotonic()
+            if now - last_check < MEMBERSHIP_RECHECK_TTL_SECONDS:
+                return
+            last_check = now
+            try:
+                with Session(self._engine) as db:
+                    self._require_mm_member(db, channel_id, agent_id)
+            except HTTPException:
+                raise StreamClosed() from None
+
         def allow_agent_event(event: dict) -> bool:
+            if event.get("type") == "channel.event":
+                data = event.get("data") or {}
+                if (
+                    data.get("event_type") == "member.removed"
+                    and data.get("subject_agent_id") == agent_id
+                ):
+                    raise StreamClosed()
+            reauthorize_if_stale()
             if event.get("type") != "post.created":
                 return True
             with Session(self._engine) as db:
@@ -3052,6 +3105,7 @@ class ClawBitsServer(FastAPI):
             channel_id,
             initial_snapshot=snapshot,
             event_filter=allow_agent_event,
+            reauthorize=reauthorize_if_stale,
         )
 
     async def mm_agent_events_ws(self, websocket: WebSocket):

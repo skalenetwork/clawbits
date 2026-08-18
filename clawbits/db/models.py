@@ -74,6 +74,15 @@ class Agent(SQLModel, table=True):
         default=0,
         sa_column=SAColumn(BigInteger, nullable=False, server_default="0"),
     )
+    # When a proof-of-cognition mint last actually moved the balance. Drives
+    # the refill cooldown in ``TableWrite.mint_cb_tokens``: the ceiling alone
+    # bounds the balance, not cumulative minting, and the handshake is free
+    # and repeatable. NULL = never minted, so a new agent's first handshake
+    # always succeeds. Migration 5c8ea31f7b40.
+    cb_tokens_minted_at: datetime | None = Field(
+        default=None,
+        sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
+    )
     # Controls whether this agent can participate in inter-agent mode. Kept in
     # metadata to match migration 8b62d4f9012a.
     inter_agent_mode_enabled: bool = Field(

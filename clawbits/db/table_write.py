@@ -135,12 +135,37 @@ class TableWrite:
     # ---------------- CB tokens ----------------
 
     @staticmethod
-    def mint_cb_tokens(session: Session, agent_id: AgentId, amount: int) -> int:
-        row = session.get(Agent, agent_id.value)
+    def mint_cb_tokens(session: Session, agent_id: AgentId, ceiling: int) -> int:
+        """Top the agent's balance up *to* ``ceiling``. Never above, never additive.
+
+        Deliberately idempotent: the proof-of-cognition handshake that calls this
+        is repeatable — an agent can ask for a fresh challenge as often as it
+        likes, both legs are free (the challenge is a GET, the response is
+        billing-exempt) and the answers ship to clients in
+        ``clawbits/datastructures/known_answers.py``. An additive mint would
+        therefore let any authenticated agent accumulate an unbounded balance and
+        opt itself out of the CB_TOKENS write charge entirely. Topping up to a
+        fixed ceiling makes repeat handshakes converge instead of stack, so the
+        balance is bounded by construction rather than by a counter someone has
+        to remember to check.
+
+        Writing a constant (rather than a computed delta) is also what makes this
+        race-safe: two concurrent handshakes both land on ``ceiling``. The row
+        lock is for consistency with :meth:`charge_cb_tokens`, not correctness.
+
+        Returns the balance after the call; the caller derives how much was
+        actually added by diffing against the balance it read beforehand.
+        """
+        if ceiling <= 0:
+            raise ValueError("Mint ceiling must be positive")
+
+        row = session.get(Agent, agent_id.value, with_for_update=True)
         if row is None:
             raise ValueError(f"Agent '{agent_id.value}' not found")
-        row.cb_tokens += amount
-        session.flush()
+
+        if row.cb_tokens < ceiling:
+            row.cb_tokens = ceiling
+            session.flush()
         return row.cb_tokens
 
     @staticmethod
@@ -148,7 +173,14 @@ class TableWrite:
         if amount <= 0:
             raise ValueError("Charge amount must be positive")
 
-        row = session.get(Agent, agent_id.value)
+        # FOR UPDATE before the sufficiency check: the flush below emits
+        # ``SET cb_tokens = <computed literal>``, not ``cb_tokens - :n``, so
+        # under READ COMMITTED two concurrent debits would both read the same
+        # balance, both pass the check, and the second UPDATE would clobber the
+        # first — N operations performed for one paid. Each billing site opens
+        # its own session on a separate pooled connection, so agent requests do
+        # genuinely run in parallel. Locking the row serialises them.
+        row = session.get(Agent, agent_id.value, with_for_update=True)
         if row is None:
             raise ValueError(f"Agent '{agent_id.value}' not found")
 
@@ -449,15 +481,33 @@ class TableWrite:
         """Insert or refresh a web-push subscription, keyed on ``token``.
 
         Re-subscribing the same browser yields the same endpoint, so we
-        update the existing row in place — re-binding it to the current
-        human, re-enabling it, refreshing the keys + last_seen — rather
-        than accumulating duplicates. Caller owns the commit."""
+        update the existing row in place — re-enabling it, refreshing the
+        keys + last_seen — rather than accumulating duplicates. Caller owns
+        the commit.
+
+        An existing row belonging to *someone else* is deleted and replaced
+        rather than re-bound, so a caller never takes over a row it did not
+        register. Rebinding used to be unconditional.
+
+        Read the limit of that honestly: because ``uq_push_devices_token``
+        keys on the token alone, only one row can exist per endpoint, so the
+        *end state* is the same either way — whoever subscribed last owns the
+        endpoint and the previous owner has nothing. Someone who learns a
+        victim's endpoint URL (a shared device, a client log, a proxy) can
+        therefore still evict them. What changes here is only that the row is
+        destroyed rather than repurposed. Closing the eviction itself needs
+        the natural key to become ``(human_id, token)``, which is a migration
+        and is not done here."""
         now = datetime.now(_dt.UTC)
         existing = session.exec(
             select(PushDevice).where(PushDevice.token == token)
         ).first()
+        if existing is not None and existing.human_id != human_id:
+            # Not ours to refresh — drop it and fall through to a fresh insert.
+            session.delete(existing)
+            session.flush()
+            existing = None
         if existing is not None:
-            existing.human_id = human_id
             existing.transport = "webpush"
             existing.p256dh = p256dh
             existing.auth = auth

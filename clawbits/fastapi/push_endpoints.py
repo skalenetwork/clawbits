@@ -12,13 +12,23 @@ transport.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from clawbits.db.table_write import TableWrite
 from clawbits.fastapi.workos_auth import get_current_human_user
-from clawbits.realtime.web_push import vapid_public_key
+from clawbits.realtime.web_push import (
+    MAX_ENDPOINT_LEN,
+    validate_push_endpoint,
+    vapid_configured,
+    vapid_public_key,
+)
+from clawbits.ssrf import UnsafeHostError, redact_url
+
+log = logging.getLogger(__name__)
 
 push_router = APIRouter(tags=["Push"])
 
@@ -36,12 +46,15 @@ class WebPushSubscribeRequest(BaseModel):
     # Shape mirrors the browser's ``PushSubscription.toJSON()`` so the client
     # can POST it verbatim. ``expirationTime`` (also in that object) is
     # ignored — pydantic drops unknown fields by default.
-    endpoint: str
+    #
+    # ``endpoint`` is a URL the *server* later POSTs to, so it is bounded here
+    # and vetted by ``validate_push_endpoint`` before it reaches the table.
+    endpoint: str = Field(max_length=MAX_ENDPOINT_LEN)
     keys: _WebPushKeys
 
 
 class WebPushUnsubscribeRequest(BaseModel):
-    endpoint: str
+    endpoint: str = Field(max_length=MAX_ENDPOINT_LEN)
 
 
 @push_router.get("/api/push/vapid-public-key")
@@ -61,7 +74,25 @@ def subscribe_web_push(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ) -> dict:
-    """Register (or refresh) this browser's Web Push subscription."""
+    """Register (or refresh) this browser's Web Push subscription.
+
+    404s when VAPID isn't configured: without keys nothing can ever be sent,
+    so storing subscriptions would only accumulate unvetted rows. The client
+    already hides the affordance in that case (``/api/push/vapid-public-key``
+    returns null).
+    """
+    if not vapid_configured():
+        raise HTTPException(status_code=404, detail="Web push is not configured")
+    try:
+        validate_push_endpoint(body.endpoint)
+    except UnsafeHostError as exc:
+        log.warning(
+            "push subscribe refused for human %s: %s (%s)",
+            user["id"],
+            redact_url(body.endpoint),
+            exc,
+        )
+        raise HTTPException(status_code=422, detail=f"Invalid push endpoint: {exc}") from exc
     user_agent = request.headers.get("user-agent")
     with _get_db(request) as db:
         TableWrite.upsert_webpush_device(
@@ -84,7 +115,16 @@ def unsubscribe_web_push(
     user: dict = Depends(get_current_human_user),
 ) -> dict:
     """Drop this browser's subscription (user turned notifications off, or
-    the browser rotated the endpoint). Scoped to the caller's own rows."""
+    the browser rotated the endpoint). Scoped to the caller's own rows.
+
+    Not endpoint-validated: this only ever deletes, and a row stored before
+    the validation landed must still be removable by its owner.
+
+    Deliberately *not* gated on ``vapid_configured()`` either, unlike
+    subscribe. Sending config has no business blocking a delete: pulling or
+    fat-fingering the VAPID keys would otherwise strand every existing
+    subscriber with a row they can no longer remove — the one operation that
+    is always safe to honour."""
     with _get_db(request) as db:
         TableWrite.delete_push_device_by_token(db, token=body.endpoint, human_id=int(user["id"]))
         db.commit()

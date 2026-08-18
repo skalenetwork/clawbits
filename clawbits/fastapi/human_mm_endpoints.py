@@ -91,7 +91,9 @@ from clawbits.lobstertalk.attention import (
     consider_post,
 )
 from clawbits.realtime import (
+    MEMBERSHIP_RECHECK_TTL_SECONDS,
     EventBus,
+    StreamClosed,
     build_presence_snapshot_event,
     fire_and_forget,
     get_bus,
@@ -2413,9 +2415,51 @@ async def stream_events(
     Connect with ``fetch`` (not ``EventSource``) so the ``Authorization:
     Bearer <JWT>`` header carries through. The response is a standard
     ``text/event-stream``.
+
+    Membership is enforced for the stream's whole lifetime, not just at
+    connect: the event filter below closes the stream the moment it sees
+    the viewer's own removal cross the channel topic, and re-verifies
+    membership on a short TTL as the backstop for revocation paths that
+    publish nothing there (DM kick, channel deletion, ``can_dm``
+    revocation).
     """
     with _get_db(request) as db:
         _require_human_member(db, channel_id, user["id"])
+
+    viewer_id = user["id"]
+    last_check = _time.monotonic()
+
+    def reauthorize_if_stale() -> None:
+        """Re-verify membership at most once per TTL. Raises StreamClosed
+        when access is gone. Shared by the per-event filter and the
+        keepalive hook so a revoked stream closes whether or not events
+        are flowing."""
+        nonlocal last_check
+        now = _time.monotonic()
+        if now - last_check < MEMBERSHIP_RECHECK_TTL_SECONDS:
+            return
+        last_check = now
+        try:
+            with _get_db(request) as db:
+                _require_human_member(db, channel_id, viewer_id)
+        except HTTPException:
+            raise StreamClosed() from None
+
+    def allow_event(event: dict) -> bool:
+        if event.get("type") == "channel.event":
+            data = event.get("data") or {}
+            if data.get("event_type") == "member.removed":
+                removed_self = (
+                    # Self-leave: create_mm_channel_event nulls the subject
+                    # when actor == subject, so match on the actor instead.
+                    data.get("subject_human_id") is None
+                    and data.get("subject_agent_id") is None
+                    and data.get("actor_human_id") == viewer_id
+                )
+                if data.get("subject_human_id") == viewer_id or removed_self:
+                    raise StreamClosed()
+        reauthorize_if_stale()
+        return True
 
     bus = get_bus()
     # Per-channel presence now carries only the ``typing`` indicator —
@@ -2424,7 +2468,13 @@ async def stream_events(
     # still useful so newly-connected clients see who is currently
     # typing in this channel.
     snapshot = [await build_presence_snapshot_event(bus, channel_id)]
-    return await stream_channel_events(request, channel_id, initial_snapshot=snapshot)
+    return await stream_channel_events(
+        request,
+        channel_id,
+        initial_snapshot=snapshot,
+        event_filter=allow_event,
+        reauthorize=reauthorize_if_stale,
+    )
 
 
 # ---------------------------------------------------------------------------

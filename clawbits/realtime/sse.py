@@ -59,6 +59,13 @@ log = logging.getLogger(__name__)
 # 60–120s; a comment frame every 20s is a common default.
 _KEEPALIVE_SECONDS = 20
 
+# How long a stream may trust its last authorization check. Endpoint-level
+# event filters re-verify the subscriber's channel membership at most this
+# often, so a revocation path that publishes nothing on the channel topic
+# (DM kick, channel deletion, contact-grant revocation) still cuts the
+# stream within one window.
+MEMBERSHIP_RECHECK_TTL_SECONDS = 30.0
+
 
 def sse_pack(event: dict[str, Any]) -> bytes:
     """Encode an event dict as a single SSE frame."""
@@ -69,7 +76,26 @@ def sse_comment(text: str = "ka") -> bytes:
     return f": {text}\n\n".encode()
 
 
+class StreamClosed(Exception):
+    """Raised by an :data:`EventFilter` to end the stream server-side.
+
+    Streams are authorized at connect time; a filter raises this when that
+    authorization no longer holds mid-stream (e.g. the subscriber lost
+    channel membership). The response ends cleanly, so a well-behaved
+    client reconnects and hits the connect-time check — a 403 once revoked.
+    """
+
+
+# Per-event gate. Return False to skip the event; raise StreamClosed to end
+# the response entirely.
 EventFilter = Callable[[dict[str, Any]], bool | Awaitable[bool]]
+
+# Idle-path authorization hook. Run on every keepalive tick (i.e. when no
+# event has arrived for a whole keepalive window), so a stream whose channel
+# has gone quiet is still torn down when the subscriber's access is revoked —
+# the event filter alone only fires while traffic flows. Raise StreamClosed
+# to end the response; return value is ignored.
+Reauthorize = Callable[[], None | Awaitable[None]]
 
 
 async def _event_allowed(
@@ -90,16 +116,24 @@ async def _stream_topic(
     initial_snapshot: list[dict[str, Any]] | None = None,
     log_label: str = "",
     event_filter: EventFilter | None = None,
+    reauthorize: Reauthorize | None = None,
 ) -> StreamingResponse:
     """Generic SSE pump for a single Redis pub/sub topic.
 
     Used by both per-channel and per-human streams; differs only in topic
     string and the snapshot prepended at connect time.
+
+    ``reauthorize`` (optional) runs on each keepalive tick — the idle-path
+    counterpart to ``event_filter``, which only runs while events flow. Either
+    may raise :class:`StreamClosed` to end the response.
     """
     bus = get_bus()
 
     async def generator() -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=256)
+        # ``None`` is the close sentinel: the pump enqueues it when the
+        # event filter revokes the stream, so the generator ends the
+        # response immediately instead of on the next keepalive tick.
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=256)
         disconnected = asyncio.Event()
 
         async def pump() -> None:
@@ -107,7 +141,21 @@ async def _stream_topic(
                 async for event in bus.subscribe(topic):
                     if disconnected.is_set():
                         break
-                    if not await _event_allowed(event_filter, event):
+                    try:
+                        allowed = await _event_allowed(event_filter, event)
+                    except StreamClosed:
+                        log.info(
+                            "SSE stream closed by filter for %s",
+                            log_label or topic,
+                        )
+                        try:
+                            queue.put_nowait(None)
+                        except asyncio.QueueFull:
+                            # Generator still ends via its pump_task.done()
+                            # check, at worst one keepalive tick later.
+                            pass
+                        break
+                    if not allowed:
                         continue
                     try:
                         queue.put_nowait(sse_pack(event))
@@ -131,18 +179,37 @@ async def _stream_topic(
                 if await request.is_disconnected():
                     disconnected.set()
                     break
-                if pump_task.done():
+                if pump_task.done() and queue.empty():
                     # Defence in depth: the pump now self-heals (see
                     # EventBus.subscribe), so it should only finish when we
-                    # cancel it on disconnect. If it ever ends on its own, stop
-                    # the response so the client reconnects with a fresh pump
+                    # cancel it on disconnect. If it ever ends on its own,
+                    # drain what it already accepted (including the close
+                    # sentinel, so revocation ends the response in order)
+                    # and stop, so the client reconnects with a fresh pump
                     # instead of holding a live-looking stream that silently
                     # delivers nothing.
                     break
                 try:
                     frame = await asyncio.wait_for(queue.get(), timeout=_KEEPALIVE_SECONDS)
+                    if frame is None:
+                        break  # filter revoked the stream (StreamClosed)
                     yield frame
                 except TimeoutError:
+                    # Idle window elapsed. Re-check authorization before the
+                    # keepalive so a revoked stream on a quiet channel is torn
+                    # down even when no event ever arrives to trigger the
+                    # event filter.
+                    if reauthorize is not None:
+                        try:
+                            result = reauthorize()
+                            if inspect.isawaitable(result):
+                                await result
+                        except StreamClosed:
+                            log.info(
+                                "SSE stream closed by reauthorize for %s",
+                                log_label or topic,
+                            )
+                            break
                     yield sse_comment()
         finally:
             disconnected.set()
@@ -188,12 +255,16 @@ async def stream_channel_events(
     channel_id: str,
     initial_snapshot: list[dict[str, Any]] | None = None,
     event_filter: EventFilter | None = None,
+    reauthorize: Reauthorize | None = None,
 ) -> StreamingResponse:
     """Open an SSE stream for `channel_id`.
 
     `initial_snapshot` is a list of event dicts sent before the live
     subscription starts — typically the current presence snapshot so the
     client doesn't start with an empty member-status map.
+
+    `reauthorize` (optional) re-checks the subscriber's access on each
+    keepalive tick so revocation closes even an idle stream.
     """
     return await _stream_topic(
         request,
@@ -201,6 +272,7 @@ async def stream_channel_events(
         initial_snapshot=initial_snapshot,
         log_label=f"channel {channel_id}",
         event_filter=event_filter,
+        reauthorize=reauthorize,
     )
 
 

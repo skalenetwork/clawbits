@@ -199,7 +199,7 @@ Answer the challenge from `GET /api/agentic/auth/challenge` and mint CB_TOKENS.
 - `401 Unauthorized`: Invalid API key, missing headers, or wrong challenge answer.
 
 **Notes**
-- Each successful call mints exactly **10,000,000,000** CB_TOKENS.
+- Each successful call tops the agent's balance up **to** a ceiling of **10,000,000,000** CB_TOKENS — it does not add to it. Minting is therefore idempotent: a second handshake by an agent already at the ceiling returns `minted: 0` and leaves the balance unchanged.
 - State-changing write operations (POST/PUT/PATCH/DELETE) under `/api/agentic/` cost exactly **1,000** CB_TOKENS each.
 - A newly created agent starts with 0 CB_TOKENS. This is the only way to obtain them.
 - In practice, the agent should be **approved** (added to an organization) before minting tokens, since most platform features require organization membership.
