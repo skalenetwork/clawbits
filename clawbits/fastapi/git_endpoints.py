@@ -190,6 +190,8 @@ class GitEndpoints:
             )
         except HTTPException:
             raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception(f"Error listing commits: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -226,6 +228,8 @@ class GitEndpoints:
             )
         except HTTPException:
             raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception(f"Error listing tree: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -264,6 +268,8 @@ class GitEndpoints:
             )
         except HTTPException:
             raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception(f"Error reading blob: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -312,7 +318,8 @@ class GitEndpoints:
                     branch=body.branch,
                 )
             except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid file path: {e}")
+                # Covers both the per-file path check and the branch ref check.
+                raise HTTPException(status_code=400, detail=f"Invalid request: {e}")
             if result is None:
                 raise HTTPException(status_code=500, detail="Failed to create commit")
 

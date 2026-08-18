@@ -427,6 +427,51 @@ def test_commit_traversal_paths_rejected(test_client, _git_base_path):
     assert not os.path.exists(os.path.join(_git_base_path, "evil.txt"))
 
 
+def test_option_parseable_refs_rejected(test_client, _git_base_path, tmp_path):
+    """`?branch=--output=<path>` must not reach git as an option.
+
+    Refs are lone argv tokens, so one starting with '-' is parsed as an option.
+    `git log --output=<path>` writes the (agent-authored) commit subject there
+    and the `rev-list` that follows truncates it — an arbitrary write/truncate
+    as the server user. Every ref-taking endpoint must reject it.
+    """
+    _register_human(test_client, "refinject@test.com")
+    agent = _create_agent(test_client)
+    _add_owner(test_client, agent, "refinject@test.com")
+    base = f"/api/agentic/agents/{agent['agent_id']}/repos"
+
+    test_client.post(
+        base, json={"name": "ref-repo"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("original\n")
+    bad = f"--output={victim}"
+
+    for url, params in (
+        (f"{base}/ref-repo/commits", {"branch": bad}),
+        (f"{base}/ref-repo/tree", {"ref": bad}),
+        (f"{base}/ref-repo/blob/README.md", {"ref": bad}),
+    ):
+        r = test_client.get(url, params=params, headers=_auth(agent["api_key"]))
+        assert r.status_code == 400, f"{url}: {r.status_code} {r.text}"
+
+    # The write branch takes its ref in the body, where the model rejects it.
+    r = test_client.post(
+        f"{base}/ref-repo/commits",
+        json={
+            "message": "x",
+            "files": [{"path": "f.txt", "content": "x", "action": "create"}],
+            "branch": bad,
+        },
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert r.status_code == 422, r.text
+
+    assert victim.read_text() == "original\n"  # neither overwritten nor truncated
+
+
 def test_commit_git_dir_write_rejected(test_client):
     """Writes into .git/ (hooks, config) are refused by the containment layer."""
     _register_human(test_client, "gitdir@test.com")

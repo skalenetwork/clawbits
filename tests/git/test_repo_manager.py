@@ -121,6 +121,64 @@ def test_failed_git_action_does_not_fake_success(tmp_path):
     assert repo_manager.count_commits(str(tmp_path), "org1", "r1") == before
 
 
+def test_rejects_option_parseable_refs(tmp_path):
+    """A ref starting with '-' is parsed by git as an option, not a revision.
+
+    ``git log``/``git show`` accept ``--output=<path>`` and write there; a
+    ``rev-list`` that then errors has already truncated the file. Each read sink
+    must refuse the ref outright rather than hand it to git.
+    """
+    repo_manager.init_repo(str(tmp_path), "org1", "r1")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("original\n")
+
+    bad_refs = [
+        f"--output={victim}",          # the write / truncate primitive
+        "--help",                      # any option at all
+        "-",                           # bare dash
+        "main..evil",                  # range syntax
+        "main^{tree}",                 # revision grammar
+        "HEAD@{1}",                    # reflog syntax
+        "refs//heads/main",            # empty component
+        "main.lock",                   # git's own reserved suffix
+        "",                            # empty
+        "a" * 256,                     # over the length cap
+    ]
+    for bad in bad_refs:
+        with pytest.raises(ValueError):
+            repo_manager.list_commits(str(tmp_path), "org1", "r1", branch=bad)
+        with pytest.raises(ValueError):
+            repo_manager.count_commits(str(tmp_path), "org1", "r1", branch=bad)
+        with pytest.raises(ValueError):
+            repo_manager.list_tree(str(tmp_path), "org1", "r1", ref=bad)
+        with pytest.raises(ValueError):
+            repo_manager.read_blob(str(tmp_path), "org1", "r1", bad, "README.md")
+        with pytest.raises(ValueError):
+            repo_manager.create_commit(
+                str(tmp_path), "org1", "r1", "msg",
+                [{"path": "f.txt", "content": "x", "action": "create"}],
+                author_name="agent-1", author_email="agent-1@test",
+                branch=bad,
+            )
+
+    assert victim.read_text() == "original\n"  # neither overwritten nor truncated
+
+
+def test_accepts_legitimate_refs(tmp_path):
+    """The ref check must not break branch names, tags, refs/ paths or SHAs."""
+    repo_manager.init_repo(str(tmp_path), "org1", "r1")
+    rpath = repo_manager.repo_path(str(tmp_path), "org1", "r1")
+    sha = repo_manager.list_commits(str(tmp_path), "org1", "r1")[0]["sha"]
+    assert repo_manager._run_git(["tag", "v1.0.0"], cwd=rpath).returncode == 0
+    assert repo_manager._run_git(["branch", "feature/x_1-2"], cwd=rpath).returncode == 0
+
+    for ref in ("main", "feature/x_1-2", "v1.0.0", "refs/heads/main", sha, sha[:7], "HEAD"):
+        assert repo_manager.read_blob(str(tmp_path), "org1", "r1", ref, "README.md") == "# r1\n"
+        assert repo_manager.list_tree(str(tmp_path), "org1", "r1", ref=ref)
+        assert repo_manager.count_commits(str(tmp_path), "org1", "r1", branch=ref) == 1
+        assert len(repo_manager.list_commits(str(tmp_path), "org1", "r1", branch=ref)) == 1
+
+
 def test_accepts_contained_paths(tmp_path):
     repo_manager.init_repo(str(tmp_path), "org1", "r1")
 

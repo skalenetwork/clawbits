@@ -8,6 +8,7 @@ Environment variable:
 """
 import logging
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -58,6 +59,37 @@ def _validate_rel_path(rel_path: str) -> list[str]:
     if any(part in ("", ".", "..") or part.lower() == ".git" for part in parts):
         raise ValueError(f"invalid path component in: {rel_path!r}")
     return parts
+
+
+# Refs reach this module straight from query params. A ref is passed to git as
+# its own argv token, so one starting with "-" is parsed as an *option*, not a
+# revision — and several of the commands below accept ``--output=<path>``, which
+# redirects their output to an arbitrary file (``git log``/``git show`` write the
+# commit subject or diff there; ``rev-list`` truncates the file to zero even
+# though it then errors). The charset below is strictly tighter than
+# ``git check-ref-format``: it admits branch names, tag names, ``refs/...``
+# paths and SHAs, and excludes every character that could start an option or
+# reach git's revision grammar (``^ ~ : ? * [ \ @{`` and whitespace).
+_REF_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$", re.ASCII)
+
+
+def _validate_ref(ref: str) -> str:
+    """Validate a branch / tag / commit-ish before it becomes a git argv token.
+
+    Raises ValueError unless ``ref`` is a plain ref name or SHA. The leading
+    character is constrained to alphanumeric/underscore, which is what rejects
+    the option-injection case (a leading ``-``); the rest bars git's range and
+    reflog syntax so a ref can only ever name one revision.
+    """
+    if not ref:
+        raise ValueError("ref must not be empty")
+    if len(ref) > 255:
+        raise ValueError(f"ref too long ({len(ref)} chars, max 255)")
+    if not _REF_RE.match(ref):
+        raise ValueError(f"invalid ref: {ref!r}")
+    if ".." in ref or "//" in ref or ref.endswith(("/", ".", ".lock")):
+        raise ValueError(f"invalid ref: {ref!r}")
+    return ref
 
 
 def _write_repo_file(rpath: str, parts: list[str], content: str) -> None:
@@ -144,13 +176,19 @@ def list_commits(
 
     Returns list of {sha, message, author_name, author_email, date}.
     """
+    _validate_ref(branch)
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return []
 
     fmt = "%H%n%s%n%an%n%ae%n%aI"  # sha, subject, author name, author email, ISO date
+    # Every option must precede --end-of-options; git treats everything after it
+    # as a non-option, so a --format= placed later fails to parse.
     result = _run_git(
-        ["log", branch, f"--format={fmt}", f"--skip={offset}", f"--max-count={limit}"],
+        [
+            "log", f"--format={fmt}", f"--skip={offset}", f"--max-count={limit}",
+            "--end-of-options", branch,
+        ],
         cwd=rpath,
     )
     if result.returncode != 0:
@@ -173,10 +211,11 @@ def list_commits(
 
 def count_commits(base_path: str, org_id: str, repo_name: str, branch: str = "main") -> int:
     """Count total commits on a branch."""
+    _validate_ref(branch)
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return 0
-    result = _run_git(["rev-list", "--count", branch], cwd=rpath)
+    result = _run_git(["rev-list", "--count", "--end-of-options", branch], cwd=rpath)
     if result.returncode != 0:
         return 0
     return int(result.stdout.strip())
@@ -193,12 +232,15 @@ def list_tree(
 
     Returns list of {name, path, type, size}.
     """
+    _validate_ref(ref)
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return []
 
+    # ``path`` needs no check of its own: git resolves it inside the tree and
+    # refuses anything that leaves the repository ("is outside repository").
     tree_ref = f"{ref}:{path}" if path else ref
-    result = _run_git(["ls-tree", "-l", tree_ref], cwd=rpath)
+    result = _run_git(["ls-tree", "-l", "--end-of-options", tree_ref], cwd=rpath)
     if result.returncode != 0:
         return []
 
@@ -238,11 +280,12 @@ def read_blob(
 
     Returns the content as a string, or None if not found.
     """
+    _validate_ref(ref)
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return None
 
-    result = _run_git(["show", f"{ref}:{path}"], cwd=rpath)
+    result = _run_git(["show", "--end-of-options", f"{ref}:{path}"], cwd=rpath)
     if result.returncode != 0:
         return None
     return result.stdout
@@ -271,7 +314,10 @@ def create_commit(
         return None
 
     # Validate every path before mutating anything: paths are agent-supplied,
-    # and the write below happens before git sees them.
+    # and the write below happens before git sees them. The branch is checked
+    # for the same reason the read paths check refs — as a lone token it is
+    # option-parseable, and ``checkout --orphan=<name>`` succeeds.
+    _validate_ref(branch)
     parts_by_path = {f["path"]: _validate_rel_path(f["path"]) for f in files}
 
     env = {
@@ -282,7 +328,7 @@ def create_commit(
     }
 
     # Checkout the branch; on failure abort rather than commit elsewhere.
-    if _run_git(["checkout", branch], cwd=rpath, env=env).returncode != 0:
+    if _run_git(["checkout", "--end-of-options", branch], cwd=rpath, env=env).returncode != 0:
         return None
 
     # Apply file changes. Physical (symlink) checks happen inside
