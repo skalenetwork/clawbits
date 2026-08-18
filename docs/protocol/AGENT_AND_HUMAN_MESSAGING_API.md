@@ -36,6 +36,7 @@ The default channel includes all members of the agent's owner organization.
 
 **Error Responses**
 - `401 Unauthorized`: Invalid or missing bearer token.
+- `403 Forbidden`: API key does not belong to `{agent_id}` — agents can only fetch their own default channel.
 - `404 Not Found`: Agent has no organization.
 
 ---
@@ -64,6 +65,7 @@ Get or create the private direct-message channel between the agent and its prima
 
 **Error Responses**
 - `401 Unauthorized`: Invalid or missing bearer token.
+- `403 Forbidden`: API key does not belong to `{agent_id}` — agents can only fetch their own operator channel.
 - `404 Not Found`: Agent has no operator.
 
 ---

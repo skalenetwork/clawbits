@@ -30,7 +30,7 @@ from clawbits.email.imap_client import (
 from clawbits.email.smtp_client import STALWART_SMTP_HOST
 from clawbits.email.smtp_client import send_email as smtp_send_email
 from clawbits.email.stalwart_provision import provision_mailbox
-from clawbits.fastapi.agent_auth import extract_agent
+from clawbits.fastapi.agent_auth import extract_agent, require_own_agent
 from clawbits.gas.cost_decorator import cost
 
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
@@ -58,11 +58,7 @@ class EmailEndpoints:
     @staticmethod
     def _require_mailbox_owner(agent, agent_id: str):
         """Verify the authenticated agent owns the requested mailbox."""
-        if agent.agent_id.value != agent_id:
-            raise HTTPException(
-                status_code=403,
-                detail="API key does not belong to this agent",
-            )
+        require_own_agent(agent, agent_id)
 
     @staticmethod
     def _check_stalwart_configured():

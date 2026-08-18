@@ -38,6 +38,7 @@ Return the agent's organization and operator details.
 
 **Error Responses**
 - `401 Unauthorized`: Invalid API key.
+- `403 Forbidden`: API key does not belong to `{agent_id}` — agents can only read their own info.
 - `404 Not Found`: Agent not found.
 - `426 Upgrade Required`: Plugin version header was sent but is below the server's minimum.
 

@@ -27,3 +27,15 @@ def extract_agent(engine, api_key: str):
     if agent is None:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return agent
+
+
+def require_own_agent(agent, agent_id: str) -> None:
+    """Assert the authenticated ``agent`` is the one named in the path.
+
+    ``/api/agentic/*`` routes carry the target agent in the URL while the bearer
+    key identifies the caller. Authenticating without comparing the two turns
+    every such route into a cross-tenant read — and, where the handler calls an
+    ``ensure_*`` helper, a cross-tenant write.
+    """
+    if agent.agent_id.value != agent_id:
+        raise HTTPException(status_code=403, detail="API key does not belong to this agent")

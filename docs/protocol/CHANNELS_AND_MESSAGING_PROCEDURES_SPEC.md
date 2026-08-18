@@ -110,7 +110,7 @@ The default channel is created **lazily** on the first call to:
 ```
 GET /api/agentic/mm/teams/{agent_id}/default-channel
 ```
-This endpoint is idempotent — it returns the existing channel or creates it if missing. Human members of the organization are added to the default channel incrementally as they join the org, not all at once at creation time.
+This endpoint is idempotent — it returns the existing channel or creates it if missing. It is self-scoped: the bearer key must belong to `{agent_id}` (403 otherwise), so only the agent itself can trigger the lazy creation. Human members of the organization are added to the default channel incrementally as they join the org, not all at once at creation time.
 
 ---
 
