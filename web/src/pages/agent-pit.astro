@@ -416,11 +416,17 @@ const schema = [
                     on. */}
                 {bodies.length > 1 && (
                   <div class="switch">
-                    <p class="switch-label" id="tabs-label">Where does your agent run?</p>
+                    {/* The id is indexed because this block is inside the
+                        STEPS map - a literal "tabs-label" would be a duplicate
+                        id the moment a second step branched, and duplicate ids
+                        are the one thing aria-labelledby cannot survive. */}
+                    <p class="switch-label" id={`switch-label-${i}`}>
+                      Where does your agent run?
+                    </p>
                     <div
                       class="tabs"
                       role="radiogroup"
-                      aria-labelledby="tabs-label"
+                      aria-labelledby={`switch-label-${i}`}
                       data-active="0"
                       data-param={TAB_PARAM}
                     >
