@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { socialAuthUrl, type OAuthProvider } from "@/lib/api";
 import { isDesktop } from "@/lib/desktop";
+import { useSearchParams } from "react-router-dom";
+import { NEXT_PARAM, safeReturnPath } from "@/lib/returnPath";
 
 function GoogleIcon() {
   return (
@@ -24,10 +26,15 @@ function GithubIcon() {
 
 export default function OAuthButtons({ label }: { label: string }) {
   const [busy, setBusy] = useState<OAuthProvider | null>(null);
+  const [params] = useSearchParams();
 
   const handle = async (provider: OAuthProvider) => {
     setBusy(provider);
     const path = socialAuthUrl(provider);
+    // Where to land afterwards, for a visitor bounced here off a deep link.
+    // The web leg hands it to the backend, which parks it in a cookie for the
+    // WorkOS round-trip; it is validated there again before it is used.
+    const next = safeReturnPath(params.get(NEXT_PARAM));
     if (isDesktop) {
       // Open the OAuth flow in the user's default system browser; the
       // backend's `?desktop=1` marker causes the final callback to redirect
@@ -46,7 +53,9 @@ export default function OAuthButtons({ label }: { label: string }) {
       return;
     }
     // Web: hard-navigate to backend start, browser handles the rest.
-    window.location.href = path;
+    window.location.href = next
+      ? `${path}?${NEXT_PARAM}=${encodeURIComponent(next)}`
+      : path;
   };
 
   return (

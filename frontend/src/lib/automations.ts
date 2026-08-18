@@ -7,6 +7,7 @@
  */
 import {
   Megaphone01Icon,
+  ChartCandlestickIcon,
   ChartLineData01Icon,
   Notification03Icon,
   Sun03Icon,
@@ -146,10 +147,16 @@ export interface AutomationTemplate {
   icon?: IconSvgElement;
   /** Tile accent color (recommendations only). */
   accent?: AutomationAccent;
+  /** Keep this recipe on the shelf instead of letting it fall off the end of
+   *  the top-3 window. Pinned recipes still disappear once created — "already
+   *  added" always wins over "always shown". Use sparingly: every pin costs a
+   *  slot the rotating suggestions would otherwise use. */
+  pinned?: boolean;
 }
 
 /** The suggestion catalog — bigger than the shelf (the UI shows the first 3
- *  not already created, so fresh ideas surface as automations get made).
+ *  not already created, so fresh ideas surface as automations get made;
+ *  ``pinned`` entries hold a slot rather than rotating out).
  *
  *  Ordered by what actually retains users across ChatGPT scheduled tasks,
  *  Claude routines, and the Lindy/Relay/Gumloop galleries (researched
@@ -162,6 +169,25 @@ export interface AutomationTemplate {
  *  self-contained, personalizes via [bracketed] slots the operator fills in
  *  the Forge, and biases to staying quiet over posting noise. */
 export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
+  {
+    /* PINNED — the landing site's /agent-pit walkthrough ends with "Open
+     * Automations, pick the AgentPit recipe", so this one cannot be allowed to
+     * rotate off the shelf behind three other suggestions. It still vanishes
+     * once the operator has it. The prompt is verbatim the message step four
+     * of that walkthrough has them send by hand, so the automation is the
+     * dry-run they already watched succeed; 15 minutes is AgentPit's own
+     * market cadence. */
+    id: "agentpit-trading",
+    label: "AgentPit trading run",
+    description:
+      "Wakes your agent on AgentPit's market cadence to trade its prediction-market strategy.",
+    defaultName: "AgentPit trading run",
+    prompt: "run the agentpit-reference skill",
+    defaultSchedule: { kind: "every", everyMs: 15 * MINUTE_MS },
+    icon: ChartCandlestickIcon,
+    accent: "blue",
+    pinned: true,
+  },
   {
     id: "morning-briefing",
     label: "Morning briefing",

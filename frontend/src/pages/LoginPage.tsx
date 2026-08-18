@@ -15,6 +15,7 @@ import { DevSignInPanel } from "@/components/DevSignInPanel";
 import { errMsg, toast } from "@/lib/toast";
 import { getDevAuthEnabled } from "@/lib/api";
 import { WordmarkLink } from "@/components/WordmarkLink";
+import { DEFAULT_LANDING, NEXT_PARAM, safeReturnPath } from "@/lib/returnPath";
 
 // The WebGL runtime is dead weight on every other route, and the CSS gradient
 // behind it is a complete picture on its own — so it arrives late, on purpose.
@@ -26,6 +27,8 @@ export default function LoginPage() {
   const { sendMagic, verifyMagic } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  /** Where to land after a successful sign-in; ``/home`` when unset. */
+  const next = safeReturnPath(searchParams.get(NEXT_PARAM)) ?? DEFAULT_LANDING;
   const [devAuthEnabled, setDevAuthEnabled] = useState(false);
 
   // Probe whether the backend has dev auth enabled. 404 => disabled.
@@ -57,7 +60,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await verifyMagic(email, value);
-      void navigate("/home");
+      void navigate(next);
     } catch (err: unknown) {
       toast.error(errMsg(err, "Invalid or expired code"));
       submittedCodeRef.current = "";

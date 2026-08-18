@@ -1,0 +1,1650 @@
+---
+import Base from "../layouts/Base.astro";
+import Button from "../components/Button.astro";
+import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
+import { appLink, canonicalUrl } from "../config";
+import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import HugeIcon from "../components/HugeIcon.astro";
+import PlayOnView from "../components/PlayOnView.astro";
+/* Raw text, injected inline - see the file for why it is not a module. */
+import tabBoot from "../scripts/tab-boot.js?raw";
+import RegisterVisual from "../components/RegisterVisual.astro";
+import ManageVisual from "../components/ManageVisual.astro";
+import TerminalVisual from "../components/TerminalVisual.astro";
+import ChatVisual from "../components/ChatVisual.astro";
+import AutomateVisual from "../components/AutomateVisual.astro";
+
+/**
+ * /agent-pit - the AgentPit integration.
+ *
+ * WHAT AGENTPIT IS, so nobody has to re-derive it from the copy: a
+ * prediction-market sandbox (agentpit.dev). Signing up mints a wallet funded
+ * with paper apUSD; orders route through Polymarket's own CTF token and
+ * exchange mechanics and settle as real transactions on SKALE. The money is
+ * fake, the order books and the settlement path are not. Agents are ranked on
+ * a leaderboard that refreshes every few minutes.
+ *
+ * WHY THIS PAGE EXISTS. AgentPit's own "For builders" section already walks
+ * through the same five steps - as five shell commands, on a machine you keep
+ * awake yourself. Every one of those steps is a screen in Clawbits, and the
+ * machine question goes away. That contrast is the page's argument; the steps
+ * below are just the argument spelled out. Do not let the copy drift into
+ * repeating their CLI.
+ *
+ * Structure follows /download: a shader canvas carrying the hero and the
+ * single CTA, then railed hairline-divided blocks. The difference is the
+ * numbering - these blocks are a sequence, so each one leads with its step
+ * number and they must stay in order.
+ *
+ * THE CANVAS IS LIGHT HERE, and it is the only one on the site that is (owner,
+ * 2026-08-17). It runs AgentPit's blues on white instead of the candy palette
+ * on warm black, which is what makes this page read as theirs rather than as
+ * another Clawbits section. Everything that follows from that inversion is
+ * load-bearing and none of it is optional:
+ *
+ *  - nav="overlay-light", not "overlay". The overlay bar's white text and
+ *    cream pill are invisible on white; the variant restores the ink palette.
+ *  - NO `data-theme-anchor` on the canvas. That attribute tells Base to paint
+ *    the browser chrome and <body> with --color-canvas (warm black) while the
+ *    hero holds the top of the viewport - correct for a dark hero, and a black
+ *    band above a white one.
+ *  - --color-signal is put BACK to its light-ground value below. global.css
+ *    swaps every `.canvas` subtree to the lighter red that is legible on ink,
+ *    and that red fails on white.
+ *  - The scrim under the headline is white, not black, and the CTA is the
+ *    `primary` (dark fill) button rather than `inverse`.
+ *
+ * FIRST PASS (owner, 2026-08-17): the step visuals are deliberately EMPTY
+ * tinted panels. They are placeholders for real product visuals in the same
+ * spirit as the homepage's endowment cards - do not fill them with wireframe
+ * decoration, and do not delete the panel to "clean up", because the split
+ * layout is what the finished visuals slot into.
+ */
+
+/**
+ * The page's own claim, in the page's own terms. It has to survive being read
+ * with no picture next to it - a search result, a link preview - so it names
+ * the five steps, the paper money and the real order books, and it says the
+ * agent runs on a schedule without your machine, which is the whole argument
+ * against AgentPit's own five shell commands.
+ */
+const DESCRIPTION =
+  "Give a Clawbits agent an AgentPit key and it trades prediction markets on a schedule - no machine of yours left running. Paper apUSD, real order books, five steps.";
+
+/** AgentPit's own home. One CTA on this page, and this is where it goes. */
+const AGENTPIT = "https://agentpit.dev/";
+
+/** The reference trading skill, public and readable. */
+const EXAMPLES_REPO = "https://github.com/skalenetwork/agentpit-examples";
+
+/**
+ * The five steps, in order.
+ *
+ * `heading` is the block's h2, `bullets` the instruction and `note` an
+ * OPTIONAL caveat closing it. The step's own index is derived from position,
+ * not stored.
+ *
+ * There was a `label` here - the short eyebrow name beside the numeral ("Sign
+ * up", "Environment variables"). The owner cut the eyebrow on 2026-08-17 in
+ * favour of the numeral alone, which left `label` with no consumer, so it went
+ * with it rather than sitting in the file as data nothing reads. Steps one and two carry no
+ * note by design (owner, 2026-08-17): the action is the whole of them, and a
+ * trailing sentence of colour was the thing making them read long.
+ *
+ * BULLETS, NOT PROSE, AND AS SHORT AS THEY GO (owner, 2026-08-17). A step is
+ * something the reader is doing WHILE they read it, one hand on the page and
+ * one in the app, and a paragraph makes them re-find their place every time
+ * they look away. One bullet is one action, five to nine words, no subordinate
+ * clauses. The moment a bullet needs a comma and a "then", it is two bullets;
+ * the moment it needs explaining, that belongs in `note` or in the visual.
+ *
+ * Every factual claim here is checkable:
+ *
+ *  - The once-a-day bankroll restore and the 15 minute cadence are AgentPit's
+ *    own published numbers.
+ *  - "Environment variables" is verbatim the section heading the agent's
+ *    Manage page renders (frontend EnvSection.tsx). `AGENTPIT_API_KEY` is the
+ *    one key the reference skill needs - `AGENTPIT_HOST` was here and is gone
+ *    (owner, 2026-08-17): the skill defaults its host, so setting it was a
+ *    step that bought nothing. Do not restore it without a reason.
+ *  - Bullets are PLAIN TEXT and rendered as text (owner, 2026-08-18). They
+ *    carried inline app icons and a <b> around the variable name, and the
+ *    stack of emphasis was reading as decoration; the line now says what to do
+ *    and nothing else. Anything that needs markup here has to come back
+ *    through `set:html`, which is worth avoiding for its own sake - Astro does
+ *    not scope styles into injected markup, so every rule aimed at it has to
+ *    remember a :global() or it silently does nothing.
+ *  - `say` is a message you send your agent, verbatim. A walkthrough whose
+ *    commands have been smoothed into prose is one nobody can follow.
+ *  - `link` is the site's "Learn more" affordance (see .more in index.astro's
+ *    Reef block). Optional, and always leaves this site - either to AgentPit
+ *    or into the app, both of which are other origins, which is why the render
+ *    opens every one of them in a new tab. `event` is per-link on purpose: one
+ *    shared name would put an outbound partner click and an app hop in the
+ *    same Umami bucket, and those are the two things the report exists to tell
+ *    apart.
+ *  - Step 5 describes a RECIPE ON THE AUTOMATIONS SHELF. It exists now: the
+ *    `agentpit-trading` entry in AUTOMATION_TEMPLATES
+ *    (frontend/src/lib/automations.ts), and it is `pinned` there precisely so
+ *    this step can say "pick the AgentPit recipe" and be right - the shelf
+ *    only shows three at a time and an unpinned recipe rotates out. The one
+ *    case where the reader will not find it is the honest one: they already
+ *    added it. If the pin is ever dropped, this block has to become "New
+ *    automation, message `run the agentpit-reference skill`, every 15
+ *    minutes".
+ */
+const TAB_PARAM = "tab";
+const TABS = [
+  { id: "reef", label: "Agent on Reef" },
+  { id: "self-hosted", label: "Self-hosted" },
+] as const;
+
+const STEPS = [
+  {
+    heading: "Register and grab a key.",
+    bullets: [
+      "Go to AgentPit website and register",
+      "Grab an API key from the main page",
+    ],
+    link: { label: "Register on AgentPit", href: AGENTPIT, event: "agentpit-register" },
+  },
+  {
+    /* THE SHORTEST HEADING ON THE PAGE, and it leans on both neighbours to be
+     * one: "it" is the key from step one, and the recipient is left unsaid
+     * because step three names the agent in its own heading - saying it here
+     * too put "your agent" in two consecutive lines. So this heading cannot be
+     * rewritten in isolation. Change one and re-read all three. */
+    heading: "Hand it over.",
+    bullets: [
+      "In Clawbits, open Agents and select yours",
+      "Open Manage, then Environment variables",
+      "Add AGENTPIT_API_KEY and save",
+    ],
+    /* THE ONLY STEP THAT BRANCHES. Everything else in the walkthrough is the
+     * same work either way - you still register, still install the skill,
+     * still dry-run it, still automate it. Only HOW the key reaches the agent
+     * changes, because on Reef there is a screen for it and self-hosted there
+     * is a config file.
+     *
+     * A WHOLE BODY, not a patch over the one above. The temptation is to spell
+     * this as overrides and merge them, and merging is how the link to the app
+     * survives into a variant that has no app to link to - the reef body ends
+     * with "Open your agents", which is exactly wrong here. Each variant lists
+     * what it renders and inherits nothing but the heading.
+     *
+     * If a SECOND step ever branches, this shape carries: add `selfHosted` to
+     * it and the render already handles it. */
+    selfHosted: {
+      bullets: [],
+      sayLabel: "Run this command:",
+      say: "openclaw config set skills.entries.agentpit-reference.env.AGENTPIT_API_KEY [YOUR_API_KEY]",
+    },
+    /* appLink(), not a hand-written URL: it resolves APP_URL per environment
+     * (the staging build points at app.freeclaws.ai) and tags the hop with the
+     * landing campaign, which is the only way the analytics can see it - the
+     * session id is hostname-scoped, so an untagged arrival is
+     * indistinguishable from someone who typed the app URL. See config.ts. */
+    link: { label: "Open your agents", href: appLink("/agents"), event: "openapp-step" },
+  },
+  {
+    /* "your agent", not "it". After step two ends on "your agent", an "it"
+     * here binds to the nearest preceding noun - the KEY - so the line read as
+     * telling the key how to trade. Naming the agent costs a word and removes
+     * the ambiguity. */
+    heading: "Tell your agent how to trade.",
+    bullets: [],
+    say: "install this skill: git:https://github.com/skalenetwork/agentpit-examples",
+    note: "This will install a reference strategy",
+  },
+  {
+    heading: "Dry run.",
+    bullets: [],
+    say: "run the agentpit-reference skill",
+    note: "Check the results of the test run after",
+  },
+  {
+    heading: "Automate.",
+    bullets: [
+      "Open Automations on your agent's page",
+      "Pick the AgentPit recipe",
+      "Hit Automate",
+    ],
+    note: "Optionally customize delivery channel and schedule",
+  },
+] as const;
+
+const schema = [
+  {
+    "@type": "WebPage",
+    "@id": canonicalUrl("/agent-pit", Astro.site),
+    name: "AgentPit + Clawbits in five steps",
+    description: DESCRIPTION,
+    isPartOf: { "@id": `${Astro.site}#website` },
+    about: {
+      "@type": "WebApplication",
+      name: "AgentPit",
+      url: AGENTPIT,
+      applicationCategory: "FinanceApplication",
+    },
+  },
+];
+---
+
+<Base
+  title="AgentPit + Clawbits"
+  description={DESCRIPTION}
+  ogImage="/og/og-clawbits-agentpit.png"
+  schema={schema}
+  nav="overlay-light"
+>
+  {/* Injected verbatim from src/scripts/tab-boot.js, whose text astro.config
+      hashes into script-src. It has to be inline and blocking to beat the
+      first paint; see that file for why it cannot be a module and why the hash
+      is derived from the source rather than copied by hand. */}
+  <script is:inline set:html={tabBoot} />
+
+  {/* ── Head canvas: the lockup, the claim, the one button ─────────────── */}
+  <div class="frame">
+    <section class="canvas">
+      {/* AgentPit's blue, owner-specified. The GROUND is the blue, with the
+          palette running light over it - so `colorBack` must stay in step with
+          --ap-ground below, or a seam appears at the shader's edge exactly the
+          way --color-canvas does on the dark heroes.
+
+          Three stops, white at both ends: the wave reads as light breaking
+          over the blue rather than as a colour sequence, which is why a fourth
+          hue was dropped rather than tuned.
+
+          Noise is dialled below the dark canvases' on purpose - grain that
+          reads as texture over warm black reads as dirt over pale blue. */}
+      <div class="shader" aria-hidden="true">
+        <ShaderBackdrop
+          client:only="react"
+          colors={["#ffffff", "#c2e1ff", "#ffffff"]}
+          colorBack="#add6ff"
+          softness={0.78}
+          intensity={0.16}
+          noise={0.1}
+          speed={0.5}
+        />
+      </div>
+
+      <div class="head">
+        {/* Same shape and placement as the homepage's "Introducing
+            Lobstertalk" pill, doing a slightly different job: an invitation
+            rather than an announcement. The homepage has news to break; this
+            page IS the thing, so the pill's only real job is to tell an
+            arriving reader there is a walkthrough below and start them down
+            it. Only the palette differs from the homepage's - that one is
+            white-on-dark because its canvas is near-black, and the same
+            treatment here would be a white pill with white text.
+
+            It points at step one rather than off-site: the CTA below already
+            goes to AgentPit, and two links to the same place stacked three
+            inches apart is one of them wasted. */}
+        {/* RADIOGROUP, NOT A TABLIST. It looks like tabs and it will drive the
+            steps, but `role="tab"` is a promise of a `tabpanel` this page does
+            not have yet - a screen reader would announce a tab and then find
+            nothing it controls. A radiogroup is honest about a mutually
+            exclusive choice and stays correct once the steps do branch, so
+            this does not need revisiting then.
+
+            `data-active` is the single source of truth: the thumb reads it in
+            CSS, the script writes it, and aria-checked follows. Nothing else
+            stores which tab is on. */}
+        <div
+          class="tabs"
+          role="radiogroup"
+          aria-label="How your agent runs"
+          data-active="0"
+          data-param={TAB_PARAM}
+        >
+          {/* Behind the labels, and the only thing that moves. Painting the
+              selected tab's own background instead would cross-fade two fills
+              rather than slide one, which is the difference between a
+              segmented control and two buttons. */}
+          <span class="tabs-thumb" aria-hidden="true"></span>
+          {/* Roving tabindex: one stop for the whole group, then arrow keys
+              inside it - the radiogroup pattern. Tabbing through both would
+              make a two-item control cost two tab stops. */}
+          {TABS.map((tab, i) => (
+            <button
+              type="button"
+              class="tab"
+              role="radio"
+              data-tab={tab.id}
+              aria-checked={i === 0 ? "true" : "false"}
+              tabindex={i === 0 ? 0 : -1}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Two app icons, overlapped and turned in space - the whole
+            partnership before a word of copy. Both are the products' real
+            icons, one dark and one light, which is why the overlap reads as
+            two objects rather than as one smudged shape.
+
+            The <img> sits inside a wrapper rather than being the tile itself:
+            the wrapper owns the 3D pose and the drift, the image owns the
+            shadows. Splitting them keeps the animated element free of a
+            `filter`, so the drift stays a compositor-only transform. */}
+        <div class="lockup">
+          <div class="tile t-cb">
+            <img src="/brand/clawbits-ios.png" alt="Clawbits" width="256" height="256" />
+          </div>
+          <div class="tile t-ap">
+            <img src="/brand/agentpit-ios.png" alt="AgentPit" width="256" height="256" />
+          </div>
+        </div>
+
+        {/* Plain, not a hook (owner, 2026-08-17). The register is /download's
+            "Clawbits on your desktop": say what the page is and stop. It also
+            sets the expectation the page then meets - five numbered blocks,
+            in order, and nothing else. Keep the count in step with STEPS. */}
+        <h1 class="display display-hero">
+          <span class="line">AgentPit + Clawbits</span>
+          <span class="line">in five steps.</span>
+        </h1>
+
+        {/* One line as of this revision, so .line is only giving it block
+            display - it earns its name again the moment a second is added, and
+            the break then holds at every width rather than moving with the
+            measure.
+
+            NOTHING IN THIS HERO SAYS THE MONEY IS FAKE any more. It used to:
+            the line under the button said so, then the lede carried it once
+            that line was cut. Both are gone now, and the first mention a
+            reader reaches is "paper apUSD" in step one, below the fold. That
+            is a product call rather than a bug, but it is the kind that gets
+            made by accident, so it is written down here. */}
+        <p class="lede">
+          <span class="line">Connect Clawbits agent to AgentPit and set up automations.</span>
+        </p>
+
+        <div class="cta">
+          {/* Points DOWN the page, not off it. No `external` prop: that sets
+              target="_blank" plus rel, which on a same-document anchor would
+              open the page again in a new tab.
+
+              Worth knowing what this costs - the hero no longer links to
+              AgentPit at all. The only outbound routes left are step one's
+              "Register on AgentPit" and the tail, both below the fold. */}
+          <Button href="#steps" variant="primary" data-umami-event="agentpit-walkthrough">
+            Read the walkthrough
+          </Button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  {/* ── The five steps ─────────────────────────────────────────────────── */}
+  <div class="rails">
+    {
+      STEPS.map((step, i) => {
+        /* BOTH variants ship in the HTML and CSS shows one - see the .body
+           rules. The alternative is rendering the chosen one, and on a
+           prerendered page there is no chosen one at build time: every reader
+           would get whatever the build guessed and the tabs could only fix it
+           after JavaScript arrived. This way the switch is instant, works from
+           a shared ?tab= link, and the copy for both paths is in the page for
+           anything that reads it without running scripts.
+
+           `tab: null` for the four steps that do not branch - they render one
+           body with no data-only attribute and CSS never touches them. */
+        const bodies =
+          "selfHosted" in step
+            ? [
+                { tab: "reef", data: step },
+                { tab: "self-hosted", data: step.selfHosted },
+              ]
+            : [{ tab: null, data: step }];
+
+        return (
+          <section class="block">
+            {/* The pill's target sits on the first STEP, not on the rails
+                container or its section. Both of those start above a block of
+                padding, so a jump landed the reader on empty page with step one
+                somewhere below the fold - which reads as a broken anchor rather
+                than a short scroll. */}
+            {/* `v${i}` sits on the STEP, not on the visual it was named for.
+                Custom properties inherit, so the panel still gets its own
+                --tint and --angle - but so does the message block over in the
+                copy column, which is the whole point: the two are one material
+                per step rather than a picture and an unrelated card beside
+                it. */}
+            <div
+              class:list={["step", `v${i}`, { flip: i % 2 === 1 }]}
+              id={i === 0 ? "steps" : undefined}
+            >
+              <div class="copy">
+                {/* Zero-padded so the numerals stack: 01 through 05 occupy the
+                    same box down the page, which is what makes the sequence
+                    read as one column rather than five headings. The
+                    parentheses are content rather than a ::before pair - they
+                    are read aloud, and "(01)" is what tells a screen reader
+                    this is an index now that the label beside it is gone. */}
+                <p class="num">({String(i + 1).padStart(2, "0")})</p>
+                {/* Outside the variants on purpose: the heading is the step,
+                    and the step is the same job on both paths. A variant that
+                    needs its own heading is a sign it should be its own
+                    step. */}
+                <h2 class="display display-md">{step.heading}</h2>
+
+                {bodies.map(({ tab, data }) => (
+                  <div class="body" data-only={tab}>
+                    {data.bullets.length > 0 && (
+                      <ul class="points" role="list">
+                        {data.bullets.map((point) => (
+                          <li>{point}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {"say" in data && (
+                      <div class="say-block">
+                        {/* The label is part of the instruction, not a caption
+                            on it: the panel below is a string with no other
+                            explanation of what to do with it. Above the panel
+                            (owner, 2026-08-18) because the reader has to know
+                            what they are looking at before they read it.
+
+                            Per-variant, because it is the one line that says
+                            WHERE this goes - a chat on Reef, a terminal
+                            self-hosted - and getting that wrong sends someone
+                            to paste a shell command at their agent. */}
+                        <p class="say-label">
+                          {"sayLabel" in data ? data.sayLabel : "Send this to your agent:"}
+                        </p>
+                        <div class="say">
+                          <p class="say-text">{data.say}</p>
+                          {/* Icon only. data-copy carries the string verbatim,
+                              the same attribute brand.astro's copy buttons
+                              use. aria-label does the whole job of naming this
+                              control now that the word "Copy" is gone from the
+                              face. */}
+                          <button
+                            type="button"
+                            class="say-copy"
+                            data-copy={data.say}
+                            aria-label="Copy this message"
+                          >
+                            <HugeIcon icon={Copy01Icon} size={16} class="ic-copy" />
+                            {/* The confirmation. Both glyphs ship and CSS
+                                swaps them, so the button cannot change size at
+                                the moment it is pressed. */}
+                            <HugeIcon icon={Tick02Icon} size={16} class="ic-done" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {"note" in data && <p class="sub sub-note">{data.note}</p>}
+                    {"link" in data && (
+                      <p class="more-row">
+                        <a
+                          class="more"
+                          href={data.link.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-umami-event={data.link.event}
+                        >
+                          {data.link.label}
+                        </a>
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Step one has its scene; the rest are still the empty panels
+                  of the first pass. `aria-hidden` sits here rather than inside
+                  each visual, so a scene never has to remember it. */}
+              <div class="visual" aria-hidden="true">
+                {i === 0 && <RegisterVisual />}
+                {/* STEP TWO BRANCHES ITS PICTURE TOO. The copy already
+                    forks - Reef sends you through Agents/Manage, self-hosted
+                    hands you a command - and a screenshot of our app on the
+                    self-hosted tab would be showing a screen that reader does
+                    not have.
+
+                    Both ship and CSS shows one, reusing the SAME `.body`
+                    machinery the copy uses, so there is one rule about which
+                    variant is visible rather than two that can disagree. */}
+                {i === 1 && (
+                  <>
+                    <div class="body" data-only="reef">
+                      <ManageVisual />
+                    </div>
+                    <div class="body" data-only="self-hosted">
+                      <TerminalVisual />
+                    </div>
+                  </>
+                )}
+                {/* Steps 3 and 4 are the same component. The heights are
+                    measured for these exact strings - see ChatVisual. */}
+                {i === 2 && (
+                  <ChatVisual
+                    say={STEPS[2].say}
+                    reply="Installed agentpit-reference - I can price a market and place an order."
+                    variant="skill"
+                  />
+                )}
+                {i === 3 && (
+                  <ChatVisual
+                    say={STEPS[3].say}
+                    reply="Priced 3 markets, bought the cheap side on one at 0.38 apUSD. Full round in the channel."
+                    variant="run"
+                  />
+                )}
+                {i === 4 && <AutomateVisual />}
+              </div>
+            </div>
+          </section>
+        );
+      })
+    }
+  </div>
+
+  <div class="tail">
+    <div class="tail-inner">
+      <p>
+        Skills and automations need an OpenClaw agent. The reference trader is
+        public - <a href={EXAMPLES_REPO} target="_blank" rel="noopener noreferrer">read it</a>{" "}
+        before you run it.
+      </p>
+    </div>
+  </div>
+  {/* Once per page. Starts every `data-play-on-view` scene where it is
+      actually seen rather than mid-cycle, and declines to start any of them
+      under reduced motion. */}
+  <PlayOnView />
+</Base>
+
+<script>
+  /* Copy buttons for the message bubbles. Lifted from brand.astro's, minus its
+   * data-src half - every string here is already in the page, so there is
+   * nothing to fetch.
+   *
+   * Fails SILENTLY by design: clipboard writes are refused outside a secure
+   * context and in some embedded browsers, and the message is visible and
+   * selectable right beside the button. Swapping the label to an error would
+   * make a page that works look broken. */
+  /* Hero tabs. `data-active` on the group is the whole state: CSS slides the
+   * thumb off it, the script keeps aria-checked and the roving tabindex in
+   * step, and the URL carries it between visits. Nothing here touches the
+   * steps yet - see TABS in the frontmatter. */
+  const group = document.querySelector<HTMLElement>(".tabs");
+  if (group) {
+    const param = group.dataset.param ?? "tab";
+    const tabs = [...group.querySelectorAll<HTMLButtonElement>(".tab")];
+    const slugs = tabs.map((t) => t.dataset.tab ?? "");
+
+    const apply = (i: number, focus: boolean) => {
+      group.dataset.active = String(i);
+      /* The steps read this, not `data-active` - they are in the rails, with
+       * no shared ancestor below <html> to hang it on. The default tab clears
+       * the attribute rather than writing "reef", so the served markup and a
+       * page switched back to the first tab are the same state rather than two
+       * that happen to look alike. */
+      if (i === 0) delete document.documentElement.dataset.tab;
+      else document.documentElement.dataset.tab = slugs[i];
+      tabs.forEach((t, j) => {
+        t.setAttribute("aria-checked", j === i ? "true" : "false");
+        t.tabIndex = j === i ? 0 : -1;
+      });
+      if (focus) tabs[i].focus();
+    };
+
+    /* An unknown or absent value falls back to the first tab rather than to
+     * nothing - ?tab=typo must still render a usable page, and the first tab
+     * is what the server already marked up. */
+    const indexFromUrl = () => {
+      const want = new URL(location.href).searchParams.get(param);
+      const i = slugs.indexOf(want ?? "");
+      return i === -1 ? 0 : i;
+    };
+
+    /* replaceState, NOT pushState: this is a view control, and pushing would
+     * put a history entry behind every toggle, so Back would walk the reader
+     * through their own clicks instead of returning them to the page they
+     * arrived from.
+     *
+     * Built off the CURRENT url so other params and the #steps hash survive -
+     * `?tab=x` written as a whole query string would silently drop them. */
+    const writeUrl = (i: number) => {
+      const url = new URL(location.href);
+      /* The default is the clean URL. Writing ?tab=reef on first paint would
+       * hand every reader a shareable link to a state they never chose. */
+      if (i === 0) url.searchParams.delete(param);
+      else url.searchParams.set(param, slugs[i]);
+      history.replaceState(history.state, "", url);
+    };
+
+    const select = (i: number, focus: boolean) => {
+      apply(i, focus);
+      writeUrl(i);
+    };
+
+    tabs.forEach((t, i) => t.addEventListener("click", () => select(i, false)));
+
+    /* Arrow keys wrap, which is the radiogroup pattern - and with two options
+     * every arrow is a toggle, so Up/Left and Down/Right share a branch. */
+    group.addEventListener("keydown", (e) => {
+      const back = e.key === "ArrowLeft" || e.key === "ArrowUp";
+      const fwd = e.key === "ArrowRight" || e.key === "ArrowDown";
+      if (!back && !fwd) return;
+      e.preventDefault();
+      const now = Number(group.dataset.active ?? 0);
+      select((now + (fwd ? 1 : tabs.length - 1)) % tabs.length, true);
+    });
+
+    /* Back/forward can still land on a different ?tab= - from a link, or from
+     * a history entry this page did not write. Restore without rewriting the
+     * URL, or the entry being navigated to gets overwritten as it arrives. */
+    addEventListener("popstate", () => apply(indexFromUrl(), false));
+
+    /* Restore on load. `apply`, not `select`: an arriving ?tab= is already in
+     * the URL and does not need writing back.
+     *
+     * data-ready gates the thumb's transition (see the CSS), so a page opened
+     * on the second tab paints it there instead of sliding across on load -
+     * the script is deferred, so that slide would read as the page changing
+     * its mind. Two frames, because one still lands inside the same style
+     * recalculation and the transition fires anyway. */
+    apply(indexFromUrl(), false);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      group.dataset.ready = "";
+    }));
+  }
+
+  document.querySelectorAll<HTMLButtonElement>(".say-copy").forEach((b) => {
+    b.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(b.dataset.copy ?? "");
+      } catch {
+        return;
+      }
+      /* One attribute, and CSS does the rest - the button holds both glyphs
+       * and swaps which is visible. Nothing here writes into the button, which
+       * is what keeps it clear of the trap brand.astro documents: assigning
+       * textContent would delete the icons along with everything else. */
+      b.setAttribute("data-done", "");
+      setTimeout(() => b.removeAttribute("data-done"), 1400);
+    });
+  });
+</script>
+
+<style>
+  /* ── Head canvas ──────────────────────────────────────────────────────
+   * /download's construction - inset frame, rounded canvas, a static gradient
+   * underneath the shader island so the page is never blank while React boots
+   * - with the palette inverted. See the frontmatter for the full list of what
+   * that inversion drags with it. */
+  .frame {
+    padding: 1rem 1rem 0;
+  }
+
+  /* The one blue ground on the site, so it declares its own token rather
+   * than borrowing --color-ink (cream) and hoping. Keep --ap-ground in step
+   * with the shader's colorBack in the template above.
+   *
+   * Near-black type clears 12.9:1 on this blue, and the shader only ever
+   * paints LIGHTER than it (white and #c2e1ff), so that is the FLOOR rather
+   * than an average - which is why the headline needs no scrim. Darken
+   * --ap-ground and that guarantee is what you are spending.
+   *
+   * The page's muted grey is the one thing this ground will NOT carry: #6f7176
+   * measures 3.3:1 on it, which is why the lede below is near-black and takes
+   * its step down from size rather than colour. */
+  .canvas {
+    --ap-ground: #add6ff;
+
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    /* THE SITE'S HAIRLINE, not a blue one (owner, 2026-08-17). The dark
+     * canvases composite --color-line against their own ground because a
+     * 7%-alpha black vanishes over near-black; composited against blue it does
+     * the opposite and reads as a deliberate blue frame.
+     *
+     * `background-clip: padding-box` is what makes the plain token work here:
+     * a background paints UNDER the border by default, so a translucent border
+     * over the blue ground would composite to that same blue line. Stopping
+     * the ground at the padding edge lets the page's cream show through the
+     * border instead, which is precisely the hairline the rails draw. */
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-canvas);
+    background: var(--ap-ground);
+    background-clip: padding-box;
+    /* Lighter than the dark heroes' lift (owner, 2026-08-17). Those canvases
+     * are near-black and need a deep shadow to sit off the cream at all; this
+     * one is pale and a 25px shadow read as a bruise under it. */
+    box-shadow:
+      0 10px 20px -8px rgb(0 0 0 / 0.07),
+      0 3px 6px -4px rgb(0 0 0 / 0.05);
+    /* Required by the overlay nav - without it the fixed bar never scrubs in. */
+    view-timeline-name: --hero-view;
+    /* global.css swaps every .canvas subtree to --color-signal-canvas, the red
+     * that is legible on warm black. This canvas is white, so it takes the
+     * ordinary page values back - a page-scoped selector carries the extra
+     * attribute and outranks the global one. */
+    --color-signal: #c0394f;
+    --color-signal-deep: #a82840;
+  }
+
+  /* Pre-hydration gradient, in the same four values the shader runs and in
+   * the same direction: light pools ON the blue ground, not blue pools on
+   * white. Painted top-down because that is where the shader's wave crest
+   * sits, so the swap when React arrives is not a jump. */
+  .shader {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(60% 55% at 50% 4%, rgb(255 255 255 / 0.92), transparent 70%),
+      radial-gradient(52% 54% at 12% 26%, rgb(194 225 255 / 0.85), transparent 70%),
+      radial-gradient(52% 54% at 88% 22%, rgb(255 255 255 / 0.7), transparent 70%),
+      var(--ap-ground);
+  }
+
+  /* The owner's 48px pixel grid, laid OVER the live shader rather than under
+   * it - the whole point is that the wave moves behind a fixed lattice, so a
+   * layer on `.shader`'s own background would be hidden the moment React
+   * paints its canvas. `::after` is a positioned descendant inside `.shader`'s
+   * stacking context, so it lands above the canvas and still below `.head`.
+   *
+   * Same asset convention as the homepage's agent tiles (/brand/patterns/*):
+   * a 48px tile with the source's opaque #fafafa plate stripped, so only the
+   * marks carry. It keeps the file's own 0.15 - dial THAT, not an opacity
+   * here, if it ever reads heavy, because the canvas's contrast floor is a
+   * property of the ground and the marks are 1px wide. */
+  .shader::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background: url("/brand/patterns/agentpit-grid.svg") 0 0 / 48px 48px repeat;
+    pointer-events: none;
+    /* The marks take their weight FROM the wave instead of sitting on it at
+     * one flat strength: overlay darkens against the shader's mid blues and
+     * all but disappears into its white crests, so the lattice breathes with
+     * the motion behind it rather than screening it.
+     *
+     * Contained by construction - `.shader` is a stacking context (positioned,
+     * z-index 0), so the blend reaches its own gradient and the React canvas
+     * and stops there. The headline is in `.head` outside that context, so it
+     * is never a blend backdrop and its contrast floor is untouched.
+     *
+     * It also makes the SVG's own opacity no longer the whole story: the two
+     * compose. Overlay roughly halves the marks against the blue and cancels
+     * them entirely on the white crests, which is why the file carries 0.3 and
+     * not the source art's 0.15 - that pair lands back at about the weight a
+     * flat 15% black had before the blend. Retune ONE of them, not both. */
+    mix-blend-mode: overlay;
+    /* Arrives FIRST and slowest - it is the stage the tiles then rise onto, so
+     * its 120ms lead puts it under them rather than racing them (the tiles are
+     * at 420ms and 660ms). `both` fill holds it at zero through the delay.
+     *
+     * OPACITY ONLY, and no transform: any drift or scale would slide the tile
+     * seams and the lattice would stop reading as a fixed grid the wave moves
+     * behind, which is the whole effect. Plain `ease-out` rather than the
+     * page's expo - expo snaps opacity to near-full in the first fifth and
+     * then crawls, which on a texture reads as a pop followed by nothing. */
+    animation: ap-grid-in 1400ms ease-out 120ms both;
+  }
+
+  @keyframes ap-grid-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* NO SCRIM (owner, 2026-08-17). Every other canvas on the site pools a
+   * legibility wash under its headline; this one shows the shader clean and
+   * the type sits straight on it. Do not reintroduce one - if the headline
+   * ever stops reading, dial the shader's own `intensity` down instead, which
+   * costs the art nothing.  */
+
+  /* ── Hero tabs ────────────────────────────────────────────────────────
+   * A track holding one chip that slides. The selected tab wears the geometry
+   * the hero's old pill did - 1.625rem tall, 550/0.75rem label, the same white
+   * fill - because it took that pill's place in the composition. The pill
+   * itself is gone; these values are now the only copy.
+   *
+   * The track is the chip's fill at roughly half strength, so the off tab
+   * reads as a dimmer of the same material rather than as a second colour. */
+  .tabs {
+    position: relative;
+    display: inline-grid;
+    grid-auto-flow: column;
+    /* Equal columns, so the thumb is exactly half the track and can slide on a
+     * percentage with nothing to measure. Sized by the longer label. */
+    grid-auto-columns: 1fr;
+    margin-bottom: clamp(1.5rem, 3vw, 2rem);
+    padding: var(--tabs-pad, 0.1875rem);
+    border-radius: var(--radius-pill);
+    background: rgb(255 255 255 / 0.3);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+  }
+
+  .tabs-thumb {
+    position: absolute;
+    z-index: 0;
+    inset: var(--tabs-pad, 0.1875rem);
+    /* Half the track's INNER width - `inset` already took the padding off both
+     * ends, so the thumb spans the full inner box and this halves it. */
+    inline-size: calc((100% - var(--tabs-pad, 0.1875rem) * 2) / 2);
+    border-radius: var(--radius-pill);
+    background: rgb(255 255 255 / 0.58);
+  }
+
+  /* The slide is only for a CHOICE, never for a restore. Until the script has
+   * marked the group ready, the thumb jumps - a page opened on ?tab=self-hosted
+   * would otherwise paint the first tab and slide across, which reads as the
+   * page changing its mind rather than as landing where it was asked to.
+   *
+   * `translate`, not `left`: a compositor-only move, and it leaves `inset` to
+   * own the geometry so the two never fight. */
+  .tabs[data-ready] .tabs-thumb {
+    transition: translate 320ms var(--ease-out-expo);
+  }
+
+  .tabs[data-active="1"] .tabs-thumb {
+    translate: 100% 0;
+  }
+
+  /* SECONDARY on both, on and off (owner, 2026-08-18) - the thumb carries the
+   * selected state by itself, so the labels are one tier and the fill is the
+   * only difference between them.
+   *
+   * Same contrast note as .lede above: --color-muted is ~3.3:1 on this blue.
+   * It fares better here than in the lede on the OFF tab (the track's white
+   * wash lifts the ground under it) and better again on the ON tab, where it
+   * sits on the near-white thumb. 12px is still the smallest type on the
+   * canvas, so this is the tightest of the three - do not shrink it further
+   * without re-measuring. */
+  .tab {
+    position: relative;
+    z-index: 1;
+    height: 1.625rem;
+    padding-inline: 1rem;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: none;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 550;
+    letter-spacing: 0.01em;
+    color: var(--color-muted);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .tab[aria-checked="true"] {
+    cursor: default;
+  }
+
+  /* Hover only where it means something - the on tab already sits on the fill
+   * this would be previewing. */
+  .tab[aria-checked="false"]:hover {
+    background: rgb(255 255 255 / 0.28);
+  }
+
+  .head {
+    /* One number, read by the tiles AND by the negative gap that overlaps
+     * them. Split across two rules they drift and the overlap changes depth
+     * as the viewport scales. */
+    --tile: clamp(8rem, 20.5vw, 13.75rem);
+
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    color: var(--color-paper);
+    padding: clamp(5rem, 3.5vw + 3.5rem, 6rem) clamp(1.5rem, 5vw, 3rem)
+      clamp(3.5rem, 5vw, 4.5rem);
+  }
+
+  /* ── The lockup ── */
+
+  /* The overlap is a NEGATIVE gap, so the pair stays centred as a unit at
+   * every width - a margin on one tile would shift the whole group off the
+   * page's centre line as the tiles scale. */
+  /* `perspective` on the CONTAINER, not on each tile. One vanishing point for
+   * both means they read as two objects in a single space; per-tile
+   * perspective gives each its own horizon and they stop looking related.
+   *
+   * The origin sits above centre because the tiles are above the headline -
+   * the viewer's eye line is roughly at the copy, so the lockup should be
+   * seen slightly from below.
+   *
+   * Deliberately NO `transform-style: preserve-3d` here. It would only matter
+   * for depth-SORTING siblings, and document order already puts AgentPit in
+   * front; adding it changes nothing and starts flattening arguments with the
+   * shadows below. `perspective` alone still scales each tile by its own
+   * translateZ, which is the part that carries the depth. */
+  .lockup {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    perspective: 800px;
+    perspective-origin: 50% 38%;
+    /* BOTH gaps live here, and the pill above deliberately carries none.
+     * Adjacent block margins collapse to the larger of the two, so splitting
+     * the space between the two elements makes "add a little room above the
+     * icons" a change whose result depends on which value happened to be
+     * bigger. One element owns the air on both sides instead. */
+    margin-block: clamp(2.5rem, 5vw, 3.5rem) clamp(2.75rem, 5.5vw, 4rem);
+  }
+
+  /* NEGATIVE MARGIN, NOT NEGATIVE GAP. `gap` rejects negative lengths - the
+   * declaration is simply dropped, silently, and the tiles sit flush with no
+   * error anywhere to explain why. A negative inline-start margin on the
+   * second tile is the one that works, and `justify-content: center` measures
+   * outer size including margins, so the pair still centres as a unit.
+   *
+   * Less pull than the flat version needed (-0.22): Clawbits is now set BACK
+   * in Z, so perspective already shrinks it and turns its inner edge away.
+   * Depth is doing part of the job the margin used to do alone.
+   *
+   * Deliberately off --tile rather than off the second tile's own width, so
+   * retuning --tile-scale moves the tile's size without also moving how far it
+   * sits over its neighbour. Two knobs, one each. */
+  .tile + .tile {
+    margin-inline-start: calc(var(--tile) * -0.14);
+  }
+
+  /* The pose lives here so it survives `animation: none` - see the
+   * reduced-motion block at the end of this file. These are the MID-POINTS of
+   * each drift below; keep them in the middle if you retune the keyframes, or
+   * the still version stops matching what the moving one settles around. */
+  .tile {
+    /* --tile is the pair's base size; --tile-scale is a per-tile multiplier.
+     * Sized rather than pushed forward in Z: translateZ would make AgentPit
+     * bigger too, but it is also what the drift animates, so the size would
+     * breathe with the motion. Width is the axis nothing else is using. */
+    width: calc(var(--tile) * var(--tile-scale, 1));
+    /* TWO animations on one element, and they do not fight because they drive
+     * DIFFERENT properties: the entrance moves `translate`, the drift moves
+     * `transform`. That is also why the hover zoom uses `scale`. Three
+     * independent channels - translate, scale, transform - composing into one
+     * matrix in that order, which is the only reason all three effects can run
+     * at once without one silently winning.
+     *
+     * `both` fill: the tile is held at the entrance's `from` state during its
+     * delay, so a staggered tile is invisible rather than flashing in place
+     * and then sliding. Durations and delays come through custom properties
+     * because each tile needs its own of both, and `animation-duration` with
+     * one value would apply to the entrance too. */
+    animation:
+      ap-rise 1100ms var(--ease-out-expo) var(--rise-delay) both,
+      var(--drift) var(--drift-dur) ease-in-out var(--drift-delay) infinite alternate;
+  }
+
+  /* Up and in. The distance scales with the tile so the gesture reads the same
+   * on a phone as on a wide desktop - a fixed 36px is a third of a small tile
+   * and a tenth of a large one. */
+  @keyframes ap-rise {
+    from {
+      translate: 0 calc(var(--tile) * 0.22);
+      opacity: 0;
+    }
+    to {
+      translate: 0 0;
+      opacity: 1;
+    }
+  }
+
+  /* Turned in OPPOSITE directions, like two cards held up facing each other.
+   * Clawbits sits back in Z and AgentPit forward, so the near edge of the
+   * light tile overlaps the receding edge of the dark one - the overlap now
+   * has a reason rather than being a flat stack. */
+  .t-cb {
+    --drift: drift-cb;
+    --drift-dur: 17s;
+    --drift-delay: -4s;
+    /* Left tile first: the pair reads left to right, so the one that arrives
+     * first is the one the eye is already on. The lead-in is long enough that
+     * the hero is visibly settled before anything moves - the tiles arrive
+     * ONTO a finished page rather than as part of it painting, which is the
+     * difference between an entrance and a slow load. */
+    --rise-delay: 420ms;
+    transform: translate3d(0, 0, -44px) rotateX(-7deg) rotateY(15deg) rotateZ(-6deg);
+  }
+
+  .t-ap {
+    /* Slightly the larger of the two (owner, 2026-08-17). The page is about
+     * AgentPit, and the tile in front reading marginally bigger is also what
+     * the perspective would do on its own. */
+    --tile-scale: 1.12;
+    --drift: drift-ap;
+    /* Negative, and NOT a multiple of the other tile's: a shared or harmonic
+     * offset lets the pair fall into step every few cycles, which is the exact
+     * moment ambient motion starts looking like a loop. Different durations
+     * (17s and 21s) plus this keep them permanently out of phase. */
+    --drift-delay: -11s;
+    --drift-dur: 21s;
+    /* Far enough behind to read as two arrivals rather than one wobble, close
+     * enough that the pair still lands as a unit. */
+    --rise-delay: 660ms;
+    transform: translate3d(0, 0, 4px) rotateX(6deg) rotateY(-13deg) rotateZ(7deg);
+  }
+
+  /* MATCHED FUNCTION LISTS, and that is the whole technique. When two keyframes
+   * carry the same transform functions in the same order, CSS interpolates each
+   * function's arguments individually - rotateY(11deg) to rotateY(19deg)
+   * animates as an angle. Break the match (drop a function, reorder one) and it
+   * silently falls back to decomposing the composed matrix, where a small
+   * rotation reads as a shear. This is also why the drift needs no @property:
+   * the registered-custom-property trick exists for the case where the lists
+   * cannot be made to match, and it costs the compositor, because a custom
+   * property animation runs on the main thread. */
+  /* WIDENED TWICE NOW (~1.8x, then ~1.5x again), MIDPOINTS UNCHANGED both
+   * times. Each pair below still averages exactly to its tile's static
+   * `transform` above - that is the constraint that keeps the reduced-motion
+   * pose identical to the one the motion settles around, and it is the first
+   * thing to re-check if these are widened again.
+   *
+   * rotateZ now swings too, +/-2deg either side of each tile's resting tilt.
+   * It was held static through the earlier passes, and holding it is what made
+   * the motion read as a card being TURNED rather than one SWINGING: the
+   * in-plane angle is the axis a pendulum actually moves on, so a couple of
+   * degrees there buys more swing than another five of rotateY would.
+   *
+   * Durations stay at 17s and 21s. A wider arc over the same period is already
+   * the faster motion. */
+  @keyframes drift-cb {
+    from {
+      transform: translate3d(0, -16px, -77px) rotateX(-16deg) rotateY(5deg) rotateZ(-8deg);
+    }
+    to {
+      transform: translate3d(0, 16px, -11px) rotateX(2deg) rotateY(25deg) rotateZ(-4deg);
+    }
+  }
+
+  @keyframes drift-ap {
+    from {
+      transform: translate3d(0, 13px, -23px) rotateX(-2deg) rotateY(-23deg) rotateZ(9deg);
+    }
+    to {
+      transform: translate3d(0, -13px, 31px) rotateX(14deg) rotateY(-3deg) rotateZ(5deg);
+    }
+  }
+
+  /* Hover zoom, via the INDIVIDUAL `scale` property rather than `transform`.
+   *
+   * This is the only thing that works here: the drift owns `transform`
+   * outright, and a CSS animation beats an author rule in the cascade, so
+   * `.tile:hover { transform: ... }` is silently ignored for as long as the
+   * animation is running. `scale` is a separate property the animation never
+   * touches, and the two compose - the browser applies translate, rotate and
+   * scale, then `transform`, so the posed card is what gets scaled up.
+   *
+   * (hover: hover) because a tap on a touch screen latches :hover until the
+   * next tap somewhere else, which would leave one tile stuck enlarged. */
+  @media (hover: hover) {
+    .tile {
+      transition: scale 320ms var(--ease-out-expo);
+    }
+
+    .tile:hover {
+      scale: 1.03;
+    }
+  }
+
+  /* The shadows sit on the IMAGE, one level below the animating element.
+   *
+   * Two of them, doing different jobs: a tight, dark contact shadow that says
+   * the tile is a solid object, and a wide soft one that says it is floating
+   * above the canvas rather than printed on it. One shadow can be either but
+   * not both, which is why the flat version read as a sticker.
+   *
+   * `filter`, never `box-shadow`: these are alpha PNGs, and a box shadow would
+   * trace the transparent bounding box instead of the rounded square inside
+   * it. The icons carry their own corner radius and their own baked highlight,
+   * so nothing here adds a border or a radius on top of the artwork. */
+  .tile img {
+    display: block;
+    width: 100%;
+    height: auto;
+    filter:
+      drop-shadow(0 2px 3px rgb(12 13 14 / 0.14))
+      drop-shadow(0 20px 38px rgb(12 13 14 / 0.22));
+  }
+
+  /* Two deliberate lines, like the homepage hero - never one wrapped block. */
+  .line {
+    display: block;
+  }
+
+  /* SECONDARY (owner, 2026-08-18), reversing the near-black this carried.
+   * Read the number before touching it again: with no scrim, this sits
+   * directly on the shader's blues, and the page's --color-muted (#6f7176)
+   * measures about 3.3:1 there - under the 4.5:1 that AA asks of 16px text.
+   * The near-black was the previous answer to exactly that, and the tier below
+   * the headline was being carried by size and weight instead.
+   *
+   * It is a deliberate call, not an oversight, so it is written down rather
+   * than quietly fixed. The lever if it needs rescuing without going back to
+   * black: darken the shader's `intensity`, which lifts every ratio on this
+   * canvas at once. */
+  .lede {
+    margin: 1.25rem auto 0;
+    max-width: 34rem;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--color-muted);
+  }
+
+  .cta {
+    margin-top: 2rem;
+  }
+
+  /* ── Railed steps ─────────────────────────────────────────────────────
+   * The homepage's rails column and cadence, so a reader arriving from there
+   * lands in the same measure. */
+  .rails {
+    /* The steps' accent, declared ONCE and read by everything below that needs
+     * it - the "Learn more" link and the copy button's confirmation tick. It
+     * is deliberately not --color-signal: assigning that here would repaint
+     * every accented thing in the column, which is what .more-row's own
+     * scoping exists to prevent. This is the value; that is the opt-in.
+     *
+     * 4.50:1 on the page ground - it clears AA for small text with nothing to
+     * spare, so it can be darkened but never lightened. One of the hero
+     * shader's own blues. */
+    --ap-accent: #2463eb;
+    --ap-accent-deep: #1d52c6;
+
+    max-width: 70.5rem;
+    margin-inline: auto;
+    border-inline: 1px solid var(--color-line);
+  }
+
+  @media (max-width: 48rem) {
+    .rails {
+      border-inline: 0;
+    }
+  }
+
+  .block {
+    padding: clamp(3.5rem, 6.5vw, 5.5rem) clamp(1.25rem, 4vw, 3rem);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  /* The .tail's full-width rule closes the column, so the last step draws
+   * none of its own - one line, not two. */
+  .rails .block:last-child {
+    border-bottom: 0;
+  }
+
+  .step {
+    /* Carries #steps on the first one. 4rem clears the fixed bar that slides
+     * in once the canvas has left; the rest is the air that stops the heading
+     * from sitting flush against it. */
+    scroll-margin-top: 6.5rem;
+
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    gap: clamp(2.5rem, 5vw, 4.5rem);
+    align-items: center;
+  }
+
+  /* Alternating sides. Order flips AND the track sizes flip with it (owner
+   * bug report, 2026-08-18) - the two have to move together.
+   *
+   * The columns are 1fr for copy and 1.1fr for the visual. Flipping only the
+   * order left those sizes where they were, so on every other step the visual
+   * landed in the NARROW track and the copy in the wide one - the exact
+   * opposite of the intent, and the comment here used to claim the copy kept
+   * its width either way. It did not.
+   *
+   * The visible cost was the scenes: `--u` is a container query unit, so a
+   * visual in a 450px panel drew itself smaller than the same visual in a
+   * 495px one, and steps 3 and 4 were noticeably different scales side by
+   * side. Reversing the tracks gives every panel one width, so every scene
+   * renders at one scale. */
+  .flip {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  }
+
+  .flip .copy {
+    order: 2;
+  }
+
+  .flip .visual {
+    order: 1;
+  }
+
+  /* ── Step number ── */
+
+  /* THE EYEBROW LABEL IS GONE (owner, 2026-08-18) and so is the rule that
+   * joined it to the numeral. It had been the same blue as the trailing link,
+   * which meant colour was marking two different kinds of thing identically:
+   * the label was structure, the link is the one thing you can click. The
+   * intermediate fix was to quiet the label; the owner then cut it outright,
+   * which is the cleaner answer - the heading directly below already says what
+   * the step is, so the label was naming it twice.
+   *
+   * What is left is an index, and it reads as one: a parenthesised numeral in
+   * the body grey. The accent now appears exactly once per block, on the link,
+   * where it means clickable. */
+
+  /* The DISPLAY face, not the mono one. Geist Mono draws a slashed zero, so
+   * "(05)" came out reading as a Danish O - and a step counter is editorial
+   * furniture rather than code, which is what the mono face is reserved for on
+   * this site. Tabular figures keep the numerals boxed identically down the
+   * page, which is the whole reason they are zero-padded.
+   *
+   * A step up from the label it replaced (0.875rem): standing alone it has to
+   * hold the top of the block by itself, and at the old size it read as a
+   * stray caption rather than an index. */
+  .num {
+    margin: 0 0 0.75rem;
+    font-family: var(--font-display);
+    font-size: 1.0625rem;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-muted);
+  }
+
+  /* ── Shared text roles (page-scoped; the homepage's are its own) ── */
+
+  .sub {
+    margin: 1rem 0 0;
+    max-width: 36rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--color-muted);
+  }
+
+  /* One action per line. Custom markers rather than list-style: a browser disc
+   * sits on the text baseline and drifts as soon as a bullet wraps to a second
+   * line; an absolutely-positioned dot stays pinned to the FIRST line, which
+   * is where the eye scanning the column expects it. `list-style: none` also
+   * costs the list its semantics in Safari + VoiceOver, so the role is put
+   * back explicitly. */
+  .points {
+    margin: 1rem 0 0;
+    padding: 0;
+    max-width: 36rem;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .points li {
+    position: relative;
+    padding-inline-start: 1.125rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--color-muted);
+  }
+
+  .points li::before {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    /* Optically centred on the first line's x-height rather than its box:
+     * (line-height 1.5em - dot 0.3125em) / 2 lands it low, so this splits the
+     * difference and sits it against the letterforms. */
+    top: 0.625em;
+    width: 0.3125rem;
+    height: 0.3125rem;
+    border-radius: 50%;
+    background: var(--color-faint);
+  }
+
+  /* A variant wrapper inside a PANEL has to fill it. The scenes are
+   * `height: 100%`, and a plain block wrapper is auto-height, so wrapping them
+   * for the tab switch collapsed both step-two visuals to zero - the panel
+   * rendered empty and the frame never appeared. `inset: 0` against the
+   * panel's own `position: relative` gives them the box back; `display` still
+   * does the switching. */
+  .visual > .body {
+    position: absolute;
+    inset: 0;
+  }
+
+  /* ── Which variant shows ──────────────────────────────────────────────
+   * The server renders reef, because that is the first tab and the URL that
+   * carries no ?tab= means reef. Everything here is the departure from that.
+   *
+   * `html[data-tab]`, not the tab group's own `data-active`: the control lives
+   * in the hero and the bodies live in the rails, so there is no shared
+   * ancestor further down to hang the state on. :global() around the html half
+   * because Astro scopes by stamping an attribute on elements THIS template
+   * renders, and <html> is the layout's - scoped, the selector would compile
+   * to something <html> can never match and the rule would silently never
+   * fire. That is the same failure that made the bullet icons render at 442px.
+   *
+   * Only the second tab needs rules. A `[data-only="reef"]` shown by default
+   * and hidden by an attribute is one state to reason about; a symmetric pair
+   * that both hide and both show is two, and they can disagree. */
+  .body[data-only="self-hosted"] {
+    display: none;
+  }
+
+  :global(html[data-tab="self-hosted"]) .body[data-only="reef"] {
+    display: none;
+  }
+
+  :global(html[data-tab="self-hosted"]) .body[data-only="self-hosted"] {
+    display: block;
+  }
+
+  .sub-note {
+    margin-top: 0.875rem;
+  }
+
+  /* The site's "Learn more" link, lifted verbatim from index.astro's Reef
+   * block so the two are the same affordance rather than two links that
+   * happen to be accent-coloured. The chevron is a masked data: URI taking
+   * currentColor - the production CSP allows data: under img-src, and a mask
+   * means the glyph follows the hover colour without a second asset.
+   *
+   * No colour of its own: it reads --color-signal, which .copy has already
+   * set to the page's blue, so the link and the step label match without
+   * either of them naming a hex. */
+  .more-row {
+    /* Opting the link's accent in. Scoped here rather than to the whole column
+     * so it cannot leak back onto the label; the hex itself lives on .rails,
+     * so this and the copy tick cannot drift apart. */
+    --color-signal: var(--ap-accent);
+    --color-signal-deep: var(--ap-accent-deep);
+
+    margin: 1.25rem 0 0;
+    font-size: 1rem;
+  }
+
+  .more {
+    color: var(--color-signal);
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  .more::after {
+    content: "";
+    display: inline-block;
+    width: 1.05em;
+    height: 1.05em;
+    vertical-align: -0.24em;
+    margin-inline-start: 0.125em;
+    background-color: currentColor;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+
+  .more:hover {
+    color: var(--color-signal-deep);
+  }
+
+  /* The docs' code-block treatment, one tier smaller. */
+  /* ── The message to send ──────────────────────────────────────────────
+   * MINIMAL (owner, 2026-08-18). This was a picture of the app's own-message
+   * bubble - blue fill, white 15px body, a copy button inside it - and it is
+   * now a quoted line. The bubble was replaced rather than shelved: a picture
+   * of the app in the middle of a step competed with the step.
+   *
+   * The type is `.points li`'s, so a message reads as one more line of the
+   * same instruction. The white card and the copy control are the only things
+   * marking it out; nothing is done to the words themselves. If the bullets
+   * are ever retyped, retype .say-label and .say-text with them. */
+  .say-block {
+    margin: 1.25rem 0 0;
+    max-width: 36rem;
+  }
+
+  .say-label {
+    margin: 0 0 0.375rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--color-muted);
+  }
+
+  /* A PANEL, sharing the visuals' 1rem corner but NOT their gradient (owner,
+   * 2026-08-18): solid white. The step's --tint and --angle still reach here
+   * by inheritance and are deliberately left unread - the message is a thing
+   * you act on, and a card that shifted colour step by step made it look
+   * decorative.
+   *
+   * White rather than --color-ink-raised: the cream card surface barely
+   * separates from the page ground, and this panel has to read as lifted off
+   * it with no border to help.
+   *
+   * `align-items: start` so the button holds the FIRST line as the message
+   * wraps - centred, it would drift to the middle of a two-line message and
+   * stop pointing at anything. */
+  .say {
+    display: flex;
+    align-items: start;
+    gap: 0.625rem;
+    padding: 0.875rem 1rem;
+    border-radius: 1rem;
+    background: #fff;
+  }
+
+  /* The bullets' type exactly - see the block note above. */
+  .say-text {
+    margin: 0;
+    min-width: 0;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--color-paper);
+    /* Wrapping, not a horizontal scroller: the longest line is a git URL, and
+     * a reader made to drag a 40px trough to see the end of the thing they are
+     * meant to copy has been handed a puzzle instead of an instruction. */
+    overflow-wrap: anywhere;
+  }
+
+  /* Pushed to the far end of the row rather than sitting against the text, so
+   * the control has one position down the page instead of one per message
+   * length. Square, borderless, and quiet until pointed at. */
+  .say-copy {
+    flex: none;
+    margin-inline-start: auto;
+    display: grid;
+    place-items: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: 0;
+    border-radius: 0.5rem;
+    background: none;
+    color: var(--color-faint);
+    cursor: pointer;
+    transition:
+      color 160ms var(--ease-out-expo),
+      background-color 160ms var(--ease-out-expo);
+  }
+
+  /* A wash of ink, not the page's card colour: --color-ink-raised is lighter
+   * than the panel it now sits on, so the old hover read as a hole rather than
+   * as a press target. A translucent black darkens whichever end of the
+   * gradient it lands on. */
+  .say-copy:hover {
+    background: rgb(0 0 0 / 0.05);
+    color: var(--color-paper);
+  }
+
+  /* Both glyphs share one grid cell, so the swap cannot move the button or the
+   * row - `display: none` on the outgoing one would collapse the cell for a
+   * frame. Only ever one of them is visible.
+   *
+   * :global() because HugeIcon renders the <svg> in ITS component scope, not
+   * this page's - the same class of miss as the set:html icons above, and it
+   * fails the same silent way. */
+  .say-copy :global(svg) {
+    grid-area: 1 / 1;
+  }
+
+  .say-copy :global(.ic-done),
+  .say-copy[data-done] :global(.ic-copy) {
+    opacity: 0;
+  }
+
+  .say-copy[data-done] :global(.ic-done) {
+    opacity: 1;
+  }
+
+  /* The tick is the only confirmation now that the label is gone, so it says
+   * so in colour as well as in shape.
+   *
+   * The step's blue, NOT --color-signal: that token is the site's red here,
+   * and a red tick reads as a failed copy - the exact opposite of what just
+   * happened. Anything confirming success on this page has to name the accent
+   * rather than inherit the signal. */
+  .say-copy[data-done] {
+    color: var(--ap-accent);
+  }
+
+  /* ── Step visuals ─────────────────────────────────────────────────────
+   * Empty panels, first pass.
+   *
+   * TWO GRADIENTS, FIVE ROTATIONS (owner, 2026-08-17). Both are white falling
+   * to a near-paper tint, one blue and one neutral, and they ALTERNATE one by
+   * one down the page. The only other thing that changes is the angle, which
+   * steps by 72deg so the five panels walk one full revolution between them.
+   * The run therefore reads as one material lit from a moving source rather
+   * than as five different swatches, which is what a per-panel colour was
+   * starting to look like.
+   *
+   * Both halves are custom properties so a panel is two declarations and the
+   * shared `background` stays in one place. 360/5 = 72: if a sixth step is
+   * ever added, redistribute the whole set rather than appending 150+72*5,
+   * which lands back on the first angle. */
+  /* The panel stays the page's; the scene inside it is a component. Splitting
+   * it that way keeps the aspect ratio, the corner and the per-step gradient
+   * in ONE place - five visuals each re-deriving them is five chances to
+   * disagree about what a step panel is. */
+  .visual {
+    position: relative;
+    /* Wider than the 4/3 of the first pass (owner, 2026-08-18). The panels are
+     * scenery beside a short column of copy, and at 4/3 they out-measured the
+     * text they sit next to - a step's picture was taller than its words. */
+    aspect-ratio: 3 / 2;
+    border-radius: 1rem;
+    /* The scenes are built to the panel's edges and would otherwise paint over
+     * the rounded corners. */
+    overflow: hidden;
+    background: linear-gradient(var(--angle), #ffffff, var(--tint));
+  }
+
+  .v0 {
+    --tint: #e6f3ff;
+    --angle: 150deg;
+  }
+  .v1 {
+    --tint: #e9eaec;
+    --angle: 222deg;
+  }
+  .v2 {
+    --tint: #e6f3ff;
+    --angle: 294deg;
+  }
+  .v3 {
+    --tint: #e9eaec;
+    --angle: 6deg;
+  }
+  .v4 {
+    --tint: #e6f3ff;
+    --angle: 78deg;
+  }
+
+  @media (max-width: 62rem) {
+    .step {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2.25rem;
+    }
+
+    /* Stacked, the copy always leads. An alternating order down a single
+     * column is just an inconsistent reading path. */
+    .flip .copy,
+    .flip .visual {
+      order: initial;
+    }
+
+    .visual {
+      aspect-ratio: 16 / 9;
+    }
+  }
+
+  /* Freeze, do not flatten - the same call ShaderBackdrop makes. The 3D pose
+   * is art direction and it stays; only its drift is the optional part. The
+   * still pose is each tile's own `transform`, which the animation was
+   * overriding, so this needs nothing but turning the animation off. */
+  @media (prefers-reduced-motion: reduce) {
+    .tile {
+      animation: none;
+    }
+
+    /* The grid's end state IS its resting state, so dropping the animation
+     * leaves it fully painted rather than hidden - no `opacity: 1` needed
+     * here, and adding one would only be a second place to keep in step. */
+    .shader::after {
+      animation: none;
+    }
+
+    /* The thumb still MOVES, it just arrives immediately - the control would
+     * be unreadable if the selected state stopped being shown at all. */
+    .tabs[data-ready] .tabs-thumb {
+      transition: none;
+    }
+  }
+
+  /* ── Tail ── */
+
+  .tail {
+    border-top: 1px solid var(--color-line);
+  }
+
+  .tail-inner {
+    max-width: 70.5rem;
+    margin-inline: auto;
+    padding: clamp(2.5rem, 5vw, 3.5rem) clamp(1.25rem, 4vw, 3rem);
+  }
+
+  .tail-inner p {
+    max-width: 44rem;
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--color-muted);
+  }
+
+  .tail-inner a {
+    color: var(--color-paper);
+    text-decoration: none;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .tail-inner a:hover {
+    border-bottom-color: var(--color-paper);
+  }
+</style>
+
+{/* SELECTION HIGHLIGHT, and it has to be a GLOBAL block.
+    ::selection is matched against the element the user dragged over, which on
+    this page includes text rendered by Nav, Eyebrow and Footer - other
+    components, each carrying its own scope id. A scoped rule here would style
+    the page's own markup and silently leave the nav and footer on the site's
+    red, which is the half a reader notices. Global is safe precisely because
+    this stylesheet only ships with this route.
+
+    SPECIFICITY IS DELIBERATE, not decoration. global.css sets a bare
+    `::selection` (0,0,1) AND a `.canvas ::selection` (0,1,1) that puts the
+    glyph in warm black for the dark heroes. `:root` on both rules below takes
+    them to (0,1,1) and (0,2,1), so each wins on specificity rather than on
+    where the bundler happened to order two stylesheets. Drop the `:root` and
+    the hero's own selection goes back to red the next time that order
+    changes. */}
+<style is:global>
+  :root ::selection,
+  :root .canvas ::selection {
+    background: #2463eb;
+    color: #fff;
+  }
+</style>

@@ -163,6 +163,10 @@ export const LINKS = {
   changelog: "/changelog/", // Phase 5 landed 2026-08-06
   download: "/download/", // real page landed 2026-08-06
   brand: "/brand/", // brand kit landed 2026-08-06
+  /* The AgentPit integration walkthrough. Footer-only by owner call
+   * (2026-08-17): it is a partner page, not a section of the product, and
+   * the primary nav stays at four items. */
+  agentPit: "/agent-pit/",
   /* The raw release list, for people who want checksums, older versions, or
    * the updater artifacts. /download links here rather than pretending to be
    * the only way in. */

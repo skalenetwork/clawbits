@@ -5,6 +5,24 @@ import sitemap from "@astrojs/sitemap";
 import tailwindcss from "@tailwindcss/vite";
 import { satteri } from "@astrojs/markdown-satteri";
 
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+/**
+ * /agent-pit injects src/scripts/tab-boot.js verbatim as an inline, blocking
+ * script - it has to run before the first paint, which a bundled module cannot.
+ * `is:inline` opts out of Astro's build-time hashing, so its hash has to be
+ * supplied here or the production CSP refuses it and the page silently loses
+ * its no-flash tab restore (invisible in `astro dev`, which emits no CSP).
+ *
+ * COMPUTED, never pasted: the page and this hash read the same file, so editing
+ * the script cannot leave a stale hash behind. A hand-copied one would fail
+ * only in production, and only for that one behaviour.
+ */
+const TAB_BOOT_HASH = `'sha256-${createHash("sha256")
+  .update(readFileSync(new URL("./src/scripts/tab-boot.js", import.meta.url)))
+  .digest("base64")}'`;
+
 // The apex is the marketing site; the app lives on app.<domain>. SITE is what
 // canonical URLs, the sitemap, and absolute OG image URLs are built from, so it
 // must be the real deployed origin - override per environment at build time.
@@ -200,7 +218,7 @@ export default defineConfig({
       // default, and `resources` REPLACES that default rather than adding to
       // it, so dropping it here would block every bundled /_astro/*.js.
       scriptDirective: {
-        resources: ["'self'", "https://cloud.umami.is"],
+        resources: ["'self'", "https://cloud.umami.is", TAB_BOOT_HASH],
       },
 
       directives: [

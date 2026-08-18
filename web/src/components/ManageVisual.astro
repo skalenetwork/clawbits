@@ -1,0 +1,954 @@
+---
+import {
+  Add01Icon,
+  Clock05Icon,
+  ComputerTerminal01Icon,
+  Key01Icon,
+  Mail01Icon,
+  Message01Icon,
+  Robot02Icon,
+  Settings02Icon,
+} from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+import { miniCardSvg, type MiniCard } from "../lib/agent-card";
+import PointerCursor from "./PointerCursor.astro";
+
+/**
+ * Step 02's visual: handing the key to an agent, inside our own app.
+ *
+ * ── What this is drawn from ───────────────────────────────────────────────
+ * Clawbits in DARK MODE (owner reference shots, 2026-08-18), three screens in
+ * the order the step's bullets name them:
+ *
+ *   1. Agents      - the collectible cards in a row
+ *   2. Agent card  - one card centred between its two columns of actions
+ *   3. Manage      - the Environment variables list, key pasted, Save
+ *
+ * SIMPLIFIED CARDS (owner, 2026-08-18). AppDemo.astro carries the collectible
+ * card ported 1:1 from frontend/src/components/agent-card - scallop lobes, arc
+ * text on r136/r150, registration ticks, the joined and operator seals. None
+ * of that survives at this size: three cards share ~400px here, so each is
+ * FAITHFUL AGAIN (owner, 2026-08-18). The first pass drew a suggestion of the
+ * card in divs - white frame, tinted body, a round avatar - on the reasoning
+ * that the real one's detail would land sub-pixel. That was wrong about the
+ * medium: the card is ALL SVG, so a viewBox scales the whole construction and
+ * a 120px card is the same drawing as a 360px one. These now render the real
+ * geometry from lib/agent-card.ts - the scallop stamp and the soft rect, the
+ * seeded texture, the radar rings, the arc name, the containment ring and its
+ * twelve registration ticks, the presence dot.
+ *
+ * What the miniatures still drop is COPY, which does have a floor: the handle
+ * arc, the JOINED medal's date and the operator seal all fall under a legible
+ * size here and would read as smudges. Shapes scale; 6px text does not. If the cards ever need to be
+ * exact, extract AppDemo's version rather than growing this one.
+ *
+ * Unlike step 01 this is OUR product, so the strings are real: the agent
+ * names are the demo fleet, and the env rows are the ones the reference shot
+ * shows. AGENTPIT_API_KEY is the row the step is about and is the only one
+ * that arrives during the loop.
+ *
+ * ── The frame ─────────────────────────────────────────────────────────────
+ * MIRRORED from step 01 (owner, 2026-08-18): inset from the top and the RIGHT
+ * by one shared value, bleeding off the left and the bottom. Step 01's panel
+ * sits on the right of its row and its window opens rightward; this one sits
+ * on the left and opens leftward, so the pair leans away from the copy
+ * between them instead of both crowding the same edge.
+ *
+ * NO CHROME AT ALL (owner, 2026-08-18) - the icon rail went first, then the
+ * roster sidebar. Both were there to be cropped by the frame's bleed, and
+ * both turned out to buy nothing: a sliver of unreadable glyphs and half a
+ * list of names at the edge is noise, and the width they cost was the width
+ * the screens needed. The frame holds the main column and nothing else.
+ *
+ * ── The loop ──────────────────────────────────────────────────────────────
+ * 9s, CSS only, held at its 0% frame until PlayOnView marks the scene - the
+ * same duration every step visual runs, so the column reads as one system.
+ *
+ *   04-22%  cursor arrives, clicks an agent card   -> its page
+ *   26-46%  cursor clicks Manage                   -> the Manage screen
+ *   50-70%  the key row lands, cursor clicks Save
+ *   70-86%  hold on the saved state
+ *   86-100% the seam
+ *
+ * SEAM: dissolve at 86-89%, reset at 89-94% while invisible, back by 96.8%.
+ *
+ * ── Rules ─────────────────────────────────────────────────────────────────
+ * As RegisterVisual: no `style` attributes (the production CSP drops them),
+ * settled by default with the 0% state declared only inside the no-preference
+ * query, `--u` and container units rather than viewport units, and a cursor
+ * that moves by translating a wrapper the size of the whole scene.
+ */
+
+/** The fleet. Only the first three are drawn, as the cards on the shelf. */
+const FLEET: MiniCard[] = [
+  { name: "SoftGong", av: "agent-4.svg", from: "#4fbb52", to: "#34903a", angle: 18, frame: "soft", pattern: "dots", status: "available" },
+  { name: "Scout", av: "agent-3.svg", from: "#93bb1c", to: "#6b8c0f", angle: -30, frame: "scallop", pattern: "dots", status: "available" },
+  /* WHITE FRAME, DIFFERENT TEXTURE (owner, 2026-08-18). The premium near-black
+     draw was tried here and abandoned: #0c0c0d against this frame's own
+     #0f0f0f is a card with no visible silhouette, and the rim needed to rescue
+     it was a detail the real card does not have. The app varies cards by
+     PATTERN as much as by frame - eleven tiles picked per card by seed - so
+     the third card varies the way the product does. */
+  { name: "Quill", av: "agent-2.svg", from: "#1cbfab", to: "#10897c", angle: 12, frame: "soft", pattern: "plus", status: "setup" },
+];
+
+/* Card tints, read off each avatar's own body fill (owner, 2026-08-18) rather
+ * than invented: agent-4 #40a843, agent-3 #7a9f12, agent-2 #15a594. The card
+ * and the face on it are then one object instead of a face dropped onto an
+ * unrelated colour. If an avatar is ever reassigned, re-read its fill - the
+ * dominant colour in these files is the head, not the eyes (#F1EEDA and
+ * friends), which is what makes them look wrong if picked by frequency. */
+
+
+
+/** The env rows already on the agent. AGENTPIT_API_KEY arrives in the loop. */
+const ENV = [
+  { k: "AGENTPIT_HOST", v: "https://api.agentpit.dev" },
+  { k: "OPERATING_MODE", v: "production" },
+];
+---
+
+<div class="scene" data-play-on-view>
+  <div class="app">
+
+    {/* A DIV, not <main> (owner bug report, 2026-08-18). global.css carries
+        `main, body > footer { background-color: var(--color-ink) }`, so the
+        semantic element painted the site's cream straight over this frame and
+        the right two-thirds of the app rendered light. Nothing here is a
+        landmark - the whole scene is aria-hidden decoration - so the tag was
+        buying nothing and costing the illustration. */}
+    <div class="main">
+      {/* All three screens share one grid cell, so the frame never changes
+          height as they swap. */}
+      <div class="stage s-agents">
+        <div class="crumb">
+          <span class="crumb-i" set:html={ico(Robot02Icon)} />All
+        </div>
+        <div class="cards">
+          {
+            FLEET.map((a, i) => (
+              <span class:list={["card", i === 0 && "card-hit"]}>
+                <Fragment set:html={miniCardSvg(a, `mv-${a.name}`)} />
+                {i === 0 && <span class="ring r1" />}
+              </span>
+            ))
+          }
+        </div>
+      </div>
+
+      <div class="stage s-detail">
+        <div class="crumb">
+          <span class="crumb-i" set:html={ico(Robot02Icon)} />All
+          <span class="crumb-s">›</span>SoftGong
+        </div>
+        <div class="detail">
+          <span class="acts">
+            <span class="act"><span class="act-i" set:html={ico(Message01Icon)} />Chat</span>
+            <span class="act"><span class="act-i" set:html={ico(Clock05Icon)} />Automations</span>
+            <span class="act"><span class="act-i" set:html={ico(Mail01Icon)} />Inbox</span>
+          </span>
+
+          {/* The same card, bigger - one construction, two sizes. */}
+          <span class="card card-big">
+            <Fragment set:html={miniCardSvg(FLEET[0], "mv-big")} />
+          </span>
+
+          <span class="acts">
+            <span class="act"><span class="act-i" set:html={ico(ComputerTerminal01Icon)} />Terminal</span>
+            {/* "UI", not "OpenClaw UI" (owner, 2026-08-18): the full label wrapped to
+                two lines at this width and broke the column's rhythm, and the
+                glyph beside it already says whose UI it is. */}
+            <span class="act"><span class="act-i" set:html={ico(Robot02Icon)} />UI</span>
+            {/* The step's actual verb. */}
+            <span class="act act-hit">
+              <span class="act-i" set:html={ico(Settings02Icon)} />Manage
+              <span class="ring r2"></span>
+            </span>
+          </span>
+        </div>
+      </div>
+
+      <div class="stage s-env">
+        <div class="crumb">
+          <span class="crumb-i" set:html={ico(Robot02Icon)} />All
+          <span class="crumb-s">›</span>SoftGong
+          <span class="crumb-s">›</span>Manage
+        </div>
+        <div class="env">
+          <div class="env-head">
+            <span class="env-i" set:html={ico(Key01Icon)} />
+            <span class="env-t">Environment variables</span>
+            <span class="env-add"><span class="env-addi" set:html={ico(Add01Icon)} />Add</span>
+          </div>
+
+          {/* One rounded box with divided rows, as the real panel draws it -
+              not a stack of separately rounded cards. */}
+          <div class="elist">
+            {
+              ENV.map((e) => (
+                <div class="erow">
+                  <span class="ekey">{e.k}</span>
+                  <span class="eval">{e.v}</span>
+                </div>
+              ))
+            }
+
+            {/* THE EMPTY ROW IS THERE FROM THE START (owner, 2026-08-18) and
+                sits at the END of the list, where the app puts it. The key
+                does not appear out of nowhere: the reader sees the blank
+                name/value pair waiting, then the two fill, then Save. An
+                animation that materialised a finished row skipped the only
+                part of this step the reader has to do themselves. */}
+            <div class="erow erow-new">
+              <span class="efield ef-name">
+                <span class="eph">name</span>
+                <span class="etyped">AGENTPIT_API_KEY</span>
+              </span>
+              <span class="efield ef-val">
+                <span class="eph">value</span>
+                <span class="etyped">a41f7d92-6c05-4e8b-9f31-2b7ce0d4a6f8</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="env-foot">
+            <span class="ebtn">Cancel</span>
+            <span class="ebtn ebtn-p">
+              Save
+              <span class="ring r3"></span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <span class="cur-track">
+    <span class="cur-press"><PointerCursor /></span>
+  </span>
+</div>
+
+<style>
+  .scene {
+    container-type: inline-size;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow-anchor: none;
+
+    /* LARGER than the other visuals' unit, and deliberately so: dropping the
+     * 96u sidebar handed this frame its width back, and the screens drawn at
+     * the old scale in the new box just looked far away. ~1.15x. */
+    --u: clamp(0.78px, 0.23cqw, 1.32px);
+    /* The window's top and right gap. One value, two edges - a percentage
+     * would read one from the panel's height and one from its width and the
+     * two could never match. */
+    --win-in: calc(var(--u) * 34);
+
+    /* Dark app tokens, from the product's own .dark block
+     * (frontend/src/index.css), sRGB-converted. */
+    --bg: #0f0f0f;
+    --panel: #171717;
+    --card: #202020;
+    --fg: #ebe7df;
+    --mut: #8b8880;
+    --line: rgb(255 255 255 / 0.08);
+  }
+
+  /* MIRRORED from RegisterVisual: inset top + right, bleeding left + bottom. */
+  .app {
+    position: absolute;
+    top: var(--win-in);
+    right: var(--win-in);
+    /* RUNS OFF THE LEFT EDGE (owner, 2026-08-18), as it did before the sidebar
+     * came out. What the bleed used to crop was the roster; with that gone it
+     * would crop the screens themselves, so `.main` carries the bleed back as
+     * left padding - the frame extends past the panel while its contents stop
+     * where they always did. Keep the two in step. */
+    left: calc(var(--u) * -14);
+    bottom: calc(var(--u) * -70);
+    border-radius: calc(var(--u) * 14);
+    background: var(--bg);
+    overflow: hidden;
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.06),
+      0 calc(var(--u) * 14) calc(var(--u) * 30) rgb(15 15 15 / 0.3);
+  }
+
+  /* ── Roster ── */
+  /* ── Main ── */
+  .main {
+    display: grid;
+    flex: 1;
+    min-width: 0;
+    /* The bottom padding is the BLEED, not a design value. The app runs 70u
+     * past the panel's lower edge, so anything centred in this box centres in
+     * a rectangle whose bottom the reader cannot see - which is exactly why
+     * the card and its buttons sat too low. Reserving the hidden strip puts
+     * the optical centre back where the eye expects it. Keep it in step with
+     * `.app`'s bottom. */
+    /* Left and bottom both reserve the frame's BLEED on top of the normal
+     * gutter - anything laid out without that runs off an edge the reader
+     * cannot see. Keep both in step with `.app`. */
+    padding: calc(var(--u) * 12) calc(var(--u) * 14) calc(var(--u) * 70)
+      calc(var(--u) * 28);
+  }
+
+  .stage {
+    grid-area: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--u) * 12);
+    min-width: 0;
+  }
+
+  /* The settled frame, declared because three stages in one cell are all
+   * visible at once unless something says otherwise - and a reduced-motion
+   * visitor never reads the no-preference block below. The end of the story
+   * is the right still. */
+  .s-agents,
+  .s-detail {
+    opacity: 0;
+  }
+
+  .s-env {
+    opacity: 1;
+  }
+
+  .crumb {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 5);
+    font-size: calc(var(--u) * 11);
+    color: var(--fg);
+  }
+
+  .crumb-i {
+    display: block;
+    width: calc(var(--u) * 12);
+    height: calc(var(--u) * 12);
+  }
+
+  .crumb-s {
+    color: var(--mut);
+  }
+
+  /* ── Cards ──
+   * The card itself is SVG (see `cardSvg`), so all the frame needs to do is
+   * give it a width - the viewBox carries every proportion inside. That is
+   * also why the miniature can be faithful: nothing here re-derives geometry
+   * that lib/agent-card.ts already owns. */
+  .cards {
+    display: flex;
+    gap: calc(var(--u) * 10);
+  }
+
+  .card {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .csvg {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* The card's own drop shadow. On the real one this comes from the frame's
+     * filter; at this size a single soft shadow reads the same and costs less
+     * than a filter on three cards animating at once. */
+    filter: drop-shadow(0 calc(var(--u) * 3) calc(var(--u) * 6) rgb(0 0 0 / 0.35));
+  }
+
+  /* ── Agent page ── */
+  /* THREE TRACKS, and the middle one sized to the card (owner, 2026-08-18).
+   * Flex with `flex: 1` columns centred the ROW, not the card: the two action
+   * stacks have different natural widths, so the card drifted off the axis by
+   * half their difference. Equal `1fr` side tracks put the card on the centre
+   * line whatever the buttons say.
+   *
+   * `align-items: center` on the grid centres all three vertically, and the
+   * stage below centres the grid itself in the leftover height - so the card
+   * is centred on both axes rather than hanging from the breadcrumb. */
+  .detail {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: calc(var(--u) * 12);
+    flex: 1;
+    min-height: 0;
+    /* The last of the centring correction, and it belongs to THIS stage only.
+     * `.main` already reserves the frame's bottom bleed; what remains is the
+     * breadcrumb above, which pushes a centred row down by half its own
+     * height, plus half the app's top inset. Measured at 34px low before this;
+     * padding shifts a centred box by half what you add. */
+    padding-bottom: calc(var(--u) * 68);
+  }
+
+  .card-big {
+    flex: none;
+    width: calc(var(--u) * 120);
+  }
+
+  .acts {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: calc(var(--u) * 7);
+  }
+
+  /* Taller, and CENTRED (owner, 2026-08-18). They were left-aligned pills of
+   * varying label length, which made the icons line up but the block of text
+   * ragged - and with three of them stacked, the ragged edge was the thing the
+   * eye followed. Centring the glyph-and-label pair as a unit gives the column
+   * one axis. */
+  .act {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(var(--u) * 6);
+    height: calc(var(--u) * 30);
+    padding-inline: calc(var(--u) * 9);
+    border-radius: 999px;
+    background: var(--card);
+    font-size: calc(var(--u) * 10);
+    color: var(--fg);
+  }
+
+  .act-i {
+    display: block;
+    flex: none;
+    width: calc(var(--u) * 12);
+    height: calc(var(--u) * 12);
+    color: var(--mut);
+  }
+
+  /* ── Manage ── */
+  .env {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .env-head {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 6);
+    padding-bottom: calc(var(--u) * 9);
+  }
+
+  .env-i {
+    display: block;
+    width: calc(var(--u) * 12);
+    height: calc(var(--u) * 12);
+    color: var(--mut);
+  }
+
+  .env-t {
+    font-size: calc(var(--u) * 11);
+    color: var(--mut);
+  }
+
+  .env-add {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 4);
+    margin-inline-start: auto;
+    padding: calc(var(--u) * 3) calc(var(--u) * 8);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: calc(var(--u) * 9.5);
+    color: var(--fg);
+  }
+
+  .env-addi {
+    display: block;
+    width: calc(var(--u) * 10);
+    height: calc(var(--u) * 10);
+  }
+
+  /* The box owns the border and the corners; the rows only divide it. Rounding
+   * each row separately and stacking them is what produced the seam of doubled
+   * hairlines the first pass had. `overflow: hidden` is what makes the first
+   * and last rows take the box's radius without either of them naming it. */
+  .elist {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: calc(var(--u) * 10);
+    background: var(--panel);
+    overflow: hidden;
+  }
+
+  .erow {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 10);
+    padding: calc(var(--u) * 7) calc(var(--u) * 10);
+  }
+
+  .erow + .erow {
+    border-top: 1px solid var(--line);
+  }
+
+  /* ── The row being filled in ── */
+  .erow-new {
+    gap: calc(var(--u) * 8);
+    padding: calc(var(--u) * 6) calc(var(--u) * 8);
+  }
+
+  /* Inputs, not text: a border and a radius of their own so the pair reads as
+   * something you are typing into rather than a row that is merely blank. */
+  .efield {
+    position: relative;
+    display: grid;
+    align-items: center;
+    height: calc(var(--u) * 22);
+    padding-inline: calc(var(--u) * 8);
+    border: 1px solid var(--line);
+    border-radius: calc(var(--u) * 7);
+    font-size: calc(var(--u) * 9.5);
+    overflow: hidden;
+  }
+
+  .ef-name {
+    flex: none;
+    width: calc(var(--u) * 108);
+  }
+
+  .ef-val {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Placeholder and value share one cell, so the swap cannot resize either
+   * field - the row must not twitch as it fills. */
+  .eph,
+  .etyped {
+    grid-area: 1 / 1;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .eph {
+    color: #6c6a64;
+  }
+
+  .etyped {
+    opacity: 0;
+    color: var(--fg);
+  }
+
+  .ef-val .etyped {
+    color: var(--mut);
+  }
+
+  .ekey {
+    flex: none;
+    width: calc(var(--u) * 108);
+    font-size: calc(var(--u) * 9.5);
+    letter-spacing: 0.01em;
+    color: var(--fg);
+  }
+
+  .eval {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: calc(var(--u) * 9.5);
+    color: var(--mut);
+    white-space: nowrap;
+  }
+
+  .env-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: calc(var(--u) * 8);
+    margin-top: calc(var(--u) * 10);
+  }
+
+  .ebtn {
+    position: relative;
+    padding: calc(var(--u) * 5) calc(var(--u) * 12);
+    border-radius: calc(var(--u) * 7);
+    font-size: calc(var(--u) * 10);
+    color: var(--mut);
+  }
+
+  .ebtn-p {
+    background: #d6d2c9;
+    font-weight: 550;
+    color: #1a1a18;
+  }
+
+  /* ── Glyph plumbing ──
+   * :global(), because every glyph arrives through set:html and so never
+   * carries the scope attribute a plain selector would demand. */
+  .crumb-i :global(svg),
+  .act-i :global(svg),
+  .env-i :global(svg),
+  .env-addi :global(svg) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* ── Click rings ──
+   * Anchored inside the control each one marks, never at a coordinate on the
+   * scene - hand-written percentages drift the moment any padding changes. */
+  .ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: calc(var(--u) * 34);
+    height: calc(var(--u) * 34);
+    margin: calc(var(--u) * -17) 0 0 calc(var(--u) * -17);
+    border: calc(var(--u) * 1.5) solid #fff;
+    border-radius: 50%;
+    opacity: 0;
+  }
+
+  /* ── The cursor ──
+   * The track is the whole scene, so a percentage translate is a percentage
+   * OF THE SCENE. The stops in `mv-path` are MEASURED against the rendered
+   * scene - if any of this layout moves, re-measure rather than reason. */
+  .cur-track {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+  }
+
+  .cur-press {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* The 0% frame. */
+    .s-agents {
+      opacity: 1;
+    }
+
+    .s-detail,
+    .s-env {
+      opacity: 0;
+    }
+
+    .etyped {
+      opacity: 0;
+    }
+
+    .cur-track {
+      opacity: 1;
+      translate: 12% 94%;
+    }
+
+    .play .s-agents {
+      animation: mv-agents 9s ease infinite;
+    }
+    .play .s-detail {
+      animation: mv-detail 9s ease infinite;
+    }
+    .play .s-env {
+      animation: mv-env 9s ease infinite;
+    }
+    .play .eph {
+      animation: mv-ph-out 9s ease infinite;
+    }
+    .play .etyped {
+      animation: mv-typed-in 9s ease infinite;
+    }
+    .play .ef-name {
+      animation: mv-focus 9s ease infinite;
+    }
+    .play .cur-track {
+      animation: mv-path 9s ease infinite;
+    }
+    .play .cur-press {
+      animation: mv-press 9s ease infinite;
+    }
+    .play .card-hit {
+      animation: mv-press-1 9s ease infinite;
+    }
+    .play .act-hit {
+      animation: mv-press-2 9s ease infinite;
+    }
+    .play .ebtn-p {
+      animation: mv-press-3 9s ease infinite;
+    }
+    .play .r1 {
+      animation: mv-ring1 9s ease infinite;
+    }
+    .play .r2 {
+      animation: mv-ring2 9s ease infinite;
+    }
+    .play .r3 {
+      animation: mv-ring3 9s ease infinite;
+    }
+  }
+
+  /* NO CHROME FADE (owner, 2026-08-18). The frame used to dissolve with
+   * everything else at the seam, which left a beat of empty panel once a loop
+   * - the visual blinking out and back. The frame is the one thing that is
+   * true on every screen, so it never leaves; only what is INSIDE it resets
+   * during the seam, and the reader sees a window whose contents change rather
+   * than a card that flickers.
+   *
+   * This is the rule for every step visual on the page, not just this one. */
+
+  /* Three stops, each with a dwell before its click. Measured coordinates. */
+  @keyframes mv-path {
+    0%,
+    4% {
+      translate: 12% 94%;
+    }
+    18%,
+    24% {
+      translate: 16.7% 57.7%;
+    }
+    40%,
+    48% {
+      translate: 75.6% 67.9%;
+    }
+    68%,
+    86% {
+      translate: 83.5% 76.6%;
+    }
+    89% {
+      translate: 83.5% 76.6%;
+      opacity: 1;
+    }
+    90%,
+    94% {
+      translate: 12% 94%;
+      opacity: 0;
+    }
+    96.8%,
+    100% {
+      translate: 12% 94%;
+      opacity: 1;
+    }
+  }
+
+  @keyframes mv-press {
+    0%,
+    21% {
+      scale: 1;
+    }
+    23%,
+    25% {
+      scale: 0.88;
+    }
+    27%,
+    45% {
+      scale: 1;
+    }
+    47%,
+    49% {
+      scale: 0.88;
+    }
+    51%,
+    74% {
+      scale: 1;
+    }
+    76%,
+    78% {
+      scale: 0.88;
+    }
+    80%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  /* The controls take the press too - a pointer that dips over a control that
+   * does not move reads as a cursor twitching beside it. */
+  @keyframes mv-press-1 {
+    0%,
+    21% {
+      scale: 1;
+    }
+    23%,
+    25% {
+      scale: 0.97;
+    }
+    27%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes mv-press-2 {
+    0%,
+    45% {
+      scale: 1;
+    }
+    47%,
+    49% {
+      scale: 0.96;
+    }
+    51%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes mv-press-3 {
+    0%,
+    74% {
+      scale: 1;
+    }
+    76%,
+    78% {
+      scale: 0.95;
+    }
+    80%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes mv-ring1 {
+    0%,
+    21% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    24% {
+      opacity: 0.5;
+    }
+    31%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  @keyframes mv-ring2 {
+    0%,
+    45% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    48% {
+      opacity: 0.5;
+    }
+    55%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  @keyframes mv-ring3 {
+    0%,
+    74% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    77% {
+      opacity: 0.5;
+    }
+    84%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  @keyframes mv-agents {
+    0%,
+    25% {
+      opacity: 1;
+    }
+    31%,
+    94% {
+      opacity: 0;
+    }
+    96.8%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes mv-detail {
+    0%,
+    30% {
+      opacity: 0;
+    }
+    36%,
+    49% {
+      opacity: 1;
+    }
+    55%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes mv-env {
+    0%,
+    54% {
+      opacity: 0;
+    }
+    60%,
+    86% {
+      opacity: 1;
+    }
+    89%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The paste. Placeholders out, values in, with a beat of daylight before the
+   * Save - that gap is what reads as "you did that", and without it the row
+   * appears already filled and the step loses its verb. */
+  @keyframes mv-ph-out {
+    0%,
+    58% {
+      opacity: 1;
+    }
+    62%,
+    94% {
+      opacity: 0;
+    }
+    96.8%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes mv-typed-in {
+    0%,
+    58% {
+      opacity: 0;
+    }
+    62%,
+    86% {
+      opacity: 1;
+    }
+    89%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The name field carries focus while it is being filled - the ring is what
+   * places the cursor in the row rather than leaving two fields to change on
+   * their own. */
+  @keyframes mv-focus {
+    0%,
+    54% {
+      border-color: var(--line);
+    }
+    58%,
+    66% {
+      border-color: rgb(255 255 255 / 0.28);
+    }
+    70%,
+    100% {
+      border-color: var(--line);
+    }
+  }
+</style>
