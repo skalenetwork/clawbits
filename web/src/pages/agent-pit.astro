@@ -270,56 +270,14 @@ const schema = [
       </div>
 
       <div class="head">
-        {/* Same shape and placement as the homepage's "Introducing
-            Lobstertalk" pill, doing a slightly different job: an invitation
-            rather than an announcement. The homepage has news to break; this
-            page IS the thing, so the pill's only real job is to tell an
-            arriving reader there is a walkthrough below and start them down
-            it. Only the palette differs from the homepage's - that one is
-            white-on-dark because its canvas is near-black, and the same
-            treatment here would be a white pill with white text.
-
-            It points at step one rather than off-site: the CTA below already
-            goes to AgentPit, and two links to the same place stacked three
-            inches apart is one of them wasted. */}
-        {/* RADIOGROUP, NOT A TABLIST. It looks like tabs and it will drive the
-            steps, but `role="tab"` is a promise of a `tabpanel` this page does
-            not have yet - a screen reader would announce a tab and then find
-            nothing it controls. A radiogroup is honest about a mutually
-            exclusive choice and stays correct once the steps do branch, so
-            this does not need revisiting then.
-
-            `data-active` is the single source of truth: the thumb reads it in
-            CSS, the script writes it, and aria-checked follows. Nothing else
-            stores which tab is on. */}
-        <div
-          class="tabs"
-          role="radiogroup"
-          aria-label="How your agent runs"
-          data-active="0"
-          data-param={TAB_PARAM}
-        >
-          {/* Behind the labels, and the only thing that moves. Painting the
-              selected tab's own background instead would cross-fade two fills
-              rather than slide one, which is the difference between a
-              segmented control and two buttons. */}
-          <span class="tabs-thumb" aria-hidden="true"></span>
-          {/* Roving tabindex: one stop for the whole group, then arrow keys
-              inside it - the radiogroup pattern. Tabbing through both would
-              make a two-item control cost two tab stops. */}
-          {TABS.map((tab, i) => (
-            <button
-              type="button"
-              class="tab"
-              role="radio"
-              data-tab={tab.id}
-              aria-checked={i === 0 ? "true" : "false"}
-              tabindex={i === 0 ? 0 : -1}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        {/* THE HERO CARRIES NO CONTROL any more (owner, 2026-08-18). The
+            reef/self-hosted segmented control used to open this canvas, above
+            the lockup, where it asked the reader to choose a path before the
+            page had told them there were two - and then the thing it changed
+            was three screens below the fold, out of sight of the click. It now
+            sits in step two, the only step that branches, right where the
+            answer changes what the reader is being told to do. See .tabs in
+            the rails below. */}
 
         {/* Two app icons, overlapped and turned in space - the whole
             partnership before a word of copy. Both are the products' real
@@ -432,8 +390,88 @@ const schema = [
                     step. */}
                 <h2 class="display display-md">{step.heading}</h2>
 
+                {/* THE PATH SWITCH, and it renders only on the step that
+                    branches - `bodies.length > 1` rather than `i === 1`, so it
+                    follows the data: give a second step a `selfHosted` and the
+                    control appears there too without anyone remembering to
+                    move an index. It would then render twice, which is the
+                    point at which this needs the pair kept in step (both
+                    groups read the same `html[data-tab]`, so they would agree;
+                    each just needs its own `data-active` written, and the
+                    script below already loops over every `.tabs` it finds).
+
+                    Between the heading and the bodies on purpose: the reader
+                    has been told what step two IS before being asked which
+                    version of it they want, and the thing that changes is the
+                    very next paragraph rather than a screen away.
+
+                    RADIOGROUP, NOT A TABLIST. `role="tab"` is a promise of a
+                    `tabpanel`, and the bodies below are not one - they are two
+                    renderings of the same step, one of which is displayed. A
+                    radiogroup is honest about a mutually exclusive choice.
+
+                    `data-active` is the single source of truth for the
+                    control: the thumb reads it in CSS, the script writes it,
+                    and aria-checked follows. Nothing else stores which tab is
+                    on. */}
+                {bodies.length > 1 && (
+                  <div class="switch">
+                    {/* The id is indexed because this block is inside the
+                        STEPS map - a literal "tabs-label" would be a duplicate
+                        id the moment a second step branched, and duplicate ids
+                        are the one thing aria-labelledby cannot survive. */}
+                    <p class="switch-label" id={`switch-label-${i}`}>
+                      Where does your agent run?
+                    </p>
+                    <div
+                      class="tabs"
+                      role="radiogroup"
+                      aria-labelledby={`switch-label-${i}`}
+                      data-active="0"
+                      data-param={TAB_PARAM}
+                    >
+                      {/* Behind the labels, and the only thing that moves.
+                          Painting the selected tab's own background instead
+                          would cross-fade two fills rather than slide one,
+                          which is the difference between a segmented control
+                          and two buttons. */}
+                      <span class="tabs-thumb" aria-hidden="true"></span>
+                      {/* Roving tabindex: one stop for the whole group, then
+                          arrow keys inside it - the radiogroup pattern.
+                          Tabbing through both would make a two-item control
+                          cost two tab stops. */}
+                      {TABS.map((tab, i) => (
+                        <button
+                          type="button"
+                          class="tab"
+                          role="radio"
+                          data-tab={tab.id}
+                          aria-checked={i === 0 ? "true" : "false"}
+                          tabindex={i === 0 ? 0 : -1}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {bodies.map(({ tab, data }) => (
+                  /* TWO ELEMENTS, NOT ONE, and only because the switch has to
+                     animate. The outer is the collapsing track (see .body in
+                     the styles - `grid-template-rows` going 1fr to 0fr); the
+                     inner is the thing that gets clipped as it closes. Put the
+                     content straight on the track and there is nothing for
+                     `overflow` to hide, so the copy would spill out of a
+                     zero-height row instead of being wiped by it.
+
+                     `.body-in` is rendered for EVERY step, branching or not -
+                     a wrapper that appears only on step two would mean the
+                     column's spacing rules have to work on two different
+                     shapes. It costs a div on four steps and buys one
+                     shape. */
                   <div class="body" data-only={tab}>
+                   <div class="body-in">
                     {data.bullets.length > 0 && (
                       <ul class="points" role="list">
                         {data.bullets.map((point) => (
@@ -492,6 +530,7 @@ const schema = [
                         </a>
                       </p>
                     )}
+                   </div>
                   </div>
                 ))}
               </div>
@@ -569,30 +608,46 @@ const schema = [
    * context and in some embedded browsers, and the message is visible and
    * selectable right beside the button. Swapping the label to an error would
    * make a page that works look broken. */
-  /* Hero tabs. `data-active` on the group is the whole state: CSS slides the
-   * thumb off it, the script keeps aria-checked and the roving tabindex in
-   * step, and the URL carries it between visits. Nothing here touches the
-   * steps yet - see TABS in the frontmatter. */
-  const group = document.querySelector<HTMLElement>(".tabs");
-  if (group) {
-    const param = group.dataset.param ?? "tab";
-    const tabs = [...group.querySelectorAll<HTMLButtonElement>(".tab")];
-    const slugs = tabs.map((t) => t.dataset.tab ?? "");
+  /* The path switch in step two. `data-active` on the group is the control's
+   * whole state: CSS slides the thumb off it, the script keeps aria-checked
+   * and the roving tabindex in step, `html[data-tab]` carries the choice to
+   * the bodies, and the URL carries it between visits.
+   *
+   * WRITTEN FOR N GROUPS even though the page renders one. The control is
+   * emitted per branching step (see `bodies.length > 1` in the template), so a
+   * second branching step puts a second copy on the page - and two copies of a
+   * radiogroup that disagreed about which option is on would be worse than no
+   * control. Selecting therefore writes EVERY group, and only the group the
+   * reader is actually keyboarding takes focus. */
+  const groups = [...document.querySelectorAll<HTMLElement>(".tabs")];
+  if (groups.length) {
+    const param = groups[0].dataset.param ?? "tab";
+    const tabsIn = (g: HTMLElement) => [...g.querySelectorAll<HTMLButtonElement>(".tab")];
+    /* Every group renders the same TABS in the same order, so one group's
+     * slugs are the page's. */
+    const slugs = tabsIn(groups[0]).map((t) => t.dataset.tab ?? "");
 
-    const apply = (i: number, focus: boolean) => {
-      group.dataset.active = String(i);
-      /* The steps read this, not `data-active` - they are in the rails, with
-       * no shared ancestor below <html> to hang it on. The default tab clears
-       * the attribute rather than writing "reef", so the served markup and a
-       * page switched back to the first tab are the same state rather than two
-       * that happen to look alike. */
+    /* `focusIn` is the group whose arrow keys moved the selection, or null for
+     * a click and for a restore - stealing focus on either of those would drag
+     * the reader up the page. */
+    const apply = (i: number, focusIn: HTMLElement | null) => {
+      /* The bodies read this, not `data-active` - the control and the bodies
+       * it switches are siblings today, but the visuals it also switches are
+       * in the other column, so the state hangs on the one ancestor both are
+       * inside. The default tab CLEARS the attribute rather than writing
+       * "reef", so the served markup and a page switched back to the first tab
+       * are the same state rather than two that happen to look alike. */
       if (i === 0) delete document.documentElement.dataset.tab;
       else document.documentElement.dataset.tab = slugs[i];
-      tabs.forEach((t, j) => {
-        t.setAttribute("aria-checked", j === i ? "true" : "false");
-        t.tabIndex = j === i ? 0 : -1;
+      groups.forEach((g) => {
+        g.dataset.active = String(i);
+        const tabs = tabsIn(g);
+        tabs.forEach((t, j) => {
+          t.setAttribute("aria-checked", j === i ? "true" : "false");
+          t.tabIndex = j === i ? 0 : -1;
+        });
+        if (focusIn === g) tabs[i].focus();
       });
-      if (focus) tabs[i].focus();
     };
 
     /* An unknown or absent value falls back to the first tab rather than to
@@ -620,28 +675,31 @@ const schema = [
       history.replaceState(history.state, "", url);
     };
 
-    const select = (i: number, focus: boolean) => {
-      apply(i, focus);
+    const select = (i: number, focusIn: HTMLElement | null) => {
+      apply(i, focusIn);
       writeUrl(i);
     };
 
-    tabs.forEach((t, i) => t.addEventListener("click", () => select(i, false)));
+    groups.forEach((g) => {
+      tabsIn(g).forEach((t, i) => t.addEventListener("click", () => select(i, null)));
 
-    /* Arrow keys wrap, which is the radiogroup pattern - and with two options
-     * every arrow is a toggle, so Up/Left and Down/Right share a branch. */
-    group.addEventListener("keydown", (e) => {
-      const back = e.key === "ArrowLeft" || e.key === "ArrowUp";
-      const fwd = e.key === "ArrowRight" || e.key === "ArrowDown";
-      if (!back && !fwd) return;
-      e.preventDefault();
-      const now = Number(group.dataset.active ?? 0);
-      select((now + (fwd ? 1 : tabs.length - 1)) % tabs.length, true);
+      /* Arrow keys wrap, which is the radiogroup pattern - and with two
+       * options every arrow is a toggle, so Up/Left and Down/Right share a
+       * branch. */
+      g.addEventListener("keydown", (e) => {
+        const back = e.key === "ArrowLeft" || e.key === "ArrowUp";
+        const fwd = e.key === "ArrowRight" || e.key === "ArrowDown";
+        if (!back && !fwd) return;
+        e.preventDefault();
+        const now = Number(g.dataset.active ?? 0);
+        select((now + (fwd ? 1 : slugs.length - 1)) % slugs.length, g);
+      });
     });
 
     /* Back/forward can still land on a different ?tab= - from a link, or from
      * a history entry this page did not write. Restore without rewriting the
      * URL, or the entry being navigated to gets overwritten as it arrives. */
-    addEventListener("popstate", () => apply(indexFromUrl(), false));
+    addEventListener("popstate", () => apply(indexFromUrl(), null));
 
     /* Restore on load. `apply`, not `select`: an arriving ?tab= is already in
      * the URL and does not need writing back.
@@ -651,9 +709,11 @@ const schema = [
      * the script is deferred, so that slide would read as the page changing
      * its mind. Two frames, because one still lands inside the same style
      * recalculation and the transition fires anyway. */
-    apply(indexFromUrl(), false);
+    apply(indexFromUrl(), null);
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      group.dataset.ready = "";
+      groups.forEach((g) => {
+        g.dataset.ready = "";
+      });
     }));
   }
 
@@ -807,92 +867,6 @@ const schema = [
    * the type sits straight on it. Do not reintroduce one - if the headline
    * ever stops reading, dial the shader's own `intensity` down instead, which
    * costs the art nothing.  */
-
-  /* ── Hero tabs ────────────────────────────────────────────────────────
-   * A track holding one chip that slides. The selected tab wears the geometry
-   * the hero's old pill did - 1.625rem tall, 550/0.75rem label, the same white
-   * fill - because it took that pill's place in the composition. The pill
-   * itself is gone; these values are now the only copy.
-   *
-   * The track is the chip's fill at roughly half strength, so the off tab
-   * reads as a dimmer of the same material rather than as a second colour. */
-  .tabs {
-    position: relative;
-    display: inline-grid;
-    grid-auto-flow: column;
-    /* Equal columns, so the thumb is exactly half the track and can slide on a
-     * percentage with nothing to measure. Sized by the longer label. */
-    grid-auto-columns: 1fr;
-    margin-bottom: clamp(1.5rem, 3vw, 2rem);
-    padding: var(--tabs-pad, 0.1875rem);
-    border-radius: var(--radius-pill);
-    background: rgb(255 255 255 / 0.3);
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
-  }
-
-  .tabs-thumb {
-    position: absolute;
-    z-index: 0;
-    inset: var(--tabs-pad, 0.1875rem);
-    /* Half the track's INNER width - `inset` already took the padding off both
-     * ends, so the thumb spans the full inner box and this halves it. */
-    inline-size: calc((100% - var(--tabs-pad, 0.1875rem) * 2) / 2);
-    border-radius: var(--radius-pill);
-    background: rgb(255 255 255 / 0.58);
-  }
-
-  /* The slide is only for a CHOICE, never for a restore. Until the script has
-   * marked the group ready, the thumb jumps - a page opened on ?tab=self-hosted
-   * would otherwise paint the first tab and slide across, which reads as the
-   * page changing its mind rather than as landing where it was asked to.
-   *
-   * `translate`, not `left`: a compositor-only move, and it leaves `inset` to
-   * own the geometry so the two never fight. */
-  .tabs[data-ready] .tabs-thumb {
-    transition: translate 320ms var(--ease-out-expo);
-  }
-
-  .tabs[data-active="1"] .tabs-thumb {
-    translate: 100% 0;
-  }
-
-  /* SECONDARY on both, on and off (owner, 2026-08-18) - the thumb carries the
-   * selected state by itself, so the labels are one tier and the fill is the
-   * only difference between them.
-   *
-   * Same contrast note as .lede above: --color-muted is ~3.3:1 on this blue.
-   * It fares better here than in the lede on the OFF tab (the track's white
-   * wash lifts the ground under it) and better again on the ON tab, where it
-   * sits on the near-white thumb. 12px is still the smallest type on the
-   * canvas, so this is the tightest of the three - do not shrink it further
-   * without re-measuring. */
-  .tab {
-    position: relative;
-    z-index: 1;
-    height: 1.625rem;
-    padding-inline: 1rem;
-    border: 0;
-    border-radius: var(--radius-pill);
-    background: none;
-    font: inherit;
-    font-size: 0.75rem;
-    font-weight: 550;
-    letter-spacing: 0.01em;
-    color: var(--color-muted);
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .tab[aria-checked="true"] {
-    cursor: default;
-  }
-
-  /* Hover only where it means something - the on tab already sits on the fill
-   * this would be previewing. */
-  .tab[aria-checked="false"]:hover {
-    background: rgb(255 255 255 / 0.28);
-  }
 
   .head {
     /* One number, read by the tiles AND by the negative gap that overlaps
@@ -1310,31 +1284,238 @@ const schema = [
     inset: 0;
   }
 
+  /* ── The path switch ──────────────────────────────────────────────────
+   * A track holding one chip that slides. It used to live on the hero canvas
+   * and wore that canvas's palette - a white-on-blue chip in a translucent,
+   * backdrop-blurred track. On the page's cream ground none of that survives:
+   * a 30%-white track is invisible here, and a blur has nothing behind it to
+   * blur. So the material is restated in the page's own tokens - a faint ink
+   * wash for the track, the raised paper for the chip - and the geometry is
+   * all that carried over.
+   *
+   * TWO TIERS OF LABEL now, where the hero's were one. On blue, the thumb
+   * alone could carry the selected state because both labels sat on a
+   * light-on-light wash; on cream the off tab reads perfectly well, so the on
+   * tab has to take the near-black or the control looks like it has no
+   * selection at all. */
+  .switch {
+    /* Against .points' and .body's own 1rem top margin: this sits between the
+     * heading and the instructions and needs to belong to neither, so it takes
+     * more air above than the body below it does. */
+    margin: 1.375rem 0 0;
+  }
+
+  /* SENTENCE CASE AND A QUESTION MARK, not a label. It reads as the page
+   * asking, which is what makes the two chips beside it read as the answer -
+   * the alternative ("Runtime", "Environment") is a form field, and this is a
+   * walkthrough. */
+  .switch-label {
+    margin: 0 0 0.5rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--color-muted);
+  }
+
+  .tabs {
+    position: relative;
+    display: inline-grid;
+    grid-auto-flow: column;
+    /* Equal columns, so the thumb is exactly half the track and can slide on a
+     * percentage with nothing to measure. Sized by the longer label. */
+    grid-auto-columns: 1fr;
+    padding: var(--tabs-pad, 0.1875rem);
+    border-radius: var(--radius-pill);
+    background: rgb(12 13 14 / 0.05);
+  }
+
+  .tabs-thumb {
+    position: absolute;
+    z-index: 0;
+    /* Half the track's INNER width - `inset` already took the padding off both
+     * ends, so the thumb spans the full inner box and this halves it. */
+    inset: var(--tabs-pad, 0.1875rem);
+    inline-size: calc((100% - var(--tabs-pad, 0.1875rem) * 2) / 2);
+    border-radius: var(--radius-pill);
+    /* Raised paper plus one soft contact shadow. The chip has to sit ABOVE a
+     * wash that is itself darker than the page, and a flat fill at this size
+     * reads as a second track rather than as the thing on top of it. */
+    background: var(--color-ink-raised);
+    box-shadow: 0 1px 2px rgb(12 13 14 / 0.1);
+  }
+
+  /* The slide is only for a CHOICE, never for a restore. Until the script has
+   * marked the group ready, the thumb jumps - a page opened on
+   * ?tab=self-hosted would otherwise paint the first tab and slide across,
+   * which reads as the page changing its mind rather than as landing where it
+   * was asked to.
+   *
+   * `translate`, not `left`: a compositor-only move, and it leaves `inset` to
+   * own the geometry so the two never fight. */
+  .tabs[data-ready] .tabs-thumb {
+    transition: translate 320ms var(--ease-out-expo);
+  }
+
+  .tabs[data-active="1"] .tabs-thumb {
+    translate: 100% 0;
+  }
+
+  .tab {
+    position: relative;
+    z-index: 1;
+    height: 1.75rem;
+    padding-inline: 0.875rem;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: none;
+    font: inherit;
+    font-size: 0.8125rem;
+    font-weight: 550;
+    letter-spacing: 0.01em;
+    color: var(--color-muted);
+    white-space: nowrap;
+    cursor: pointer;
+    /* The label darkens as the chip arrives under it, so the two read as one
+     * move. Same duration as the thumb; no `data-ready` gate needed, because a
+     * colour that starts correct has nothing to animate from. */
+    transition: color 320ms var(--ease-out-expo);
+  }
+
+  .tab[aria-checked="true"] {
+    color: var(--color-paper);
+    cursor: default;
+  }
+
+  /* Hover only where it means something - the on tab already sits on the fill
+   * this would be previewing. */
+  .tab[aria-checked="false"]:hover {
+    color: var(--color-paper);
+  }
+
   /* ── Which variant shows ──────────────────────────────────────────────
    * The server renders reef, because that is the first tab and the URL that
-   * carries no ?tab= means reef. Everything here is the departure from that.
+   * carries no ?tab= means reef.
    *
-   * `html[data-tab]`, not the tab group's own `data-active`: the control lives
-   * in the hero and the bodies live in the rails, so there is no shared
-   * ancestor further down to hang the state on. :global() around the html half
-   * because Astro scopes by stamping an attribute on elements THIS template
-   * renders, and <html> is the layout's - scoped, the selector would compile
-   * to something <html> can never match and the rule would silently never
-   * fire. That is the same failure that made the bullet icons render at 442px.
+   * `html[data-tab]`, not the tab group's own `data-active`: the control sits
+   * in step two's copy column and it switches a picture in the OTHER column,
+   * so the state has to hang on an ancestor of both - and <html> is also the
+   * one element the pre-paint boot script can reach before the body exists.
+   * :global() around the html half because Astro scopes by stamping an
+   * attribute on elements THIS template renders, and <html> is the layout's -
+   * scoped, the selector would compile to something <html> can never match and
+   * the rule would silently never fire. That is the same failure that made the
+   * bullet icons render at 442px.
    *
-   * Only the second tab needs rules. A `[data-only="reef"]` shown by default
-   * and hidden by an attribute is one state to reason about; a symmetric pair
-   * that both hide and both show is two, and they can disagree. */
-  .body[data-only="self-hosted"] {
-    display: none;
+   * EVERY PROPERTY THAT SWITCHES IS WRITTEN TWICE, once shut and once open,
+   * and that is not redundancy - it is the shape the two variants actually
+   * have. Reef's open state is the base rule and its shut state is an
+   * override; self-hosted starts shut, so its open state has to be an override
+   * too. An earlier pass tried to name only the shut state and let the base
+   * rule carry every open one, and it silently broke exactly here: a base
+   * `.body[data-only]` is less specific than `.body[data-only="self-hosted"]`,
+   * so the self-hosted copy collapsed on load and then never reopened. The
+   * `html[data-tab]` prefix is what puts the open rules over the shut ones.
+   *
+   * The pairs are grouped by PROPERTY rather than by variant so the two halves
+   * of each switch sit next to each other and a missing half is visible. */
+
+  /* ── The switch, animated ─────────────────────────────────────────────
+   * NOT `display: none` any more (owner, 2026-08-18). The two copy variants
+   * are different heights, so swapping them by display made everything below
+   * step two - three more steps and the tail - jump by that difference the
+   * instant the chip was clicked. The control moved down here to sit next to
+   * what it changes, and a snap is exactly the thing you notice when the
+   * change is six inches from your cursor rather than a screen away.
+   *
+   * THE COLLAPSE IS `grid-template-rows`, 1fr to 0fr - the one way to
+   * transition to a content-derived height without measuring it in script. It
+   * needs the pair of elements the template renders: the track collapses, and
+   * `overflow: hidden` on the child inside it does the wiping.
+   *
+   * Both variants animate at once and in opposite directions, which is what
+   * makes the column's total height a straight interpolation between the two:
+   * the outgoing gives up exactly what the incoming takes. Two SEPARATE grids,
+   * one per variant, and that is load-bearing - as two rows of ONE grid, an
+   * intermediate 0.5fr/0.5fr resolves each track against the taller content
+   * and the column bulges to twice the tallest variant halfway through. */
+  .copy .body[data-only] {
+    display: grid;
+    transition: grid-template-rows 420ms var(--ease-out-expo);
   }
 
-  :global(html[data-tab="self-hosted"]) .body[data-only="reef"] {
-    display: none;
+  .copy .body[data-only] > .body-in {
+    /* The clip the collapse needs, AND what floors the row's minimum at zero -
+     * without an overflow other than visible here, the track keeps the
+     * content's min-content height and 0fr never reaches 0. */
+    overflow: hidden;
   }
 
-  :global(html[data-tab="self-hosted"]) .body[data-only="self-hosted"] {
-    display: block;
+  /* ── The height. Shut, then open. ── */
+  .copy .body[data-only="self-hosted"],
+  :global(html[data-tab="self-hosted"]) .copy .body[data-only="reef"] {
+    grid-template-rows: 0fr;
+  }
+
+  .copy .body[data-only="reef"],
+  :global(html[data-tab="self-hosted"]) .copy .body[data-only="self-hosted"] {
+    grid-template-rows: 1fr;
+  }
+
+  /* ── The copy inside it. Shut, then open. ──
+   * `visibility` is what actually takes the hidden copy out of the tab order
+   * and off the accessibility tree - opacity alone would leave a focusable
+   * "Open your agents" link and a copy button sitting invisibly in the page.
+   * It is stepped rather than eased, and DELAYED on the way out so it only
+   * lands once the collapse has finished; on the way in it has no delay, so
+   * the content is present the moment the box starts opening.
+   *
+   * The fade is deliberately faster than the height and starts late on the way
+   * in, so the incoming copy comes up into a box that is already most of the
+   * way open rather than being readable while it is still squashing. */
+  .copy .body[data-only="self-hosted"] > .body-in,
+  :global(html[data-tab="self-hosted"]) .copy .body[data-only="reef"] > .body-in {
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 200ms var(--ease-out-expo),
+      visibility 0s linear 420ms;
+  }
+
+  .copy .body[data-only="reef"] > .body-in,
+  :global(html[data-tab="self-hosted"]) .copy .body[data-only="self-hosted"] > .body-in {
+    opacity: 1;
+    visibility: visible;
+    transition:
+      opacity 260ms var(--ease-out-expo) 120ms,
+      visibility 0s;
+  }
+
+  /* ── The panel. Shut, then open. ──
+   * It is aspect-ratio'd, so there is no height to animate here and the two
+   * scenes simply cross-fade in place.
+   *
+   * A NOTE ON THE LOOPS: under the old `display: none` the hidden scene had no
+   * box, so PlayOnView's observer never saw it and it only started when it was
+   * switched to. `visibility` leaves the box, so both scenes now start on
+   * first view and the one you switch to is caught mid-loop. That is the
+   * trade for the cross-fade, and it is the right way round - these are
+   * ambient loops with no first beat to miss, and a hard cut in the picture
+   * beside a morphing column would read as two different controls. */
+  .visual > .body[data-only="self-hosted"],
+  :global(html[data-tab="self-hosted"]) .visual > .body[data-only="reef"] {
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 300ms var(--ease-out-expo),
+      visibility 0s linear 300ms;
+  }
+
+  .visual > .body[data-only="reef"],
+  :global(html[data-tab="self-hosted"]) .visual > .body[data-only="self-hosted"] {
+    opacity: 1;
+    visibility: visible;
+    transition:
+      opacity 300ms var(--ease-out-expo),
+      visibility 0s;
   }
 
   .sub-note {
@@ -1591,6 +1772,36 @@ const schema = [
     /* The thumb still MOVES, it just arrives immediately - the control would
      * be unreadable if the selected state stopped being shown at all. */
     .tabs[data-ready] .tabs-thumb {
+      transition: none;
+    }
+
+    /* Same call for the switch itself: the variants still swap, they just
+     * swap instantly. Everything here is a `transition`, so turning them off
+     * leaves the end states exactly as they are - the collapsed track is
+     * still 0fr, the hidden copy is still `visibility: hidden`, and nothing
+     * needs restating. The `visibility` delay HAS to go with them, though:
+     * left at 420ms it would hold the outgoing copy on screen for four tenths
+     * of a second after the incoming one had already appeared under it. */
+    /* Every selector that carries a `transition` up in the switch block has to
+     * be repeated here - each of those rules is more specific than a bare
+     * `.body`, so a single low-specificity `transition: none` would silently
+     * leave half the switch still easing. The `visibility` delay is the one
+     * that MUST go: left at 420ms it holds the outgoing copy on screen for
+     * four tenths of a second after the incoming one has appeared under it.
+     *
+     * The end states are untouched, because every one of them is a
+     * `transition` rather than an animation - the shut track is still 0fr and
+     * the hidden copy is still `visibility: hidden`. They just arrive at
+     * once. */
+    .copy .body[data-only],
+    .copy .body[data-only="self-hosted"] > .body-in,
+    :global(html[data-tab="self-hosted"]) .copy .body[data-only="reef"] > .body-in,
+    .copy .body[data-only="reef"] > .body-in,
+    :global(html[data-tab="self-hosted"]) .copy .body[data-only="self-hosted"] > .body-in,
+    .visual > .body[data-only="self-hosted"],
+    :global(html[data-tab="self-hosted"]) .visual > .body[data-only="reef"],
+    .visual > .body[data-only="reef"],
+    :global(html[data-tab="self-hosted"]) .visual > .body[data-only="self-hosted"] {
       transition: none;
     }
   }

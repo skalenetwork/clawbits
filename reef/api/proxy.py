@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from urllib.parse import urlsplit
 
 import httpx
@@ -103,10 +104,64 @@ def _http_client(request: Request) -> httpx.AsyncClient:
     if client is None or client.is_closed:
         client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=5.0, read=None, write=None, pool=5.0),
+            # NO keep-alive reuse. Agent surfaces hang up right after a response
+            # (ttyd/libwebsockets does it on every 401 challenge), but say
+            # nothing about it in the response, so httpx parks the dead socket
+            # in its pool for keepalive_expiry (5s by default) and the NEXT
+            # proxied request within that window dies on it. Basic auth makes
+            # that pair unavoidable — the browser's 401 challenge and its
+            # credentialed retry are milliseconds apart — so every other
+            # terminal open used to 502. Over loopback a fresh connection per
+            # request costs nothing.
+            limits=httpx.Limits(max_keepalive_connections=0),
             follow_redirects=False,
         )
         request.app.state.surface_proxy_client = client
     return client
+
+
+_IDEMPOTENT = {"GET", "HEAD", "OPTIONS"}
+
+
+def _unreachable(sandbox_id: str, url: str, exc: Exception) -> JSONResponse:
+    """The one 502 reef itself mints: the surface did not answer. Say which
+    sandbox — the alternative is Cloudflare's contentless "Bad gateway", which
+    tells the operator nothing about which of the two hops failed."""
+    logger.info("surface proxy: upstream %s unreachable for %s: %s", url, sandbox_id, exc)
+    return JSONResponse(
+        status_code=502,
+        content={"detail": f"agent surface not reachable (sandbox {sandbox_id}) — is it running?"},
+    )
+
+
+async def _send_upstream(
+    client: httpx.AsyncClient,
+    request: Request,
+    url: str,
+    headers: dict[str, str],
+    *,
+    has_body: bool,
+) -> httpx.Response:
+    """Send the proxied request, retrying ONCE on a connection-level failure.
+
+    Only for bodyless idempotent requests: a retry must not replay a side
+    effect, and a request body is an already-consumed ``request.stream()``.
+    Covers the surface coming back mid-request (a restarted agent accepts the
+    connection before its UI binds), which would otherwise surface as a 502 on
+    the first click after a restart."""
+    attempts = 2 if not has_body and request.method.upper() in _IDEMPOTENT else 1
+    last: httpx.HTTPError | None = None
+    for attempt in range(attempts):
+        upstream_req = client.build_request(
+            request.method, url, headers=headers, content=request.stream() if has_body else None
+        )
+        try:
+            return await client.send(upstream_req, stream=True)
+        except httpx.HTTPError as e:
+            last = e
+            if attempt + 1 < attempts:
+                logger.info("surface proxy: retrying %s after %s", url, e)
+    raise last  # type: ignore[misc]  # attempts >= 1, so last is set
 
 
 def _rewrite_location(location: str, digest: str, upstream_base: str) -> str:
@@ -199,17 +254,10 @@ async def proxy_http(digest: str, path: str, request: Request) -> Response:
     # turns bodyless GETs into Transfer-Encoding: chunked requests, which some
     # surface servers (ttyd's libwebsockets) answer with headers but no body.
     has_body = "content-length" in request.headers or "transfer-encoding" in request.headers
-    upstream_req = client.build_request(
-        request.method, url, headers=headers, content=request.stream() if has_body else None
-    )
     try:
-        upstream = await client.send(upstream_req, stream=True)
+        upstream = await _send_upstream(client, request, url, headers, has_body=has_body)
     except httpx.HTTPError as e:
-        logger.info("surface proxy: upstream %s unreachable for %s: %s", url, sandbox_id, e)
-        return JSONResponse(
-            status_code=502,
-            content={"detail": f"agent surface not reachable (sandbox {sandbox_id}) — is it running?"},
-        )
+        return _unreachable(sandbox_id, url, e)
 
     # HTML documents bootstrap the agent UI: buffer and splice in the WebSocket
     # shim (see _inject_ws_shim) so its gateway connection keeps the /s/{digest}/
@@ -218,8 +266,14 @@ async def proxy_http(digest: str, path: str, request: Request) -> Response:
     # drop that header and let Response re-derive content-length from the new body.
     ctype = upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if request.method == "GET" and ctype == "text/html":
+        # A body that dies mid-read is still a dead surface, and nothing has
+        # reached the client yet — answer it like an unreachable upstream
+        # instead of letting the exception tear the connection down (which
+        # reaches the browser as an opaque proxy-level 502).
         try:
             body = _inject_ws_shim(await upstream.aread(), digest)
+        except httpx.HTTPError as e:
+            return _unreachable(sandbox_id, url, e)
         finally:
             await upstream.aclose()
         html = Response(content=body, status_code=upstream.status_code)
@@ -234,10 +288,21 @@ async def proxy_http(digest: str, path: str, request: Request) -> Response:
             html.headers.append(k, v)
         return html
 
+    async def body() -> AsyncIterator[bytes]:
+        # Headers are already on the wire here, so a failure can no longer
+        # become a 502 — log it so a truncated response is traceable to the
+        # surface rather than looking like a client-side bug.
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        except httpx.HTTPError as e:
+            logger.info("surface proxy: stream from %s for %s failed: %s", url, sandbox_id, e)
+            raise
+
     # aiter_raw streams the still-encoded entity bytes, so content-length and
     # content-encoding pass through untouched.
     out = StreamingResponse(
-        upstream.aiter_raw(),
+        body(),
         status_code=upstream.status_code,
         background=BackgroundTask(upstream.aclose),
     )

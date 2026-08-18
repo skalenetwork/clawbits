@@ -121,6 +121,64 @@ def http_upstream():
         server.shutdown()
 
 
+class _KeepAliveHandler(BaseHTTPRequestHandler):
+    """A keep-alive-capable upstream that records the source port of every
+    request, so a test can tell a reused connection from a fresh one."""
+
+    protocol_version = "HTTP/1.1"  # without this http.server closes after each response
+    seen: list[int] = []
+
+    def do_GET(self) -> None:  # noqa: N802 — http.server API
+        type(self).seen.append(self.client_address[1])
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *args: object) -> None:  # quiet
+        return
+
+
+@pytest.fixture()
+def keepalive_upstream():
+    _KeepAliveHandler.seen = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _KeepAliveHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port, _KeepAliveHandler.seen
+    finally:
+        server.shutdown()
+
+
+@pytest.fixture()
+def truncating_html_upstream():
+    """Promises more HTML than it delivers, then hangs up — what a surface that
+    dies mid-response looks like to the proxy."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+
+    def serve() -> None:
+        with contextlib.suppress(OSError):
+            while True:
+                conn, _ = listener.accept()
+                with conn:
+                    conn.recv(65536)
+                    conn.sendall(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                        b"Content-Length: 500\r\n\r\n<!doctype html><html><head></head>"
+                    )
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield listener.getsockname()[1]
+    finally:
+        listener.close()
+
+
 @pytest.fixture()
 def ws_upstream():
     from websockets.sync.server import serve
@@ -266,6 +324,35 @@ def test_http_proxy_upstream_down_is_502(monkeypatch):
     dead_port = sock.getsockname()[1]
     sock.close()  # nothing listens here anymore
     app = _make_app([_rec(port=dead_port)])
+    digest = surface_digest(SECRET, "oc-1")
+    with TestClient(app) as client:
+        r = client.get(f"/s/{digest}/")
+        assert r.status_code == 502
+        assert "not reachable" in r.json()["detail"]
+
+
+def test_http_proxy_does_not_reuse_upstream_connections(keepalive_upstream, monkeypatch):
+    # Regression: agent surfaces (ttyd) hang up after a response without saying
+    # so, and a pooled dead socket made every SECOND proxied request 502 — which
+    # basic auth hits every time, since the 401 challenge and the credentialed
+    # retry are milliseconds apart.
+    port, seen = keepalive_upstream
+    monkeypatch.setenv("REEF_SUBDOMAIN_SECRET", SECRET)
+    app = _make_app([_rec(port=port)])
+    digest = surface_digest(SECRET, "oc-1")
+    with TestClient(app) as client:
+        assert client.get(f"/s/{digest}/first").status_code == 200
+        assert client.get(f"/s/{digest}/second").status_code == 200
+    assert len(seen) == 2
+    assert len(set(seen)) == 2, "proxy reused a pooled upstream connection"
+
+
+def test_html_proxy_body_dying_mid_read_is_502(truncating_html_upstream, monkeypatch):
+    # The HTML branch buffers (to splice the WS shim), so a body that dies is
+    # caught before anything reaches the client: it must become reef's own
+    # diagnosable 502, not an exception that drops the connection.
+    monkeypatch.setenv("REEF_SUBDOMAIN_SECRET", SECRET)
+    app = _make_app([_rec(port=truncating_html_upstream)])
     digest = surface_digest(SECRET, "oc-1")
     with TestClient(app) as client:
         r = client.get(f"/s/{digest}/")
