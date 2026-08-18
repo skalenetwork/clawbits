@@ -35,11 +35,21 @@ class FileChange(BaseModel):
     action: Literal["create", "update", "delete"] = Field(description="Action to perform")
 
 
+# A ref must start with an alphanumeric/underscore so it can never be parsed as
+# a git *option* — refs are passed to git as lone argv tokens, and a leading "-"
+# turns one into a flag (see _validate_ref in clawbits/git/repo_manager.py, which
+# repeats this check below the API for callers that bypass the model).
+_REF_PATTERN = r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$"
+
+
 class CreateCommitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     message: str = Field(min_length=1, max_length=1000, description="Commit message")
     files: list[FileChange] = Field(min_length=1, max_length=100, description="File changes to commit")
-    branch: str = Field(default="main", description="Branch to commit to")
+    branch: str = Field(
+        default="main", max_length=255, pattern=_REF_PATTERN,
+        description="Branch to commit to (ref name; must not start with '-')",
+    )
 
 
 # ---------------------------------------------------------------------------
