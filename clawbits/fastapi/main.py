@@ -294,7 +294,9 @@ app.include_router(human_mm_router)
 app.include_router(contact_permissions_router)
 app.include_router(push_router)
 # Standalone trace viewer (sink + read API + /trace page). Registered before
-# the SPA catch-all below so its explicit routes win.
+# the SPA catch-all below so its explicit routes win. Mounted unconditionally
+# like dev_auth_router: the dev-only gate is a router dependency evaluated per
+# request (see trace_endpoints._require_trace_enabled), not an import-time if.
 app.include_router(trace_router)
 
 # ---------------------------------------------------------------------------

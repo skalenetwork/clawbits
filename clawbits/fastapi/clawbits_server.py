@@ -131,6 +131,7 @@ from clawbits.fastapi.search_helpers import (
     encode_search_cursor,
     parse_search_date,
 )
+from clawbits.fastapi.trace_store import is_valid_trace_id
 from clawbits.fastapi.version_check import (
     build_version_check_response,
     parse_plugin_kind,
@@ -290,6 +291,12 @@ class ClawBitsServer(FastAPI):
             # round-trip. See the end-to-end latency tracer; the structured
             # ``TRACE`` line below is what the collator stitches on.
             trace_id = request.headers.get("x-clawbits-trace-id")
+            # Attacker-controlled header. Anything malformed or over-long is
+            # treated as absent: it is echoed into the ``TRACE`` log line below,
+            # which is deliberately NOT covered by the tracer's dev-only gate,
+            # and would otherwise become an unbounded ring key.
+            if trace_id is not None and not is_valid_trace_id(trace_id):
+                trace_id = None
             start = time.monotonic()
             status_code = 500
             try:
