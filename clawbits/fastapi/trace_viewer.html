@@ -81,7 +81,10 @@
 const SUBS = ["frontend", "server", "plugin"];
 function subClass(s) { return SUBS.includes(s) ? "b-" + s : "b-other"; }
 function barColor(s) {
-  return { frontend: "var(--frontend)", server: "var(--server)", plugin: "var(--plugin)" }[s] || "var(--other)";
+  // Allow-list, mirroring subClass above. A bare object-literal lookup returns
+  // an *inherited* member for a crafted subsystem ("constructor", "toString",
+  // "valueOf") and stringifies a function straight into the style attribute.
+  return SUBS.includes(s) ? `var(--${s})` : "var(--other)";
 }
 function fmtMs(ms) {
   if (ms == null) return "—";
@@ -110,11 +113,13 @@ async function loadList() {
     el.innerHTML = '<div class="empty">No traces yet. Send a message in the app, then refresh.</div>';
     return;
   }
+  // data-id below is encodeURIComponent'd, which is safe ONLY because the
+  // attribute is double-quoted: it escapes " to %22 but leaves ' intact.
   el.innerHTML = data.traces.map((t) => `
     <div class="trace-row ${t.trace_id === selected ? "active" : ""}" data-id="${encodeURIComponent(t.trace_id)}">
-      <div><span class="dur">${fmtMs(t.total_ms)}</span><span class="tid">${t.trace_id}</span></div>
+      <div><span class="dur">${fmtMs(t.total_ms)}</span><span class="tid">${escapeHtml(t.trace_id)}</span></div>
       <div class="meta">
-        ${t.subsystems.map((s) => `<span class="badge ${subClass(s)}">${s}</span>`).join("")}
+        ${t.subsystems.map((s) => `<span class="badge ${subClass(s)}">${escapeHtml(s)}</span>`).join("")}
         ${t.span_count} spans · ${fmtClock(t.t_start_ms)}
       </div>
     </div>`).join("");
@@ -145,7 +150,7 @@ function renderWaterfall(trace) {
     const width = Math.max((dur / span) * 100, 0.5);
     return `
       <div class="row">
-        <div class="label" title="${s.span}">${s.span}</div>
+        <div class="label" title="${escapeHtml(s.span)}">${escapeHtml(s.span)}</div>
         <div class="track">
           <div class="bar" style="left:${left}%;width:${width}%;background:${barColor(s.subsystem)}">
             <span class="barlabel">${fmtMs(dur)}</span>
@@ -155,7 +160,7 @@ function renderWaterfall(trace) {
   }).join("");
   document.getElementById("detail").innerHTML = `
     <div class="wf-head">
-      <div class="tid">${trace.trace_id}</div>
+      <div class="tid">${escapeHtml(trace.trace_id)}</div>
       <div class="total">total ${fmtMs(trace.total_ms)} · ${trace.spans.length} spans · start ${fmtClock(t0)}</div>
     </div>
     <div class="axis"><div class="label"></div><div class="track"><span>0</span><span class="end">${fmtMs(span)}</span></div></div>
@@ -165,8 +170,13 @@ function renderWaterfall(trace) {
     earliest span. Cross-process timings are exact on a single host; across machines clock skew can shift bars.</div>`;
 }
 
+// INVARIANT: every interpolation into an innerHTML template below MUST go
+// through this. Span fields come straight from the POST sink and can be any
+// JSON type, so coerce with String(); quotes are escaped because several of
+// those sinks sit inside HTML attributes.
 function escapeHtml(s) {
-  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
 loadList();

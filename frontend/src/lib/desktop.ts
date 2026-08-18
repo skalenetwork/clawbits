@@ -61,6 +61,80 @@ function clearStoredAuthToken(): void {
   try { window.localStorage.removeItem(AUTH_TOKEN_KEY); } catch { /* quota */ }
 }
 
+const PENDING_OAUTH_STATE_KEY = "fc_desktop_oauth_state";
+/** Matches the ``max_age=600`` the backend puts on its OAuth state cookie —
+ *  a nonce older than that belongs to a flow the server has already
+ *  forgotten, so accepting it could only ever be a replay. */
+const PENDING_OAUTH_STATE_TTL_MS = 10 * 60_000;
+
+/**
+ * Mint a one-shot nonce for a desktop OAuth login and remember it.
+ *
+ * The system browser, not the app, receives the OAuth callback; the app
+ * learns the outcome from a `clawbits://oauth-callback` URL that *any*
+ * local program can forge — including a web page pointing an iframe at
+ * the scheme handler. The nonce is what distinguishes a real callback
+ * from a forged one: it goes out on the start URL, rides the WorkOS
+ * `state` round trip, and must come back in the deep link.
+ *
+ * Persisted rather than held in memory so the flow survives both a
+ * webview reload and the cold-start case where the OS relaunches the app
+ * to deliver the URL. localStorage is no more exposed than the session
+ * token already stored beside it.
+ */
+export function beginDesktopOAuth(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  const nonce = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  try {
+    window.localStorage.setItem(
+      PENDING_OAUTH_STATE_KEY,
+      JSON.stringify({ nonce, at: Date.now() }),
+    );
+  } catch { /* quota */ }
+  return nonce;
+}
+
+/**
+ * Consume the pending nonce and report whether `state` matches it.
+ *
+ * One shot: the stored nonce is dropped whether or not it matched, so a
+ * deep link can never be replayed and a failed attempt can't be probed
+ * repeatedly against the same secret.
+ */
+function consumePendingOAuthState(state: string | null): boolean {
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(PENDING_OAUTH_STATE_KEY);
+    window.localStorage.removeItem(PENDING_OAUTH_STATE_KEY);
+  } catch { /* quota */ }
+  if (!raw || !state) return false;
+  try {
+    const pending = JSON.parse(raw) as { nonce?: unknown; at?: unknown };
+    if (typeof pending.nonce !== "string" || typeof pending.at !== "number") return false;
+    if (Date.now() - pending.at > PENDING_OAUTH_STATE_TTL_MS) return false;
+    return pending.nonce === state;
+  } catch {
+    return false;
+  }
+}
+
+let sessionIsLive = false;
+
+/**
+ * Mirror of "AuthContext currently has a user", used by the deep-link
+ * handler to refuse a token hand-off mid-session.
+ *
+ * Deliberately NOT derived from `getStoredAuthToken()`: the stored token
+ * is only cleared on an explicit logout, so it outlives its own session.
+ * Gating on its presence would refuse the deep link of a user who is
+ * legitimately signing back in after an expiry — locking them out for
+ * good.
+ */
+export function setDesktopSessionLive(live: boolean): void {
+  sessionIsLive = live;
+}
+
 /**
  * Install a window.fetch wrapper that:
  *  - rewrites relative /api/* to VITE_CLAWBITS_API_URL (built desktop only),
@@ -306,6 +380,16 @@ const KNOWN_DEEP_LINK_PROTOCOLS = new Set([
  * AuthContext re-probes /me with the Bearer header. Listens for the
  * same event the Rust setup() fires in both cold-start (initial-URL)
  * and warm hand-off cases.
+ *
+ * Treat the payload as hostile. The OS routes the scheme to us from
+ * whatever fired it, so an attacker who hosts
+ * `<iframe src="clawbits://oauth-callback?token=…">` can hand this
+ * listener a session they control — and since the stored token becomes
+ * the `Authorization: Bearer` on every API call, and the backend prefers
+ * Bearer over the cookie, the victim would go on working normally inside
+ * the attacker's account. Two things gate the hand-off: the callback
+ * must echo the nonce from a login this install started, and there must
+ * be no live session to displace.
  */
 export async function setupDeepLinkListener(): Promise<void> {
   if (!isDesktop) return;
@@ -318,10 +402,15 @@ export async function setupDeepLinkListener(): Promise<void> {
     if (!KNOWN_DEEP_LINK_PROTOCOLS.has(parsed.protocol)) return;
     if (parsed.host === "oauth-callback") {
       const token = parsed.searchParams.get("token");
-      if (token) {
-        setStoredAuthToken(token);
-        window.location.replace("/home");
-      }
+      if (!token) return;
+      // Never swap the session out from under a signed-in user. Mirrors
+      // the mobile handler's `status === 'authenticated'` early return in
+      // apps/mobile/src/app/_layout.tsx.
+      if (sessionIsLive) return;
+      // Bind the callback to a login this install actually started.
+      if (!consumePendingOAuthState(parsed.searchParams.get("state"))) return;
+      setStoredAuthToken(token);
+      window.location.replace("/home");
     }
   });
 }

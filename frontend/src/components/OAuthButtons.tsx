@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { socialAuthUrl, type OAuthProvider } from "@/lib/api";
-import { isDesktop } from "@/lib/desktop";
+import { beginDesktopOAuth, isDesktop } from "@/lib/desktop";
 import { useSearchParams } from "react-router-dom";
 import { NEXT_PARAM, safeReturnPath } from "@/lib/returnPath";
 
@@ -40,8 +40,14 @@ export default function OAuthButtons({ label }: { label: string }) {
       // backend's `?desktop=1` marker causes the final callback to redirect
       // into `clawbits://oauth-callback?token=…`, which is captured by the
       // deep-link listener in desktop.ts.
+      //
+      // `client_state` is a nonce the backend round-trips back to us in
+      // that deep link. Without it the listener has no way to tell our
+      // own callback from one any web page can fire at the scheme
+      // handler, so it refuses tokens that don't echo it.
       const apiBase = (import.meta.env.VITE_CLAWBITS_API_URL as string | undefined) || window.location.origin;
-      const fullUrl = `${apiBase}${path}?desktop=1`;
+      const clientState = beginDesktopOAuth();
+      const fullUrl = `${apiBase}${path}?desktop=1&client_state=${encodeURIComponent(clientState)}`;
       try {
         const { open } = await import("@tauri-apps/plugin-shell");
         await open(fullUrl);
