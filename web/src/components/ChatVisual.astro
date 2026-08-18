@@ -1,0 +1,568 @@
+---
+/**
+ * The chat visual, used by steps 03 and 04.
+ *
+ * ONE COMPONENT, TWO INSTANCES (owner, 2026-08-18: "same style as step 3").
+ * Both steps are the same act - you send your agent a line, it works, it
+ * answers - so they are the same component with different strings rather than
+ * two files that would drift the first time either is touched. What differs
+ * between them is only the copy and the two measured row heights that copy
+ * needs.
+ *
+ * NO APP WINDOW (owner, 2026-08-18). Steps 01 and 02 are both framed screens -
+ * someone else's site, then ours - and a third would make the column read as a
+ * slideshow of chrome. This step is not about a screen, it is about a sentence
+ * you send, so the chat is all there is: bubbles on the panel, nothing around
+ * them. It is LobstertalkVisual's construction with Lobstertalk taken out -
+ * no gate, no verdict glyphs, no nudge fan-out, no toggle. Just the exchange.
+ *
+ * NO CURSOR either, and that is the same argument. Nothing here is clicked;
+ * messages arrive. A pointer with nothing to press would be an animation
+ * looking for a job.
+ *
+ * ── Bubble anatomy ────────────────────────────────────────────────────────
+ * The app's, at the app's own size rather than shrunk, copied from
+ * LobstertalkVisual so the two chat visuals on this site are the same product
+ * at the same scale: 15/1.625 bodies in 16u-radius bubbles with the 8u tail
+ * corner, 13/600 muted author name inside the bubble, 28u avatars, and the
+ * agent's silhouette carrying the machined bottom-left tail
+ * (lib/avatarShapes.ts - people round, agents notched).
+ *
+ * Rows are FIXED-HEIGHT and clip. That is what lets a row collapse to zero and
+ * reopen to an exact height as it arrives; a row that sized itself to its text
+ * could not be animated open without the stream jumping.
+ *
+ * ── Copy ──────────────────────────────────────────────────────────────────
+ * The human's line is the step's `say` string VERBATIM - it is the thing the
+ * reader is about to copy, and a visual that paraphrased it would be teaching
+ * the wrong command. Keep them in step: if STEPS changes, change this.
+ *
+ * The agent's reply claims only what the skill does - it installs, and it can
+ * price and order. No profit, no promises about outcomes. The whole page is
+ * careful that the money is paper and the edge is unproven; a bubble bragging
+ * about a win would undo that in one line.
+ *
+ * ── The loop ──────────────────────────────────────────────────────────────
+ * 9s, CSS only, held at its 0% frame until PlayOnView marks the scene - the
+ * same duration every step visual runs.
+ *
+ *   08-20%  the command arrives
+ *   26-38%  the agent starts typing
+ *   42-54%  typing gives way to the reply
+ *   54-86%  hold
+ *   86-100% the seam
+ *
+ * Settled by DEFAULT: the base rules draw the finished exchange, so reduced
+ * motion and the moment before PlayOnView both show a complete conversation
+ * rather than an empty panel.
+ */
+import { AttachmentIcon, UserMultiple02Icon } from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+
+interface Props {
+  /** The human's message. Pass the step's own `say` string, verbatim. */
+  say: string;
+  /** The agent's answer. */
+  reply: string;
+  /**
+   * Which set of measured row heights to use. The heights live in the
+   * stylesheet keyed on this, NOT as numeric props: a row is fixed-height so
+   * it can animate open to an exact size, that size is only knowable by
+   * rendering the sentence, and the measurement belongs next to the value it
+   * produced. Passing them in would scatter three numbers across two files and
+   * lose the note explaining them.
+   *
+   * (`define:vars` would have been the other way to do it, and is worse here -
+   * it is only valid on <style>/<script>, and on <style> it opts the component
+   * out of style hoisting, shipping this whole sheet once per instance.)
+   */
+  variant: "skill" | "run";
+}
+
+const { say, reply, variant } = Astro.props;
+---
+
+<div class:list={["scene", `v-${variant}`]} data-play-on-view>
+  <div class="chat">
+    <header class="chead">
+      <img class="cav av-agent" src="/avatars/agent-4.svg" alt="" width="64" height="64" />
+      <span class="cname">SoftGong</span>
+      {/* The real header's right-hand pair (ChannelPage.tsx): attachments and
+          chat details. Named from the app rather than chosen - a channel
+          header with invented controls is a lie about a screen we ship. */}
+      <span class="chead-acts">
+        <span class="chead-i" set:html={ico(AttachmentIcon)} />
+        <span class="chead-i" set:html={ico(UserMultiple02Icon)} />
+      </span>
+    </header>
+
+    <div class="stream">
+      {/* OWN MESSAGE (owner, 2026-08-18): right-hand side, accent fill, no
+          avatar and no author name - the app's own-message treatment, where
+          the side and the colour say who sent it and a label repeating "you"
+          would be the third thing saying the same. */}
+      <div class="row r-say r-own">
+        <div class="bub bub-own">
+          <p>{say}</p>
+        </div>
+      </div>
+
+      {/* ONE ROW for both the thinking and the answer (owner, 2026-08-18).
+          They used to be two rows that swapped, which meant the avatar and the
+          bubble blinked out and back at the moment the agent finished - the
+          one moment in the scene where continuity is the whole point. Now the
+          avatar never moves and the bubble grows around its own contents.
+
+          The row is bottom-aligned inside a bottom-anchored stream, so the
+          growth goes UPWARD from a fixed floor: the avatar stays exactly where
+          it was while the bubble opens above it. */}
+      <div class="row r-agent">
+        <img class="av av-agent" src="/avatars/agent-4.svg" alt="" width="64" height="64" />
+        <div class="bub bub-agent">
+          {/* Absolutely placed so it never contributes to the bubble's size -
+              the bubble is sized by the animation, and dots that took part in
+              that measurement would make the small state depend on them. */}
+          <span class="typing">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          </span>
+          <span class="msg">
+            <b class="author">SoftGong</b>
+            <p>{reply}</p>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .scene {
+    --h-say: calc(var(--u) * var(--hSay));
+    --h-reply: calc(var(--u) * var(--hReply));
+
+    container-type: inline-size;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow-anchor: none;
+
+    /* 1u == 1px at the panel's reference width. */
+    --u: clamp(0.68px, 0.2cqw, 1.15px);
+
+    --ink: #14161a;
+    --mut: #6b7280;
+    --bub: rgb(20 22 26 / 0.055);
+
+    /* Row heights, declared once because the keyframes reopen these exact
+     * values - a row that changes size changes here.
+     *
+     * MEASURED against the rendered scene, not estimated: the command wraps to
+     * three lines at this measure, not the two it looks like it should, and
+     * the first guess clipped the author name clean off the top of its own
+     * bubble. Each carries a few units of headroom over its natural height so
+     * a wrap that lands differently at another width cannot cut anything - the
+     * rows clip by design, so slack here is cheap and a shortfall is not. */
+    /* --hSay / --hReply are set per variant below. */
+    /* The agent row's two states. It opens at the thinking size and grows to
+     * the answer's - one row, two heights, rather than two rows swapping. */
+    --h-typing: calc(var(--u) * 38);
+    /* The bubble's own two sizes. The message wrapper is pinned to `--w-msg`
+     * so its text wraps identically at both, which is what lets the bubble
+     * grow AROUND settled text instead of reflowing it mid-animation. */
+    --w-typing: calc(var(--u) * 54);
+    --w-reply: calc(var(--u) * 258);
+    --w-msg: calc(var(--u) * 234);
+    --gap: calc(var(--u) * 10);
+  }
+
+  /* MEASURED, per variant, at --w-msg and the panel's reference width. A row
+   * is fixed-height so it can animate open to an exact size, and the height a
+   * sentence needs is only knowable by rendering it - the first pass guessed
+   * and clipped a line off the bottom of the reply. Re-measure both numbers if
+   * either string changes.
+   *
+   * Step 03: the install command is three lines; the reply is three plus its
+   * author. Step 04: "run the agentpit-reference skill" is one line, so its
+   * own bubble is much shorter, while its reply happens to land at the same
+   * height as step 03's. */
+  .v-skill {
+    --hSay: 96;
+    --hReply: 106;
+  }
+
+  .v-run {
+    --hSay: 62;
+    --hReply: 106;
+  }
+
+  .chat {
+    position: absolute;
+    /* ONE value on all four sides (owner, 2026-08-18). It was 26/24, close
+     * enough to look like a mistake rather than a decision - the eye reads an
+     * unequal inset as a misalignment long before it can name the numbers.
+     * There is no reason for the sides to differ here: nothing bleeds. */
+    inset: calc(var(--u) * 26);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* NO RULE UNDER IT (owner, 2026-08-18). The stream fades out under the
+   * header instead - LobstertalkVisual's treatment - which says "there is more
+   * above" where a hairline says "this is the top". A line also has to decide
+   * how far to run, and every answer looked wrong against a panel that bleeds. */
+  .chead {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 8);
+    padding-bottom: calc(var(--u) * 10);
+  }
+
+  .chead-acts {
+    display: flex;
+    gap: calc(var(--u) * 10);
+    margin-inline-start: auto;
+  }
+
+  .chead-i {
+    display: block;
+    width: calc(var(--u) * 15);
+    height: calc(var(--u) * 15);
+    color: var(--mut);
+  }
+
+  .chead-i :global(svg) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .cav {
+    width: calc(var(--u) * 22);
+    height: calc(var(--u) * 22);
+    border-radius: 999px;
+  }
+
+  .cname {
+    font-size: calc(var(--u) * 14);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+  }
+
+  /* Bottom-anchored, like a real stream: new messages push up from the floor
+   * of the panel rather than growing down from the header into empty space. */
+  .stream {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    justify-content: flex-end;
+    min-height: 0;
+    overflow: hidden;
+    /* The crop is a fade, not a guillotine - a hard cut through a line of text
+     * reads as a clipping bug rather than as more content above. Copied from
+     * LobstertalkVisual, which is also what replaces the header's old rule. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 calc(var(--u) * 26));
+    mask-image: linear-gradient(to bottom, transparent 0, #000 calc(var(--u) * 26));
+  }
+
+  .row {
+    display: flex;
+    flex-shrink: 0;
+    align-items: flex-end;
+    gap: calc(var(--u) * 8);
+    margin-bottom: var(--gap);
+    /* Required by the arrival animation - a row collapses to zero height and
+     * reopens, and without this its contents would spill while it did. */
+    overflow: hidden;
+  }
+
+  .r-say {
+    height: var(--h-say);
+  }
+
+  .r-agent {
+    height: var(--h-reply);
+    margin-bottom: 0;
+  }
+
+  /* Species silhouettes (lib/avatarShapes.ts): people round, agents round with
+   * the machined bottom-left tail. */
+  .av {
+    flex-shrink: 0;
+    display: block;
+    width: calc(var(--u) * 28);
+    height: calc(var(--u) * 28);
+    object-fit: cover;
+    border-radius: 999px;
+    background: rgb(20 22 26 / 0.06);
+  }
+
+  .av-agent {
+    border-bottom-left-radius: calc(var(--u) * 6);
+  }
+
+  .r-own {
+    justify-content: flex-end;
+  }
+
+  /* The app's own bubble: the accent fill from MessageRow.tsx, white body, and
+   * the tail corner moved to the SENDER'S side - bottom-right rather than
+   * bottom-left. A right-aligned bubble still notched on the left reads as a
+   * received message that drifted. */
+  /* `.bub.bub-own`, not `.bub-own`. Both are single-class selectors, so the
+   * cascade falls back to source order - and this rule sits ABOVE `.bub`,
+   * which meant `.bub`'s grey fill won and the own message rendered received.
+   * Doubling the class settles it wherever either rule ends up in the file. */
+  .bub.bub-own {
+    background: #2f6bf6;
+    border-bottom-left-radius: calc(var(--u) * 16);
+    border-bottom-right-radius: calc(var(--u) * 8);
+  }
+
+  .bub.bub-own p {
+    color: #fff;
+  }
+
+  /* Shrink-to-fit, so a short reply reads as a small bubble and the stream
+   * gets its rhythm from the message lengths. */
+  .bub {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    max-width: calc(var(--u) * 300);
+    padding: calc(var(--u) * 8) calc(var(--u) * 12);
+    border-radius: calc(var(--u) * 16);
+    border-bottom-left-radius: calc(var(--u) * 8);
+    background: var(--bub);
+  }
+
+  .author {
+    margin-bottom: calc(var(--u) * 2);
+    font-size: calc(var(--u) * 13);
+    font-weight: 600;
+    line-height: calc(var(--u) * 16);
+    color: var(--mut);
+  }
+
+  .bub p {
+    margin: 0;
+    font-size: calc(var(--u) * 15);
+    line-height: 1.625;
+    color: var(--ink);
+    /* The command is a URL and must wrap rather than trail off - it is the
+     * one string in this scene a reader might actually read. */
+    overflow-wrap: anywhere;
+  }
+
+  /* ── The agent's bubble, which grows ──
+   * Explicitly sized because it animates between two states, and `auto` is not
+   * an animatable value. Both children are taken out of flow so neither can
+   * feed back into that size. */
+  .bub-agent {
+    position: relative;
+    width: var(--w-reply);
+    height: var(--h-reply);
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .typing {
+    position: absolute;
+    top: 50%;
+    left: calc(var(--u) * 12);
+    translate: 0 -50%;
+    display: flex;
+    gap: calc(var(--u) * 5);
+  }
+
+  /* Pinned to the bubble's top-left padding origin at a FIXED width, so the
+   * sentence is already laid out at its final wrap before the bubble opens.
+   * Left to size itself it would re-wrap on every frame of the growth, which
+   * reads as text squirming rather than a bubble opening. */
+  .msg {
+    position: absolute;
+    top: calc(var(--u) * 8);
+    left: calc(var(--u) * 12);
+    display: flex;
+    flex-direction: column;
+    width: var(--w-msg);
+  }
+
+  .dot {
+    width: calc(var(--u) * 6);
+    height: calc(var(--u) * 6);
+    border-radius: 50%;
+    background: rgb(20 22 26 / 0.3);
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────
+   * The loop.
+   * ──────────────────────────────────────────────────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    /* The 0% frame: an empty stream. Collapsed to zero height AND transparent,
+     * because a row at zero height still paints its overflow for one frame on
+     * some engines. */
+    .r-say,
+    .r-agent {
+      height: 0;
+      margin-bottom: 0;
+      opacity: 0;
+    }
+
+    .bub-agent {
+      width: var(--w-typing);
+      height: var(--h-typing);
+    }
+
+    .msg {
+      opacity: 0;
+    }
+
+    .play .r-say {
+      animation: sk-say 9s ease infinite;
+    }
+    .play .r-agent {
+      animation: sk-agent 9s ease infinite;
+    }
+    .play .bub-agent {
+      animation: sk-grow 9s ease infinite;
+    }
+    .play .typing {
+      animation: sk-dots-out 9s ease infinite;
+    }
+    .play .msg {
+      animation: sk-msg-in 9s ease infinite;
+    }
+    .play .dot {
+      animation: sk-dot 1.1s ease-in-out infinite;
+    }
+  }
+
+  /* NO HEADER FADE (owner, 2026-08-18). The chat's header is the frame here,
+   * and a frame that blinks out once a loop reads as a glitch. Only the
+   * messages come and go. */
+
+  /* Each row opens to its declared height and stays. The seam closes all three
+   * while nothing is visible, so 0% and 100% are the same empty stream. */
+  @keyframes sk-say {
+    0%,
+    8% {
+      height: 0;
+      margin-bottom: 0;
+      opacity: 0;
+    }
+    20%,
+    86% {
+      height: var(--h-say);
+      margin-bottom: var(--gap);
+      opacity: 1;
+    }
+    89% {
+      height: var(--h-say);
+      margin-bottom: var(--gap);
+      opacity: 0;
+    }
+    90%,
+    100% {
+      height: 0;
+      margin-bottom: 0;
+      opacity: 0;
+    }
+  }
+
+  /* ONE row for both states: it opens at the thinking height and grows to the
+   * answer's. The avatar rides its bottom edge, which never moves. */
+  @keyframes sk-agent {
+    0%,
+    26% {
+      height: 0;
+      margin-bottom: 0;
+      opacity: 0;
+    }
+    32%,
+    42% {
+      height: var(--h-typing);
+      opacity: 1;
+    }
+    52%,
+    86% {
+      height: var(--h-reply);
+      opacity: 1;
+    }
+    89% {
+      height: var(--h-reply);
+      opacity: 0;
+    }
+    90%,
+    100% {
+      height: 0;
+      opacity: 0;
+    }
+  }
+
+  /* The bubble opens in both axes at once. Same window as the row, so the two
+   * arrive together rather than the bubble chasing its own container. */
+  @keyframes sk-grow {
+    0%,
+    42% {
+      width: var(--w-typing);
+      height: var(--h-typing);
+    }
+    52%,
+    100% {
+      width: var(--w-reply);
+      height: var(--h-reply);
+    }
+  }
+
+  /* Dots out before the text is in - they overlap for a few frames, which is
+   * what makes it one bubble changing rather than two swapping. */
+  @keyframes sk-dots-out {
+    0%,
+    42% {
+      opacity: 1;
+    }
+    47%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes sk-msg-in {
+    0%,
+    45% {
+      opacity: 0;
+    }
+    54%,
+    86% {
+      opacity: 1;
+    }
+    89%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The three dots, on their own short clock rather than the 9s one - typing
+   * is a texture, not a beat, and tying it to the loop would make it stall. */
+  @keyframes sk-dot {
+    0%,
+    60%,
+    100% {
+      opacity: 0.35;
+      translate: 0 0;
+    }
+    30% {
+      opacity: 1;
+      translate: 0 calc(var(--u) * -3);
+    }
+  }
+
+  .play .dot:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+
+  .play .dot:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+</style>

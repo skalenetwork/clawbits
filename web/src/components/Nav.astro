@@ -24,26 +24,37 @@ import { LINKS, NAV, SITE, isExternal } from "../config";
  *      off-screen and only the animation brings it in, so an unresolved or
  *      unsupported timeline fails closed, never as a stuck double header.
  *
+ * overlay-light (/agent-pit) - the same two headers as `overlay`, over a
+ *   canvas that is LIGHT rather than dark. Only the foreground changes: the
+ *   overlay bar's white text and cream pill are invisible on a white ground,
+ *   so on-light restores the page's ordinary ink foreground and the default
+ *   dark pill. The FIXED bar is unaffected - it slides in over cream and was
+ *   already ink either way.
+ *
  * solid (docs, legal) - one sticky bar, same layout, no animation.
  */
 
 interface Props {
-  variant?: "overlay" | "solid";
+  variant?: "overlay" | "solid" | "overlay-light";
 }
 
 const { variant = "solid" } = Astro.props;
+
+/** Both overlay variants draw the same two headers; only the palette differs. */
+const overlay = variant !== "solid";
+const onLight = variant === "overlay-light";
 
 /** The fixed duplicate is mouse-only chrome; keep it out of the tab order. */
 const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
 ---
 
 {
-  [variant === "overlay" ? "top" : "solid", ...(variant === "overlay" ? ["fixed"] : [])].map(
+  [overlay ? "top" : "solid", ...(overlay ? ["fixed"] : [])].map(
     (kind) => {
       const hidden = kind === "fixed";
       return (
         <header
-          class:list={["nav", `nav-${kind}`]}
+          class:list={["nav", `nav-${kind}`, { "on-light": onLight && kind === "top" }]}
           aria-hidden={hidden ? "true" : undefined}
         >
           {kind !== "top" && <div class="bar" aria-hidden="true" />}
@@ -135,6 +146,19 @@ const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
     color: #fff;
     /* Logo.astro flips the black artwork to white via this. */
     --logo-invert: 1;
+  }
+
+  /* Over a light canvas the same bar keeps the page's own foreground: ink
+   * text, un-inverted artwork, and the default dark pill rather than the
+   * cream one the dark canvases need. */
+  .nav-top.on-light {
+    color: var(--color-paper);
+    --logo-invert: 0;
+  }
+
+  .nav-top.on-light .pill {
+    background: var(--color-paper);
+    color: var(--color-ink);
   }
 
   .nav-fixed {
@@ -390,6 +414,17 @@ const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
 
     .nav-top .inner {
       padding-inline: var(--hero-gutter);
+    }
+
+    /* EXCEPT on a hero that keeps its frame. The rule above assumes the canvas
+     * goes full-bleed on phones, which is index.astro's behaviour; /agent-pit
+     * keeps its 1rem inset at every width, so the same gutter put the wordmark
+     * and the menu hard against the canvas's rounded edge. Adding the frame's
+     * own inset back gives them the gutter they were meant to have relative to
+     * the canvas rather than to the viewport. Keep the 1rem in step with that
+     * page's `.frame` padding. */
+    .nav-top.on-light .inner {
+      padding-inline: calc(var(--hero-gutter) + 1rem);
     }
   }
 </style>

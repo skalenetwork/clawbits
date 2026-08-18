@@ -23,9 +23,10 @@ interface Props {
   /**
    * Nav treatment. The homepage passes "overlay" so the fixed nav starts
    * transparent over the hero shader canvas; every other page keeps the
-   * sticky solid bar.
+   * sticky solid bar. "overlay-light" is the same overlay over a canvas that
+   * is light rather than dark - see Nav.astro.
    */
-  nav?: "overlay" | "solid";
+  nav?: "overlay" | "solid" | "overlay-light";
 }
 
 const {

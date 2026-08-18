@@ -1,0 +1,434 @@
+---
+import PointerCursor from "./PointerCursor.astro";
+
+/**
+ * Step 02's visual for the SELF-HOSTED tab: the same key, handed over at a
+ * shell instead of in the app.
+ *
+ * The step already branches its copy - `selfHosted` in STEPS - and this is the
+ * other half of that branch. On Reef the reader clicks through Agents, Manage
+ * and Environment variables (ManageVisual); self-hosted they run one command,
+ * and a picture of our app would be showing them a screen they do not have.
+ * Both render into the same panel and the tab decides which is displayed, the
+ * same mechanism the copy uses.
+ *
+ * ── What this is drawn from ───────────────────────────────────────────────
+ * macOS Terminal (owner reference shot, 2026-08-18): the traffic lights, the
+ * "user — -bash — 164×33" title, the dark body, and the prompt's own colours -
+ * user in tan, the tilde in blue, a white `$`.
+ *
+ * The command is the step's `selfHosted.say` VERBATIM. It is the thing the
+ * reader is about to copy from the panel beside this, and a visual showing a
+ * different command would be teaching the wrong one. The key is the same
+ * invented UUID the AgentPit card uses, never a real one.
+ *
+ * ── The loop ──────────────────────────────────────────────────────────────
+ * 9s, CSS only, held at its 0% frame until PlayOnView marks the scene - the
+ * same duration every step visual runs.
+ *
+ *   04-22%  the cursor arrives and clicks into the window
+ *   26-38%  the caret starts blinking
+ *   42-56%  the command is pasted, whole - it arrives at once because that is
+ *           what pasting looks like; typing it out would be a different claim
+ *   62-86%  the shell takes it and a fresh prompt appears
+ *   86-100% the seam - contents only; the frame never leaves
+ */
+const SAY =
+  "openclaw config set skills.entries.agentpit-reference.env.AGENTPIT_API_KEY a41f7d92-6c05-4e8b-9f31-2b7ce0d4a6f8";
+---
+
+<div class="scene" data-play-on-view>
+  <div class="term">
+    <header class="bar">
+      <span class="lights">
+        <span class="lt red"></span>
+        <span class="lt amber"></span>
+        <span class="lt green"></span>
+      </span>
+      <span class="title">dmytro — -bash — 164&times;33</span>
+    </header>
+
+    <div class="body">
+      <div class="line">
+        <span class="who">dmytro</span><span class="punc">:</span><span class="cwd">~</span>
+        <span class="sigil">$</span>
+        {/* The pasted command and the caret share the line, so the caret sits
+            at the end of whatever is there - before the paste it blinks alone
+            after the prompt, which is what an empty focused shell does. */}
+        <span class="cmd">{SAY}</span><span class="caret"></span>
+        {/* Anchored to the prompt line, not placed at a coordinate in the
+            body: the line is where the click lands, and a hand-written offset
+            drifts the moment the bar height or the body padding changes. It
+            already did once - the first value put the ring, and the cursor
+            with it, up in the title bar. */}
+        <span class="ring"></span>
+      </div>
+
+      <div class="line next">
+        <span class="who">dmytro</span><span class="punc">:</span><span class="cwd">~</span>
+        <span class="sigil">$</span><span class="caret caret-2"></span>
+      </div>
+
+    </div>
+  </div>
+
+  <span class="cur-track">
+    <span class="cur-press"><PointerCursor /></span>
+  </span>
+</div>
+
+<style>
+  .scene {
+    container-type: inline-size;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow-anchor: none;
+
+    /* The same unit the other app-frame visual uses, so the two variants of
+     * this one step render at one scale. */
+    --u: clamp(0.78px, 0.23cqw, 1.32px);
+    --win-in: calc(var(--u) * 34);
+
+    /* Terminal.app, read off the reference. */
+    --bar: #3a3a3c;
+    --bar-line: rgb(0 0 0 / 0.4);
+    --body: #232323;
+    --fg: #e6e6e6;
+    --who: #d9a441;
+    --cwd: #5aa9e6;
+  }
+
+  /* The frame matches ManageVisual's exactly - same insets, same left bleed,
+   * same bottom bleed - because the tab swaps one for the other in place and
+   * any difference would read as the panel jumping. */
+  .term {
+    position: absolute;
+    top: var(--win-in);
+    right: var(--win-in);
+    left: calc(var(--u) * -14);
+    bottom: calc(var(--u) * -70);
+    display: flex;
+    flex-direction: column;
+    border-radius: calc(var(--u) * 12);
+    overflow: hidden;
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.07),
+      0 calc(var(--u) * 14) calc(var(--u) * 30) rgb(15 15 15 / 0.35);
+  }
+
+  .bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: calc(var(--u) * 8);
+    height: calc(var(--u) * 30);
+    padding-inline: calc(var(--u) * 12);
+    border-bottom: 1px solid var(--bar-line);
+    background: var(--bar);
+  }
+
+  /* The lights sit at the window's left edge, which the bleed crops - the same
+   * crop the app frame gives its own chrome. Enough of them shows to read. */
+  .lights {
+    display: flex;
+    gap: calc(var(--u) * 6);
+  }
+
+  .lt {
+    width: calc(var(--u) * 11);
+    height: calc(var(--u) * 11);
+    border-radius: 50%;
+  }
+
+  .red {
+    background: #ff5f57;
+  }
+
+  .amber {
+    background: #febc2e;
+  }
+
+  .green {
+    background: #28c840;
+  }
+
+  .title {
+    /* Centred on the BAR, not on what is left of it after the lights - the
+     * real title bar centres its label on the window. */
+    margin-inline: auto;
+    padding-inline-end: calc(var(--u) * 44);
+    font-size: calc(var(--u) * 11);
+    font-weight: 600;
+    color: rgb(255 255 255 / 0.85);
+  }
+
+  .body {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    padding: calc(var(--u) * 12) calc(var(--u) * 14) 0 calc(var(--u) * 28);
+    background: var(--body);
+    font-family: var(--font-mono);
+    font-size: calc(var(--u) * 11);
+    line-height: 1.65;
+  }
+
+  .line {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    /* NO GAP. A flex gap spaces every child, which put air around the colon
+     * and rendered the prompt as "dmytro : ~ $" - the real one is
+     * "dmytro:~ $". The one space that belongs, before the command, is set on
+     * the sigil instead. */
+    color: var(--fg);
+    /* The command is one long unbroken token; without this it would push the
+     * line off the frame instead of wrapping inside it. */
+    overflow-wrap: anywhere;
+  }
+
+  .who {
+    font-weight: 700;
+    color: var(--who);
+  }
+
+  .punc {
+    color: var(--fg);
+  }
+
+  .cwd {
+    font-weight: 700;
+    color: var(--cwd);
+  }
+
+  .sigil {
+    /* The prompt's only spaces: one before the `$`, one after it. */
+    margin-inline: calc(var(--u) * 5);
+    font-weight: 700;
+    color: var(--fg);
+  }
+
+  .cmd {
+    min-width: 0;
+    color: var(--fg);
+  }
+
+  /* A block caret, as Terminal draws it. */
+  .caret {
+    display: inline-block;
+    width: calc(var(--u) * 6);
+    height: calc(var(--u) * 13);
+    translate: 0 calc(var(--u) * 2);
+    background: var(--fg);
+  }
+
+  /* The whole body is the target in a real terminal - there is no control - so
+   * the ring sits on the first line, a little in from the prompt. */
+  .ring {
+    position: absolute;
+    top: calc(var(--u) * 9);
+    left: calc(var(--u) * 90);
+    width: calc(var(--u) * 34);
+    height: calc(var(--u) * 34);
+    margin: calc(var(--u) * -17) 0 0 calc(var(--u) * -17);
+    border: calc(var(--u) * 1.5) solid #fff;
+    border-radius: 50%;
+    opacity: 0;
+  }
+
+  .cur-track {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+  }
+
+  .cur-press {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* The 0% frame: an empty focused shell, nothing typed, nothing run. */
+    .cmd,
+    .next {
+      opacity: 0;
+    }
+
+    .caret {
+      opacity: 0;
+    }
+
+    .cur-track {
+      opacity: 1;
+      translate: 12% 94%;
+    }
+
+    .play .cmd {
+      animation: tm-cmd 9s ease infinite;
+    }
+    .play .next {
+      animation: tm-next 9s ease infinite;
+    }
+    .play .caret {
+      animation: tm-caret 9s steps(1, end) infinite;
+    }
+    .play .caret-2 {
+      animation: tm-caret-2 9s steps(1, end) infinite;
+    }
+    .play .cur-track {
+      animation: tm-path 9s ease infinite;
+    }
+    .play .cur-press {
+      animation: tm-press 9s ease infinite;
+    }
+    .play .ring {
+      animation: tm-ring 9s ease infinite;
+    }
+  }
+
+  /* NO CHROME FADE: the window is the one thing true on every beat, so it
+   * never leaves - only what is inside it resets at the seam. */
+
+  @keyframes tm-path {
+    0%,
+    4% {
+      translate: 12% 94%;
+    }
+    18%,
+    86% {
+      translate: 20.5% 29.8%;
+    }
+    89% {
+      translate: 20.5% 29.8%;
+      opacity: 1;
+    }
+    90%,
+    94% {
+      translate: 12% 94%;
+      opacity: 0;
+    }
+    96.8%,
+    100% {
+      translate: 12% 94%;
+      opacity: 1;
+    }
+  }
+
+  @keyframes tm-press {
+    0%,
+    20% {
+      scale: 1;
+    }
+    22%,
+    24% {
+      scale: 0.88;
+    }
+    26%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes tm-ring {
+    0%,
+    20% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    23% {
+      opacity: 0.45;
+    }
+    30%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  /* WHOLE, not typed out. The reader copies this string from the panel beside
+   * the visual; a character-by-character reveal would be showing them typing
+   * it, which is a different instruction. */
+  @keyframes tm-cmd {
+    0%,
+    42% {
+      opacity: 0;
+    }
+    46%,
+    86% {
+      opacity: 1;
+    }
+    89%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The shell takes the line and hands back a fresh prompt. */
+  @keyframes tm-next {
+    0%,
+    60% {
+      opacity: 0;
+    }
+    66%,
+    86% {
+      opacity: 1;
+    }
+    89%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* Blinks from the click until the command is run, then goes with the line -
+   * a caret left behind after the prompt has moved on is the tell of a
+   * screenshot pretending to be a terminal. `steps(1)` because a caret does
+   * not fade. */
+  @keyframes tm-caret {
+    0%,
+    24% {
+      opacity: 0;
+    }
+    26%,
+    32% {
+      opacity: 1;
+    }
+    34%,
+    40% {
+      opacity: 0;
+    }
+    42%,
+    60% {
+      opacity: 1;
+    }
+    62%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes tm-caret-2 {
+    0%,
+    64% {
+      opacity: 0;
+    }
+    66%,
+    73% {
+      opacity: 1;
+    }
+    75%,
+    82% {
+      opacity: 0;
+    }
+    84%,
+    86% {
+      opacity: 1;
+    }
+    89%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

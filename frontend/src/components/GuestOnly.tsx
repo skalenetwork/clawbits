@@ -1,5 +1,6 @@
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { DEFAULT_LANDING, NEXT_PARAM, safeReturnPath } from "../lib/returnPath";
 
 /**
  * Route guard for pages that should only be visible when *not* signed in
@@ -11,6 +12,7 @@ import { useAuth } from "../context/AuthContext";
  */
 export default function GuestOnly() {
   const { user, loading } = useAuth();
+  const [params] = useSearchParams();
 
   if (loading) {
     return (
@@ -20,7 +22,12 @@ export default function GuestOnly() {
     );
   }
 
-  if (user) return <Navigate to="/home" replace />;
+  // Honour ?next= here too. Without it, a signed-in user following a deep
+  // link that had been bounced to /login lands on /home instead of the thing
+  // they clicked - the same bug this feature exists to fix, one step later.
+  if (user) {
+    return <Navigate to={safeReturnPath(params.get(NEXT_PARAM)) ?? DEFAULT_LANDING} replace />;
+  }
 
   return <Outlet />;
 }

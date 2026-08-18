@@ -1,0 +1,853 @@
+---
+import {
+  ChartUpIcon,
+  Clock05Icon,
+  ComputerTerminal01Icon,
+  Idea01Icon,
+  Mail01Icon,
+  Message01Icon,
+  RepeatIcon,
+  Robot02Icon,
+  Settings02Icon,
+  Sun01Icon,
+} from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+import { miniCardSvg, type MiniCard } from "../lib/agent-card";
+import PointerCursor from "./PointerCursor.astro";
+
+/**
+ * Step 05's visual: putting the dry run on a schedule.
+ *
+ * ── What this is drawn from ───────────────────────────────────────────────
+ * Clawbits in dark mode (owner reference shots, 2026-08-18), three screens:
+ *
+ *   1. the agent page      - click Automations
+ *   2. Automations         - the Suggested shelf, and nothing scheduled yet
+ *   3. the recipe modal    - the prompt, the cadence, and Automate
+ *
+ * THE RECIPE IS REAL COPY, not invented: "AgentPit trading run / Every 15 min
+ * / Wakes your agent on AgentPit's market cadence to trade its
+ * prediction-market strategy", and the prompt inside it is step 04's `say`.
+ * The whole page turns on that recipe existing, so the picture of it has to
+ * match what ships. See the STEPS note about this recipe not being in
+ * AUTOMATION_TEMPLATES yet - if it lands with different wording, this changes
+ * with it.
+ *
+ * Shares ManageVisual's frame, tokens and card silhouette by construction
+ * rather than by import: each visual on this site is self-contained, which is
+ * the homepage's convention too. What must NOT drift is the palette and the
+ * frame geometry - if either moves there, move it here.
+ *
+ * ── The frame ─────────────────────────────────────────────────────────────
+ * The SAME orientation as step 02 - inset top and right, bleeding left and
+ * bottom - even though this panel sits on the other side of its row. The
+ * mirroring in steps 01/02 was about two framed screens leaning away from the
+ * copy between them; here it would put the bleed on the right, and the right
+ * is where the modal's Automate button lives, and a cropped click target is
+ * worse than an unmirrored frame. With the sidebar gone the frame no longer
+ * bleeds sideways at all, so the question is moot - it is inset on three
+ * sides and runs off only the bottom.
+ *
+ * ── The loop ──────────────────────────────────────────────────────────────
+ * 9s, CSS only, held at its 0% frame until PlayOnView marks the scene.
+ *
+ *   04-24%  cursor clicks Automations   -> the shelf
+ *   30-48%  cursor clicks the AgentPit recipe -> the modal
+ *   54-78%  cursor clicks Automate
+ *   78-86%  hold
+ *   86-100% the seam - contents only; the frame never leaves
+ */
+
+
+
+/**
+ * The agent on the card. Same values ManageVisual gives SoftGong, because the
+ * two steps show the same agent one screen apart and a card that differed
+ * between them would read as two different agents.
+ */
+const AGENT: MiniCard = {
+  name: "SoftGong",
+  av: "agent-4.svg",
+  from: "#4fbb52",
+  to: "#34903a",
+  angle: 18,
+  frame: "soft",
+  pattern: "dots",
+  status: "available",
+};
+
+/**
+ * The Suggested shelf, in the order the app lists it - TWO of the three
+ * (owner, 2026-08-18). The real shelf shows a third, Topic watch, and at this
+ * width three cards truncated every title: "AgentPit trac...", "Morning
+ * brie...". A shelf whose headline is unreadable is not showing a shelf. Two
+ * fit whole, and the one that matters is still first.
+ */
+const RECIPES = [
+  { name: "AgentPit trading run", when: "Every 15 min", icon: ChartUpIcon, tone: "r-blue" },
+  { name: "Morning briefing", when: "At 08:00 AM", icon: Sun01Icon, tone: "r-blue" },
+];
+
+/** The cadence pills. "Custom" is the one the recipe arrives on. */
+const WHEN = ["Hourly", "Daily", "Weekly", "Custom"];
+---
+
+<div class="scene" data-play-on-view>
+  <div class="app">
+
+    <div class="main">
+      {/* ── 1. The agent page ── */}
+      <div class="stage s-agent">
+        <div class="crumb">
+          <span class="crumb-i" set:html={ico(Robot02Icon)} />All
+          <span class="crumb-s">›</span>SoftGong
+        </div>
+        <div class="detail">
+          <span class="acts">
+            <span class="act"><span class="act-i" set:html={ico(Message01Icon)} />Chat</span>
+            {/* The step's first verb. */}
+            <span class="act act-hit">
+              <span class="act-i" set:html={ico(Clock05Icon)} />Automations
+              <span class="ring r1"></span>
+            </span>
+            <span class="act"><span class="act-i" set:html={ico(Mail01Icon)} />Inbox</span>
+          </span>
+
+          <span class="card">
+            <Fragment set:html={miniCardSvg(AGENT, "au-card")} />
+          </span>
+
+          <span class="acts">
+            <span class="act"><span class="act-i" set:html={ico(ComputerTerminal01Icon)} />Terminal</span>
+            <span class="act"><span class="act-i" set:html={ico(Robot02Icon)} />UI</span>
+            <span class="act"><span class="act-i" set:html={ico(Settings02Icon)} />Manage</span>
+          </span>
+        </div>
+      </div>
+
+      {/* ── 2. The Suggested shelf ── */}
+      <div class="stage s-shelf">
+        <div class="crumb">
+          <span class="crumb-i" set:html={ico(Robot02Icon)} />All
+          <span class="crumb-s">›</span>SoftGong
+          <span class="crumb-s">›</span>Automations
+        </div>
+        <div class="sug">
+          <span class="sug-i" set:html={ico(Idea01Icon)} />
+          <span class="sug-t">Suggested</span>
+        </div>
+        <div class="recipes">
+          {
+            RECIPES.map((r, i) => (
+              <span class:list={["recipe", i === 0 && "recipe-hit"]}>
+                <span class:list={["rico", r.tone]} set:html={ico(r.icon)} />
+                <span class="rtext">
+                  <span class="rname-t">{r.name}</span>
+                  <span class="rwhen">
+                    <span class="rwhen-i" set:html={ico(RepeatIcon)} />
+                    {r.when}
+                  </span>
+                </span>
+                {i === 0 && <span class="ring r2" />}
+              </span>
+            ))
+          }
+        </div>
+        {/* The honest empty state, dashed exactly as the app draws it. */}
+        <div class="empty">
+          <span class="empty-i" set:html={ico(Clock05Icon)} />
+          <span class="empty-t">Nothing scheduled yet</span>
+        </div>
+      </div>
+
+      {/* ── 3. The recipe modal ── */}
+      <div class="stage s-modal">
+        <div class="scrim"></div>
+        <div class="dialog">
+          <div class="dhead">
+            <span class="rico r-blue" set:html={ico(ChartUpIcon)} />
+            <span class="rtext">
+              <span class="rname-t">AgentPit trading run</span>
+              <span class="rwhen">
+                <span class="rwhen-i" set:html={ico(RepeatIcon)} />
+                Every 15 min
+              </span>
+            </span>
+          </div>
+
+          {/* Step 04's `say`, which is what the recipe actually sends. */}
+          <div class="prompt">run the agentpit-reference skill</div>
+
+          <div class="dlabel">When</div>
+          <div class="pills">
+            {WHEN.map((w) => (
+              <span class:list={["pill", w === "Custom" && "pill-on"]}>{w}</span>
+            ))}
+          </div>
+
+          <div class="dfoot">
+            <span class="dbtn">
+              Automate
+              <span class="ring r3"></span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <span class="cur-track">
+    <span class="cur-press"><PointerCursor /></span>
+  </span>
+</div>
+
+<style>
+  .scene {
+    container-type: inline-size;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow-anchor: none;
+
+    /* LARGER than the other visuals' unit, and deliberately so: dropping the
+     * 96u sidebar handed this frame its width back, and the screens drawn at
+     * the old scale in the new box just looked far away. ~1.15x. */
+    --u: clamp(0.78px, 0.23cqw, 1.32px);
+    --win-in: calc(var(--u) * 34);
+
+    /* Dark app tokens - keep in step with ManageVisual. */
+    --bg: #0f0f0f;
+    --panel: #171717;
+    --card: #202020;
+    --fg: #ebe7df;
+    --mut: #8b8880;
+    --line: rgb(255 255 255 / 0.08);
+  }
+
+  .app {
+    position: absolute;
+    top: var(--win-in);
+    right: var(--win-in);
+    /* RUNS OFF THE LEFT EDGE (owner, 2026-08-18), as it did before the sidebar
+     * came out. What the bleed used to crop was the roster; with that gone it
+     * would crop the screens themselves, so `.main` carries the bleed back as
+     * left padding - the frame extends past the panel while its contents stop
+     * where they always did. Keep the two in step. */
+    left: calc(var(--u) * -14);
+    bottom: calc(var(--u) * -70);
+    border-radius: calc(var(--u) * 14);
+    background: var(--bg);
+    overflow: hidden;
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.06),
+      0 calc(var(--u) * 14) calc(var(--u) * 30) rgb(15 15 15 / 0.3);
+  }
+
+  /* A DIV, not <main>: global.css paints `main` with the site's cream, which
+   * once rendered two thirds of this frame light. */
+  .main {
+    position: relative;
+    display: grid;
+    flex: 1;
+    min-width: 0;
+    /* The bottom padding is the frame's BLEED - anything centred without it
+     * centres in a box whose floor the reader cannot see. Keep in step with
+     * `.app`'s bottom. */
+    /* Left and bottom both reserve the frame's BLEED on top of the normal
+     * gutter - anything laid out without that runs off an edge the reader
+     * cannot see. Keep both in step with `.app`. */
+    padding: calc(var(--u) * 12) calc(var(--u) * 14) calc(var(--u) * 70)
+      calc(var(--u) * 28);
+  }
+
+  .stage {
+    grid-area: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--u) * 10);
+    min-width: 0;
+  }
+
+  /* The settled frame - three stages in one cell are all visible at once
+   * unless something says otherwise, and reduced motion never reads the
+   * no-preference block. The end of the story is the right still. */
+  .s-agent,
+  .s-shelf {
+    opacity: 0;
+  }
+
+  .s-modal {
+    opacity: 1;
+  }
+
+  .crumb {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 5);
+    font-size: calc(var(--u) * 11);
+    color: var(--fg);
+  }
+
+  .crumb-i {
+    display: block;
+    width: calc(var(--u) * 12);
+    height: calc(var(--u) * 12);
+  }
+
+  .crumb-s {
+    color: var(--mut);
+  }
+
+  /* ── The agent page ── */
+  .detail {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: calc(var(--u) * 12);
+    flex: 1;
+    min-height: 0;
+    /* Lifts the row off the breadcrumb's shadow - see ManageVisual. */
+    padding-bottom: calc(var(--u) * 60);
+  }
+
+  .acts {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: calc(var(--u) * 7);
+  }
+
+  .act {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(var(--u) * 6);
+    height: calc(var(--u) * 30);
+    padding-inline: calc(var(--u) * 9);
+    border-radius: 999px;
+    background: var(--card);
+    font-size: calc(var(--u) * 10);
+    color: var(--fg);
+  }
+
+  .act-i {
+    display: block;
+    flex: none;
+    width: calc(var(--u) * 12);
+    height: calc(var(--u) * 12);
+    color: var(--mut);
+  }
+
+  /* ── The card ──
+   * SVG (see `cardSvg`), so the frame only supplies a width - the viewBox
+   * carries every proportion inside it. */
+  .card {
+    flex: none;
+    width: calc(var(--u) * 120);
+  }
+
+  .csvg {
+    display: block;
+    width: 100%;
+    height: auto;
+    filter: drop-shadow(0 calc(var(--u) * 3) calc(var(--u) * 6) rgb(0 0 0 / 0.35));
+  }
+
+  /* ── The shelf ── */
+  .sug {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 6);
+  }
+
+  .sug-i {
+    display: block;
+    width: calc(var(--u) * 12);
+    height: calc(var(--u) * 12);
+    color: var(--mut);
+  }
+
+  .sug-t {
+    font-size: calc(var(--u) * 11);
+    color: var(--mut);
+  }
+
+  .recipes {
+    display: flex;
+    gap: calc(var(--u) * 9);
+  }
+
+  .recipe {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    align-items: center;
+    gap: calc(var(--u) * 8);
+    padding: calc(var(--u) * 9);
+    border: 1px solid var(--line);
+    border-radius: calc(var(--u) * 10);
+    background: var(--panel);
+  }
+
+  /* The recipe's accent tile - the app's own three, of which this shelf shows
+   * two blues and a teal. */
+  .rico {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: calc(var(--u) * 26);
+    height: calc(var(--u) * 26);
+    border-radius: calc(var(--u) * 8);
+    color: #fff;
+  }
+
+  .r-blue {
+    background: #2f6bf6;
+  }
+
+  .rtext {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: calc(var(--u) * 2);
+  }
+
+  .rname-t {
+    font-size: calc(var(--u) * 10.5);
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .rwhen {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 4);
+    font-size: calc(var(--u) * 9.5);
+    color: var(--mut);
+  }
+
+  .rwhen-i {
+    display: block;
+    width: calc(var(--u) * 10);
+    height: calc(var(--u) * 10);
+  }
+
+  .empty {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: calc(var(--u) * 7);
+    border: 1px dashed var(--line);
+    border-radius: calc(var(--u) * 10);
+  }
+
+  .empty-i {
+    display: block;
+    width: calc(var(--u) * 20);
+    height: calc(var(--u) * 20);
+    color: var(--mut);
+  }
+
+  .empty-t {
+    font-size: calc(var(--u) * 10.5);
+    color: var(--fg);
+  }
+
+  /* ── The modal ──
+   * The shelf stays behind it, dimmed, because that is what a modal is: the
+   * page you were on, still there. Drawn as a scrim over the stage rather than
+   * a solid panel, so the recipes read through it. */
+  .s-modal {
+    position: relative;
+    display: block;
+    /* PADDING on the stage, not a margin on the dialog. A top margin there
+     * collapsed straight through this block and moved the whole stage - scrim
+     * and all - instead of offsetting the sheet inside it, which is also why
+     * the first attempt overshot and pushed the dialog past the frame's floor.
+     *
+     * The value leaves the shelf's first row visible above the sheet and keeps
+     * the Automate button clear of the bottom bleed. Both edges are tight:
+     * raise it and the button goes off-frame, drop it and the modal sits on
+     * the ceiling. */
+    padding-top: calc(var(--u) * 20);
+  }
+
+  .scrim {
+    position: absolute;
+    inset: calc(var(--u) * -12) calc(var(--u) * -14) calc(var(--u) * -70);
+    background: rgb(0 0 0 / 0.55);
+  }
+
+  .dialog {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+
+    gap: calc(var(--u) * 9);
+    padding: calc(var(--u) * 12);
+    border: 1px solid var(--line);
+    border-radius: calc(var(--u) * 12);
+    background: #161616;
+    box-shadow: 0 calc(var(--u) * 18) calc(var(--u) * 40) rgb(0 0 0 / 0.5);
+  }
+
+  .dhead {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 9);
+  }
+
+  .prompt {
+    padding: calc(var(--u) * 9) calc(var(--u) * 10);
+    border: 1px solid var(--line);
+    border-radius: calc(var(--u) * 9);
+    background: var(--panel);
+    font-size: calc(var(--u) * 10);
+    color: var(--fg);
+  }
+
+  .dlabel {
+    font-size: calc(var(--u) * 10);
+    color: var(--fg);
+  }
+
+  .pills {
+    display: flex;
+    gap: calc(var(--u) * 6);
+  }
+
+  .pill {
+    padding: calc(var(--u) * 5) calc(var(--u) * 10);
+    border-radius: 999px;
+    background: var(--card);
+    font-size: calc(var(--u) * 9.5);
+    color: var(--mut);
+  }
+
+  .pill-on {
+    background: #ddd9d0;
+    color: #1a1a18;
+  }
+
+  .dfoot {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .dbtn {
+    position: relative;
+    padding: calc(var(--u) * 6) calc(var(--u) * 14);
+    border-radius: calc(var(--u) * 8);
+    background: #ddd9d0;
+    font-size: calc(var(--u) * 10);
+    font-weight: 550;
+    color: #1a1a18;
+  }
+
+  /* ── Glyph plumbing - every one arrives through set:html ── */
+  .crumb-i :global(svg),
+  .act-i :global(svg),
+  .sug-i :global(svg),
+  .rico :global(svg),
+  .rwhen-i :global(svg),
+  .empty-i :global(svg) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .rico :global(svg) {
+    width: calc(var(--u) * 15);
+    height: calc(var(--u) * 15);
+  }
+
+  /* ── Click rings, anchored inside what they mark ── */
+  .ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: calc(var(--u) * 34);
+    height: calc(var(--u) * 34);
+    margin: calc(var(--u) * -17) 0 0 calc(var(--u) * -17);
+    border: calc(var(--u) * 1.5) solid #fff;
+    border-radius: 50%;
+    opacity: 0;
+  }
+
+  .cur-track {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+  }
+
+  .cur-press {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .s-agent {
+      opacity: 1;
+    }
+
+    .s-shelf,
+    .s-modal {
+      opacity: 0;
+    }
+
+    .cur-track {
+      opacity: 1;
+      translate: 12% 94%;
+    }
+
+    .play .s-agent {
+      animation: au-agent 9s ease infinite;
+    }
+    .play .s-shelf {
+      animation: au-shelf 9s ease infinite;
+    }
+    .play .s-modal {
+      animation: au-modal 9s ease infinite;
+    }
+    .play .cur-track {
+      animation: au-path 9s ease infinite;
+    }
+    .play .cur-press {
+      animation: au-press 9s ease infinite;
+    }
+    .play .act-hit {
+      animation: au-press-1 9s ease infinite;
+    }
+    .play .recipe-hit {
+      animation: au-press-2 9s ease infinite;
+    }
+    .play .dbtn {
+      animation: au-press-3 9s ease infinite;
+    }
+    .play .r1 {
+      animation: au-ring1 9s ease infinite;
+    }
+    .play .r2 {
+      animation: au-ring2 9s ease infinite;
+    }
+    .play .r3 {
+      animation: au-ring3 9s ease infinite;
+    }
+  }
+
+  /* NO CHROME FADE - the frame is the one thing true on every screen, so it
+   * never leaves; only the contents reset at the seam. */
+
+  /* Measured coordinates - re-measure if the layout moves. */
+  @keyframes au-path {
+    0%,
+    4% {
+      translate: 12% 94%;
+    }
+    18%,
+    26% {
+      translate: 16.6% 54.4%;
+    }
+    38%,
+    50% {
+      translate: 16.8% 45.5%;
+    }
+    62%,
+    86% {
+      translate: 80.7% 82%;
+    }
+    89% {
+      translate: 80.7% 82%;
+      opacity: 1;
+    }
+    90%,
+    94% {
+      translate: 12% 94%;
+      opacity: 0;
+    }
+    96.8%,
+    100% {
+      translate: 12% 94%;
+      opacity: 1;
+    }
+  }
+
+  @keyframes au-press {
+    0%,
+    22% {
+      scale: 1;
+    }
+    24%,
+    26% {
+      scale: 0.88;
+    }
+    28%,
+    46% {
+      scale: 1;
+    }
+    48%,
+    50% {
+      scale: 0.88;
+    }
+    52%,
+    70% {
+      scale: 1;
+    }
+    72%,
+    74% {
+      scale: 0.88;
+    }
+    76%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes au-press-1 {
+    0%,
+    22% {
+      scale: 1;
+    }
+    24%,
+    26% {
+      scale: 0.97;
+    }
+    28%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes au-press-2 {
+    0%,
+    46% {
+      scale: 1;
+    }
+    48%,
+    50% {
+      scale: 0.97;
+    }
+    52%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes au-press-3 {
+    0%,
+    70% {
+      scale: 1;
+    }
+    72%,
+    74% {
+      scale: 0.95;
+    }
+    76%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes au-ring1 {
+    0%,
+    22% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    25% {
+      opacity: 0.5;
+    }
+    32%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  @keyframes au-ring2 {
+    0%,
+    46% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    49% {
+      opacity: 0.5;
+    }
+    56%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  @keyframes au-ring3 {
+    0%,
+    70% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    73% {
+      opacity: 0.5;
+    }
+    80%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  @keyframes au-agent {
+    0%,
+    27% {
+      opacity: 1;
+    }
+    33%,
+    94% {
+      opacity: 0;
+    }
+    96.8%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes au-shelf {
+    0%,
+    32% {
+      opacity: 0;
+    }
+    38%,
+    52% {
+      opacity: 1;
+    }
+    58%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The modal keeps the shelf visible behind its scrim, so this stage fades in
+   * over a screen that never left rather than replacing it. */
+  @keyframes au-modal {
+    0%,
+    52% {
+      opacity: 0;
+    }
+    58%,
+    86% {
+      opacity: 1;
+    }
+    89%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

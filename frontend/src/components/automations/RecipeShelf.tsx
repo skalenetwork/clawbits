@@ -14,6 +14,10 @@ import {cn} from "@/lib/utils";
  * Personalization is honest about what we know client-side: templates
  * already running are hidden.
  */
+
+/** Recipes on the shelf at once. Three keeps one row on desktop. */
+const SHELF_SIZE = 3;
+
 export function RecipeShelf({automations, onPick}: {
     /** Existing automations — used to hide already-created template names. */
     automations: Automation[];
@@ -22,9 +26,16 @@ export function RecipeShelf({automations, onPick}: {
     const existingNames = new Set(automations.map(a => (a.name ?? "").toLowerCase()));
     // The catalog is bigger than the shelf: hide what's already running, show
     // the top 3 — as automations get created, fresh suggestions surface.
-    const recipes = AUTOMATION_TEMPLATES.filter(
+    // Pinned recipes (AgentPit) are hoisted ahead of the rotation so a
+    // walkthrough can point at one and be right; "already added" still wins,
+    // because a pin only survives the slicing, not the filter above it.
+    const available = AUTOMATION_TEMPLATES.filter(
         t => !existingNames.has(t.defaultName.toLowerCase()),
-    ).slice(0, 3);
+    );
+    const recipes = [
+        ...available.filter(t => t.pinned),
+        ...available.filter(t => !t.pinned),
+    ].slice(0, SHELF_SIZE);
     if (recipes.length === 0) return null;
 
     return (

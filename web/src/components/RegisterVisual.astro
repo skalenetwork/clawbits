@@ -1,0 +1,1010 @@
+---
+import {
+  ChartUpIcon,
+  Copy01Icon,
+  Key01Icon,
+  Robot02Icon,
+  Tick02Icon,
+  Wallet01Icon,
+} from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+import PointerCursor from "./PointerCursor.astro";
+
+/**
+ * Step 01's visual: signing in to AgentPit and walking away with a key.
+ *
+ * ── What this is drawn from ───────────────────────────────────────────────
+ * AgentPit's real screens (owner reference shots, 2026-08-18), simplified.
+ * Three of them, in the order a reader will meet them:
+ *
+ *   1. the sign-in modal   - "Sign in", an email field, a navy "Send code"
+ *   2. the navy key pill   - a key glyph and "Your key is ready"
+ *   3. the key card        - a blue-tinted panel, "funded & ready" on the
+ *                            right, a wallet glyph, the key, and Copy
+ *
+ * SIMPLIFIED, not transcribed. The homepage cards copy our own screens
+ * component by component; these are someone else's, so this takes the palette,
+ * the shapes and the distinctive strings and leaves the rest. What it must not
+ * do is drift into inventing AgentPit UI that does not exist.
+ *
+ * Two deliberate departures from the reference:
+ *
+ *  - SENTENCE CASE, where their labels are letter-spaced caps ("YOUR API KEY",
+ *    "EMAIL"). The house rule is that nothing in our UI is all-caps and that
+ *    size, weight and colour carry hierarchy instead. Fidelity to a partner's
+ *    screen does not outrank it in a drawing that lives on our page.
+ *  - A DIFFERENT UUID. The reference shot shows what is plausibly a live key
+ *    from a real account; it is not reproduced here. This one is invented and
+ *    should stay invented.
+ *
+ * The sign-in modal drops their "OR / Continue with Google" half. At this size
+ * the two buttons and the divider between them stop being legible and start
+ * being texture, and the beat only needs one thing to click.
+ *
+ * ── The window ────────────────────────────────────────────────────────────
+ * ReefVisual's construction (owner, 2026-08-18): a frosted panel set INTO the
+ * card rather than drawn on it - inset from the top and sides, bleeding off
+ * the bottom edge, with a rim highlight and a shadow tinted to the panel it
+ * sits in. The bleed is what sells it as a window onto something larger; a box
+ * closed on all four sides would just be a card inside a card.
+ *
+ * It bleeds DOWNWARD only, unlike Reef's, which also runs off to the right.
+ * Reef's content is a grid where any corner tells the story; this scene has
+ * things that must be clickable on screen, and a right-hand bleed puts the
+ * Copy button past the edge.
+ *
+ * ── The loop ──────────────────────────────────────────────────────────────
+ * 9s, CSS only, held at its 0% frame until PlayOnView marks the scene (12s
+ * originally; quickened on the owner's call, 2026-08-18). The percentages
+ * below are the choreography and are unchanged - the duration is the only
+ * knob, and every element shares it, so they cannot drift out of step.
+ *
+ * Three clicks, one per screen:
+ *
+ *   04-20%  cursor arrives, clicks "Send code"          -> signed in
+ *   22-44%  cursor clicks "Your key is ready"           -> the key card
+ *   46-68%  cursor clicks Copy                          -> tick
+ *   68-86%  hold on the result
+ *   86-100% the seam
+ *
+ * SEAM, matching the homepage cards exactly: dissolve at 86-89%, put
+ * everything back at 89-94% while nothing is visible, fade in by 96.8%. 0% and
+ * 100% are then the same frame and the wrap cannot be seen.
+ *
+ * ── Rules this file follows ───────────────────────────────────────────────
+ *  - NO `style` attributes. The production CSP drops them, so every position
+ *    below is a class in the stylesheet (see AppWindow.astro).
+ *  - Settled by DEFAULT. The base rules draw the finished state - key card up,
+ *    no cursor - so reduced motion and the moment before PlayOnView both show
+ *    a sensible still. The 0% state is declared inside the no-preference
+ *    query, which is the only place the animation exists.
+ *  - `--u` and container units, not viewport units, so the scene scales with
+ *    its own panel. The panel is half a rail on desktop and full width on a
+ *    phone; anything sized off `vw` breaks across that.
+ *  - Compositor-only motion: the cursor moves by translating a wrapper the
+ *    size of the whole scene, so a percentage is a percentage OF THE SCENE and
+ *    nothing has to know its own pixel position.
+ */
+---
+
+<div class="scene" data-play-on-view>
+  <div class="win">
+    <header class="whead">
+      <img class="wmark" src="/brand/agentpit.svg" alt="" width="24" height="24" />
+      <span class="wname">AgentPit</span>
+      <span class="wbeta">Beta</span>
+      {/* The real nav, now that the reference shows it: two outlined pills,
+          each with its glyph. The blank pills that stood here were a guess and
+          are gone. */}
+      <span class="wnav">
+        <span class="wpill">
+          <span class="pico" set:html={ico(ChartUpIcon)} />Markets
+        </span>
+        <span class="wpill">
+          <span class="pico" set:html={ico(Robot02Icon)} />Arena
+        </span>
+      </span>
+    </header>
+
+    {/* All three screens share ONE grid cell, so the window's height never
+        changes as they swap. Content that grew mid-loop would move the scene
+        under a reader mid-scroll - the same class of problem
+        `overflow-anchor` is turned off for below. */}
+    <div class="wbody">
+      {/* ── 1. Sign in ── */}
+      <span class="stage s-signin">
+        <span class="s-title">Sign in</span>
+        <span class="s-label">Email</span>
+        <span class="s-input"></span>
+        <span class="btn btn-navy b-send">Send code</span>
+        {/* Restored (owner, 2026-08-18). It was dropped as "texture at this
+            size" and that was the wrong call: the divider is what tells you
+            the two buttons are alternatives rather than a sequence, and
+            Google is the route most readers will actually take - so it is
+            what the cursor clicks. */}
+        <span class="s-or"><i></i>or<i></i></span>
+        <span class="btn btn-ghost b-google">
+          Continue with Google
+          <span class="ring r1"></span>
+        </span>
+      </span>
+
+      {/* ── 2. The key is minted, and the landing page says so ──
+          NOT a lone pill on an empty screen, which is what this was before the
+          reference arrived: the button lives in AgentPit's hero, and the hero
+          is most of what makes the beat recognisable as their site. Eyebrow,
+          two-line headline with the second line in their blue, one line of
+          body, then the button pair. */}
+      <span class="stage s-ready">
+        <span class="h-eyebrow">Prediction market sandbox</span>
+        <span class="h-title">
+          <span class="h-l1">Train in the Sandbox.</span>
+          <span class="h-l2">Rule the Leaderboard.</span>
+        </span>
+        <span class="h-sub">
+          Fine-tune your agent on identical Polymarket mechanics, risk free.
+        </span>
+        <span class="h-cta">
+          <span class="btn btn-navy b-ready">
+            <span class="bico" set:html={ico(Key01Icon)} />
+            Your key is ready
+            <span class="ring r2"></span>
+          </span>
+          {/* Its right edge falls off the window's bleed, which is the point -
+              a hero that ended tidily inside the frame would stop reading as a
+              page and start reading as a card. */}
+          <span class="btn btn-ghost">
+            <span class="bico" set:html={ico(ChartUpIcon)} />
+            Explore the Pit
+          </span>
+        </span>
+      </span>
+
+      {/* ── 3. The key itself ── */}
+      <span class="stage s-key">
+        {/* The numeral from AgentPit's own "01 / Get your key" block. It is
+            what places this card in a sequence rather than leaving it
+            floating - which is exactly what the step it illustrates is doing
+            on our page. */}
+        <span class="k-num">01</span>
+        <span class="k-main">
+          <span class="k-title">Get your key</span>
+          <span class="kcard">
+          <span class="kchead">
+            <span class="kctitle">Your API key</span>
+            <span class="kcstate">funded &amp; ready</span>
+          </span>
+          <span class="kcrow">
+            <span class="kcwallet" set:html={ico(Wallet01Icon)} />
+            <span class="kcval">a41f7d92-6c05-4e8b-9f31-2b7ce0d4a6f8</span>
+            <span class="kcopy">
+              <span class="kico kc" set:html={ico(Copy01Icon)} />
+              <span class="kico kt" set:html={ico(Tick02Icon)} />
+              <span class="kcopy-l">Copy</span>
+              <span class="ring r3"></span>
+            </span>
+          </span>
+            <span class="kcnote">Your live key, minted for this account.</span>
+          </span>
+        </span>
+      </span>
+    </div>
+  </div>
+
+  {/* Two wrappers, two jobs: -track carries the path, -press carries the dip.
+      Splitting them keeps each animation on one property, so they compose
+      instead of overwriting one another. */}
+  <span class="cur-track">
+    <span class="cur-press"><PointerCursor /></span>
+  </span>
+</div>
+
+<style>
+  .scene {
+    /* Makes `cqw` below resolve against THIS box rather than the viewport. */
+    container-type: inline-size;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    /* Nothing in here is content a reader tracks, so nothing in here should
+     * ever be picked as a scroll anchor - Chrome will otherwise "correct" for
+     * the scene's own motion by scrolling the page. */
+    overflow-anchor: none;
+
+    /* 1u == 1px at the panel's reference width (~500px: the rails' 1.1fr
+     * column at the desktop measure). Everything below is a multiple, so the
+     * scene scales with ITSELF and not with the window. */
+    --u: clamp(0.68px, 0.2cqw, 1.15px);
+    /* The window's top and left gap. One value, two edges - see .win. */
+    --win-in: calc(var(--u) * 34);
+
+    /* AgentPit's palette, read off the reference shots. */
+    --ap-navy: #111827;
+    --ap-blue: #2563eb;
+    /* Two blues, and they are genuinely different in the reference: the key
+     * card's label is the calmer one above, the hero headline is this. */
+    --ap-hero: #3b5bfd;
+    --ap-ink: #0f172a;
+    --ap-mut: #64748b;
+    --ap-tint: #f5f8ff;
+    --ap-line: #dbe4fb;
+    --line: rgb(20 22 26 / 0.09);
+  }
+
+  /* ── The window ──
+   * Set into the panel, not drawn on it. Reef's offset (owner, 2026-08-18):
+   * pushed in from the LEFT and running off the right and the bottom, so the
+   * frame crops a window onto something larger rather than centring a card in
+   * a box.
+   *
+   * The right bleed is small where Reef's is -16%, and the difference is not
+   * timidity. Reef's content is a grid where any corner tells the story; this
+   * scene has a Copy button at the far right of the key card that the third
+   * click has to land on. Deepen the bleed and that click goes off the edge -
+   * so re-measure the three targets against the rendered scene before touching
+   * this, and carry the new numbers into `ap-path`. */
+  .win {
+    position: absolute;
+    /* ONE VALUE for the top and the left gap (owner, 2026-08-18), and it has
+     * to be a length rather than a percentage: `inset: 11% ... 16%` reads its
+     * top from the panel's HEIGHT and its left from the panel's WIDTH, so on
+     * anything but a square the two gaps are different sizes no matter what
+     * numbers you write. They were 36px and 79px. In `u` they are the same
+     * number because they are the same unit, and they stay the same through
+     * any future change to the panel's aspect ratio. */
+    top: var(--win-in);
+    left: var(--win-in);
+    /* The bleeds are free to differ - they are off-frame. */
+    right: calc(var(--u) * -20);
+    bottom: calc(var(--u) * -66);
+    /* ASYMMETRIC, and the right value is the whole point: the window runs 20u
+     * past the panel's edge, so a symmetric 16u padding left content ending 4u
+     * OUTSIDE the frame - the Copy button was being sliced by the crop. The
+     * right padding has to clear the bleed and then leave a gutter, or content
+     * touches the edge of the box. Keep it larger than the right bleed. */
+    padding: calc(var(--u) * 16) calc(var(--u) * 46) calc(var(--u) * 16)
+      calc(var(--u) * 16);
+    border-radius: calc(var(--u) * 14);
+    background: rgb(255 255 255 / 0.88);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    /* Rim light first, then a shadow tinted to the step's own blue - a neutral
+     * grey shadow on a tinted panel reads as dirt under the window. */
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 0.85),
+      0 calc(var(--u) * 14) calc(var(--u) * 30) rgb(36 99 235 / 0.16);
+  }
+
+  .whead {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 8);
+    padding-bottom: calc(var(--u) * 12);
+    margin-bottom: calc(var(--u) * 14);
+    border-bottom: 1px solid var(--line);
+    /* The rule runs to the WINDOW's edge, not the content's (owner,
+     * 2026-08-18). The window carries 46u of right padding to clear its own
+     * bleed, which stopped this line well short and made the header look like
+     * a floating card rather than a bar. Cancelling that padding with a
+     * negative margin and re-adding it as padding here lets the border span
+     * the full width while the nav pills stay exactly where they were. */
+    margin-inline-end: calc(var(--u) * -46);
+    padding-inline-end: calc(var(--u) * 46);
+  }
+
+  .wmark {
+    width: calc(var(--u) * 18);
+    height: calc(var(--u) * 18);
+  }
+
+  .wname {
+    font-size: calc(var(--u) * 15);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ap-ink);
+  }
+
+  /* Their beta badge. Orange is the only warm note in AgentPit's palette and
+   * it is what the eye finds first in the reference shot, so it earns its
+   * place even at this size. */
+  .wbeta {
+    padding: calc(var(--u) * 2) calc(var(--u) * 6);
+    border-radius: 999px;
+    background: #f97316;
+    font-size: calc(var(--u) * 9);
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    color: #fff;
+  }
+
+  .wnav {
+    display: flex;
+    gap: calc(var(--u) * 7);
+    margin-inline-start: calc(var(--u) * 14);
+  }
+
+  .wpill {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 5);
+    height: calc(var(--u) * 22);
+    padding-inline: calc(var(--u) * 10);
+    border: 1px solid var(--ap-line);
+    border-radius: 999px;
+    font-size: calc(var(--u) * 11);
+    color: var(--ap-mut);
+  }
+
+  .pico {
+    display: block;
+    width: calc(var(--u) * 12);
+    height: calc(var(--u) * 12);
+  }
+
+  /* ── The hero ── */
+  .h-eyebrow {
+    /* The hero starts lower than the modal does - a headline that begins
+     * immediately under the nav reads as cramped where a form does not. */
+    margin-top: calc(var(--u) * 14);
+    font-size: calc(var(--u) * 9.5);
+    font-weight: 650;
+    letter-spacing: 0.14em;
+    color: var(--ap-hero);
+  }
+
+  .h-title {
+    display: flex;
+    flex-direction: column;
+    font-size: calc(var(--u) * 25);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.12;
+  }
+
+  .h-l1 {
+    color: var(--ap-ink);
+  }
+
+  /* The second line in their blue - the one detail that makes the headline
+   * theirs rather than any hero on any site. */
+  .h-l2 {
+    color: var(--ap-hero);
+  }
+
+  .h-sub {
+    max-width: calc(var(--u) * 300);
+    font-size: calc(var(--u) * 11);
+    line-height: 1.5;
+    color: var(--ap-mut);
+  }
+
+  .h-cta {
+    display: flex;
+    gap: calc(var(--u) * 9);
+    margin-top: calc(var(--u) * 2);
+  }
+
+  /* Shorter and self-sizing in the hero - the full-width 38u button is the
+   * modal's shape, not this one's. */
+  .h-cta .btn {
+    flex: none;
+    height: calc(var(--u) * 34);
+    padding-inline: calc(var(--u) * 14);
+    font-size: calc(var(--u) * 12.5);
+  }
+
+  .btn-ghost {
+    border: 1px solid var(--ap-line);
+    background: #fff;
+    color: var(--ap-ink);
+  }
+
+  /* ── The three screens, stacked in one cell ── */
+  .wbody {
+    display: grid;
+  }
+
+  .stage {
+    grid-area: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    /* The shorter screens centre in the cell the tallest one sizes. */
+    justify-content: center;
+    gap: calc(var(--u) * 8);
+  }
+
+  /* THE SETTLED FRAME, and it has to be declared: three screens sharing one
+   * cell are all visible at once unless something says otherwise, and the
+   * no-preference block below is not that something - a reduced-motion visitor
+   * never reads it. Without these two rules that visitor gets the sign-in
+   * modal, the pill and the key card printed on top of each other.
+   *
+   * The end of the story is the right still: the key, already minted. */
+  .s-signin,
+  .s-ready {
+    opacity: 0;
+  }
+
+  .s-key {
+    opacity: 1;
+  }
+
+  /* The hero's own spacing - looser between the headline block and what
+   * frames it than the modal's uniform 8u. */
+  .s-ready {
+    gap: calc(var(--u) * 10);
+    justify-content: center;
+  }
+
+  .s-title {
+    font-size: calc(var(--u) * 17);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-align: center;
+    color: var(--ap-ink);
+    margin-bottom: calc(var(--u) * 4);
+  }
+
+  .s-label {
+    font-size: calc(var(--u) * 11);
+    letter-spacing: 0.06em;
+    color: var(--ap-mut);
+  }
+
+  .s-input {
+    height: calc(var(--u) * 34);
+    border: 1px solid var(--ap-line);
+    border-radius: calc(var(--u) * 8);
+    background: #fff;
+  }
+
+  /* The alternatives divider: a rule, the word, a rule. */
+  .s-or {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 10);
+    margin: calc(var(--u) * 2) 0;
+    font-size: calc(var(--u) * 10.5);
+    letter-spacing: 0.08em;
+    color: var(--ap-mut);
+  }
+
+  .s-or i {
+    flex: 1;
+    height: 1px;
+    background: var(--ap-line);
+  }
+
+  /* ── The key beat ── */
+  .s-key {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: calc(var(--u) * 16);
+    /* Same air the hero's eyebrow takes: a numbered block starting flush
+     * under the nav divider reads as attached to the chrome above it rather
+     * than as the start of its own section. */
+    margin-top: calc(var(--u) * 16);
+  }
+
+  /* Big, pale and set back - an index, not a heading. Their own numeral is
+   * the lightest thing in the block and it still reads first because of the
+   * size, which is the trick worth copying. */
+  .k-num {
+    flex: none;
+    font-size: calc(var(--u) * 30);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: #bcd0f8;
+  }
+
+  .k-main {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    gap: calc(var(--u) * 9);
+  }
+
+  .k-title {
+    font-size: calc(var(--u) * 15);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ap-ink);
+  }
+
+  /* ── Buttons ── */
+  .btn {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(var(--u) * 8);
+    height: calc(var(--u) * 38);
+    border-radius: calc(var(--u) * 9);
+    font-size: calc(var(--u) * 14);
+    font-weight: 550;
+  }
+
+  .btn-navy {
+    background: var(--ap-navy);
+    color: #fff;
+  }
+
+  .b-send {
+    margin-top: calc(var(--u) * 4);
+  }
+
+  .bico {
+    display: block;
+    width: calc(var(--u) * 16);
+    height: calc(var(--u) * 16);
+  }
+
+  /* ── The key card ── */
+  .kcard {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--ap-line);
+    border-radius: calc(var(--u) * 10);
+    background: var(--ap-tint);
+    overflow: hidden;
+  }
+
+  .kchead {
+    display: flex;
+    align-items: baseline;
+    padding: calc(var(--u) * 9) calc(var(--u) * 12);
+    border-bottom: 1px solid var(--ap-line);
+  }
+
+  .kctitle {
+    font-size: calc(var(--u) * 11.5);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--ap-blue);
+  }
+
+  .kcstate {
+    margin-inline-start: auto;
+    font-size: calc(var(--u) * 11);
+    color: var(--ap-mut);
+  }
+
+  .kcrow {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--u) * 9);
+    padding: calc(var(--u) * 10) calc(var(--u) * 12) calc(var(--u) * 4);
+  }
+
+  .kcwallet {
+    display: block;
+    flex: none;
+    width: calc(var(--u) * 15);
+    height: calc(var(--u) * 15);
+    color: var(--ap-blue);
+  }
+
+  .kcval {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: calc(var(--u) * 12);
+    color: var(--ap-ink);
+    white-space: nowrap;
+  }
+
+  .kcopy {
+    position: relative;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: calc(var(--u) * 5);
+    font-size: calc(var(--u) * 12);
+    color: var(--ap-ink);
+  }
+
+  /* The two glyphs share one cell so the swap cannot move the label beside
+   * them - the same construction the page's own copy buttons use. */
+  .kico {
+    grid-area: 1 / 1;
+    display: block;
+    width: calc(var(--u) * 14);
+    height: calc(var(--u) * 14);
+  }
+
+  .kcopy {
+    display: grid;
+    grid-template-columns: auto auto;
+    align-items: center;
+  }
+
+  .kcopy-l {
+    grid-column: 2;
+  }
+
+  /* :global() - every glyph here arrives through set:html and never carries
+   * the scope attribute a plain selector would demand. */
+  .bico :global(svg),
+  .kico :global(svg),
+  .kcwallet :global(svg) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .kt {
+    opacity: 0;
+    color: #16a34a;
+  }
+
+  .kcnote {
+    padding: 0 calc(var(--u) * 12) calc(var(--u) * 10);
+    font-size: calc(var(--u) * 11);
+    line-height: 1.45;
+    color: var(--ap-mut);
+  }
+
+  /* ── Click rings ──
+   * A press is not legible from the cursor alone - something has to happen
+   * WHERE the cursor is, and a ring that expands and fades is the smallest
+   * thing that says "that landed".
+   *
+   * Each ring lives INSIDE the control it marks rather than at a coordinate on
+   * the scene. Hand-written percentages were tried first and were 15 points
+   * off the real targets - and would have gone off again the first time the
+   * window's padding changed. Anchored, they cannot drift. */
+  .ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: calc(var(--u) * 34);
+    height: calc(var(--u) * 34);
+    margin: calc(var(--u) * -17) 0 0 calc(var(--u) * -17);
+    border: calc(var(--u) * 1.5) solid var(--ap-navy);
+    border-radius: 50%;
+    opacity: 0;
+  }
+
+  /* ── The cursor ──
+   * The track is the WHOLE scene, so translating it by 40% moves the cursor
+   * 40% of the scene's width. That is what lets the path below be written in
+   * plain percentages without any element knowing its own size.
+   *
+   * The three stops in `ap-path` are the MEASURED centres of the three
+   * targets. The rings anchor themselves; a path cannot, so these stay
+   * hand-held - if the window moves or its padding changes, re-measure against
+   * the rendered scene rather than reasoning it out. */
+  .cur-track {
+    position: absolute;
+    inset: 0;
+    /* Settled state is no cursor at all - a pointer frozen mid-air reads as a
+     * broken image. */
+    opacity: 0;
+  }
+
+  .cur-press {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────
+   * The loop. Everything above draws the finished state; everything here is
+   * the 9 seconds that earn it.
+   * ──────────────────────────────────────────────────────────────────────── */
+  @media (prefers-reduced-motion: no-preference) {
+    /* The 0% frame, declared only where the animation exists. */
+    .s-signin {
+      opacity: 1;
+    }
+
+    .s-ready,
+    .s-key {
+      opacity: 0;
+    }
+
+    .cur-track {
+      opacity: 1;
+      translate: 84% 92%;
+    }
+
+    .play .s-signin {
+      animation: ap-signin 9s ease infinite;
+    }
+    .play .s-ready {
+      animation: ap-ready 9s ease infinite;
+    }
+    .play .s-key {
+      animation: ap-keycard 9s ease infinite;
+    }
+    .play .kc {
+      animation: ap-copy-out 9s ease infinite;
+    }
+    .play .kt {
+      animation: ap-tick-in 9s ease infinite;
+    }
+    .play .cur-track {
+      animation: ap-path 9s ease infinite;
+    }
+    .play .cur-press {
+      animation: ap-press 9s ease infinite;
+    }
+    /* The controls take the press too, not just the cursor. A pointer that
+     * dips over a button that does not move reads as a cursor twitching NEXT
+     * to a button; the pair moving together is what reads as a click. Each
+     * one shares its ring's timing exactly - they are the same event. */
+    .play .b-google {
+      animation: ap-press-1 9s ease infinite;
+    }
+    .play .b-ready {
+      animation: ap-press-2 9s ease infinite;
+    }
+    .play .kcopy {
+      animation: ap-press-3 9s ease infinite;
+    }
+
+    .play .r1 {
+      animation: ap-ring1 9s ease infinite;
+    }
+    .play .r2 {
+      animation: ap-ring2 9s ease infinite;
+    }
+    .play .r3 {
+      animation: ap-ring3 9s ease infinite;
+    }
+  }
+
+  /* NO CHROME FADE (owner, 2026-08-18). The window used to dissolve at the
+   * seam along with its contents, which left the panel empty for a beat every
+   * loop. The frame never leaves now - only the screens inside it reset. */
+
+  /* Three stops, each with a dwell before its click - a cursor that presses
+   * while still moving reads as a glitch. Coordinates are measured. */
+  @keyframes ap-path {
+    0%,
+    4% {
+      translate: 84% 92%;
+    }
+    16%,
+    22% {
+      translate: 52.4% 90.1%;
+    }
+    38%,
+    46% {
+      translate: 25.2% 87.6%;
+    }
+    62%,
+    86% {
+      translate: 87.5% 63.4%;
+    }
+    89% {
+      translate: 87.5% 63.4%;
+      opacity: 1;
+    }
+    90%,
+    94% {
+      translate: 84% 92%;
+      opacity: 0;
+    }
+    96.8%,
+    100% {
+      translate: 84% 92%;
+      opacity: 1;
+    }
+  }
+
+  @keyframes ap-press {
+    0%,
+    17% {
+      scale: 1;
+    }
+    19%,
+    21% {
+      scale: 0.88;
+    }
+    23%,
+    41% {
+      scale: 1;
+    }
+    43%,
+    45% {
+      scale: 0.88;
+    }
+    47%,
+    65% {
+      scale: 1;
+    }
+    67%,
+    69% {
+      scale: 0.88;
+    }
+    71%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  /* Three presses, one per click, each a shallow dip held for two frames.
+   * 0.97 is deliberately small - a button that visibly shrinks reads as a
+   * bug, and this only has to register as weight going into it. */
+  @keyframes ap-press-1 {
+    0%,
+    19% {
+      scale: 1;
+    }
+    21%,
+    23% {
+      scale: 0.97;
+    }
+    25%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes ap-press-2 {
+    0%,
+    43% {
+      scale: 1;
+    }
+    45%,
+    47% {
+      scale: 0.97;
+    }
+    49%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes ap-press-3 {
+    0%,
+    67% {
+      scale: 1;
+    }
+    69%,
+    71% {
+      scale: 0.94;
+    }
+    73%,
+    100% {
+      scale: 1;
+    }
+  }
+
+  @keyframes ap-ring1 {
+    0%,
+    19% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    22% {
+      opacity: 0.45;
+    }
+    29%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  @keyframes ap-ring2 {
+    0%,
+    43% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    46% {
+      opacity: 0.45;
+    }
+    53%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  @keyframes ap-ring3 {
+    0%,
+    67% {
+      opacity: 0;
+      scale: 0.4;
+    }
+    70% {
+      opacity: 0.45;
+    }
+    77%,
+    100% {
+      opacity: 0;
+      scale: 1.5;
+    }
+  }
+
+  /* Each screen leaves only after its own click has landed, and the next
+   * arrives a beat later - the gap is what reads as the page responding. */
+  @keyframes ap-signin {
+    0%,
+    22% {
+      opacity: 1;
+      translate: 0 0;
+    }
+    28%,
+    94% {
+      opacity: 0;
+      translate: 0 calc(var(--u) * -6);
+    }
+    96.8%,
+    100% {
+      opacity: 1;
+      translate: 0 0;
+    }
+  }
+
+  @keyframes ap-ready {
+    0%,
+    27% {
+      opacity: 0;
+      translate: 0 calc(var(--u) * 8);
+    }
+    33%,
+    46% {
+      opacity: 1;
+      translate: 0 0;
+    }
+    52%,
+    100% {
+      opacity: 0;
+      translate: 0 calc(var(--u) * -6);
+    }
+  }
+
+  @keyframes ap-keycard {
+    0%,
+    51% {
+      opacity: 0;
+      translate: 0 calc(var(--u) * 8);
+    }
+    58%,
+    86% {
+      opacity: 1;
+      translate: 0 0;
+    }
+    89%,
+    100% {
+      opacity: 0;
+      translate: 0 calc(var(--u) * 8);
+    }
+  }
+
+  @keyframes ap-copy-out {
+    0%,
+    68% {
+      opacity: 1;
+    }
+    71%,
+    94% {
+      opacity: 0;
+    }
+    96.8%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes ap-tick-in {
+    0%,
+    68% {
+      opacity: 0;
+    }
+    71%,
+    86% {
+      opacity: 1;
+    }
+    89%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>
