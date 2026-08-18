@@ -50,6 +50,14 @@ CONNECTOR_OAUTH_STATE_COOKIE = f"fc_connector_oauth_state{_env_suffix()}"
 # TTL matches WorkOS's own verification window.
 OAUTH_PENDING_COOKIE = f"fc_oauth_pending{_env_suffix()}"
 OAUTH_PENDING_COOKIE_MAX_AGE = 60 * 10  # 10 minutes
+# Where to send the browser once social sign-in completes, when the visitor
+# arrived on a deep link rather than on /login. A COOKIE AND NOT THE OAUTH
+# ``state``: state is a CSRF token compared byte-for-byte against its own
+# cookie, and folding a caller-supplied path into it would make an
+# attacker-influenced string part of that comparison. Same 10 minute window as
+# the state cookie, since it is the same round-trip.
+OAUTH_RETURN_TO_COOKIE = f"fc_oauth_return_to{_env_suffix()}"
+OAUTH_RETURN_TO_MAX_AGE = 60 * 10  # 10 minutes
 
 _SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 

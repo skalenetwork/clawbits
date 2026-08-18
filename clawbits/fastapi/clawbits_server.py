@@ -110,7 +110,7 @@ from clawbits.db.table_create import TableCreate
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
 from clawbits.domain import EMAIL_DOMAIN, SHARE_DOMAIN
-from clawbits.fastapi.agent_auth import extract_agent
+from clawbits.fastapi.agent_auth import extract_agent, require_own_agent
 from clawbits.fastapi.agent_signup import AgentSignup
 from clawbits.fastapi.avatar_hooks import await_channel_avatar
 from clawbits.fastapi.email_endpoints import EmailEndpoints
@@ -2225,6 +2225,9 @@ class ClawBitsServer(FastAPI):
                 caller = TableRead.get_agent_by_api_key(db, token)
                 if caller is None:
                     raise HTTPException(status_code=401, detail="Invalid API key")
+                # Before the existence lookup, so a foreign handle 403s whether
+                # or not it exists — the 404 must not be an enumeration oracle.
+                require_own_agent(caller, agent_id)
                 info = TableRead.get_agent_info(db, agent_id)
                 if info is None:
                     raise HTTPException(status_code=404, detail="Agent not found")
@@ -2308,7 +2311,10 @@ class ClawBitsServer(FastAPI):
     ) -> MmChannelResponse:
         """Get (or create) the default channel for an agent's organization."""
         try:
-            self._mm_extract_agent(api_key)
+            agent = self._mm_extract_agent(api_key)
+            # Self-scoped: ensure_* creates the channel on miss, so without
+            # this check a read request is also a cross-org write.
+            require_own_agent(agent, agent_id)
             with Session(self._engine) as db:
                 channel = TableWrite.ensure_agent_default_mm_channel(db, agent_id)
                 db.commit()
@@ -2329,7 +2335,11 @@ class ClawBitsServer(FastAPI):
     ) -> MmChannelResponse:
         """Get (or create) the operator-agent direct communication channel."""
         try:
-            self._mm_extract_agent(api_key)
+            agent = self._mm_extract_agent(api_key)
+            # Self-scoped: ensure_* creates the DM (and its membership rows) on
+            # miss, so without this check a read request is also a cross-org
+            # write — and the response previews the operator DM's last message.
+            require_own_agent(agent, agent_id)
             with Session(self._engine) as db:
                 channel, created = TableWrite.ensure_owner_agent_comm_channel(db, agent_id)
                 db.commit()
@@ -4178,8 +4188,7 @@ class ClawBitsServer(FastAPI):
             agent = TableRead.get_agent_by_api_key(db, token)
             if agent is None:
                 raise HTTPException(status_code=401, detail="Invalid API key")
-        if agent.agent_id.value != agent_id:
-            raise HTTPException(status_code=403, detail="API key does not belong to this agent")
+        require_own_agent(agent, agent_id)
 
         with Session(self._engine) as db:
             TableWrite.upsert_agent_action(db, agent_id, body.action_id, body.action_md)
@@ -4206,6 +4215,7 @@ class ClawBitsServer(FastAPI):
             agent = TableRead.get_agent_by_api_key(db, token)
             if agent is None:
                 raise HTTPException(status_code=401, detail="Invalid API key")
+            require_own_agent(agent, agent_id)
             items = TableRead.get_agent_actions(db, agent_id, limit=limit, offset=offset)
             total = TableRead.count_agent_actions_for_agent(db, agent_id)
 
@@ -4230,6 +4240,7 @@ class ClawBitsServer(FastAPI):
             agent = TableRead.get_agent_by_api_key(db, token)
             if agent is None:
                 raise HTTPException(status_code=401, detail="Invalid API key")
+            require_own_agent(agent, agent_id)
             row = TableRead.get_agent_action(db, agent_id, action_id)
 
         if row is None:
@@ -4254,8 +4265,7 @@ class ClawBitsServer(FastAPI):
             agent = TableRead.get_agent_by_api_key(db, token)
             if agent is None:
                 raise HTTPException(status_code=401, detail="Invalid API key")
-        if agent.agent_id.value != agent_id:
-            raise HTTPException(status_code=403, detail="API key does not belong to this agent")
+        require_own_agent(agent, agent_id)
 
         with Session(self._engine) as db:
             deleted = TableWrite.delete_agent_action(db, agent_id, action_id)
@@ -4310,8 +4320,7 @@ class ClawBitsServer(FastAPI):
             agent = TableRead.get_agent_by_api_key(db, token)
             if agent is None:
                 raise HTTPException(status_code=401, detail="Invalid API key")
-        if agent.agent_id.value != agent_id:
-            raise HTTPException(status_code=403, detail="API key does not belong to this agent")
+        require_own_agent(agent, agent_id)
 
         with Session(self._engine) as db:
             TableWrite.upsert_agent_profile(
@@ -4353,8 +4362,7 @@ class ClawBitsServer(FastAPI):
             agent = TableRead.get_agent_by_api_key(db, token)
             if agent is None:
                 raise HTTPException(status_code=401, detail="Invalid API key")
-        if agent.agent_id.value != agent_id:
-            raise HTTPException(status_code=403, detail="API key does not belong to this agent")
+        require_own_agent(agent, agent_id)
 
         with Session(self._engine) as db:
             TableWrite.set_agent_description(db, agent_id, body.description, source="auto")

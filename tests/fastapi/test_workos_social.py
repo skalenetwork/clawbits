@@ -7,6 +7,10 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
+from clawbits.fastapi.workos_auth import safe_return_path
+
 
 def test_social_start_redirects_to_workos(test_client):
     """``GET /api/auth/social/google/start`` 302's to the adapter's auth URL
@@ -190,3 +194,114 @@ def test_social_verify_email_without_pending_cookie_400(test_client):
         json={"code": "123456"},
     )
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Post-login return path (``?next=``)
+#
+# The validator is the security-relevant half of this feature: the parameter is
+# attacker-supplied by definition, and it lands in a ``Location`` header on our
+# own domain. These cases are the ones that turn a sign-in page into a phishing
+# launch pad, so they are asserted individually rather than as a blob.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "//evil.com",                 # protocol-relative: another origin
+        "/\\evil.com",                # browsers normalise the backslash
+        "https://evil.com/",          # absolute
+        "http://evil.com/",
+        "javascript:alert(1)",        # scheme, not rooted
+        "agents",                     # not rooted
+        "",
+        None,
+        "/agents\nLocation: https://evil.com",  # header injection
+        "/agents\r\nSet-Cookie: x=1",
+        "/login",                     # would loop against GuestOnly
+        "/verify-email",
+        "/" + "a" * 600,              # absurd length
+    ],
+)
+def test_safe_return_path_rejects_hostile_values(raw):
+    assert safe_return_path(raw) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "/agents",
+        "/agents/abc-123/manage",
+        "/channels/general?highlight=42",
+        "/agents?utm_source=clawbits.ai#top",
+        "/logins",                    # NOT /login - prefix must not over-match
+    ],
+)
+def test_safe_return_path_accepts_same_origin_paths(raw):
+    assert safe_return_path(raw) == raw
+
+
+def test_social_start_parks_safe_next_in_a_cookie(test_client):
+    """A deep link survives the WorkOS round-trip in its own cookie, kept out
+    of the OAuth ``state`` so the CSRF token stays a pure random token."""
+    resp = test_client.get(
+        "/api/auth/social/google/start",
+        params={"next": "/agents/abc/manage"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    # Starlette quotes rather than percent-encodes a value containing "/".
+    cookie = resp.headers.get("set-cookie", "")
+    assert 'fc_oauth_return_to="/agents/abc/manage"' in cookie
+    # And it must NOT have been folded into the state parameter.
+    state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
+    assert "agents" not in state
+
+
+def test_social_start_refuses_offsite_next(test_client):
+    """An off-site value is dropped, and the cookie is actively cleared so a
+    stale one from an earlier attempt cannot be inherited."""
+    resp = test_client.get(
+        "/api/auth/social/google/start",
+        params={"next": "//evil.com"},
+        follow_redirects=False,
+    )
+    cookie = resp.headers.get("set-cookie", "")
+    assert "evil.com" not in cookie
+    assert 'fc_oauth_return_to=""' in cookie or "fc_oauth_return_to=;" in cookie
+
+
+def test_social_callback_returns_to_the_deep_link(test_client):
+    """The whole point: sign in from a deep link, land back on it."""
+    start = test_client.get(
+        "/api/auth/social/google/start",
+        params={"next": "/agents/abc/manage"},
+        follow_redirects=False,
+    )
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    code = test_client.app.state.workos.inject_social_code(email="deep@test.com")
+
+    cb = test_client.get(
+        "/api/auth/social/callback",
+        params={"code": code, "state": state},
+        follow_redirects=False,
+    )
+    assert cb.status_code == 302
+    assert cb.headers["location"].endswith("/agents/abc/manage")
+    assert "fc_session=" in cb.headers.get("set-cookie", "")
+
+
+def test_social_callback_ignores_a_tampered_return_cookie(test_client):
+    """The cookie is re-validated at the redirect. We wrote it, but a cookie is
+    not a trust boundary - and this value goes straight into ``Location``."""
+    start = test_client.get("/api/auth/social/google/start", follow_redirects=False)
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    code = test_client.app.state.workos.inject_social_code(email="tamper@test.com")
+    test_client.cookies.set("fc_oauth_return_to", "https://evil.com/")
+
+    cb = test_client.get(
+        "/api/auth/social/callback",
+        params={"code": code, "state": state},
+        follow_redirects=False,
+    )
+    assert "evil.com" not in cb.headers["location"]
+    assert cb.headers["location"].endswith("/home")

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext";
 import { listMmChannels } from "@/lib/api";
@@ -17,6 +17,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { DesktopShell } from "./DesktopShell";
 import { MobileShell } from "./MobileShell";
+import { captureReturnPath, loginPathFor } from "@/lib/returnPath";
 
 /** Outlet context delivered to channel routes — lets the channel-page header
  *  pill toggle the right-rail details panel. Provided only by the desktop
@@ -42,6 +43,7 @@ export interface ChannelOutletContext {
 export default function AppShell() {
   const { user, activeOrgId, loading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const isMobile = useIsMobile();
 
   // Drives the tab-title counter + macOS dock badge. SSE (useGlobalEvents at
@@ -97,7 +99,10 @@ export default function AppShell() {
       </div>
     );
 
-  if (!user) return <Navigate to="/login" replace />;
+  // Carry the requested path across the login round-trip. Every flow reads
+  // it back on success; see lib/returnPath.ts for why it is validated rather
+  // than trusted.
+  if (!user) return <Navigate to={loginPathFor(captureReturnPath(location))} replace />;
 
   return (
     <>

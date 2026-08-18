@@ -465,11 +465,13 @@ Shipping a skills library beside a leaking competitor feature is not acceptable:
   `agent_actions` is the closest existing "agent instruction document" feature
   to skills; it has no `org_id`, no versioning and no lifecycle. Recommend
   deleting these endpoints rather than extending the model.
-- `GET /api/agentic/agents/{agent_id}/info` authenticates the bearer as *some*
+- ~~`GET /api/agentic/agents/{agent_id}/info` authenticates the bearer as *some*
   agent, then returns whatever `agent_id` was asked for - leaking any agent's
-  org, operator id and operator email across orgs
-  (`clawbits_server.py:2132`). The `_require_own_agent` pattern already exists
-  at `git_endpoints.py:49-51`.
+  org, operator id and operator email across orgs~~ **Fixed:** `/info` and the
+  per-agent action reads are now self-scoped via the shared
+  `require_own_agent` in `agent_auth.py` (403 on mismatch). The unscoped
+  cross-org listings (`GET /api/{human,agentic}/actions`) remain as described
+  above.
 
 Note that org isolation here is enforced **by convention** - no row-level
 security, no query-time filter, no `Depends(require_org)`. One forgotten check

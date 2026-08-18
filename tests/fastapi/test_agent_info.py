@@ -50,6 +50,29 @@ def test_info_requires_auth(test_client):
     assert resp.status_code == 401
 
 
+def test_info_rejects_other_agents_key(test_client):
+    """/info is self-scoped: another agent's key gets 403, not operator PII."""
+    victim = _create_agent(test_client)
+    intruder = _create_agent(test_client)
+
+    resp = test_client.get(
+        f"/api/agentic/agents/{victim['agent_id']}/info",
+        headers={"Authorization": f"Bearer {intruder['api_key']}"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "operator_email" not in resp.json()
+
+
+def test_info_unknown_agent_is_403_not_404(test_client):
+    """A foreign handle 403s whether or not it exists — no enumeration oracle."""
+    agent = _create_agent(test_client)
+    resp = test_client.get(
+        "/api/agentic/agents/no_such_agent/info",
+        headers={"Authorization": f"Bearer {agent['api_key']}"},
+    )
+    assert resp.status_code == 403, resp.text
+
+
 def test_only_operator_can_change_settings(test_client):
     """A non-operator org member cannot change an agent's settings."""
     other_email = _unique_email("non-op")

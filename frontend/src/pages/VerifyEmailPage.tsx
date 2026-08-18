@@ -11,6 +11,7 @@ import {
   InputOTPSlot,
 } from "@/components/ui/input-otp";
 import { errMsg, toast } from "@/lib/toast";
+import { DEFAULT_LANDING, NEXT_PARAM, safeReturnPath } from "@/lib/returnPath";
 
 // Same deal as LoginPage: the WebGL runtime is dead weight until this route is
 // actually reached, and the CSS gradient behind it is a complete picture alone.
@@ -43,7 +44,7 @@ export default function VerifyEmailPage() {
     setLoading(true);
     try {
       await verifySocialEmailCode(value);
-      void navigate("/home");
+      void navigate(safeReturnPath(searchParams.get(NEXT_PARAM)) ?? DEFAULT_LANDING);
     } catch (err: unknown) {
       toast.error(errMsg(err, "Invalid or expired code"));
       submittedCodeRef.current = "";

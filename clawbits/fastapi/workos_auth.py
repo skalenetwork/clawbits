@@ -47,6 +47,8 @@ from clawbits.fastapi.session_cookie import (
     DEV_SESSION_COOKIE,
     OAUTH_PENDING_COOKIE,
     OAUTH_PENDING_COOKIE_MAX_AGE,
+    OAUTH_RETURN_TO_COOKIE,
+    OAUTH_RETURN_TO_MAX_AGE,
     OAUTH_STATE_COOKIE,
     SESSION_COOKIE,
     auth_log,
@@ -911,6 +913,7 @@ def social_start(
     request: Request,
     desktop: int = 0,
     bridge: str = "",
+    next: str = "",
 ):
     """Redirect the browser to the provider via WorkOS.
 
@@ -930,6 +933,12 @@ def social_start(
     The two flags share the same callback path; the state prefix tells
     :func:`social_callback` which scheme to emit (``desktop.`` for the
     env-suffixed desktop scheme, ``mobile.`` for the fixed mobile one).
+
+    ``?next=`` is where the browser should land afterwards, for a visitor who
+    arrived on a deep link while signed out. It rides its own short-lived
+    cookie rather than the OAuth ``state`` (see OAUTH_RETURN_TO_COOKIE) and is
+    validated on the way in AND on the way out — a cookie is not a trust
+    boundary, and re-checking at the redirect costs nothing.
     """
     client = _client(request)
     state_token = secrets.token_urlsafe(24)
@@ -950,6 +959,19 @@ def social_start(
     response.set_cookie(
         key=OAUTH_STATE_COOKIE, value=state, max_age=600, **cookie_kwargs()
     )
+    return_to = safe_return_path(next)
+    if return_to:
+        response.set_cookie(
+            key=OAUTH_RETURN_TO_COOKIE,
+            value=return_to,
+            max_age=OAUTH_RETURN_TO_MAX_AGE,
+            **cookie_kwargs(),
+        )
+    else:
+        # An unsafe or absent value must not leave a STALE cookie from an
+        # earlier attempt in place, or this sign-in silently inherits the
+        # previous one's destination.
+        response.delete_cookie(OAUTH_RETURN_TO_COOKIE, path="/")
     return response
 
 
@@ -964,6 +986,7 @@ async def social_callback(
     # ``fc_oauth_state``, which doesn't match ``fc_oauth_state_staging``
     # / ``fc_oauth_state_dev`` in non-prod environments — breaking OAuth.
     oauth_state_cookie: str | None = Cookie(default=None, alias=OAUTH_STATE_COOKIE),
+    return_to_cookie: str | None = Cookie(default=None, alias=OAUTH_RETURN_TO_COOKIE),
 ):
     """OAuth callback. Validates state, exchanges code, sets session cookie."""
     frontend_root = _frontend_root()
@@ -999,6 +1022,7 @@ async def social_callback(
             frontend_root=frontend_root,
             email=e.email,
             pending_authentication_token=e.pending_authentication_token,
+            return_to=safe_return_path(return_to_cookie),
         )
 
     # Connector link flow (Settings → Connectors) uses a dedicated GitHub
@@ -1105,7 +1129,12 @@ async def social_callback(
 </html>"""
         response = HTMLResponse(content=html, status_code=200)
     else:
-        response = RedirectResponse(f"{frontend_root}/home", status_code=302)
+        # Re-validated, not trusted: the cookie was written by us, but a
+        # cookie is not a trust boundary and this value lands in a Location
+        # header. Cheap to check twice, and the fallback is the old behaviour.
+        landing = safe_return_path(return_to_cookie) or "/home"
+        response = RedirectResponse(f"{frontend_root}{landing}", status_code=302)
+        response.delete_cookie(OAUTH_RETURN_TO_COOKIE, path="/")
     response.delete_cookie(OAUTH_STATE_COOKIE, path="/")
 
     audit.user_signed_in(
@@ -1122,9 +1151,17 @@ def _redirect_to_email_verification(
     frontend_root: str,
     email: str | None,
     pending_authentication_token: str | None,
+    return_to: str | None = None,
 ) -> RedirectResponse:
     """Send the browser to ``/verify-email`` with the pending token in a
-    cookie and the email surfaced in the query string for display."""
+    cookie and the email surfaced in the query string for display.
+
+    ``return_to`` rides the QUERY STRING from here rather than staying in its
+    cookie, because verification finishes in the SPA: ``verify_social_email``
+    answers with JSON and the page navigates itself. Handing the path to the
+    page is what lets a first-time social signup still land on the deep link
+    they originally clicked. Already validated by the caller; the cookie is
+    dropped below so the two cannot disagree."""
     if not pending_authentication_token:
         # Defensive: WorkOS shouldn't raise email_verification_required
         # without a token, but if it does we can't recover the flow.
@@ -1132,7 +1169,10 @@ def _redirect_to_email_verification(
             f"{frontend_root}/login?error=email_verification_unavailable",
             status_code=302,
         )
-    qs = urllib.parse.urlencode({"email": email or ""})
+    params = {"email": email or ""}
+    if return_to:
+        params["next"] = return_to
+    qs = urllib.parse.urlencode(params)
     response = RedirectResponse(
         f"{frontend_root}/verify-email?{qs}", status_code=302,
     )
@@ -1143,6 +1183,7 @@ def _redirect_to_email_verification(
         **cookie_kwargs(),
     )
     response.delete_cookie(OAUTH_STATE_COOKIE, path="/")
+    response.delete_cookie(OAUTH_RETURN_TO_COOKIE, path="/")
     return response
 
 
@@ -1422,6 +1463,46 @@ def delete_workos_organization(client: Any, *, workos_org_id: str) -> None:
         logging.warning(
             f"WorkOS organization deletion failed for org={workos_org_id}: {e}"
         )
+
+
+def safe_return_path(raw: str | None) -> str | None:
+    """A caller-supplied post-login destination, or ``None`` if unsafe.
+
+    THE ONLY THING BETWEEN ``?next=`` AND AN OPEN REDIRECT. The value is
+    attacker-supplied by definition — anyone can mail a victim a link to
+    ``/auth/social/google/start?next=<anything>`` — and it ends up in a
+    ``Location`` header on our own domain. Unchecked, that turns the sign-in
+    page into a credible phishing launch pad: the victim authenticates against
+    the real Clawbits and is then handed wherever the link said.
+
+    So this is a whitelist. A value survives only if it is provably a path on
+    this origin; everything else returns ``None`` and the caller falls back to
+    ``/home``.
+
+    Deliberately mirrors ``safeReturnPath`` in
+    ``frontend/src/lib/returnPath.ts`` — the SPA validates the same parameter
+    for the flows that never leave the browser. Change one, change both.
+    """
+    if not raw or len(raw) > 512:
+        return None
+    # Must be rooted, and must not be protocol-relative. ``//evil.com`` and
+    # ``/\evil.com`` are both another origin to a browser (the second because
+    # browsers normalise the backslash) while looking like paths.
+    if not raw.startswith("/") or raw.startswith("//") or raw.startswith("/\\"):
+        return None
+    # Control characters are how a scheme gets smuggled past a prefix check,
+    # and a bare newline here is also header injection into ``Location``.
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return None
+    # Authoritative check behind the readable ones: anything carrying its own
+    # scheme or authority parses with them set, however it was spelled.
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return None
+    # Bouncing back to a login route is at best a no-op and at worst a loop.
+    if parsed.path in ("/login", "/verify-email"):
+        return None
+    return raw
 
 
 def _social_redirect_uri() -> str:

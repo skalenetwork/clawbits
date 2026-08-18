@@ -1,0 +1,54 @@
+---
+/**
+ * The pointer that drives the /agent-pit step visuals.
+ *
+ * Owns how the cursor LOOKS - shape, size, fill, shadow - and nothing about
+ * where it goes. Every scene needs its own path, so each visual renders this
+ * inside two wrappers it controls itself: one it translates along the path,
+ * one it scales for the click. Scoped styles mean a parent cannot reach in
+ * here, and it does not need to.
+ *
+ * WHITE FILL, DARK STROKE. Cursor02Icon ships as a stroke-only outline, which
+ * disappears the moment it crosses a dark or busy patch of a scene. Filling it
+ * gives the two-tone arrow every real cursor is, and it then reads on any
+ * ground - which matters here because the step panels are five different
+ * gradients and the cursor travels across all of them.
+ *
+ * Sizes off `--u`, the caller's layout unit, so it scales with the scene
+ * rather than with the viewport. The fallback keeps it sane anywhere else.
+ */
+import { Cursor02Icon } from "@hugeicons/core-free-icons";
+import { ico } from "../lib/appicon";
+---
+
+<span class="cur" aria-hidden="true" set:html={ico(Cursor02Icon)} />
+
+<style>
+  .cur {
+    display: block;
+    /* A real desktop cursor is ~20px against a 1000px window; 22u against this
+     * scene's reference width is the same relationship. */
+    width: calc(var(--u, 1px) * 22);
+    height: calc(var(--u, 1px) * 22);
+    /* The stroke reads currentColor. Near-black rather than pure, matching the
+     * page's ink. */
+    color: #101112;
+    /* Lifts it off the scene as an object rather than a drawing ON the scene.
+     * Cheap here - the element is 22px and never repaints its own contents. */
+    filter: drop-shadow(0 calc(var(--u, 1px) * 1.5) calc(var(--u, 1px) * 2.5) rgb(0 0 0 / 0.28));
+  }
+
+  /* :global(), because the <svg> arrives through set:html and Astro only
+   * stamps its scope attribute on elements this template renders - a plain
+   * `.cur svg` compiles to a selector the injected markup can never match and
+   * silently does nothing. */
+  .cur :global(svg) {
+    display: block;
+    width: 100%;
+    height: 100%;
+    /* Beats the `fill="none"` in the icon data: a CSS declaration always
+     * outranks a presentation attribute, so nothing needs re-serialising. The
+     * path carries no fill of its own and inherits this. */
+    fill: #fff;
+  }
+</style>

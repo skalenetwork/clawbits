@@ -23,7 +23,7 @@ from clawbits.datastructures.git_models import (
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
 from clawbits.email.imap_client import agent_email_address
-from clawbits.fastapi.agent_auth import extract_agent
+from clawbits.fastapi.agent_auth import extract_agent, require_own_agent
 from clawbits.gas.cost_decorator import cost
 from clawbits.git import repo_manager
 
@@ -48,8 +48,7 @@ class GitEndpoints:
 
     @staticmethod
     def _require_own_agent(agent, agent_id: str):
-        if agent.agent_id.value != agent_id:
-            raise HTTPException(status_code=403, detail="API key does not belong to this agent")
+        require_own_agent(agent, agent_id)
 
     @staticmethod
     def _resolve_org(server, agent_id: str, org_id: str | None) -> str:
@@ -190,6 +189,8 @@ class GitEndpoints:
             )
         except HTTPException:
             raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception(f"Error listing commits: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -226,6 +227,8 @@ class GitEndpoints:
             )
         except HTTPException:
             raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception(f"Error listing tree: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -264,6 +267,8 @@ class GitEndpoints:
             )
         except HTTPException:
             raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception(f"Error reading blob: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -312,7 +317,8 @@ class GitEndpoints:
                     branch=body.branch,
                 )
             except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid file path: {e}")
+                # Covers both the per-file path check and the branch ref check.
+                raise HTTPException(status_code=400, detail=f"Invalid request: {e}")
             if result is None:
                 raise HTTPException(status_code=500, detail="Failed to create commit")
 

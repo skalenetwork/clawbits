@@ -18,15 +18,32 @@
  * in their own data, so they tint from the surrounding text colour.
  */
 
-/**
- * Declared here rather than imported: the package's own `IconSvgObject` is
- * exported from its internal types module but NOT re-exported from the package
- * root, so `import type { IconSvgObject } from "@hugeicons/core-free-icons"`
- * does not resolve. This is the readonly half of their union - the mutable
- * half assigns to it structurally, so every icon export fits.
- */
 type IconAttrs = { readonly [key: string]: string | number };
 type IconSvg = readonly (readonly [string, IconAttrs])[];
+
+const toKebab = (k: string) => k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+
+/**
+ * The glyph's children only - the `<svg>` wrapper is the caller's, because the
+ * component wants Astro props on it and the inline case wants a class and a
+ * viewBox and nothing else.
+ *
+ * Safe to inject: both the tag names and the attribute values come from the
+ * bundled icon package, not from user input or content. Values are still
+ * quote-escaped so a future icon carrying a quote cannot break out of the
+ * attribute.
+ */
+function hugeIconInner(icon: IconSvg): string {
+  return icon
+    .map(([tag, attrs]) => {
+      const rendered = Object.entries(attrs)
+        .filter(([k]) => k !== "key")
+        .map(([k, v]) => `${toKebab(k)}="${String(v).replace(/"/g, "&quot;")}"`)
+        .join(" ");
+      return `<${tag} ${rendered} />`;
+    })
+    .join("");
+}
 
 interface Props {
   /** A named export from @hugeicons/core-free-icons. */
@@ -36,29 +53,9 @@ interface Props {
   class?: string;
 }
 
-const { icon, size = 20, class: className = "" } = Astro.props;
+const { icon, size = 20, class: className = "" } = Astro.props as Props;
 
-const toKebab = (k: string) => k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
-
-/**
- * Serialised rather than rendered as dynamic `<Tag>` elements: a tag name held
- * in a variable is not a valid component to Astro's type checker, and the
- * casts needed to silence that are worse than building the markup.
- *
- * Safe to inject: both the tag names and the attribute values come from the
- * bundled icon package, not from user input or content. Values are still
- * quote-escaped so a future icon carrying a quote cannot break out of the
- * attribute.
- */
-const inner = icon
-  .map(([tag, attrs]) => {
-    const rendered = Object.entries(attrs)
-      .filter(([k]) => k !== "key")
-      .map(([k, v]) => `${toKebab(k)}="${String(v).replace(/"/g, "&quot;")}"`)
-      .join(" ");
-    return `<${tag} ${rendered} />`;
-  })
-  .join("");
+const inner = hugeIconInner(icon);
 ---
 
 <svg

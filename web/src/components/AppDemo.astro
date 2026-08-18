@@ -112,69 +112,17 @@ const JUMP = [
   { id: "eng", species: "channel" as Species, src: "/avatars/channel-3.svg", name: "engineering", preview: "Yes - tested on the office Pi 5…" },
 ];
 
-/* ── Collectible-card geometry, ported 1:1 from the real card system
- * (frontend/src/components/agent-card/: AgentCollectibleCard.tsx,
- * shapes.ts, JoinedSeal.tsx, OperatorSeal.tsx). Card space is 360×568
- * with 48px headroom above (viewBox "0 -48 360 568") for the JOINED
- * medal; frame (12,14) 336×492; body (40,42) 280×436 r26; avatar circle
- * (180,238) r78 on a white r84 disc; name/handle arcs curve OVER the
- * medallion (r136/150° and r112/132°). ── */
-const fx = (n: number) => Math.round(n * 100) / 100;
-
-/** Top arc, left→right over the apex (shapes.ts arcTextPath). */
-const arcText = (cx: number, cy: number, r: number, sweepDeg: number) => {
-  const half = (sweepDeg * Math.PI) / 180 / 2;
-  const x0 = fx(cx - r * Math.sin(half));
-  const x1 = fx(cx + r * Math.sin(half));
-  const y = fx(cy - r * Math.cos(half));
-  return `M ${x0} ${y} A ${r} ${r} 0 0 1 ${x1} ${y}`;
-};
-
-/** Bottom arc, left→right under the center (OperatorSeal ringPath). */
-const bottomArc = (cx: number, cy: number, r: number) =>
-  `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${cx + r} ${cy}`;
-
-/** Scalloped stamp frame: rounded corners with outward lobes along each
- * run - a simplified take on shapes.ts scallopChain. Local w×h coords. */
-const scallopFrame = (w: number, h: number) => {
-  const inset = 9;
-  const cr = 20;
-  const run = (len: number) => {
-    const k = Math.max(1, Math.round(len / 26));
-    return { k, s: fx(len / k), r: fx(len / k / 2) };
-  };
-  const tx = run(w - 2 * inset - 2 * cr);
-  const ty = run(h - 2 * inset - 2 * cr);
-  let d = `M ${inset + cr} ${inset}`;
-  for (let i = 0; i < tx.k; i++) d += ` a ${tx.r} ${tx.r} 0 0 1 ${tx.s} 0`;
-  d += ` a ${cr} ${cr} 0 0 1 ${cr} ${cr}`;
-  for (let i = 0; i < ty.k; i++) d += ` a ${ty.r} ${ty.r} 0 0 1 0 ${ty.s}`;
-  d += ` a ${cr} ${cr} 0 0 1 ${-cr} ${cr}`;
-  for (let i = 0; i < tx.k; i++) d += ` a ${tx.r} ${tx.r} 0 0 1 ${-tx.s} 0`;
-  d += ` a ${cr} ${cr} 0 0 1 ${-cr} ${-cr}`;
-  for (let i = 0; i < ty.k; i++) d += ` a ${ty.r} ${ty.r} 0 0 1 0 ${-ty.s}`;
-  d += ` a ${cr} ${cr} 0 0 1 ${cr} ${-cr} Z`;
-  return d;
-};
-
-/** 12 registration ticks around the medallion (r88 → r95). */
-const TICKS = Array.from({ length: 12 }, (_, i) => {
-  const a = (i / 12) * Math.PI * 2;
-  return {
-    x1: fx(180 + Math.cos(a) * 88), y1: fx(238 + Math.sin(a) * 88),
-    x2: fx(180 + Math.cos(a) * 95), y2: fx(238 + Math.sin(a) * 95),
-  };
-});
-
-/** Liveness dot rides the avatar's lower-left diagonal: (r+2)/√2. */
-const PRES = { cx: fx(180 - 80 * Math.SQRT1_2), cy: fx(238 + 80 * Math.SQRT1_2) };
-
-/** PresenceDot palette (also the card's STATUS_COLOR). */
-const STATUS: Record<string, string> = {
-  available: "#10b981",
-  setup: "#3b82f6",
-  offline: "#a1a1aa",
-};
+/* Collectible-card geometry now lives in lib/agent-card.ts, so the /agent-pit
+ * step visuals draw the SAME card rather than a second one that agrees until
+ * someone edits it. The numbers and the notes moved with it verbatim. */
+import {
+  arcText,
+  bottomArc,
+  PRES,
+  scallopFrame,
+  STATUS,
+  TICKS,
+} from "../lib/agent-card";
 
 interface Card {
   name: string;
