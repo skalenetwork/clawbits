@@ -1,4 +1,5 @@
 """Tests for Git repository API endpoints."""
+import os
 import tempfile
 
 import pytest
@@ -383,4 +384,147 @@ def test_repo_not_found(test_client):
         headers=_auth(agent["api_key"]),
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: Commit path containment
+# ---------------------------------------------------------------------------
+
+def test_commit_traversal_paths_rejected(test_client, _git_base_path):
+    """Traversal, absolute, and dot-segment paths are rejected before any write."""
+    _register_human(test_client, "traversal@test.com")
+    agent = _create_agent(test_client)
+    _add_owner(test_client, agent, "traversal@test.com")
+
+    test_client.post(
+        f"/api/agentic/agents/{agent['agent_id']}/repos",
+        json={"name": "safe-repo"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+
+    bad_paths = [
+        "../../evil.txt",       # traversal out of the repo
+        "/etc/cron.d/evil",     # absolute: os.path.join would discard the base
+        "a/../../../b.txt",     # traversal mid-path
+        "./x.txt",              # '.' segment
+        "a//b.txt",             # empty segment
+        "a\\..\\b.txt",         # backslash separators
+        "evil .txt",            # whitespace outside the allowed charset
+    ]
+    for bad in bad_paths:
+        for file_change in (
+            {"path": bad, "content": "pwn", "action": "create"},
+            {"path": bad, "action": "delete"},
+        ):
+            r = test_client.post(
+                f"/api/agentic/agents/{agent['agent_id']}/repos/safe-repo/commits",
+                json={"message": "x", "files": [file_change]},
+                headers=_write_headers(test_client, agent["api_key"]),
+            )
+            assert r.status_code == 422, f"{bad!r} ({file_change['action']}): {r.status_code} {r.text}"
+
+    # '../../evil.txt' resolves to the base directory root; prove nothing landed there.
+    assert not os.path.exists(os.path.join(_git_base_path, "evil.txt"))
+
+
+def test_option_parseable_refs_rejected(test_client, _git_base_path, tmp_path):
+    """`?branch=--output=<path>` must not reach git as an option.
+
+    Refs are lone argv tokens, so one starting with '-' is parsed as an option.
+    `git log --output=<path>` writes the (agent-authored) commit subject there
+    and the `rev-list` that follows truncates it — an arbitrary write/truncate
+    as the server user. Every ref-taking endpoint must reject it.
+    """
+    _register_human(test_client, "refinject@test.com")
+    agent = _create_agent(test_client)
+    _add_owner(test_client, agent, "refinject@test.com")
+    base = f"/api/agentic/agents/{agent['agent_id']}/repos"
+
+    test_client.post(
+        base, json={"name": "ref-repo"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("original\n")
+    bad = f"--output={victim}"
+
+    for url, params in (
+        (f"{base}/ref-repo/commits", {"branch": bad}),
+        (f"{base}/ref-repo/tree", {"ref": bad}),
+        (f"{base}/ref-repo/blob/README.md", {"ref": bad}),
+    ):
+        r = test_client.get(url, params=params, headers=_auth(agent["api_key"]))
+        assert r.status_code == 400, f"{url}: {r.status_code} {r.text}"
+
+    # The write branch takes its ref in the body, where the model rejects it.
+    r = test_client.post(
+        f"{base}/ref-repo/commits",
+        json={
+            "message": "x",
+            "files": [{"path": "f.txt", "content": "x", "action": "create"}],
+            "branch": bad,
+        },
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert r.status_code == 422, r.text
+
+    assert victim.read_text() == "original\n"  # neither overwritten nor truncated
+
+
+def test_commit_git_dir_write_rejected(test_client):
+    """Writes into .git/ (hooks, config) are refused by the containment layer."""
+    _register_human(test_client, "gitdir@test.com")
+    agent = _create_agent(test_client)
+    _add_owner(test_client, agent, "gitdir@test.com")
+
+    test_client.post(
+        f"/api/agentic/agents/{agent['agent_id']}/repos",
+        json={"name": "hook-repo"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+
+    r = test_client.post(
+        f"/api/agentic/agents/{agent['agent_id']}/repos/hook-repo/commits",
+        json={
+            "message": "x",
+            "files": [{"path": ".git/hooks/post-checkout", "content": "#!/bin/sh\n", "action": "create"}],
+        },
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert r.status_code == 400, r.text
+    assert "path" in r.json()["detail"].lower()
+
+
+def test_commit_dotfiles_and_nested_paths_ok(test_client):
+    """Legitimate dotfiles and nested paths still commit fine."""
+    _register_human(test_client, "dotfile@test.com")
+    agent = _create_agent(test_client)
+    _add_owner(test_client, agent, "dotfile@test.com")
+
+    test_client.post(
+        f"/api/agentic/agents/{agent['agent_id']}/repos",
+        json={"name": "dot-repo"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+
+    r = test_client.post(
+        f"/api/agentic/agents/{agent['agent_id']}/repos/dot-repo/commits",
+        json={
+            "message": "Add dotfile and nested file",
+            "files": [
+                {"path": ".gitignore", "content": "*.pyc\n", "action": "create"},
+                {"path": "docs/notes/readme.md", "content": "hi\n", "action": "create"},
+            ],
+        },
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+
+    r = test_client.get(
+        f"/api/agentic/agents/{agent['agent_id']}/repos/dot-repo/blob/docs/notes/readme.md",
+        headers=_auth(agent["api_key"]),
+    )
+    assert r.status_code == 200
+    assert r.json()["content"] == "hi\n"
 

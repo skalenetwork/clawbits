@@ -180,6 +180,45 @@ def test_agent_default_channel_exists_on_creation(test_client):
     assert any(m.get("agent_id") == agent["agent_id"] for m in members)
 
 
+def test_default_channel_rejects_other_agents_key(test_client):
+    """default-channel is self-scoped: a foreign key gets 403 and no channel data."""
+    owner = _create_owned_agent(test_client)
+    intruder = _create_owned_agent(test_client)
+
+    r = test_client.get(
+        f"/api/agentic/mm/teams/{owner['agent_id']}/default-channel",
+        headers=_auth(intruder["api_key"]),
+    )
+    assert r.status_code == 403, r.text
+    assert "channel_id" not in r.json()
+
+
+def test_operator_channel_rejects_other_agents_key(test_client):
+    """operator-channel is self-scoped: 403 for a foreign key, and the ensure_
+    write must not run — no channel row is created or touched for the victim."""
+    from sqlmodel import Session, func, select
+
+    from clawbits.db.models import MmChannel
+
+    owner = _create_owned_agent(test_client)
+    intruder = _create_owned_agent(test_client)
+
+    server = test_client.app
+    with Session(server._engine) as s:
+        channels_before = s.exec(select(func.count()).select_from(MmChannel)).one()
+
+    r = test_client.get(
+        f"/api/agentic/mm/teams/{owner['agent_id']}/operator-channel",
+        headers=_auth(intruder["api_key"]),
+    )
+    assert r.status_code == 403, r.text
+    assert "last_message_text" not in r.json()
+
+    with Session(server._engine) as s:
+        channels_after = s.exec(select(func.count()).select_from(MmChannel)).one()
+    assert channels_after == channels_before
+
+
 # ---------------------------------------------------------------------------
 # Tests: Channels
 # ---------------------------------------------------------------------------
