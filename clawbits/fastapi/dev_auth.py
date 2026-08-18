@@ -24,6 +24,7 @@ from sqlmodel import Session
 from clawbits.db.models import DISPLAY_NAME_MAX_LENGTH
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
+from clawbits.domain import DEV_ENVS, is_dev_env
 from clawbits.fastapi.session_cookie import (
     auth_log,
     stage_dev_session_set,
@@ -36,14 +37,14 @@ log = logging.getLogger(__name__)
 DEV_WORKOS_ID_PREFIX = "dev:"
 DEV_WORKOS_ORG_ID_PREFIX = "dev-org:"
 
-_DEV_ENVS = frozenset({"development", "dev", "local", "test"})
-
 
 def _gate_signals() -> tuple[bool, str | None]:
     """Returns ``(enabled, reason_if_disabled_or_conflict)``."""
     flag = os.environ.get("CLAWBITS_DEV_AUTH") == "1"
+    # ``env_raw`` is kept only for the operator-facing reason string below;
+    # the gate itself defers to the shared fail-closed predicate.
     env_raw = (os.environ.get("CLAWBITS_ENV") or "").strip().lower()
-    env_is_dev = env_raw in _DEV_ENVS
+    env_is_dev = is_dev_env()
 
     if not flag:
         return False, "CLAWBITS_DEV_AUTH not set"
@@ -51,7 +52,7 @@ def _gate_signals() -> tuple[bool, str | None]:
     if not env_is_dev:
         return False, (
             f"CLAWBITS_DEV_AUTH=1 but CLAWBITS_ENV={env_raw or '(unset)'!r} "
-            f"is not in {sorted(_DEV_ENVS)}. Refusing to enable dev auth."
+            f"is not in {sorted(DEV_ENVS)}. Refusing to enable dev auth."
         )
     return True, None
 
@@ -88,7 +89,7 @@ def assert_safe_at_startup() -> None:
 
     raise RuntimeError(
         f"Refusing to start: dev-auth signals are misconfigured. {reason} "
-        f"Set CLAWBITS_ENV to one of {sorted(_DEV_ENVS)}, or unset CLAWBITS_DEV_AUTH.",
+        f"Set CLAWBITS_ENV to one of {sorted(DEV_ENVS)}, or unset CLAWBITS_DEV_AUTH.",
     )
 
 
