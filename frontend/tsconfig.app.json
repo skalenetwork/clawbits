@@ -29,5 +29,12 @@
     "noUncheckedIndexedAccess": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* The frontend image builds with `context: ./frontend` (compose.yaml), so
+     anything outside this directory does not exist during that build. This one
+     test deliberately imports reef/admin-ui to prove the two env editors agree
+     about apply modes, which `tsc -b` cannot resolve inside the image. CI has
+     the whole repo checked out and vitest executes the file for real there, so
+     the parity check still fails loudly if reef's exports drift. */
+  "exclude": ["src/components/reef/envApplyParity.test.ts"]
 }
