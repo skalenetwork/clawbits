@@ -23,7 +23,7 @@ from clawbits.datastructures.git_models import (
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
 from clawbits.email.imap_client import agent_email_address
-from clawbits.fastapi.agent_auth import extract_agent
+from clawbits.fastapi.agent_auth import extract_agent, require_own_agent
 from clawbits.gas.cost_decorator import cost
 from clawbits.git import repo_manager
 
@@ -48,8 +48,7 @@ class GitEndpoints:
 
     @staticmethod
     def _require_own_agent(agent, agent_id: str):
-        if agent.agent_id.value != agent_id:
-            raise HTTPException(status_code=403, detail="API key does not belong to this agent")
+        require_own_agent(agent, agent_id)
 
     @staticmethod
     def _resolve_org(server, agent_id: str, org_id: str | None) -> str:

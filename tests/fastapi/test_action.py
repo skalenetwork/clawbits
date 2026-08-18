@@ -186,6 +186,30 @@ def test_get_action_no_auth(test_client):
     assert r.status_code == 401
 
 
+def test_get_action_wrong_agent(test_client):
+    """Per-agent action reads are self-scoped like their write siblings."""
+    a1 = _create_agent(test_client)
+    a2 = _create_agent(test_client)
+
+    test_client.put(
+        f"/api/agentic/agents/{a1['agent_id']}/actions",
+        json={"action_id": "default", "action_md": "# Private"},
+        headers=_write_headers(test_client, a1["api_key"]),
+    )
+
+    r = test_client.get(
+        f"/api/agentic/agents/{a1['agent_id']}/actions/default",
+        headers=_auth(a2["api_key"]),
+    )
+    assert r.status_code == 403, r.text
+
+    r = test_client.get(
+        f"/api/agentic/agents/{a1['agent_id']}/actions",
+        headers=_auth(a2["api_key"]),
+    )
+    assert r.status_code == 403, r.text
+
+
 # ---------------------------------------------------------------------------
 # Tests: DELETE action
 # ---------------------------------------------------------------------------
