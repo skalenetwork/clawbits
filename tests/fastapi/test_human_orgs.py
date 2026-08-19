@@ -792,3 +792,137 @@ def test_delete_human_user_wipes_content_and_cleans_channels(test_client):
         org = db.get(Organization, "wipe_org")
         assert org is not None
         assert org.created_by == vid
+
+
+def _create_skill(tc: TestClient, token: str, org_id: str, slug: str) -> dict:
+    r = tc.post(
+        f"/api/human/orgs/{org_id}/skills",
+        json={
+            "slug": slug,
+            "display_name": slug,
+            "manifest": {"name": slug, "description": "A skill the account owns."},
+            "body_md": f"# {slug}\n\nDo the thing.\n",
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_delete_account_with_org_skills(test_client):
+    """A user who authored skills can still delete their account.
+
+    ``skills.created_by`` / ``skill_versions.published_by`` FK ``human_users``
+    with no cascade, and ``skills.org_id`` FKs the personal org that gets torn
+    down with the account — so the library has to be cleared or the delete
+    500s (the same regression class as the agent-delete skills bug).
+    """
+    from sqlmodel import Session, select
+
+    from clawbits.db.models import HumanUser, Organization, Skill, SkillVersion
+
+    reg = _register(test_client, "skill-author@test.com")
+    uid = reg["user"]["id"]
+    org_id = f"user-{uid}"
+
+    skill = _create_skill(test_client, reg["access_token"], org_id, "owned-skill")
+    # A second version, so the skill has more than the auto-published v1.
+    r = test_client.post(
+        f"/api/human/orgs/{org_id}/skills/{skill['skill_id']}/versions",
+        json={
+            "manifest": {"name": "owned-skill", "description": "Now sharper."},
+            "body_md": "# v2\n\nSharper.\n",
+        },
+        headers=_auth(reg["access_token"]),
+    )
+    assert r.status_code == 200, r.text
+
+    r = test_client.delete("/api/human/account", headers=_auth(reg["access_token"]))
+    assert r.status_code == 204, r.text
+
+    with Session(test_client.app._engine) as db:
+        assert db.get(HumanUser, uid) is None
+        assert db.get(Organization, org_id) is None
+        assert db.exec(select(Skill).where(Skill.org_id == org_id)).all() == []
+        assert db.exec(
+            select(SkillVersion).where(SkillVersion.skill_id == skill["skill_id"])
+        ).all() == []
+
+
+def test_delete_account_keeps_skills_in_surviving_org(test_client):
+    """A skill the user authored in an org that outlives them survives with
+    its attribution cleared, rather than being deleted with the account."""
+    from datetime import UTC, datetime
+
+    from sqlmodel import Session
+
+    from clawbits.db.models import HumanUser, Organization, OrgMember, Skill
+
+    owner = _register(test_client, "lib-owner@test.com")
+    author = _register(test_client, "lib-author@test.com")
+    now = datetime.now(UTC)
+    with Session(test_client.app._engine) as db:
+        db.add(Organization(
+            org_id="lib_org", workos_org_id="wos_lib", name="lib-org",
+            created_by=owner["user"]["id"], created_at=now,
+        ))
+        db.flush()
+        db.add(OrgMember(org_id="lib_org", human_id=owner["user"]["id"], role="owner"))
+        db.add(OrgMember(org_id="lib_org", human_id=author["user"]["id"], role="member"))
+        db.commit()
+
+    skill = _create_skill(test_client, author["access_token"], "lib_org", "shared-skill")
+
+    r = test_client.delete("/api/human/account", headers=_auth(author["access_token"]))
+    assert r.status_code == 204, r.text
+
+    with Session(test_client.app._engine) as db:
+        assert db.get(HumanUser, author["user"]["id"]) is None
+        row = db.get(Skill, skill["skill_id"])
+        assert row is not None
+        assert row.created_by is None
+
+
+def test_delete_account_with_skill_installs_and_automations(test_client):
+    """Rows that merely *name* the user — an install they triggered on someone
+    else's agent, an automation they created — keep the agent's control-plane
+    state intact and lose only the attribution."""
+    from sqlmodel import Session
+
+    from clawbits.db.models import (
+        Agent,
+        AgentSkillInstall,
+        Automation,
+        HumanUser,
+    )
+
+    operator = _register(test_client, "auto-operator@test.com")
+    actor = _register(test_client, "auto-actor@test.com")
+    actor_id = actor["user"]["id"]
+
+    with Session(test_client.app._engine) as db:
+        db.add(Agent(
+            agent_id="shared_agent", api_key_hash="sa_h", eth_private_key="sa_k",
+            nickname="Shared", operator_id=operator["user"]["id"],
+            require_response_approval=True,
+        ))
+        db.flush()
+        db.add(AgentSkillInstall(
+            install_id="inst_1", agent_id="shared_agent", slug="triage",
+            installed_by=actor_id,
+        ))
+        db.add(Automation(
+            automation_id="auto_1", agent_id="shared_agent",
+            desired_spec={"schedule": "0 9 * * *"}, created_by=actor_id,
+        ))
+        db.commit()
+
+    r = test_client.delete("/api/human/account", headers=_auth(actor["access_token"]))
+    assert r.status_code == 204, r.text
+
+    with Session(test_client.app._engine) as db:
+        assert db.get(HumanUser, actor_id) is None
+        install = db.get(AgentSkillInstall, "inst_1")
+        assert install is not None and install.installed_by is None
+        automation = db.get(Automation, "auto_1")
+        assert automation is not None and automation.created_by is None
