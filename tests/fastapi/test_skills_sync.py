@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from clawbits.db.models import Agent
+from clawbits.db.models import Agent, AgentSkillInstall, AgentSkillSyncState
 from tests.fastapi._auth_helpers import login_human, personal_org_id
 from tests.fastapi.conftest import _create_agent
 
@@ -439,3 +439,75 @@ def test_library_reports_confirmed_installs_separately_from_pending(test_client:
     )
     row = library_row()
     assert (row["installed_agent_count"], row["pending_agent_count"]) == (0, 1)
+
+
+def test_delete_agent_with_skill_rows(test_client: TestClient, _test_engine):
+    """Deleting an agent that reported skills must not FK-error.
+
+    ``agent_skill_installs.agent_id`` and ``agent_skill_sync_state.agent_id``
+    both FK ``agents`` with no ON DELETE cascade, so the delete has to clear
+    them or the whole thing 500s. The sync-state row is written by *every*
+    self-report, so without this every agent whose plugin ever reported is
+    undeletable. Same class of regression as automations and usage.
+    """
+    agent_id, api_key, token, org_id = _setup(test_client, "skill-del@clawbits.ai")
+
+    r = test_client.post(
+        "/api/agentic/skills/state",
+        json=_report([
+            {
+                "slug": "doomed",
+                "root": "/home/node/.openclaw/workspace/skills",
+                "manifest": {"name": "doomed", "description": "Goes with the agent."},
+            }
+        ]),
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert r.status_code == 200, r.text
+
+    r = test_client.delete(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] is True
+
+    with Session(_test_engine) as db:
+        assert db.get(Agent, agent_id) is None
+        assert db.get(AgentSkillSyncState, agent_id) is None
+        assert db.exec(
+            select(AgentSkillInstall).where(AgentSkillInstall.agent_id == agent_id)
+        ).all() == []
+
+
+def test_delete_agent_keep_content_with_skill_rows(
+    test_client: TestClient, _test_engine
+):
+    """The keep-content path drops the same rows: skills are the agent's own
+    control-plane state, not authored content to re-home onto the placeholder.
+    """
+    agent_id, api_key, token, org_id = _setup(test_client, "skill-del-keep@clawbits.ai")
+    test_client.post(
+        "/api/agentic/skills/state",
+        json=_report([
+            {
+                "slug": "doomed-too",
+                "root": "/home/node/.openclaw/workspace/skills",
+                "manifest": {"name": "doomed-too", "description": "Also goes."},
+            }
+        ]),
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+
+    r = test_client.delete(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}?keep_content=true",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+
+    with Session(_test_engine) as db:
+        assert db.get(Agent, agent_id) is None
+        assert db.get(AgentSkillSyncState, agent_id) is None
+        assert db.exec(
+            select(AgentSkillInstall).where(AgentSkillInstall.agent_id == agent_id)
+        ).all() == []

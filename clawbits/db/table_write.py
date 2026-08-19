@@ -908,6 +908,19 @@ class TableWrite:
             delete(AgentUsageDaily).where(AgentUsageDaily.agent_id == agent_id)
         )
 
+        # The skills sync plane (mirrored installs + the per-agent sync state
+        # every self-report writes) FKs the agent with no cascade either. Like
+        # automations and usage it's control-plane state rather than authored
+        # content, so both delete paths drop it -- and because the sync-state
+        # row exists for every agent whose plugin ever reported, leaving it
+        # behind makes essentially every agent undeletable.
+        session.exec(
+            delete(AgentSkillInstall).where(AgentSkillInstall.agent_id == agent_id)
+        )
+        session.exec(
+            delete(AgentSkillSyncState).where(AgentSkillSyncState.agent_id == agent_id)
+        )
+
         if keep_content:
             TableWrite._delete_agent_keep_content(session, agent)
             return departures
@@ -1445,6 +1458,30 @@ class TableWrite:
             .where(AgentSignupRequest.reviewed_by == human_id)
             .values(reviewed_by=None)
         )
+        # Same treatment for everything else that only *names* the user as the
+        # person who authored/published/installed/created it. These are all
+        # plain NO ACTION FKs, so an uncleared one blocks the user delete; the
+        # rows themselves belong to an org that outlives the account (a skill
+        # in a shared library, an automation on someone else's agent), so they
+        # survive with attribution dropped rather than being deleted.
+        session.exec(
+            update(Skill).where(Skill.created_by == human_id).values(created_by=None)
+        )
+        session.exec(
+            update(SkillVersion)
+            .where(SkillVersion.published_by == human_id)
+            .values(published_by=None)
+        )
+        session.exec(
+            update(AgentSkillInstall)
+            .where(AgentSkillInstall.installed_by == human_id)
+            .values(installed_by=None)
+        )
+        session.exec(
+            update(Automation)
+            .where(Automation.created_by == human_id)
+            .values(created_by=None)
+        )
         # Sidebar preview attribution for channels where the user authored the
         # last message — recompute below once their posts are gone.
         preview_channel_ids = list(session.exec(
@@ -1507,8 +1544,45 @@ class TableWrite:
             session.exec(
                 delete(Repository).where(Repository.org_id == org_id)
             )
+            # The org's skill library goes with the org: ``skills.org_id`` is
+            # NOT NULL, so there's nowhere to re-home it to. Order matters —
+            # versions and installs both reference ``skills.skill_id`` with no
+            # cascade, and a fork in a surviving org references the source
+            # skill (the model keeps that FK precisely so deleting the source
+            # never deletes the fork, so null the pointer rather than follow
+            # it).
+            org_skill_ids = list(session.exec(
+                select(Skill.skill_id).where(Skill.org_id == org_id)
+            ).all())
+            if org_skill_ids:
+                session.exec(
+                    update(Skill)
+                    .where(Skill.forked_from_skill_id.in_(org_skill_ids))
+                    .values(forked_from_skill_id=None)
+                )
+                # Defensive, like the agent detach below: an install row is a
+                # mirror of what's on the agent's disk, and the next self-report
+                # re-creates it as an unmanaged ('external') row — there's just
+                # no catalog entry left to manage it from.
+                session.exec(
+                    delete(AgentSkillInstall).where(
+                        AgentSkillInstall.skill_id.in_(org_skill_ids)
+                    )
+                )
+                session.exec(
+                    delete(SkillVersion).where(
+                        SkillVersion.skill_id.in_(org_skill_ids)
+                    )
+                )
+                session.exec(delete(Skill).where(Skill.skill_id.in_(org_skill_ids)))
             # Defensive: detach any agent still tagged to this org (the operate
-            # guard means none should remain operated by this user).
+            # guard means none should remain operated by this user), and with it
+            # the install rows tagged to the org the agent is leaving.
+            session.exec(
+                update(AgentSkillInstall)
+                .where(AgentSkillInstall.org_id == org_id)
+                .values(org_id=None)
+            )
             session.exec(
                 update(Agent).where(Agent.org_id == org_id).values(org_id=None)
             )
