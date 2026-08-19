@@ -725,3 +725,183 @@ def test_agent_channel_list_latest_post_id_is_none_for_empty_channel(test_client
     r = test_client.get("/api/agentic/mm/channels", headers=_auth(a1["api_key"]))
     by_id = {c["channel_id"]: c for c in r.json()["channels"]}
     assert by_id[ch_id]["latest_post_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Agent read pointer (POST .../read + last_read_post_id/unreads on the agent
+# channel list) — the restart resume point. Acked when a turn settles; a
+# booting agent reads it back and drains `after_post_id` from there.
+# ---------------------------------------------------------------------------
+
+def _seed_two_agent_channel(tc: TestClient, posts_by_a2: list[str]):
+    """a1 owns a channel, a2 is a member and authors `posts_by_a2`.
+
+    Returns (a1, a2, ch_id, ids) — ids are a2's post serials, oldest first.
+    Posts come from a2 so they COUNT as unread for a1 (own posts never do).
+    """
+    a1 = _create_owned_agent(tc)
+    a2 = _create_agent(tc)
+    _grant_agent_contact(tc, a2, a1, can_tag=True)
+    r = tc.post(
+        "/api/agentic/mm/channels",
+        json={"name": "readptr-chan", "channel_type": "public"},
+        headers=_write_headers(tc, a1["api_key"]),
+    )
+    ch_id = r.json()["channel_id"]
+    r = tc.post(
+        f"/api/agentic/mm/channels/{ch_id}/members",
+        json={"agent_id": a2["agent_id"]},
+        headers=_write_headers(tc, a1["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    ids = []
+    for message in posts_by_a2:
+        r = tc.post(
+            f"/api/agentic/mm/channels/{ch_id}/posts",
+            json={"message": message},
+            headers=_write_headers(tc, a2["api_key"]),
+        )
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["post_id"])
+    return a1, a2, ch_id, ids
+
+
+def test_read_ack_roundtrip_fills_channel_list(test_client):
+    a1, a2, ch_id, ids = _seed_two_agent_channel(test_client, ["one", "two", "three"])
+
+    # Plain bearer auth — no challenge headers. The ack is telemetry-class.
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/read",
+        json={"post_id": ids[0]},
+        headers=_auth(a1["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"channel_id": ch_id, "last_read_post_id": ids[0]}
+
+    r = test_client.get("/api/agentic/mm/channels", headers=_auth(a1["api_key"]))
+    assert r.status_code == 200, r.text
+    ch = {c["channel_id"]: c for c in r.json()["channels"]}[ch_id]
+    assert ch["last_read_post_id"] == ids[0]
+    assert ch["unread_count"] == 2, "the two a2 posts above the pointer"
+    assert ch["unread_mention_count"] == 0
+
+    # a2 never acked: its pointer is null, and its own posts are not unread.
+    r = test_client.get("/api/agentic/mm/channels", headers=_auth(a2["api_key"]))
+    ch = {c["channel_id"]: c for c in r.json()["channels"]}[ch_id]
+    assert ch["last_read_post_id"] is None
+    assert ch["unread_count"] == 0
+
+
+def test_read_ack_is_monotonic_and_clamped(test_client):
+    a1, a2, ch_id, ids = _seed_two_agent_channel(test_client, ["one", "two", "three"])
+    auth = _auth(a1["api_key"])
+
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/read", json={"post_id": ids[2]}, headers=auth
+    )
+    assert r.json()["last_read_post_id"] == ids[2]
+
+    # Backwards ack is a no-op, not an error (idempotent replays).
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/read", json={"post_id": ids[0]}, headers=auth
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["last_read_post_id"] == ids[2], "the pointer never moves backwards"
+
+    # An optimistic id beyond the head clamps to a post that actually exists
+    # (the pointer carries an FK to mm_posts).
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/read",
+        json={"post_id": ids[2] + 1_000_000},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["last_read_post_id"] == ids[2]
+
+
+def test_read_ack_requires_membership(test_client):
+    a1, a2, ch_id, ids = _seed_two_agent_channel(test_client, ["one"])
+    outsider = _create_agent(test_client)
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/read",
+        json={"post_id": ids[0]},
+        headers=_auth(outsider["api_key"]),
+    )
+    assert r.status_code in (403, 404), r.text
+
+
+def test_read_ack_is_billing_exempt(test_client):
+    """An agent that never minted CB_TOKENS can still ack — the middleware
+    charges every agentic POST unless the route is exempt, so a 402 here
+    would mean each settled turn is taxed double and skipping the ack
+    becomes rational (the exact failure the pointer exists to prevent)."""
+    from tests.fastapi._auth_helpers import signup_agent_via_email
+    from tests.fastapi.approve_helper import _approve_signup
+
+    a1, a2, ch_id, ids = _seed_two_agent_channel(test_client, ["one"])
+
+    r = signup_agent_via_email(test_client, a1["owner_email"])
+    assert r.status_code == 200, r.text
+    challenge = r.json()
+    r = test_client.post("/api/agentic/signup-commit", json={
+        "session_token": challenge["session_token"],
+        "challenge_response": get_answer_for_question(challenge["challenge"]),
+    })
+    assert r.status_code == 200, r.text
+    bare = r.json()  # approved below, but deliberately NEVER minted
+    _approve_signup(test_client, bare, owner_email=a1["owner_email"])
+    bare["owner_email"] = a1["owner_email"]
+    # Contact is closed by default — the bare agent's operator must let a1
+    # add it to a channel at all.
+    _grant_agent_contact(test_client, bare, a1, can_tag=True)
+
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/members",
+        json={"agent_id": bare["agent_id"]},
+        headers=_write_headers(test_client, a1["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/read",
+        json={"post_id": ids[0]},
+        headers=_auth(bare["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["last_read_post_id"] == ids[0]
+
+
+def test_member_listing_shows_agent_read_pointer(test_client):
+    a1, a2, ch_id, ids = _seed_two_agent_channel(test_client, ["one", "two"])
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/read",
+        json={"post_id": ids[1]},
+        headers=_auth(a1["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+
+    r = test_client.get(
+        f"/api/agentic/mm/channels/{ch_id}/members", headers=_auth(a1["api_key"])
+    )
+    assert r.status_code == 200, r.text
+    by_agent = {m["agent_id"]: m for m in r.json()["members"] if m["agent_id"]}
+    assert by_agent[a1["agent_id"]]["last_read_post_id"] == ids[1]
+    assert by_agent[a2["agent_id"]]["last_read_post_id"] is None
+
+
+def test_agent_unread_mention_count_counts_only_addressed_posts(test_client):
+    a1, a2, ch_id, ids = _seed_two_agent_channel(test_client, ["plain chatter"])
+    # The reverse grant: tagging is per-direction, and a2 tagging a1 needs
+    # a1's operator to permit a2 (the seed helper only granted a1 → a2).
+    _grant_agent_contact(test_client, a1, a2, can_tag=True)
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch_id}/posts",
+        json={"message": f"hey @{a1['agent_id']} — look at this"},
+        headers=_write_headers(test_client, a2["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+
+    r = test_client.get("/api/agentic/mm/channels", headers=_auth(a1["api_key"]))
+    ch = {c["channel_id"]: c for c in r.json()["channels"]}[ch_id]
+    assert ch["unread_count"] == 2
+    assert ch["unread_mention_count"] == 1, "only the @-addressed post"

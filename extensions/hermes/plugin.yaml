@@ -1,10 +1,11 @@
 name: clawbits-platform
 label: Clawbits
 kind: platform
-version: 0.7.0
+version: 0.8.0
 description: >
   Hermes gateway adapter for Clawbits messaging, attachments, streaming,
-  automations, controls, live activity, and email.
+  automations, controls, live activity, email, and restart catch-up
+  (durable read pointers).
 author: Clawbits
 requires_env:
   - name: CLAWBITS_BASE_URL

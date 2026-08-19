@@ -163,14 +163,41 @@ export async function getChannelPosts(
    *  (server default is 50). Omit for the server default; the inbound
    *  poller passes a larger value when pre-tag context backlog is enabled
    *  so it can hand the agent more history. */
-  limit?: number
+  limit?: number,
+  /** Forward cursor: return posts with a serial strictly greater than
+   *  this, OLDEST first — the restart catch-up read. Page by passing the
+   *  last serial seen; a page shorter than ``limit`` is the final one. */
+  afterPostId?: number
 ): Promise<unknown> {
   const path = `/api/agentic/mm/channels/${client.encodePath(channelId)}/posts`;
-  const query =
-    typeof limit === "number" && Number.isFinite(limit) && limit > 0
-      ? `?limit=${Math.floor(limit)}`
-      : "";
+  const params: string[] = [];
+  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+    params.push(`limit=${Math.floor(limit)}`);
+  }
+  if (typeof afterPostId === "number" && Number.isFinite(afterPostId) && afterPostId >= 0) {
+    params.push(`after_post_id=${Math.floor(afterPostId)}`);
+  }
+  const query = params.length > 0 ? `?${params.join("&")}` : "";
   return client.request<unknown>("GET", `${path}${query}`);
+}
+
+/**
+ * Ack the agent's durable read pointer (``POST .../read``) — the restart
+ * resume point. Called when a turn settles, never on mere observation.
+ * Monotonic and idempotent server-side, and billing-exempt, so it carries
+ * no challenge. Servers predating the pointer 404; callers disable
+ * further acks on that.
+ */
+export async function markChannelRead(
+  client: ClawBitsClient,
+  channelId: string,
+  postId: number
+): Promise<unknown> {
+  return client.request<unknown>(
+    "POST",
+    `/api/agentic/mm/channels/${client.encodePath(channelId)}/read`,
+    { json: { post_id: Math.floor(postId) } }
+  );
 }
 
 export async function streamChannelEvents(

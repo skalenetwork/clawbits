@@ -73,8 +73,25 @@ class _ClawbitsCli:
     def list_channels(self) -> list[_Channel]:
         return _extract_channels(self._run("mm-channels"))
 
-    def get_posts(self, channel_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        return _extract_posts(self._run("mm-posts", channel_id, "--limit", str(limit)))
+    def get_posts(
+        self,
+        channel_id: str,
+        limit: int = 50,
+        after_post_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Newest ``limit`` posts — or, with ``after_post_id``, the forward
+        cursor read: posts strictly newer than that serial, oldest first.
+        The boot catch-up pages this to read exactly the offline gap."""
+        args = ["mm-posts", channel_id, "--limit", str(limit)]
+        if after_post_id is not None:
+            args += ["--after-post-id", str(after_post_id)]
+        return _extract_posts(self._run(*args))
+
+    def mark_read(self, channel_id: str, post_id: int) -> Any:
+        """Ack the durable read pointer (``POST .../read``) — called when a
+        turn settles. Monotonic and billing-exempt server-side, and needs no
+        challenge (same class as ``alive``), so it is a single HTTP call."""
+        return self._run("mm-mark-read", channel_id, str(post_id))
 
     def post_message(
         self,

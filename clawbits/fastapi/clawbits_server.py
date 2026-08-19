@@ -85,6 +85,8 @@ from clawbits.datastructures.mm_models import (
     MmFileResponse,
     MmFileUploadRequest,
     MmFileUploadResponse,
+    MmMarkReadRequest,
+    MmMarkReadResponse,
     MmPostListResponse,
     MmPostPatchRequest,
     MmPostRequest,
@@ -173,6 +175,11 @@ class ClawBitsServer(FastAPI):
     AGENTIC_WRITE_BILLING_EXEMPT_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
         ("PATCH", re.compile(r"^/api/agentic/mm/channels/[^/]+/posts/\d+$")),
         ("POST", re.compile(r"^/api/agentic/mm/channels/[^/]+/status$")),
+        # Read-pointer ack — telemetry-class bookkeeping that fires after
+        # every settled turn (the restart resume point). Charging it would
+        # tax each reply 2x and make skipping the ack rational, which is
+        # exactly the failure the pointer exists to prevent.
+        ("POST", re.compile(r"^/api/agentic/mm/channels/[^/]+/read$")),
     )
     # Per-report cap on managed/external item counts, so a chatty or misbehaving
     # plugin can't flood the self-report endpoint. Runs are capped separately in
@@ -763,6 +770,25 @@ class ClawBitsServer(FastAPI):
                 "OpenClaw plugin calls this with `generating` before "
                 "drafting a reply and clears it (via `online`) after "
                 "posting."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/mm/channels/{channel_id}/read",
+            self.mm_mark_channel_read,
+            methods=["POST"],
+            response_model=MmMarkReadResponse,
+            tags=["Mattermost"],
+            summary="Ack the agent's read pointer",
+            description=(
+                "Advance the caller's durable read pointer in this channel "
+                "to `post_id` — call it when a turn for that post has "
+                "settled. Idempotent and monotonic (the pointer never moves "
+                "backwards), and clamped to posts that exist in the "
+                "channel. After a restart, read the pointer back from "
+                "`GET /channels` (`last_read_post_id`) and page "
+                "`GET /channels/{channel_id}/posts?after_post_id=` to "
+                "process exactly the messages that arrived while offline. "
+                "Free — exempt from the CB_TOKENS write charge."
             ),
         )
         self.add_api_route(
@@ -2739,6 +2765,10 @@ class ClawBitsServer(FastAPI):
         """
         try:
             cfg = load_file_config()
+            # Bound like `around` (50) and `search` (50) already are; the
+            # catch-up pager asks for pages of 50 and loops on has_more, so
+            # nothing legitimate needs more than this.
+            limit = max(1, min(limit, 200))
             agent = self._mm_extract_agent(api_key)
             has_more = False
             with Session(self._engine) as db:
@@ -2770,6 +2800,71 @@ class ClawBitsServer(FastAPI):
                 limit=limit,
                 offset=offset,
                 has_more=has_more,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.exception(f"Error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @cost(1)
+    def mm_mark_channel_read(
+        self,
+        channel_id: str,
+        body: MmMarkReadRequest,
+        api_key: str = Security(api_key_header),
+    ) -> MmMarkReadResponse:
+        """Advance the calling agent's read pointer — the restart resume
+        point. Semantics are "settled", not "seen": plugins call this when a
+        turn for the post finished (or was permanently refused), so a crash
+        mid-turn leaves the pointer low and the post re-delivers on the next
+        boot.
+
+        Monotonic and idempotent like the human twin; additionally clamped
+        to the newest post that actually exists at or below the requested id
+        (an acked post may have been deleted in flight, and the pointer
+        carries an FK to ``mm_posts``).
+        """
+        try:
+            agent = self._mm_extract_agent(api_key)
+            agent_id = agent.agent_id.value
+            with Session(self._engine) as db:
+                self._require_mm_member(db, channel_id, agent_id)
+                target = TableRead.get_mm_channel_post_id_at_or_below(
+                    db, channel_id, body.post_id
+                )
+                if target is None:
+                    # Nothing at or below the ack in this channel (empty
+                    # channel, or everything acked was deleted). Report the
+                    # current pointer rather than inventing one.
+                    current = TableRead.get_agent_channel_last_read(
+                        db, channel_id, agent_id
+                    )
+                    return MmMarkReadResponse(
+                        channel_id=channel_id,
+                        last_read_post_id=int(current or 0),
+                    )
+                new_last_read = TableWrite.mark_mm_channel_read_agent(
+                    db, channel_id, agent_id, target
+                )
+                db.commit()
+
+            from clawbits.realtime import (
+                fire_and_forget,
+                get_bus,
+                publish_agent_member_read,
+            )
+
+            # Channel-topic read receipt so humans see the agent catch up.
+            # No personal-topic sync (publish_channel_read) — that lane
+            # drives browser-tab badges, which agents don't have.
+            fire_and_forget(
+                publish_agent_member_read(
+                    get_bus(), agent_id, channel_id, new_last_read
+                )
+            )
+            return MmMarkReadResponse(
+                channel_id=channel_id, last_read_post_id=new_last_read
             )
         except HTTPException:
             raise

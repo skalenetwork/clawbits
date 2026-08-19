@@ -9,6 +9,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_hermes_home(monkeypatch, tmp_path):
+    """Point HERMES_HOME at a temp dir for EVERY test in this module.
+
+    The adapter persists durable state there (the read-cursor map, the email
+    watermark, the greeting marker), and a first-boot poll in a test would
+    otherwise write into the developer's real ``~/.hermes``."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    yield
+
 
 @dataclass
 class _FakePlatformConfig:
@@ -950,7 +963,7 @@ def test_email_reply_context_preserves_threading_headers() -> None:
             "References": "<abc@example>",
         },
     )
-    assert mod.PLUGIN_VERSION == "0.7.0"
+    assert mod.PLUGIN_VERSION == "0.8.0"
 
 
 def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> None:
@@ -2065,3 +2078,200 @@ def test_create_job_does_not_pass_a_string_origin() -> None:
     _run_pass(mod, fake, client)
     created = [c for c in fake.calls if c[0] == "create_job"][0][1]
     assert not isinstance(created.get("origin"), str)
+
+
+# ---------------------------------------------------------------------------
+# Restart catch-up — durable read cursors + after_post_id gap drain
+# ---------------------------------------------------------------------------
+
+
+class _CatchUpClient:
+    """Fake CLI client for the boot catch-up paths: serial-id posts, a
+    forward-cursor `get_posts`, and a recorded `mark_read`."""
+
+    def __init__(self, channels, posts) -> None:
+        self.channels = channels
+        self.posts = posts  # ascending serial order
+        self.acks: list[tuple[str, int]] = []
+        self.post_calls: list[tuple[Any, ...]] = []
+
+    def list_channels(self):
+        return self.channels
+
+    def get_posts(self, channel_id, limit=50, after_post_id=None):
+        self.post_calls.append((channel_id, limit, after_post_id))
+        if after_post_id is not None:
+            return [p for p in self.posts if p["post_id"] > after_post_id][:limit]
+        return self.posts[-limit:]
+
+    def mark_read(self, channel_id, post_id):
+        self.acks.append((channel_id, int(post_id)))
+        return {"channel_id": channel_id, "last_read_post_id": int(post_id)}
+
+    def set_status(self, channel_id, status, activity=None):
+        pass
+
+
+def _catch_up_adapter(mod, client):
+    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
+    adapter = mod.ClawbitsAdapter(cfg)
+    adapter.client = client
+    return adapter
+
+
+def _poll_and_drain(adapter):
+    async def run() -> None:
+        await adapter._poll_once()
+        if adapter._turn_tasks:
+            await asyncio.gather(*adapter._turn_tasks)
+
+    asyncio.run(run())
+
+
+def _serial_post(serial: int, message: str, second: int) -> dict[str, Any]:
+    return {
+        "post_id": serial,
+        "created_at": f"2026-06-04 12:00:{second:02d}",
+        "message": message,
+        "human_id": 1,
+    }
+
+
+def test_read_cursor_file_round_trip() -> None:
+    mod = _load_hermes_module()
+    rc = sys.modules["hermes_clawbits_test.read_cursors"]
+    assert rc.load_read_cursors() == {}
+    rc.save_read_cursors({"chan": 41, "other": 7})
+    assert rc.load_read_cursors() == {"chan": 41, "other": 7}
+    # Junk values are dropped, not fatal.
+    rc.save_read_cursors({"chan": 42})
+    assert rc.load_read_cursors() == {"chan": 42}
+    del mod
+
+
+def test_first_boot_seeds_to_newest_and_acks_the_pointer() -> None:
+    # No pointer anywhere: classic seed (no dispatch), plus one ack so every
+    # LATER restart is a real resume instead of another silent seed.
+    mod = _load_hermes_module()
+    client = _CatchUpClient(
+        [mod._Channel("chan", "direct", "Chat")],
+        [_serial_post(10, "old backlog", 0), _serial_post(11, "newer backlog", 1)],
+    )
+    adapter = _catch_up_adapter(mod, client)
+    _poll_and_drain(adapter)
+
+    assert adapter.events == [], "first boot never replays history"
+    assert client.acks == [("chan", 11)], "the pointer is created at the newest serial"
+
+
+def test_restart_with_local_cursor_replays_the_gap_as_one_turn() -> None:
+    # The reported bug, fixed: messages that arrived while the process was
+    # down are drained from the durable cursor and answered — newest
+    # addressed post as the trigger, older ones as context.
+    mod = _load_hermes_module()
+    rc = sys.modules["hermes_clawbits_test.read_cursors"]
+    rc.save_read_cursors({"chan": 10})
+    client = _CatchUpClient(
+        [mod._Channel("chan", "direct", "Chat")],
+        [
+            _serial_post(10, "already answered", 0),
+            _serial_post(11, "missed one", 1),
+            _serial_post(12, "missed two", 2),
+        ],
+    )
+    adapter = _catch_up_adapter(mod, client)
+    _poll_and_drain(adapter)
+
+    assert len(adapter.events) == 1, "one turn per channel, not one per missed post"
+    event = adapter.events[0]
+    assert event.text.rsplit("\n\n", 1)[-1] == "missed two", "newest missed post triggers"
+    assert "[Missed while offline]" in event.text
+    assert "missed one" in event.text, "older missed post rides as context"
+    assert ("chan", 12) in client.acks, "the settled turn acks the trigger serial"
+    assert any(
+        call[2] == 10 for call in client.post_calls
+    ), "the drain resumes from the persisted serial"
+    # The pointer survives for the NEXT restart via the local file too.
+    assert rc.load_read_cursors()["chan"] == 12
+
+
+def test_server_pointer_wins_over_the_local_file() -> None:
+    mod = _load_hermes_module()
+    rc = sys.modules["hermes_clawbits_test.read_cursors"]
+    rc.save_read_cursors({"chan": 10})
+    client = _CatchUpClient(
+        [
+            mod._Channel(
+                "chan", "direct", "Chat", latest_post_id=12, last_read_post_id=11
+            )
+        ],
+        [
+            _serial_post(11, "covered by the server pointer", 1),
+            _serial_post(12, "actually new", 2),
+        ],
+    )
+    adapter = _catch_up_adapter(mod, client)
+    _poll_and_drain(adapter)
+
+    assert len(adapter.events) == 1
+    assert adapter.events[0].text.rsplit("\n\n", 1)[-1] == "actually new"
+    assert any(
+        call[2] == 11 for call in client.post_calls
+    ), "the drain starts at the server pointer, not the stale local file"
+
+
+def test_quiet_channel_skips_the_posts_fetch_entirely() -> None:
+    mod = _load_hermes_module()
+    client = _CatchUpClient(
+        [
+            mod._Channel(
+                "chan", "direct", "Chat", latest_post_id=12, last_read_post_id=12
+            )
+        ],
+        [_serial_post(12, "seen", 2)],
+    )
+    adapter = _catch_up_adapter(mod, client)
+    _poll_and_drain(adapter)
+
+    assert adapter.events == []
+    # One classic-seed fetch is allowed; no cursor drain must happen.
+    assert all(call[2] is None for call in client.post_calls)
+
+
+def test_unaddressed_gap_is_acked_not_replayed() -> None:
+    # Shared-room chatter with no mention: examined, skipped, acked — so the
+    # same gap is not re-drained on every restart. (Nudges are unaffected:
+    # that path keys on the seen-set, not this pointer.)
+    mod = _load_hermes_module()
+    rc = sys.modules["hermes_clawbits_test.read_cursors"]
+    rc.save_read_cursors({"chan": 10})
+    client = _CatchUpClient(
+        [mod._Channel("chan", "public", "Room")],
+        [_serial_post(11, "unrelated chatter", 1)],
+    )
+    adapter = _catch_up_adapter(mod, client)
+    _poll_and_drain(adapter)
+
+    assert adapter.events == []
+    assert client.acks == [("chan", 11)]
+
+
+def test_ws_post_on_an_unseeded_channel_defers_to_the_poll() -> None:
+    # The pre-seed race, fixed: a realtime post arriving before the boot
+    # pass classifies its channel must NOT insert a zero cursor (the next
+    # poll would then replay the whole page as live traffic).
+    mod = _load_hermes_module()
+    client = _CatchUpClient(
+        [mod._Channel("chan", "direct", "Chat")],
+        [_serial_post(11, "hello", 1)],
+    )
+    adapter = _catch_up_adapter(mod, client)
+
+    async def deliver() -> None:
+        await adapter._dispatch_realtime_post(
+            {"type": "post.created", "channel_id": "chan", "data": _serial_post(11, "hello", 1)}
+        )
+
+    asyncio.run(deliver())
+    assert adapter.events == []
+    assert "chan" not in adapter._cursors, "no cursor may be invented pre-seed"
