@@ -187,6 +187,58 @@ describe("activity reporter (status lane)", () => {
     assert.ok((doneActivity.duration_ms as number) >= 10);
   });
 
+  it("carries the Codex web_search query, which only lands on completion", async () => {
+    const client = new FakeClient();
+    const turn = makeTurn(client);
+    // The app-server's `item/started` shape: no query yet, just the enum.
+    onToolEvent(turn, {
+      phase: "start",
+      name: "web_search",
+      toolCallId: "t1",
+      args: { action: "other", queryUnavailable: true },
+    });
+    onToolEvent(turn, {
+      phase: "result",
+      name: "web_search",
+      toolCallId: "t1",
+      isError: false,
+      meta: '"skale gas price"',
+    });
+    await __reporterInflightForTest(turn);
+    const [start, done] = client.calls;
+    // Never "web_search: 'other'" — the enum is not a query.
+    assert.equal((start!.json.activity as Record<string, unknown>).label, "web_search");
+    assert.equal(
+      (done!.json.activity as Record<string, unknown>).label,
+      "web_search: 'skale gas price'",
+    );
+  });
+
+  it("carries the URL a Codex web_search opened, known only at completion", async () => {
+    const client = new FakeClient();
+    const turn = makeTurn(client);
+    onToolEvent(turn, {
+      phase: "start",
+      name: "web_search",
+      toolCallId: "t2",
+      args: { action: "other", queryUnavailable: true },
+    });
+    onToolEvent(turn, {
+      phase: "result",
+      name: "web_search",
+      toolCallId: "t2",
+      isError: false,
+      // No `meta`: OpenClaw's detail formatter covers queries, not URLs.
+      result: { status: "completed", action: "openPage", url: "https://example.com/docs" },
+    });
+    await __reporterInflightForTest(turn);
+    const [, done] = client.calls;
+    assert.equal(
+      (done!.json.activity as Record<string, unknown>).label,
+      "web_search: openPage 'https://example.com/docs'",
+    );
+  });
+
   it("throttles thinking to ~1/s, latest-wins, and drops pending on finish", async () => {
     const client = new FakeClient();
     const turn = makeTurn(client);
