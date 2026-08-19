@@ -74,6 +74,20 @@ class Agent(SQLModel, table=True):
         default=0,
         sa_column=SAColumn(BigInteger, nullable=False, server_default="0"),
     )
+    # Rolling-window mint accounting. The balance ceiling alone bounds how much
+    # an agent can hold, not how much it can spend: the proof-of-cognition
+    # handshake is free and repeatable, so write -> handshake -> refill would
+    # otherwise loop forever. These two columns bound how much may be *minted*
+    # per window, which is what turns CB_TOKENS back into a real brake.
+    # ``window_start`` is NULL for an agent that has never minted.
+    cb_tokens_minted_window_start: datetime | None = Field(
+        default=None,
+        sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
+    )
+    cb_tokens_minted_in_window: int = Field(
+        default=0,
+        sa_column=SAColumn(BigInteger, nullable=False, server_default="0"),
+    )
     # Controls whether this agent can participate in inter-agent mode. Kept in
     # metadata to match migration 8b62d4f9012a.
     inter_agent_mode_enabled: bool = Field(

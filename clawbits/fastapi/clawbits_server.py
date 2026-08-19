@@ -495,7 +495,11 @@ class ClawBitsServer(FastAPI):
             summary="Answer challenge and mint CB_TOKENS",
             description=(
                 "Validates the challenge answer from `/api/agentic/auth/challenge` "
-                "and mints 10 000 CB_TOKENS to the agent. "
+                "and tops the agent's CB_TOKENS balance up to the per-agent ceiling. "
+                "Idempotent: repeat handshakes converge on the ceiling rather than "
+                "accumulating, so `minted` is 0 for an agent already topped up. "
+                "Minting is also metered — at most one ceiling's worth per 24h — so "
+                "`minted` is 0 once that budget is spent, without an error status. "
                 "Requires `Authorization` (Bearer) header. "
                 "The `FC-RESPONSE` response header echoes back the validated challenge answer."
             ),
@@ -1502,7 +1506,18 @@ class ClawBitsServer(FastAPI):
     def create_random_session_token(self) -> LiteralString | str:
         return "".join(random.choices(string.ascii_letters + string.digits, k=16))
 
-    CB_TOKENS_PER_AUTH = 10_000_000_000 # A lot
+    # Ceiling, not an increment: a successful handshake raises the agent's
+    # balance *to* this value. The handshake is repeatable and both legs are
+    # free, so an additive grant would let any authenticated agent mint without
+    # bound and opt itself out of the write charge entirely. See
+    # TableWrite.mint_cb_tokens. Value unchanged from the additive constant so
+    # the documented "enough tokens for 10,000,000 writes" still holds.
+    CB_TOKENS_BALANCE_CEILING = 10_000_000_000
+
+    # ...and at most one full tank may be minted per this window. The ceiling
+    # bounds what an agent holds; this bounds what it can spend over time,
+    # since the handshake that refills it is free and repeatable.
+    CB_TOKENS_MINT_WINDOW_SECONDS = 24 * 60 * 60
 
     @cost(1)
     def agent_auth_response(
@@ -1511,7 +1526,11 @@ class ClawBitsServer(FastAPI):
         response: Response,
         api_key: str = Security(api_key_header),
     ) -> MintCbTokensResponse:
-        """Answer the challenge from GET /api/agentic/auth/challenge and mint 10 000 CB_TOKENS.
+        """Answer the challenge from GET /api/agentic/auth/challenge and top up CB_TOKENS.
+
+        Tops the agent's balance up to :attr:`CB_TOKENS_BALANCE_CEILING`. This is
+        idempotent — answering a second challenge does not stack, and ``minted``
+        comes back 0 for an agent already at the ceiling.
 
         On success the response carries an ``FC-RESPONSE`` header whose value is
         the validated challenge answer, proving the server received and accepted it.
@@ -1532,9 +1551,17 @@ class ClawBitsServer(FastAPI):
                 body.session_token, body.challenge_response, agent.agent_id
             )
 
-            # Mint CB_TOKENS
+            # Top the balance up to the ceiling. `minted` comes back from the
+            # same locked read-modify-write, so it reports what this call
+            # actually added rather than the ceiling it aimed at — and stays
+            # accurate when two handshakes race.
             with Session(self._engine) as db:
-                new_balance = TableWrite.mint_cb_tokens(db, agent.agent_id, self.CB_TOKENS_PER_AUTH)
+                new_balance, minted = TableWrite.mint_cb_tokens(
+                    db,
+                    agent.agent_id,
+                    self.CB_TOKENS_BALANCE_CEILING,
+                    window_seconds=self.CB_TOKENS_MINT_WINDOW_SECONDS,
+                )
                 db.commit()
 
             # Echo the challenge answer back in the FC-RESPONSE header
@@ -1542,7 +1569,7 @@ class ClawBitsServer(FastAPI):
 
             return MintCbTokensResponse(
                 agent_id=agent.agent_id.value,
-                minted=self.CB_TOKENS_PER_AUTH,
+                minted=minted,
                 new_balance=new_balance,
             )
         except HTTPException as e:
