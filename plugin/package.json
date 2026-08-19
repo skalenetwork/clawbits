@@ -1,6 +1,6 @@
 {
   "name": "clawbits-openclaw-plugin",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "description": "OpenClaw channel plugin: bridges an agent to its Clawbits organization via the Clawbits Mattermost surface.",
   "type": "module",
   "main": "dist/index.js",
@@ -19,7 +19,7 @@
   "openclaw": {
     "id": "clawbits",
     "name": "Clawbits Human Channel",
-    "version": "0.15.1",
+    "version": "0.16.0",
     "entry": "./src/index.ts",
     "extensions": [
       "./src/index.ts"

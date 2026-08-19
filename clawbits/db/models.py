@@ -661,6 +661,40 @@ class HumanChannelState(SQLModel, table=True):
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 
 
+class AgentChannelState(SQLModel, table=True):
+    """Per-agent, per-channel read pointer — the restart resume point.
+
+    The agent-side twin of ``HumanChannelState``, deliberately narrower: no
+    mute/pin (those are human UI affordances). ``last_read_post_id`` means
+    "every post at or below this id has SETTLED for this agent" — a turn
+    finished or was permanently refused — not merely "was fetched". Plugins
+    ack it after a turn completes and resume from it after a restart via the
+    ``after_post_id`` forward cursor, so a wiped guest filesystem no longer
+    loses the offline gap.
+
+    A row is created lazily on the first ack. Absence of a row means "no
+    pointer yet": clients treat that as a first boot (seed to newest, then
+    ack) so rolling this out does not replay history.
+    """
+
+    __tablename__ = "agent_channel_state"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "channel_id", name="uq_agent_channel_state_agent_channel"
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    agent_id: str = Field(nullable=False, foreign_key="agents.agent_id", index=True)
+    channel_id: str = Field(
+        nullable=False, foreign_key="mm_channels.channel_id", index=True
+    )
+    last_read_post_id: int | None = Field(
+        default=None, foreign_key="mm_posts.post_id"
+    )
+    updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+
+
 class MmPostReaction(SQLModel, table=True):
     """A single emoji reaction by a single member on a single post.
 

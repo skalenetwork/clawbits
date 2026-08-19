@@ -52,6 +52,13 @@ class _Channel:
     id: str
     channel_type: str | None = None
     name: str | None = None
+    # Server-side read state (both None on servers that predate it).
+    # ``latest_post_id`` is the newest published post's serial;
+    # ``last_read_post_id`` is this agent's acked pointer — together they
+    # tell a booting adapter which channels moved while it was down and
+    # exactly where to resume (``posts?after_post_id=``).
+    latest_post_id: int | None = None
+    last_read_post_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +220,8 @@ def _extract_channels(raw: Any) -> list[_Channel]:
                 id=str(channel_id),
                 channel_type=str(item.get("type") or item.get("channel_type") or "") or None,
                 name=str(item.get("display_name") or item.get("name") or channel_id),
+                latest_post_id=_coerce_int(item.get("latest_post_id")),
+                last_read_post_id=_coerce_int(item.get("last_read_post_id")),
             )
         )
     return channels
@@ -315,18 +324,22 @@ def _build_agent_body(
     chat_id: str | None = None,
     agent_id: str | None = None,
     attention_preamble: str | None = None,
+    prior_block: str | None = None,
 ) -> str:
     """Assemble what the model actually reads: context, then (on the attention
-    path) the reply-only-if-useful framing, then the message itself.
+    path) the reply-only-if-useful framing, then (on a boot catch-up turn) the
+    missed-while-offline block, then the message itself.
 
     Ordering mirrors the plugin: the framing closest to the ask carries the
     most weight. ``text`` is returned untouched when there is no context to add
-    (both ids absent and no attention framing), keeping the pre-feature prompt
+    (both ids absent and no other framing), keeping the pre-feature prompt
     shape for callers that pass neither.
     """
     session_id = _clawbits_session_id(chat_id) if chat_id else None
     blocks = [_build_clawbits_context(session_id, agent_id)]
     if attention_preamble:
         blocks.append(attention_preamble)
+    if prior_block:
+        blocks.append(prior_block)
     blocks.append(text)
     return "\n\n".join(b for b in blocks if b)

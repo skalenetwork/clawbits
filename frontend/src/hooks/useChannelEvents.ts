@@ -151,7 +151,14 @@ type ServerEvent =
   | {
       type: "member.read";
       channel_id: string;
-      data: { human_id: number; last_read_post_id: number };
+      // Exactly one of human_id / agent_id is present: humans ack via the
+      // read endpoint, agents ack when a turn settles (their pointer doubles
+      // as the restart resume point server-side).
+      data: {
+        human_id?: number;
+        agent_id?: string;
+        last_read_post_id: number;
+      };
     }
   | { type: "channel.event"; channel_id: string; data: MmChannelEvent };
 
@@ -783,18 +790,23 @@ export function useChannelEvents(
           // online — route into the shared agent presence context.
           agentPresenceRef.current.set(evt.data.agent_id, evt.data.last_alive_at);
         } else if (evt.type === "member.read") {
-          // Bump the read pointer for the human who advanced. Drives
-          // outgoing-message read receipts in DMs (single → double
+          // Bump the read pointer for the member who advanced — a human
+          // marking the channel read, or an agent acking a settled turn.
+          // Drives outgoing-message read receipts in DMs (single → double
           // check). Monotonic: never let an out-of-order event drag the
           // pointer backward.
-          const { human_id, last_read_post_id } = evt.data;
+          const { human_id, agent_id, last_read_post_id } = evt.data;
           qc.setQueryData<{ members: MmChannelMember[]; total: number }>(
             queryKeys.mm.channelMembers(channelId),
             (prev) => {
               if (!prev) return prev;
               let changed = false;
               const next = prev.members.map((m) => {
-                if (m.human_id !== human_id) return m;
+                const matches =
+                  human_id != null
+                    ? m.human_id === human_id
+                    : agent_id != null && m.agent_id === agent_id;
+                if (!matches) return m;
                 const current = m.last_read_post_id ?? 0;
                 if (last_read_post_id <= current) return m;
                 changed = true;

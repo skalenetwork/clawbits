@@ -30,6 +30,7 @@ from clawbits.db.models import (
     SKILL_SCHEMA_VERSION,
     Agent,
     AgentAction,
+    AgentChannelState,
     AgentContactPermission,
     AgentPost,
     AgentProfile,
@@ -1467,19 +1468,54 @@ class TableRead:
             .correlate(MmChannel)
             .lateral("latest_post")
         )
+        # ``last_read_post_id`` + unread counts make this one call the boot
+        # unread summary: an agent coming back online diffs the pointer
+        # against ``latest_post_id`` and drains only the channels that moved
+        # (``after_post_id`` paging). Missing state row = "no pointer yet" =
+        # first boot; plugins seed-and-ack instead of replaying history.
+        unread_count_sq = (
+            select(func.count())
+            .select_from(TableRead._agent_unread_window(agent_id))
+            .scalar_subquery()
+        )
+        mention_regex = TableRead._agent_mention_match_regex(agent_id)
+        unread_mention_count_sq = (
+            select(func.count())
+            .select_from(
+                TableRead._agent_unread_window(agent_id, mention_regex=mention_regex)
+            )
+            .scalar_subquery()
+        )
         rows = session.exec(
-            select(MmChannel, latest_post.c.post_id.label("latest_post_id"))
+            select(
+                MmChannel,
+                latest_post.c.post_id.label("latest_post_id"),
+                AgentChannelState.last_read_post_id,
+                unread_count_sq.label("unread_count"),
+                unread_mention_count_sq.label("unread_mention_count"),
+            )
             .join(MmChannelMember, MmChannelMember.channel_id == MmChannel.channel_id)
+            .join(
+                AgentChannelState,
+                (AgentChannelState.channel_id == MmChannel.channel_id)
+                & (AgentChannelState.agent_id == agent_id),
+                isouter=True,
+            )
             .join(latest_post, true(), isouter=True)
             .where(MmChannelMember.agent_id == agent_id)
             .order_by(MmChannel.created_at.desc())
         ).all()
         out = []
-        for c, latest_post_id in rows:
+        for c, latest_post_id, last_read_post_id, unread_count, unread_mentions in rows:
             d = TableRead._channel_to_dict(c, session)
             d["latest_post_id"] = (
                 int(latest_post_id) if latest_post_id is not None else None
             )
+            d["last_read_post_id"] = (
+                int(last_read_post_id) if last_read_post_id is not None else None
+            )
+            d["unread_count"] = int(unread_count or 0)
+            d["unread_mention_count"] = int(unread_mentions or 0)
             out.append(d)
         # Hide DMs the agent may no longer access — a human peer whose ``can_dm``
         # was revoked, or an agent peer whose grant was removed. Mirrors the
@@ -1501,11 +1537,14 @@ class TableRead:
         # SQLAlchemy session cache dedupes it to a single lookup per
         # agent id, so this isn't an extra round-trip.
         # Also outer-join ``HumanChannelState`` (keyed on the same
-        # human_id + channel_id) so the read-receipt pointer comes back
-        # in the same query — agents and never-opened human members
-        # both land on NULL, which the response normalises away.
+        # human_id + channel_id) and ``AgentChannelState`` (agent_id +
+        # channel_id) so both flavours of read-receipt pointer come back
+        # in the same query — the never-acked land on NULL, which the
+        # response normalises away.
         rows = session.exec(
-            select(MmChannelMember, HumanUser, HumanChannelState, Agent)
+            select(
+                MmChannelMember, HumanUser, HumanChannelState, Agent, AgentChannelState
+            )
             .join(HumanUser, HumanUser.id == MmChannelMember.human_id, isouter=True)
             .join(
                 HumanChannelState,
@@ -1517,6 +1556,12 @@ class TableRead:
             # the same query (NULL for human rows). The identity map dedupes
             # this against the avatar lookup below — no extra round-trip.
             .join(Agent, Agent.agent_id == MmChannelMember.agent_id, isouter=True)
+            .join(
+                AgentChannelState,
+                (AgentChannelState.agent_id == MmChannelMember.agent_id)
+                & (AgentChannelState.channel_id == MmChannelMember.channel_id),
+                isouter=True,
+            )
             .where(MmChannelMember.channel_id == channel_id)
             .order_by(MmChannelMember.joined_at)
         ).all()
@@ -1547,7 +1592,14 @@ class TableRead:
                     u.typing_indicators_enabled if u else True
                 ),
                 "avatar": TableRead._avatar_for_member(session, m.human_id, u, m.agent_id),
-                "last_read_post_id": s.last_read_post_id if s else None,
+                # Human rows read from HumanChannelState, agent rows from
+                # AgentChannelState; exactly one of ``s``/``ags`` can be
+                # non-NULL per row, so coalescing keeps one response field.
+                "last_read_post_id": (
+                    s.last_read_post_id
+                    if s
+                    else (ags.last_read_post_id if ags else None)
+                ),
                 # Global agent liveness — None for human rows (``a`` is the
                 # outer-joined Agent, NULL for humans). Computed here so every
                 # member-list call site gets it for free via
@@ -1559,7 +1611,7 @@ class TableRead:
                 ),
                 "last_alive_at": _iso(a.last_alive_at) if a is not None else None,
             }
-            for (m, u, s, a) in rows
+            for (m, u, s, a, ags) in rows
         ]
 
     @staticmethod
@@ -2676,6 +2728,40 @@ class TableRead:
         )
 
     @staticmethod
+    def _agent_unread_window(agent_id: str, *, mention_regex: str | None = None):
+        """Agent twin of :meth:`_unread_window`: published posts in the outer
+        ``MmChannel`` newer than this agent's read pointer and not authored by
+        the agent itself, capped at :data:`UNREAD_COUNT_CAP`. The ``IS NULL``
+        arm keeps human posts (NULL ``agent_id``) in the count."""
+        stmt = (
+            select(literal(1))
+            .where(MmPost.channel_id == MmChannel.channel_id)
+            .where(MmPost.status == "published")
+            .where(
+                MmPost.post_id
+                > func.coalesce(AgentChannelState.last_read_post_id, 0)
+            )
+            .where((MmPost.agent_id != agent_id) | (MmPost.agent_id.is_(None)))
+        )
+        if mention_regex is not None:
+            stmt = stmt.where(MmPost.message.op("~*")(mention_regex))
+        return (
+            stmt.limit(UNREAD_COUNT_CAP)
+            .correlate(MmChannel, AgentChannelState)
+            .subquery()
+        )
+
+    @staticmethod
+    def _agent_mention_match_regex(agent_id: str) -> str:
+        """POSIX (case-insensitive) regex matching ``@<agent_id>``, with the
+        same trailing token boundary as :meth:`_human_mention_match_regex`.
+        Deliberately ONLY the raw agent id — that is the exact predicate both
+        runtime plugins use to decide whether a shared-channel post triggers a
+        turn (``hasAgentMention`` / ``_is_mentioned``), so the server's
+        ``unread_mention_count`` agrees with what the agent will answer."""
+        return rf"@({re.escape(agent_id)})([^a-z0-9_.-]|$)"
+
+    @staticmethod
     def get_mm_channels_for_human(
         session: Session,
         human_id: int,
@@ -3017,6 +3103,35 @@ class TableRead:
             select(func.max(MmPost.post_id))
             .where(MmPost.channel_id == channel_id)
             .where(MmPost.status == "published")
+        ).first()
+
+    @staticmethod
+    def get_agent_channel_last_read(
+        session: Session, channel_id: str, agent_id: str
+    ) -> int | None:
+        """The agent's current read pointer in a channel, or None when no
+        state row exists (or the pointer was nulled by a cleanup path)."""
+        return session.exec(
+            select(AgentChannelState.last_read_post_id)
+            .where(AgentChannelState.channel_id == channel_id)
+            .where(AgentChannelState.agent_id == agent_id)
+        ).first()
+
+    @staticmethod
+    def get_mm_channel_post_id_at_or_below(
+        session: Session, channel_id: str, post_id: int
+    ) -> int | None:
+        """Newest post id in the channel that is ``<= post_id`` and still
+        exists, or None. The read-ack clamp: an acked id may have been
+        deleted (or belong to another channel) by the time the ack lands,
+        and ``last_read_post_id`` carries an FK to ``mm_posts`` — this
+        resolves the ack to the nearest id the FK will accept, in the
+        channel the caller is acking. Any status counts: a settled turn may
+        legitimately point at a post that later got edited or reaped."""
+        return session.exec(
+            select(func.max(MmPost.post_id))
+            .where(MmPost.channel_id == channel_id)
+            .where(MmPost.post_id <= post_id)
         ).first()
 
     @staticmethod

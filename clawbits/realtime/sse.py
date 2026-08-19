@@ -386,6 +386,24 @@ async def publish_member_read(
     )
 
 
+async def publish_agent_member_read(
+    bus: EventBus, agent_id: str, channel_id: str, last_read_post_id: int
+) -> None:
+    """Agent flavour of :func:`publish_member_read` — fired when an agent
+    acks its read pointer (a settled turn). Same ``member.read`` type with
+    ``agent_id`` instead of ``human_id``; clients that only understand the
+    human shape no-op on it (their member match key is ``human_id``, which
+    is null for agent members)."""
+    await bus.publish(
+        channel_topic(channel_id),
+        _envelope(
+            "member.read",
+            channel_id,
+            {"agent_id": agent_id, "last_read_post_id": last_read_post_id},
+        ),
+    )
+
+
 async def publish_channel_muted(
     bus: EventBus, human_id: int, channel_id: str, muted: bool
 ) -> None:

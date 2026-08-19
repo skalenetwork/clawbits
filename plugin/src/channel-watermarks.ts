@@ -1,5 +1,5 @@
-// Persistent per-(account, channel) watermarks, as a small JSON file next to
-// the plugin's logs (``process.cwd()``). Three key shapes share the store:
+// Persistent per-(account, channel) watermarks, as a small JSON file. Three
+// key shapes share the store:
 //
 //   "<channelId>"        — newest post already SHOWN as read-only context.
 //   "cursor:<channelId>" — newest post whose turn FINISHED (or was refused).
@@ -9,14 +9,25 @@
 //
 // On-disk: { "<accountId>": { "<key>": <createAtMs>, ... }, ... }
 //
-// DURABILITY (unresolved): cwd is not one of the volumes reef mounts
-// (`~/.openclaw/workspace`, `~/.config/openclaw`), so this survives an in-place
-// restart — what an env-var change does — but not a recreate or image upgrade,
-// i.e. every plugin release resets it. Losing it degrades to the poller's cold
-// window, which is bounded and duplicate-safe. Path is logged at poller start.
+// DURABILITY: the default path prefers, in order, $CLAWBITS_STATE_DIR, then
+// `~/.config/openclaw/clawbits/` when `~/.config/openclaw` exists (under reef
+// that is a named volume that survives destroy+recreate — reef/profiles.py
+// mounts it for auth-profile secrets), then the legacy `process.cwd()`
+// location (container rootfs: survives stop/start but not recreate/upgrade).
+// `load()` also reads the legacy cwd file once when the durable file doesn't
+// exist yet, so an upgrade carries its watermarks over. Losing the file
+// degrades to the poller's cold window / a server-pointer resume — bounded
+// and duplicate-safe either way. Path is logged at poller start.
+//
+// NOTE: the primary restart resume point is the SERVER-side read pointer
+// (`last_read_post_id`, acked on turn settle); this file is the fallback for
+// older servers and the "shown as context" memory, which is client-local by
+// nature.
 
-import { readFile, rename, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
 
 /** Minimal contract the poller depends on. Kept narrow so tests can pass a
@@ -44,6 +55,32 @@ const DEFAULT_STATE_FILENAME = "clawbits-channel-state.json";
 const FLUSH_DEBOUNCE_MS = 1000;
 const KEY_SEP = "\u0000";
 
+/** Legacy pre-0.16 location: the gateway's cwd. Read (never written) when
+ *  the durable file doesn't exist yet, so upgrading carries state over. */
+function legacyStatePath(): string {
+  return resolve(process.cwd(), DEFAULT_STATE_FILENAME);
+}
+
+/** Durable default path — see the header note for the preference order. */
+function defaultStatePath(): string {
+  const envDir = process.env["CLAWBITS_STATE_DIR"];
+  if (envDir && envDir.trim().length > 0) {
+    return resolve(envDir.trim(), DEFAULT_STATE_FILENAME);
+  }
+  try {
+    const configDir = join(homedir(), ".config", "openclaw");
+    // Gate on the PARENT existing (not our subdir): its presence is what
+    // signals "this install has a persistent config home" — reef's named
+    // volume, or a self-hosted XDG setup. flush() creates the subdir.
+    if (existsSync(configDir)) {
+      return join(configDir, "clawbits", DEFAULT_STATE_FILENAME);
+    }
+  } catch {
+    // homedir()/fs probing failed — fall through to the legacy location.
+  }
+  return legacyStatePath();
+}
+
 /**
  * In-memory map with an optional JSON file behind it. When constructed
  * without a file path it behaves as a pure in-memory store (load/flush are
@@ -69,11 +106,10 @@ export class ChannelWatermarkStore implements WatermarkStore {
     return this.filePath;
   }
 
-  /** File-backed store at `filePath` (defaults to ``<cwd>/<state file>``). */
+  /** File-backed store at `filePath` (defaults to the durable location —
+   *  see `defaultStatePath`). */
   static fileBacked(filePath?: string): ChannelWatermarkStore {
-    return new ChannelWatermarkStore(
-      filePath ?? resolve(process.cwd(), DEFAULT_STATE_FILENAME),
-    );
+    return new ChannelWatermarkStore(filePath ?? defaultStatePath());
   }
 
   /** Pure in-memory store (no disk I/O). */
@@ -85,28 +121,43 @@ export class ChannelWatermarkStore implements WatermarkStore {
     return `${accountId}${KEY_SEP}${channelId}`;
   }
 
+  private ingestSnapshot(raw: string): boolean {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return false;
+    for (const [accountId, channels] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!channels || typeof channels !== "object") continue;
+      for (const [channelId, value] of Object.entries(channels as Record<string, unknown>)) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+          this.map.set(this.keyFor(accountId, channelId), value);
+        }
+      }
+    }
+    return true;
+  }
+
   async load(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
     if (!this.filePath) return;
     try {
-      const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === "object") {
-        this.loadedExisting = true;
-        for (const [accountId, channels] of Object.entries(parsed as Record<string, unknown>)) {
-          if (!channels || typeof channels !== "object") continue;
-          for (const [channelId, value] of Object.entries(channels as Record<string, unknown>)) {
-            if (typeof value === "number" && Number.isFinite(value)) {
-              this.map.set(this.keyFor(accountId, channelId), value);
-            }
-          }
-        }
-      }
+      this.loadedExisting = this.ingestSnapshot(await readFile(this.filePath, "utf8"));
+      return;
     } catch {
-      // Missing or corrupt file → start from an empty watermark set. A bad
-      // file just means the next backlog runs untrimmed (at worst a one-time
-      // re-read), which is strictly safer than crashing the poller.
+      // Missing or corrupt durable file — try the legacy location below.
+    }
+    // One-time migration read: a pre-0.16 install kept the file in the
+    // gateway's cwd. Ingest it (the next flush writes the durable path;
+    // the old file is left behind, harmless). Skipped when the configured
+    // path IS the legacy path.
+    const legacy = legacyStatePath();
+    if (legacy === this.filePath) return;
+    try {
+      this.loadedExisting = this.ingestSnapshot(await readFile(legacy, "utf8"));
+      if (this.loadedExisting) this.dirty = true;
+    } catch {
+      // Neither file → a genuine first boot (or both corrupt). Start empty:
+      // the next backlog runs untrimmed (at worst a one-time re-read), which
+      // is strictly safer than crashing the poller.
     }
   }
 
@@ -156,6 +207,9 @@ export class ChannelWatermarkStore implements WatermarkStore {
     this.flushChain = this.flushChain.then(async () => {
       const tmp = `${path}.tmp`;
       try {
+        // The durable default lives in a subdir that may not exist yet
+        // (`~/.config/openclaw/clawbits/`) — create it on first write.
+        await mkdir(dirname(path), { recursive: true });
         await writeFile(tmp, JSON.stringify(snapshot), "utf8");
         await rename(tmp, path);
       } catch {
