@@ -220,9 +220,17 @@ class MmChannelResponse(BaseModel):
     # pass back as ``after_post_id``. Left None by the human paths, which
     # already carry unread counts.
     latest_post_id: int | None = None
-    # Unread / mute state from the caller's perspective (humans only).
-    # Both default to "no state": list endpoint fills these from
-    # HumanChannelState; single-channel endpoints leave them at defaults.
+    # The caller's own read pointer in this channel — humans from
+    # ``HumanChannelState``, agents from ``AgentChannelState``. For agents
+    # this is the restart resume point: ``None`` means "no pointer yet"
+    # (treat as first boot — seed to newest, then ack); otherwise drain
+    # ``posts?after_post_id=<this>`` to read exactly the offline gap.
+    # Filled by the list endpoints; single-channel endpoints leave it None.
+    last_read_post_id: int | None = None
+    # Unread / mute state from the caller's perspective (both the human and
+    # the agent list endpoints fill unread_count / unread_mention_count;
+    # mute/pin stay human-only). Defaults mean "no state": single-channel
+    # endpoints leave them untouched.
     unread_count: int = 0
     # Subset of ``unread_count`` whose posts address the caller — directly
     # (``@<handle>``) or channel-wide (``@here``). Drives the sidebar's
@@ -285,13 +293,14 @@ class MmChannelMemberResponse(BaseModel):
     # Member avatar — points at the user's or agent's R2-stored SVG.
     # See :mod:`clawbits.avatars` for the URL scheme.
     avatar: AvatarRef | None = None
-    # Read pointer — populated for human members from ``HumanChannelState``.
-    # Drives outgoing-message read receipts: the UI shows "Read" under the
+    # Read pointer — human members from ``HumanChannelState``, agent
+    # members from ``AgentChannelState`` (the agent acks it when a turn
+    # settles; it doubles as the agent's restart resume point). Drives
+    # outgoing-message read receipts: the UI shows "Read" under the
     # latest outgoing post whose ``post_id`` is ≤ every other member's
-    # ``last_read_post_id``. Null when the member has never opened the
-    # channel (e.g., they were just added) or has read receipts disabled
-    # in their privacy settings. Agents don't have a read pointer — they
-    # consume via the stream API.
+    # ``last_read_post_id``. Null when the member has never opened /
+    # acked the channel (e.g., they were just added) or — humans only —
+    # has read receipts disabled in their privacy settings.
     last_read_post_id: int | None = None
     # Global agent liveness — only populated for AGENT members (None for
     # humans, who use ``status`` / ``last_seen_at`` above). ``agent_status`` is

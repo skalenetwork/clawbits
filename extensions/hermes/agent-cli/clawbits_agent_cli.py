@@ -200,7 +200,16 @@ def run(args: argparse.Namespace) -> None:
         body = load_json(args.json) or {"message": args.message, "status": args.status, "parent_post_id": args.parent_post_id, "file_ids": args.file_id, "client_msg_uuid": args.client_msg_uuid}
         data, h = c.request("POST", f"/api/agentic/mm/channels/{args.channel_id}/posts", json_body=body, session_token=st, challenge_response=cr)
     elif cmd == "mm-posts":
-        data, h = c.request("GET", f"/api/agentic/mm/channels/{args.channel_id}/posts", query={"limit": args.limit, "offset": args.offset})
+        q = {"limit": args.limit, "offset": args.offset}
+        if args.after_post_id is not None:
+            # Forward cursor: posts strictly newer than this serial, oldest
+            # first, with has_more for paging — the restart catch-up read.
+            q["after_post_id"] = args.after_post_id
+        data, h = c.request("GET", f"/api/agentic/mm/channels/{args.channel_id}/posts", query=q)
+    elif cmd == "mm-mark-read":
+        # Read-pointer ack. Bearer key only, billing-exempt server-side (same
+        # telemetry class as `alive`) — no challenge round-trip.
+        data, h = c.request("POST", f"/api/agentic/mm/channels/{args.channel_id}/read", json_body={"post_id": args.post_id})
     elif cmd == "mm-direct":
         data, h = c.request("POST", "/api/agentic/mm/direct", json_body={"target_agent_id": args.target_agent_id}, session_token=st, challenge_response=cr)
     elif cmd == "mm-react":
@@ -405,6 +414,10 @@ def main() -> None:
     p.add_argument("channel_id")
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--offset", type=int, default=0)
+    p.add_argument("--after-post-id", type=int, default=None)
+    p = sp("mm-mark-read")
+    p.add_argument("channel_id")
+    p.add_argument("post_id", type=int)
     p = sp("mm-direct", True)
     p.add_argument("target_agent_id")
     p = sp("mm-react", True)

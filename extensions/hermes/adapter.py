@@ -52,9 +52,12 @@ from .messages import (
     _parent_post_id_from_metadata,
     _post_cursor_key,
     _post_id,
+    _post_sequence,
     _split_message_chunks,
+    _timestamp_ms,
     _trace_id_from_metadata,
 )
+from .read_cursors import load_read_cursors, save_read_cursors
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,18 @@ _ATTENTION_PREAMBLE = (
 # of thousands of posts.
 _SEEN_CAP = 20_000
 _REPLY_CONTEXT_CAP = 2_000
+
+# --- Boot catch-up ------------------------------------------------------------
+# With a known read pointer (server AgentChannelState, or the local cursor
+# file), the first pass DRAINS the offline gap via ``after_post_id`` paging
+# instead of swallowing it as backlog. Bounded: at most this many pages per
+# channel; a gap beyond that falls back to the newest page with the overflow
+# noted to the model. One turn per channel — the newest addressed post is the
+# trigger, older missed messages ride as context (OpenClaw parity).
+_CATCH_UP_PAGE_SIZE = 50
+_MAX_CATCH_UP_PAGES = 4
+_CATCH_UP_CONTEXT_LIMIT = 50
+_CATCH_UP_CONTEXT_CHARS = 400
 _DEFAULT_INTER_AGENT_MESSAGE_LIMIT = 10
 _MAX_INTER_AGENT_MESSAGE_LIMIT = 50
 _HUMAN_GUIDANCE_MESSAGE = "Nice, but need human guidance to proceed."
@@ -240,6 +255,15 @@ class ClawbitsAdapter(BasePlatformAdapter):
         self._seen: dict[str, None] = {}
         self._cursors: dict[str, tuple[int, int, str]] = {}
         self._channels: dict[str, _Channel] = {}
+        # Durable read pointers {channel_id: last_read_post_id} — the restart
+        # resume points. The server's AgentChannelState is authoritative (it
+        # arrives on the channel snapshot); this local map, rehydrated from
+        # HERMES_HOME like the email watermark below, is the fallback for
+        # servers that predate the pointer and the cache between acks.
+        self._read_cursors: dict[str, int] = load_read_cursors()
+        # Flipped off after the first "HTTP 404" from the ack endpoint so a
+        # pre-pointer server costs one failed call, not one per settled turn.
+        self._mark_read_supported = True
         self._snoozed = False
         self._inter_agent_mode = False
         self._inter_agent_message_limit = _DEFAULT_INTER_AGENT_MESSAGE_LIMIT
@@ -873,6 +897,13 @@ class ClawbitsAdapter(BasePlatformAdapter):
         channel_id = str(event.get("channel_id") or post.get("channel_id") or "")
         if not channel_id:
             return
+        # Not cursor-seeded yet: the boot pass hasn't classified this channel.
+        # Dispatching now would setdefault a zero cursor, and the seeding pass
+        # would then take the dispatch branch against it — replaying the whole
+        # newest page as live traffic. The poll delivers this post right after
+        # the channel seeds (it is inside the gap/newest page by definition).
+        if channel_id not in self._cursors:
+            return
         # "public", not None: `is_direct` treats an unknown type as a DM, which
         # would make the agent auto-reply to every post in a shared room it has
         # not polled yet. A missed DM is recovered by the next poll; an unwanted
@@ -1060,13 +1091,15 @@ class ClawbitsAdapter(BasePlatformAdapter):
             channels = [_Channel(self.fallback_channel_id, None, "Clawbits")]
         self._channels = {channel.id: channel for channel in channels}
         for channel in channels:
-            posts = await asyncio.to_thread(self.client.get_posts, channel.id)
             if channel.id not in self._cursors:
-                self._cursors[channel.id] = max((_post_cursor_key(post) for post in posts), default=(0, 0, ""))
-                for post in posts:
-                    if post_id := _post_id(post):
-                        self._remember(post_id)
+                # First sight of this channel in this process: with a known
+                # read pointer this REPLAYS the offline gap (one turn, older
+                # missed posts as context); without one it seeds to newest and
+                # acks so the pointer exists from now on. Either way the
+                # channel ends cursor-seeded — never silently swallowed.
+                await self._seed_or_resume_channel(channel)
                 continue
+            posts = await asyncio.to_thread(self.client.get_posts, channel.id)
             for post in posts:
                 await self._maybe_dispatch(channel, post)
         if not self._ready.is_set():
@@ -1076,6 +1109,282 @@ class ClawbitsAdapter(BasePlatformAdapter):
             # greeting already in the channel when the wizard says "available".
             await self._greet_once()
             self._ready.set()
+
+    # --- Boot catch-up --------------------------------------------------------
+
+    async def _seed_or_resume_channel(self, channel: _Channel) -> None:
+        """First pass over a channel: resume from the read pointer, or seed.
+
+        Resume point precedence: the server's ``last_read_post_id`` (from the
+        channel snapshot — survives anything), then the local cursor file
+        (older server), then none (genuine first boot). Every path leaves
+        ``self._cursors[channel.id]`` seeded, because an unseeded channel is
+        exactly the state that used to swallow the offline gap as backlog.
+        """
+        resume = channel.last_read_post_id
+        if resume is None:
+            resume = self._read_cursors.get(channel.id)
+
+        if resume is None:
+            await self._seed_channel_to_newest(channel.id, ack=True)
+            return
+
+        # Nothing moved while we were down: cheap seed, no gap to drain. The
+        # snapshot's latest_post_id makes this one comparison instead of a
+        # posts GET — but only when the snapshot carries it (old servers
+        # don't, and a None must not read as "quiet channel").
+        if channel.latest_post_id is not None and channel.latest_post_id <= resume:
+            await self._seed_channel_to_newest(channel.id, ack=False)
+            return
+
+        try:
+            await self._catch_up_channel(channel, resume)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A failed drain MUST still seed the cursor: leaving the channel
+            # unseeded would hand the next poll a zero cursor and replay the
+            # whole newest page as live traffic (the mass-dispatch inverse of
+            # the swallowed-backlog bug). Degrade to seed-to-newest, no ack —
+            # the pointer stays low, so the next restart retries the gap.
+            logger.warning(
+                "clawbits: catch-up failed for channel %s; seeding to newest",
+                channel.id,
+                exc_info=True,
+            )
+            if channel.id not in self._cursors:
+                with contextlib.suppress(Exception):
+                    await self._seed_channel_to_newest(channel.id, ack=False)
+
+    async def _seed_channel_to_newest(self, channel_id: str, *, ack: bool) -> None:
+        """Classic first-boot seed: cursor to the newest page, page ids into
+        the dedupe set, no dispatch. With ``ack`` the newest post is also
+        acked so the durable pointer exists — turning every LATER restart
+        into a real resume instead of another silent seed."""
+        posts = await asyncio.to_thread(self.client.get_posts, channel_id)
+        self._cursors[channel_id] = max(
+            (_post_cursor_key(post) for post in posts), default=(0, 0, "")
+        )
+        for post in posts:
+            if post_id := _post_id(post):
+                self._remember(post_id)
+        if ack:
+            newest_seq = max((_post_sequence(post) for post in posts), default=0)
+            if newest_seq > 0:
+                await self._ack_read(channel_id, newest_seq)
+
+    async def _drain_gap(
+        self, channel_id: str, resume: int
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Page the forward cursor from ``resume``: the posts that arrived
+        while the process was down, oldest first. Returns ``(posts,
+        overflowed)`` — ``overflowed`` when the gap may extend past the page
+        budget."""
+        drained: list[dict[str, Any]] = []
+        after = resume
+        for _ in range(_MAX_CATCH_UP_PAGES):
+            raw_page = await asyncio.to_thread(
+                self.client.get_posts, channel_id, _CATCH_UP_PAGE_SIZE, after
+            )
+            # Keep only posts strictly past the cursor. A server that
+            # predates ``after_post_id`` ignores the param and hands back
+            # the newest page regardless — without this filter that page
+            # would be replayed as "the gap", re-answering settled posts.
+            page = [p for p in raw_page if _post_sequence(p) > after]
+            drained.extend(page)
+            if len(raw_page) < _CATCH_UP_PAGE_SIZE or not page:
+                return drained, False
+            after = max((_post_sequence(post) for post in page), default=after)
+        return drained, True
+
+    def _is_catch_up_candidate(self, channel: _Channel, post: dict[str, Any]) -> bool:
+        """Would this missed post have triggered a turn had we been online?
+
+        The addressability gates of ``_maybe_dispatch`` minus its cursor/seen
+        bookkeeping, with one boot-specific tightening: agent-authored posts
+        never trigger catch-up (mirrors the OpenClaw pass — replaying agent
+        traffic at boot would restart inter-agent ping-pong across a fleet
+        roll, and the turn budget that normally bounds it resets with the
+        process)."""
+        post_id = _post_id(post)
+        if not post_id or post_id in self._seen:
+            return False
+        if post.get("agent_id"):
+            return False
+        text = str(post.get("message") or "")
+        sender_id = str(post.get("agent_id") or post.get("user_id") or post.get("human_id") or "")
+        if sender_id == self.agent_id:
+            return False
+        if not _is_user_post(post):
+            return False
+        if not text.strip() and not _extract_files(post):
+            return False
+        is_direct = channel.channel_type in {None, "direct"} or channel.id == self.fallback_channel_id
+        return is_direct or bool(self._mention_re.search(text))
+
+    def _catch_up_context_block(
+        self,
+        posts: list[dict[str, Any]],
+        trigger: dict[str, Any],
+        *,
+        overflow_note: str | None,
+    ) -> str | None:
+        """The "[Missed while offline]" block: what else arrived during the
+        outage, oldest first, so one turn can answer the backlog coherently
+        instead of the trigger post arriving with amnesia about its own
+        context."""
+        trigger_id = _post_id(trigger)
+        lines: list[str] = []
+        for post in posts[-_CATCH_UP_CONTEXT_LIMIT:]:
+            if _post_id(post) == trigger_id:
+                continue
+            if not _is_user_post(post):
+                continue
+            sender = str(
+                post.get("poster_display_name")
+                or post.get("agent_id")
+                or post.get("user_id")
+                or post.get("human_id")
+                or "unknown"
+            )
+            text = " ".join(str(post.get("message") or "").split())
+            if not text and _extract_files(post):
+                text = "(attachment)"
+            if not text:
+                continue
+            if len(text) > _CATCH_UP_CONTEXT_CHARS:
+                text = text[: _CATCH_UP_CONTEXT_CHARS - 1] + "…"
+            lines.append(f"- {sender}: {text}")
+        if not lines and not overflow_note:
+            return None
+        block = [
+            "[Missed while offline]",
+            "These messages arrived in this channel while you were offline and are",
+            "still unanswered. The current message below is the newest one addressed",
+            "to you; treat the list as context and fold anything still worth",
+            "answering into your reply.",
+        ]
+        if overflow_note:
+            block.append(overflow_note)
+        block.extend(lines)
+        block.append("[end Missed while offline]")
+        return "\n".join(block)
+
+    async def _catch_up_channel(self, channel: _Channel, resume: int) -> None:
+        """Replay the offline gap for one channel: one turn, newest addressed
+        post as the trigger, the rest as context. Every exit leaves the
+        channel cursor-seeded."""
+        drained, overflowed = await self._drain_gap(channel.id, resume)
+        overflow_note: str | None = None
+        posts = drained
+        if overflowed:
+            # The gap outran the page budget. Prioritise the newest traffic —
+            # answering week-old messages while ignoring today's would be
+            # backwards — and say so to the model instead of pretending the
+            # middle never happened.
+            posts = await asyncio.to_thread(self.client.get_posts, channel.id)
+            overflow_note = (
+                f"(The offline gap was larger than {len(drained)} messages; the"
+                " oldest part was skipped and only recent messages are shown.)"
+            )
+            logger.warning(
+                "clawbits: catch-up gap in %s exceeded %d posts; skipping the middle",
+                channel.id,
+                len(drained),
+            )
+
+        if not posts:
+            # Gap closed between snapshot and drain (or empty channel):
+            # nothing to replay, but the cursor must still exist.
+            await self._seed_channel_to_newest(channel.id, ack=False)
+            return
+
+        candidates = [p for p in posts if self._is_catch_up_candidate(channel, p)]
+        newest_seq = max((_post_sequence(post) for post in posts), default=0)
+
+        if not candidates:
+            # Examined and nothing addressed us — the permanent-refusal case,
+            # so acking past it is correct (and what stops the same gap being
+            # re-examined every restart). LobsterTalk nudges are unaffected:
+            # the nudge path keys on ``_seen``, not the pointer.
+            logger.info(
+                "clawbits: catch-up for %s — %d missed post(s), none addressed to this agent",
+                channel.id,
+                len(posts),
+            )
+            self._cursors[channel.id] = max(
+                (_post_cursor_key(post) for post in posts), default=(0, 0, "")
+            )
+            for post in posts:
+                if post_id := _post_id(post):
+                    self._remember(post_id)
+            if newest_seq > 0:
+                await self._ack_read(channel.id, newest_seq)
+            return
+
+        trigger = candidates[-1]
+        context = self._catch_up_context_block(
+            posts, trigger, overflow_note=overflow_note
+        )
+        # Open the gate just below the trigger: _maybe_dispatch accepts the
+        # trigger, advances the cursor to it, and every OLDER drained post is
+        # already below the gate (they ride as context, not turns). Posts
+        # newer than the trigger — necessarily unaddressed — re-enter via the
+        # normal poll, fail its gates, and advance the cursor one by one.
+        self._cursors[channel.id] = (
+            _timestamp_ms(trigger),
+            max(_post_sequence(trigger) - 1, 0),
+            "",
+        )
+        logger.info(
+            "clawbits: catch-up replaying %s — trigger %s, %d missed post(s), resume=%d",
+            channel.id,
+            _post_id(trigger),
+            len(posts),
+            resume,
+        )
+        await self._maybe_dispatch(channel, trigger, catch_up_context=context)
+
+    def _record_read_cursor(self, channel_id: str, post_seq: int) -> None:
+        """Advance the local cursor cache (monotonic) and best-effort persist.
+        A failed write is survivable — the server pointer still advances — so
+        it logs rather than raises."""
+        if post_seq <= self._read_cursors.get(channel_id, 0):
+            return
+        self._read_cursors[channel_id] = post_seq
+        try:
+            save_read_cursors(self._read_cursors)
+        except Exception:
+            logger.warning(
+                "clawbits: could not persist the read-cursor file", exc_info=True
+            )
+
+    async def _ack_read(self, channel_id: str, post_seq: int) -> None:
+        """Advance the durable read pointer — local file first (must make
+        progress even against an old or unreachable server), then the server
+        ack. "Settled" semantics: call sites are turn completion and the
+        nothing-addressable catch-up path, never mere observation."""
+        if post_seq <= 0:
+            return
+        self._record_read_cursor(channel_id, post_seq)
+        if not self._mark_read_supported:
+            return
+        try:
+            await asyncio.to_thread(self.client.mark_read, channel_id, post_seq)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if "HTTP 404" in str(exc):
+                # Pre-pointer server: stop asking. The local file carries the
+                # resume point until the backend is upgraded.
+                self._mark_read_supported = False
+                logger.info(
+                    "clawbits: server has no read-pointer endpoint; using the local cursor file only"
+                )
+            else:
+                logger.warning(
+                    "clawbits: read-pointer ack failed for %s", channel_id, exc_info=True
+                )
 
     async def _email_loop(self) -> None:
         while self._running:
@@ -1307,7 +1616,12 @@ class ClawbitsAdapter(BasePlatformAdapter):
         stripped = re.sub(r"[ \t]{2,}", " ", stripped)
         return stripped.strip()
 
-    async def _maybe_dispatch(self, channel: _Channel, post: dict[str, Any]) -> None:
+    async def _maybe_dispatch(
+        self,
+        channel: _Channel,
+        post: dict[str, Any],
+        catch_up_context: str | None = None,
+    ) -> None:
         post_id = _post_id(post)
         if not post_id or post_id in self._seen:
             return
@@ -1406,11 +1720,14 @@ class ClawbitsAdapter(BasePlatformAdapter):
         event = MessageEvent(
             # Same context block as the attention path (and as the OpenClaw
             # plugin): the agent should know what it is and where it is on
-            # every turn, not only when a nudge brought it here.
+            # every turn, not only when a nudge brought it here. On a boot
+            # catch-up turn, the missed-while-offline block rides between the
+            # context and the trigger message.
             text=_build_agent_body(
                 event_text,
                 chat_id=channel.id,
                 agent_id=self.agent_id or None,
+                prior_block=catch_up_context,
             ),
             message_type=self._message_type_for_media(media_types),
             source=source,
@@ -1452,11 +1769,26 @@ class ClawbitsAdapter(BasePlatformAdapter):
         heartbeat = asyncio.create_task(self._generating_heartbeat(channel_id))
         try:
             await self.handle_message(event)
+            # The turn SETTLED — this is the one moment the durable read
+            # pointer may advance past the post (crash-before-here means the
+            # post re-delivers on the next boot, which is exactly right). The
+            # gateway queues turns per session, so same-channel settles land
+            # in post order and the monotonic ack can't leapfrog an earlier
+            # unsettled turn.
+            settled_seq = (
+                _post_sequence(event.raw_message)
+                if isinstance(event.raw_message, dict)
+                else 0
+            )
+            if settled_seq > 0:
+                await self._ack_read(channel_id, settled_seq)
         except asyncio.CancelledError:
             raise
         except Exception:
             # A failed turn must not go unlogged: nothing awaits this task, so
             # an uncaught exception would otherwise vanish into the done-callback.
+            # Deliberately NOT acked — a failed turn is a transient refusal, and
+            # the un-advanced pointer is what re-delivers the post next boot.
             logger.exception("clawbits: turn failed for channel %s", channel_id)
         finally:
             heartbeat.cancel()

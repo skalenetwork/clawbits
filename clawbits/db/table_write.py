@@ -30,6 +30,7 @@ from clawbits.db.models import (
     UNKNOWN_PROVIDER,
     Agent,
     AgentAction,
+    AgentChannelState,
     AgentClaim,
     AgentContactPermission,
     AgentPost,
@@ -967,6 +968,30 @@ class TableWrite:
                 .where(MmPost.agent_id.is_distinct_from(agent_id))
             ).one()
             session.add(state)
+        # Same rewind for OTHER agents' read pointers (same FK, same phantom-
+        # unread hazard: a nulled pointer would replay the whole channel as a
+        # restart backlog for every agent whose last settled turn answered
+        # this agent).
+        stale_agent_pointers = session.exec(
+            select(AgentChannelState)
+            .where(AgentChannelState.last_read_post_id.in_(agent_post_ids_subq))
+            # The agent's own rows are bulk-deleted just below — rewinding
+            # them too would leave dirty ORM instances behind a bulk DELETE,
+            # which explodes at flush with a zero-row UPDATE.
+            .where(AgentChannelState.agent_id != agent_id)
+        ).all()
+        for state in stale_agent_pointers:
+            state.last_read_post_id = session.exec(
+                select(func.max(MmPost.post_id))
+                .where(MmPost.channel_id == state.channel_id)
+                .where(MmPost.post_id < state.last_read_post_id)
+                .where(MmPost.agent_id.is_distinct_from(agent_id))
+            ).one()
+            session.add(state)
+        # The deleted agent's own read pointers go outright (FK on agent_id).
+        session.exec(
+            delete(AgentChannelState).where(AgentChannelState.agent_id == agent_id)
+        )
         session.exec(
             update(MmPost)
             .where(MmPost.parent_post_id.in_(agent_post_ids_subq))
@@ -1405,6 +1430,15 @@ class TableWrite:
         session.exec(
             update(HumanChannelState)
             .where(HumanChannelState.last_read_post_id.in_(user_post_ids_subq))
+            .values(last_read_post_id=None)
+        )
+        # Agent read pointers parked on the user's posts share the same FK.
+        # Null (not rewind) mirrors the human treatment on this path; agents
+        # cap their own catch-up, so a null pointer costs one bounded
+        # first-boot pass, not a full-history replay.
+        session.exec(
+            update(AgentChannelState)
+            .where(AgentChannelState.last_read_post_id.in_(user_post_ids_subq))
             .values(last_read_post_id=None)
         )
         session.exec(
@@ -2715,6 +2749,31 @@ class TableWrite:
         return row.last_read_post_id or 0
 
     @staticmethod
+    def mark_mm_channel_read_agent(
+        session: Session, channel_id: str, agent_id: str, post_id: int
+    ) -> int:
+        """Upsert the agent read pointer for (agent, channel). Monotonic —
+        the pointer never moves backwards, so replays and out-of-order acks
+        are harmless. The caller clamps ``post_id`` to a real post in the
+        channel; this helper only enforces forward motion.
+
+        Returns the new effective ``last_read_post_id``.
+        """
+        row = session.exec(
+            select(AgentChannelState)
+            .where(AgentChannelState.agent_id == agent_id)
+            .where(AgentChannelState.channel_id == channel_id)
+        ).first()
+        if row is None:
+            row = AgentChannelState(agent_id=agent_id, channel_id=channel_id)
+        if row.last_read_post_id is None or post_id > row.last_read_post_id:
+            row.last_read_post_id = post_id
+        row.updated_at = _dt.datetime.now(_dt.UTC)
+        session.add(row)
+        session.flush()
+        return row.last_read_post_id or 0
+
+    @staticmethod
     def set_mm_channel_muted(
         session: Session, channel_id: str, human_id: int, muted: bool
     ) -> bool:
@@ -2753,9 +2812,10 @@ class TableWrite:
         personal SSE topic. Returns ``None`` if the channel doesn't exist.
 
         Deletion order matters because not every FK has ``ondelete``:
-          1. ``human_channel_state`` — references both ``mm_channels`` and
-             ``mm_posts`` (the ``last_read_post_id`` pointer). Clear first
-             so the post delete below isn't blocked.
+          1. ``human_channel_state`` and ``agent_channel_state`` — both
+             reference ``mm_channels`` and ``mm_posts`` (the
+             ``last_read_post_id`` pointer). Clear first so the post delete
+             below isn't blocked.
           2. ``mm_channel_members`` — direct FK to ``mm_channels``.
           3. ``mm_files`` (channel scope) — direct FK to ``mm_channels``.
              ``mm_files.post_id`` is ``ON DELETE SET NULL`` so order versus
@@ -2794,6 +2854,11 @@ class TableWrite:
         session.exec(
             delete(HumanChannelState).where(
                 HumanChannelState.channel_id == channel_id
+            )
+        )
+        session.exec(
+            delete(AgentChannelState).where(
+                AgentChannelState.channel_id == channel_id
             )
         )
         session.exec(
@@ -3024,6 +3089,17 @@ class TableWrite:
             )
         ).all()
         for state in stale_states:
+            state.last_read_post_id = predecessor_id
+            session.add(state)
+        # Agent read pointers share the FK and the same repoint-don't-null
+        # rationale: a nulled agent pointer replays the channel as restart
+        # backlog on the agent's next boot.
+        stale_agent_states = session.exec(
+            select(AgentChannelState).where(
+                AgentChannelState.last_read_post_id == post_id
+            )
+        ).all()
+        for state in stale_agent_states:
             state.last_read_post_id = predecessor_id
             session.add(state)
 

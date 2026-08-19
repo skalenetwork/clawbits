@@ -11,6 +11,7 @@
 import type { WatermarkStore } from "./channel-watermarks.js";
 import { resolveKnownAnswers, withChallenge } from "./challenge.js";
 import type { ClawBitsClient } from "./client.js";
+import { ClawBitsError } from "./errors.js";
 import { wakeAutomationsReconciler } from "./automations/reconcile.js";
 import {
   consoleErrorWithFile,
@@ -305,19 +306,43 @@ const MAX_CONSECUTIVE_AGENT_TURNS = 50;
 const HUMAN_GUIDANCE_MESSAGE = "Nice, but need human guidance to proceed.";
 
 // --- Boot catch-up -----------------------------------------------------------
-// Look-back bound with a persisted cursor. Generous because the one-turn-per-
-// channel cap decouples window size from burst risk.
+// PREFERRED RESUME POINT: the server-side read pointer (`last_read_post_id`
+// on the channel listing, acked on turn settle). It is a post-id serial, so
+// it needs no look-back window, no clock math, and survives a wiped guest
+// filesystem. The timestamp windows below are the LEGACY fallback for
+// servers that predate the pointer (channel payload carries no
+// `last_read_post_id`) — that path keeps the old semantics.
+//
+// Legacy look-back bound with a persisted cursor. Generous because the
+// one-turn-per-channel cap decouples window size from burst risk.
 const CATCH_UP_WINDOW_MS = 6 * 60 * 60_000;
-// Look-back with no cursor: a first boot, or a recreate/upgrade that wiped the
-// state file. Tighter, because it is the branch a fleet-wide rollout exercises.
+// Legacy look-back with no cursor: a first boot, or a recreate/upgrade that
+// wiped the state file.
 const COLD_CATCH_UP_WINDOW_MS = 60 * 60_000;
 // The pass runs before the agent WebSocket starts, so bound it: on breach the
-// remaining channels are clamped to `now()` and catch-up gives up.
+// remaining channels keep their now()-seeded floors and retry next boot (the
+// un-advanced read pointer is what makes the retry work).
 const MAX_CATCH_UP_TURNS = 8;
 const MAX_CATCH_UP_MS = 5 * 60_000;
 const CATCH_UP_CONTEXT_LIMIT = 50;
-// See the skew note in `runCatchUp`.
+// See the skew note in `runCatchUp` (legacy path only — a serial cursor has
+// no clock to skew).
 const MAX_CATCH_UP_CLOCK_SKEW_MS = 10 * 60_000;
+// Forward-cursor drain bounds: pages of `CATCH_UP_PAGE_SIZE` via
+// `after_post_id`, at most `MAX_CATCH_UP_PAGES` per channel. A gap beyond
+// that falls back to the newest page with the overflow noted — answering
+// this week's messages beats faithfully replaying last week's.
+const CATCH_UP_PAGE_SIZE = 50;
+const MAX_CATCH_UP_PAGES = 4;
+// A failed boot control fetch defers catch-up — but only this many times,
+// each followed by a SHORT retry sleep (not the full poll interval): the
+// deferral holds realtime startup to keep live settles from acking past the
+// unread gap, so every deferred tick is added latency on all message flow.
+// After the budget the pass runs against the fallback channel set — a
+// bounded snooze-blindness window that is no worse than the live path's own
+// (agentSnoozed also starts false there), rather than an indefinite outage.
+const MAX_CATCH_UP_DEFERRALS = 1;
+const CATCH_UP_DEFERRAL_RETRY_MS = 1000;
 
 type InboundSource = "poll" | "reconcile" | "sse" | "ws";
 
@@ -909,6 +934,50 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     watermarks?.set(account.accountId, cursorKey(channelId), createAt);
   };
 
+  // --- Server read-pointer ack ---------------------------------------------
+  // The durable twin of `persistCursor`, in server units: `POST .../read`
+  // advances this agent's `last_read_post_id`, which the next boot reads
+  // back off the channel listing and drains from (`after_post_id`). Unlike
+  // the local file it survives recreates and image upgrades. "Settled"
+  // semantics: call sites are turn completion and catch-up's
+  // nothing-addressable case — never observation or a transient refusal.
+  const ackedByChannel = new Map<string, number>();
+  let serverAckSupported = true;
+  const ackRead = (channelId: string, postSerial: number): void => {
+    if (!serverAckSupported) return;
+    if (!Number.isFinite(postSerial) || postSerial <= 0) return;
+    const previous = ackedByChannel.get(channelId) ?? 0;
+    if (postSerial <= previous) return;
+    // Claim before the async call so concurrent settles don't double-send;
+    // rolled back on a non-404 failure so a later settle retries.
+    ackedByChannel.set(channelId, postSerial);
+    void mmTools.markChannelRead(client, channelId, postSerial).catch((err) => {
+      if (err instanceof ClawBitsError && err.statusCode === 404) {
+        serverAckSupported = false;
+        logInfo(
+          log,
+          `[clawbits/${account.accountId}] server has no read-pointer endpoint; falling back to local watermarks only`,
+        );
+        return;
+      }
+      if (ackedByChannel.get(channelId) === postSerial) {
+        ackedByChannel.set(channelId, previous);
+      }
+      logWarn(
+        log,
+        `[clawbits/${account.accountId}] read-pointer ack failed for ${channelId}: ${String((err as Error)?.message ?? err)}`,
+      );
+    });
+  };
+
+  /** Serial of a post as the server knows it, or 0 when unparseable (the
+   *  ack path treats 0 as "nothing to ack"). Post ids on the agent API are
+   *  integer serials serialised into `id` by `normalizePost`. */
+  const postSerialOf = (post: MattermostPost): number => {
+    const serial = Number(post.id);
+    return Number.isFinite(serial) && serial > 0 ? Math.floor(serial) : 0;
+  };
+
   /** Raise a channel's live cursor, and unless told otherwise its durable one.
    *  In-memory means "claimed" (taken before the turn, so a concurrent SSE/WS
    *  delivery can't double-enter); durable means "the turn settled". A kill
@@ -921,10 +990,16 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
 
   /** Raise BOTH gates. `cursors` gates the poll path, `reconcileFloors` the
    *  reconcile path; they are independent and production normally takes the
-   *  reconcile one, so moving only one leaves the other open. */
+   *  reconcile one, so moving only one leaves the other open.
+   *
+   *  IN-MEMORY ONLY, deliberately: a clamp is burst suppression for this
+   *  process, not proof anything settled. The durable pointers (local
+   *  watermark + server ack) advance only on turn settle or a permanent
+   *  classification — that gap is exactly what re-delivers a clamped-past
+   *  post on the next boot. */
   const clampChannelFloors = (channelId: string, createAt: number): void => {
     if (!Number.isFinite(createAt)) return;
-    advanceCursor(channelId, createAt);
+    advanceCursor(channelId, createAt, false);
     const floor = reconcileFloors.get(channelId) ?? startedAt;
     if (createAt > floor) reconcileFloors.set(channelId, createAt);
   };
@@ -964,8 +1039,16 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     }
   };
 
+  // Read-state fields are null here on purpose: they are only trustworthy
+  // fresh off a control payload, and null routes catch-up to its safe
+  // (legacy) branch rather than acting on stale pointers.
   const discoveredFromChannelTypes = (): DiscoveredChannel[] =>
-    [...channelTypes.entries()].map(([id, channelType]) => ({ id, channelType }));
+    [...channelTypes.entries()].map(([id, channelType]) => ({
+      id,
+      channelType,
+      latestPostId: null,
+      lastReadPostId: null,
+    }));
 
   const channelSetKey = (channels: DiscoveredChannel[]): string =>
     channels.map((channel) => channel.id).sort().join("\0");
@@ -989,7 +1072,12 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       cursorFor(channel.id);
     }
     rebuildDiscoveredChannels(
-      [...merged.entries()].map(([id, channelType]) => ({ id, channelType })),
+      [...merged.entries()].map(([id, channelType]) => ({
+        id,
+        channelType,
+        latestPostId: null,
+        lastReadPostId: null,
+      })),
     );
   };
 
@@ -1009,8 +1097,11 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     const waitedMs = Math.max(0, now() - enqueuedAt);
     if (isUserAuthoredPost(post) && !seen.has(post.id)) rememberSeen(seen, post.id);
     const postCreateAt = post.create_at ?? 0;
-    // Deliberate abandonment: persist so a restart doesn't re-deliver it.
-    advanceCursor(channelId, postCreateAt);
+    // TRANSIENT abandonment: claim in memory so this process doesn't retry,
+    // but leave the durable cursor (and the server pointer) behind it — a
+    // message that aged out because a long turn held the lane, or landed in
+    // a snooze window, should re-deliver on the next boot, not vanish.
+    advanceCursor(channelId, postCreateAt, false);
     const message =
       reason === "queue expired"
         ? `[clawbits/${account.accountId}] inbound queue expired ${post.id}: source=${source} channel=${channelId} waited=${waitedMs}ms ttl=${inboundQueueTtlMs}ms`
@@ -1079,18 +1170,24 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     }
   };
 
-  const dispatchMessage = async (msg: InboundMessage): Promise<void> => {
+  /** Dispatch one turn. Returns whether it SETTLED (ran to completion) —
+   *  the callers gate the durable cursor and the server ack on this, so a
+   *  crashed/failed turn re-delivers on the next boot instead of being
+   *  silently burned past. */
+  const dispatchMessage = async (msg: InboundMessage): Promise<boolean> => {
     try {
       logInfo(
         log,
         `[clawbits/${account.accountId}] inbound dispatch ${msg.postId} from ${msg.senderId || "unknown"} on ${msg.channelId}: ${JSON.stringify(msg.text)}`,
       );
       await opts.onInboundMessage(msg);
+      return true;
     } catch (err) {
       logError(
         log,
         `[clawbits/${account.accountId}] inbound dispatch failed for ${msg.postId}: ${String(err)}`,
       );
+      return false;
     }
   };
 
@@ -1115,7 +1212,11 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     const isUserPost = isUserAuthoredPost(post);
     if (agentSnoozed) {
       if (isUserPost && !isSeen) rememberSeen(seen, post.id);
-      advanceCursor(channelId, postCreateAt);
+      // In-memory only: snooze is transient, and the durable pointer staying
+      // put is what re-delivers the post after a restart. The unsnooze
+      // branch in the main loop decides whether the snoozed backlog is
+      // durably discarded.
+      advanceCursor(channelId, postCreateAt, false);
       logDebug(
         log,
         `[clawbits/${account.accountId}] inbound skip ${post.id}: agent snoozed`,
@@ -1172,7 +1273,10 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       !isServerCommand;
     if (wouldDispatchWithoutAllowFrom && !senderAllowedByAllowFrom) {
       rememberSeen(seen, post.id);
-      advanceCursor(channelId, postCreateAt);
+      // In-memory only: the allowlist is operator-editable, so this refusal
+      // is transient — an added sender's backlog should surface on the next
+      // boot instead of having been silently burned past.
+      advanceCursor(channelId, postCreateAt, false);
       logWarn(
         log,
         `[clawbits/${account.accountId}] inbound blocked by allowFrom sender=${senderId || "(unknown)"} post=${post.id} channel=${postChannelId}`,
@@ -1303,15 +1407,21 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       createAt: postCreateAt,
       raw: post,
     };
-    // Claim in memory before the turn; persist only once it settles.
+    // Claim in memory before the turn; persist + ack only once it SETTLES.
+    // A dispatch failure leaves both durable pointers behind the post, so
+    // the next boot re-delivers it (bounded: one catch-up turn per channel).
     advanceCursor(channelId, postCreateAt, false);
 
+    const settle = (ok: boolean): void => {
+      if (!ok) return;
+      persistCursor(channelId, postCreateAt);
+      ackRead(channelId, postSerialOf(post));
+    };
     const task = dispatchMessage(msg);
     if (awaitDispatch) {
-      await task;
-      persistCursor(channelId, postCreateAt);
+      settle(await task);
     } else {
-      void task.then(() => persistCursor(channelId, postCreateAt));
+      void task.then(settle);
     }
   }
 
@@ -1516,13 +1626,42 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         : Number.POSITIVE_INFINITY;
   };
 
+  /** Page the server's forward cursor from `fromSerial`: every post that
+   *  arrived after that serial, oldest first, bounded by
+   *  `MAX_CATCH_UP_PAGES`. `overflowed` means the gap may extend further. */
+  const drainGap = async (
+    channelId: string,
+    fromSerial: number,
+  ): Promise<{ posts: MattermostPost[]; overflowed: boolean }> => {
+    const collected: MattermostPost[] = [];
+    let after = fromSerial;
+    for (let page = 0; page < MAX_CATCH_UP_PAGES; page += 1) {
+      const raw = await mmTools.getChannelPosts(client, channelId, CATCH_UP_PAGE_SIZE, after);
+      const posts = parsePostsResponse(raw);
+      collected.push(...posts);
+      if (posts.length < CATCH_UP_PAGE_SIZE) return { posts: collected, overflowed: false };
+      after = posts.reduce((max, p) => Math.max(max, postSerialOf(p)), after);
+    }
+    return { posts: collected, overflowed: true };
+  };
+
   /**
    * One-shot boot catch-up: answer what arrived while the gateway was down.
    *
    * Runs after the first control payload lands (so `agentSnoozed` is real) and
    * before the WebSocket starts (so live traffic can't interleave ahead of the
-   * backlog). It fetches the same newest-50 page the poll path already fetches,
-   * so it adds no server load — it only changes which posts survive the gate.
+   * backlog).
+   *
+   * Two modes per channel:
+   *  - SERVER-CURSOR (the channel payload carries `last_read_post_id`): drain
+   *    `after_post_id` pages — the exact offline gap, no look-back window, no
+   *    clock math, immune to a wiped state file. The pointer advances only
+   *    when the replayed turn settles (or nothing was addressable), so a
+   *    crash mid-catch-up retries on the next boot.
+   *  - LEGACY (no pointer): the previous behavior — newest-50 page trimmed by
+   *    the persisted-watermark/window floor, with the clock-skew canary. Its
+   *    completion acks too, so a legacy agent upgrades itself to
+   *    server-cursor mode on its next restart.
    *
    * ONE turn per channel by design: dispatch is serial at three layers (this
    * queue, the session lock in inbound-dispatch-guard, OpenClaw's per-session
@@ -1534,45 +1673,84 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     let turnsSpent = 0;
     let recovered = 0;
 
-    for (const { id: channelId, channelType } of discovered) {
+    for (const channel of discovered) {
       if (abortSignal.aborted) return;
+      const { id: channelId, channelType } = channel;
       if (turnsSpent >= MAX_CATCH_UP_TURNS || now() >= deadline) {
-        // Out of budget. Clamp every remaining channel so the normal poll
-        // doesn't inherit a low floor and dispatch the backlog post-by-post.
+        // Out of budget. Floors keep their now()-seeds (burst-safe), the
+        // durable pointers stay put, and the next boot retries this channel.
         clampChannelFloors(channelId, now());
         continue;
       }
 
-      // Every exit from here MUST clamp, or the lowered floor is picked up by
-      // the next reconcile pass as the per-post burst this function avoids.
+      const serverMode = channel.lastReadPostId != null;
+      // Quiet channel, zero fetches: the pointer already covers the newest
+      // post. Only trustable when the payload carries both serials.
+      if (
+        serverMode &&
+        channel.latestPostId != null &&
+        channel.latestPostId <= (channel.lastReadPostId as number)
+      ) {
+        continue;
+      }
+
+      // Every exit from here MUST clamp (in-memory), or the lowered floor is
+      // picked up by the next reconcile pass as the per-post burst this
+      // function avoids.
       let clampTo = now();
       try {
-        const posts = parsePostsResponse(await mmTools.getChannelPosts(client, channelId));
-        if (posts.length === 0) continue;
-
-        const newestInPage = posts[posts.length - 1]?.create_at ?? 0;
-        clampTo = Math.max(clampTo, newestInPage);
-
-        // Clock-skew canary: the window floor is VM-local, every `create_at` is
-        // server-issued, and the reef image has no NTP. Only "VM behind" is
-        // detectable — a post dated after our clock cannot be from the future,
-        // so that is unambiguous and we refuse rather than look back by skew +
-        // window. "VM ahead" (floor lands in the server's future, finds nothing)
-        // is indistinguishable from a quiet channel and stays silent until the
-        // cursor is a server-side post_id.
-        const skew = now() - newestInPage;
-        if (newestInPage > 0 && skew < -MAX_CATCH_UP_CLOCK_SKEW_MS) {
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] catch-up skipped for ${channelId}: VM clock is ${Math.round(-skew / 1000)}s behind the newest server post — refusing to guess a look-back window`,
+        let posts: MattermostPost[];
+        let resume: number;
+        if (serverMode) {
+          const gap = await drainGap(channelId, channel.lastReadPostId as number);
+          posts = gap.posts;
+          if (gap.overflowed) {
+            // The gap outran the page budget. Prioritise the newest traffic
+            // — answering this week's messages beats faithfully replaying
+            // last week's — and log the truncation instead of pretending
+            // the middle never happened.
+            logWarn(
+              log,
+              `[clawbits/${account.accountId}] catch-up gap in ${channelId} exceeds ${posts.length} post(s); skipping the oldest part`,
+            );
+            posts = parsePostsResponse(await mmTools.getChannelPosts(client, channelId));
+          }
+          // Everything drained is strictly after the acked pointer, so the
+          // whole fetch is unread by definition. No settled-self-post clamp
+          // here: the ack is the settle marker in this mode, and clamping on
+          // self posts would let a boot-time automation delivery bury the
+          // very gap being recovered (the D8 race).
+          resume = 0;
+        } else {
+          posts = parsePostsResponse(await mmTools.getChannelPosts(client, channelId));
+          if (posts.length > 0) {
+            const newestInPage = posts[posts.length - 1]?.create_at ?? 0;
+            clampTo = Math.max(clampTo, newestInPage);
+            // Clock-skew canary (legacy only — a serial cursor has no clock
+            // to skew): the window floor is VM-local, every `create_at` is
+            // server-issued, and the reef image has no NTP. Only "VM behind"
+            // is detectable; refuse rather than look back by skew + window.
+            // In-memory clamp only: the durable pointer stays put, so the
+            // next boot (or an upgraded server) retries instead of the old
+            // behavior of durably burning past what it refused to read.
+            const skew = now() - newestInPage;
+            if (newestInPage > 0 && skew < -MAX_CATCH_UP_CLOCK_SKEW_MS) {
+              logWarn(
+                log,
+                `[clawbits/${account.accountId}] catch-up skipped for ${channelId}: VM clock is ${Math.round(-skew / 1000)}s behind the newest server post — refusing to guess a look-back window`,
+              );
+              continue;
+            }
+          }
+          resume = Math.max(
+            resumeFloorFor(channelId),
+            ...posts.filter((p) => isSettledSelfPost(p, account.agentId)).map((p) => p.create_at),
           );
-          continue;
         }
-
-        const resume = Math.max(
-          resumeFloorFor(channelId),
-          ...posts.filter((p) => isSettledSelfPost(p, account.agentId)).map((p) => p.create_at),
-        );
+        if (posts.length === 0) continue;
+        const newestCreateAt = posts[posts.length - 1]?.create_at ?? 0;
+        clampTo = Math.max(clampTo, newestCreateAt);
+        const newestSerial = posts.reduce((max, p) => Math.max(max, postSerialOf(p)), 0);
 
         const pending = posts.filter(
           (p) =>
@@ -1585,10 +1763,23 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
             !p.agent_id &&
             p.user_id !== account.agentId,
         );
-        if (pending.length === 0) continue;
+        if (pending.length === 0) {
+          // Examined, nothing pending: a permanent classification, so the
+          // pointer may advance — this is also what creates the pointer for
+          // legacy agents and stops the same gap being re-drained every boot.
+          ackRead(channelId, newestSerial);
+          continue;
+        }
 
         const isDirect = channelType === "direct";
-        const isOperator = Boolean(fallbackChannelId && channelId === fallbackChannelId);
+        // Mirrors processPost's operator test exactly (channelType === null):
+        // a typed non-direct operator channel must NOT pick an un-mentioned
+        // trigger here that processPost will then refuse as not-addressed —
+        // that mismatch used to drop the recovered message AND burn the
+        // cursor past it.
+        const isOperator = Boolean(
+          fallbackChannelId && channelId === fallbackChannelId && channelType === null,
+        );
         const addressed = pending.filter(
           (p) =>
             isDirect ||
@@ -1600,6 +1791,10 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
             log,
             `[clawbits/${account.accountId}] catch-up: ${pending.length} missed post(s) in ${channelId}, none addressed to this agent — skipping`,
           );
+          // Same permanent classification as the empty-pending case. The
+          // LobsterTalk rescue path is unaffected: nudges arrive over the
+          // WS keyed on the post, gated by `seen` — never by this pointer.
+          ackRead(channelId, newestSerial);
           continue;
         }
 
@@ -1615,7 +1810,8 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         );
 
         // Open the gate just below the trigger so processPost will accept it,
-        // then let the dispatch path claim it normally.
+        // then let the dispatch path claim it normally. The ack rides the
+        // settle path inside processPost — never fired from here.
         cursors.set(channelId, trigger.create_at - 1);
         reconcileFloors.set(channelId, trigger.create_at - 1);
 
@@ -1623,13 +1819,13 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         recovered += pending.length;
         logInfo(
           log,
-          `[clawbits/${account.accountId}] catch-up: replaying ${channelId} — trigger ${trigger.id}, ${context.length} message(s) of missed context, resume=${resume}`,
+          `[clawbits/${account.accountId}] catch-up: replaying ${channelId} — trigger ${trigger.id}, ${context.length} message(s) of missed context, mode=${serverMode ? "server-cursor" : "legacy"}, resume=${serverMode ? channel.lastReadPostId : resume}`,
         );
         await enqueueInbound(channelId, channelType, trigger, "poll", true, false, context);
       } catch (err) {
         logWarn(
           log,
-          `[clawbits/${account.accountId}] catch-up failed for ${channelId}: ${String((err as Error)?.message ?? err)} — clamping to now`,
+          `[clawbits/${account.accountId}] catch-up failed for ${channelId}: ${String((err as Error)?.message ?? err)} — clamping to now (retries next boot)`,
         );
       } finally {
         clampChannelFloors(channelId, clampTo);
@@ -1672,6 +1868,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
   };
 
   let catchUpPending = catchUpEnabled && opts.initialCursor === undefined;
+  let catchUpDeferrals = 0;
   let controlPayloadOk = false;
 
   try {
@@ -1710,7 +1907,9 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         }
       }
       if (discovered.length === 0 && fallbackChannelId) {
-        discovered = [{ id: fallbackChannelId, channelType: null }];
+        discovered = [
+          { id: fallbackChannelId, channelType: null, latestPostId: null, lastReadPostId: null },
+        ];
         rebuildDiscoveredChannels(discovered);
       }
       if (discovered.length === 0) {
@@ -1731,40 +1930,67 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       }
 
       if (wasSnoozed && !agentSnoozed) {
-        const resumeCursor = now();
-        for (const channel of discovered) {
-          clampChannelFloors(channel.id, resumeCursor);
+        if (catchUpPending) {
+          // Snoozed since BOOT: the pending gap predates the snooze (it
+          // accumulated while the process was down), so it is not "snoozed
+          // backlog" — leave catch-up armed and let the pass below answer
+          // it now that the agent is awake. This is what used to strand the
+          // boot gap forever: the flag was cleared here before the pass
+          // ever got to run.
+          logInfo(
+            log,
+            `[clawbits/${account.accountId}] agent unsnoozed with boot catch-up still pending; running it now`,
+          );
+        } else {
+          // Mid-life unsnooze: discard the snoozed backlog, and durably —
+          // ack to the latest serial where known, so a restart right after
+          // unsnoozing doesn't replay the pile the operator silenced.
+          const resumeCursor = now();
+          for (const channel of discovered) {
+            clampChannelFloors(channel.id, resumeCursor);
+            if (channel.latestPostId != null) ackRead(channel.id, channel.latestPostId);
+          }
+          logInfo(
+            log,
+            `[clawbits/${account.accountId}] agent unsnoozed; cursor advanced to skip snoozed backlog`,
+          );
         }
-        // Unsnooze deliberately discards backlog; never let catch-up undo it.
-        catchUpPending = false;
-        logInfo(
-          log,
-          `[clawbits/${account.accountId}] agent unsnoozed; cursor advanced to skip snoozed backlog`,
-        );
       }
 
       // Gated on a real control payload: `agentSnoozed` starts false and is only
       // set by `applyControlPayload`, so running blind would let a snoozed agent
       // answer its backlog.
       if (catchUpPending) {
+        if (!controlPayloadOk && catchUpDeferrals < MAX_CATCH_UP_DEFERRALS) {
+          // Hold realtime startup too: starting the WebSocket/poll on this
+          // tick would let a live settle ack past the gap before catch-up
+          // ever reads it — the deferred-control race. Short retry sleep,
+          // not the poll interval: this hold delays ALL message flow.
+          catchUpDeferrals += 1;
+          logWarn(
+            log,
+            `[clawbits/${account.accountId}] catch-up deferred (${catchUpDeferrals}/${MAX_CATCH_UP_DEFERRALS}): no control payload yet — holding realtime startup`,
+          );
+          await sleepInterruptible(Math.min(CATCH_UP_DEFERRAL_RETRY_MS, pollMs), abortSignal);
+          continue;
+        }
+        catchUpPending = false;
         if (!controlPayloadOk) {
           logWarn(
             log,
-            `[clawbits/${account.accountId}] catch-up deferred: no control payload yet`,
+            `[clawbits/${account.accountId}] catch-up proceeding without a control payload after ${catchUpDeferrals} deferral(s) — fallback channel set only`,
           );
-        } else {
-          catchUpPending = false;
-          try {
-            await runCatchUp(discovered);
-          } catch (err) {
-            logWarn(
-              log,
-              `[clawbits/${account.accountId}] catch-up pass aborted: ${String((err as Error)?.message ?? err)}`,
-            );
-            for (const channel of discovered) clampChannelFloors(channel.id, now());
-          }
-          if (abortSignal.aborted) break;
         }
+        try {
+          await runCatchUp(discovered);
+        } catch (err) {
+          logWarn(
+            log,
+            `[clawbits/${account.accountId}] catch-up pass aborted: ${String((err as Error)?.message ?? err)}`,
+          );
+          for (const channel of discovered) clampChannelFloors(channel.id, now());
+        }
+        if (abortSignal.aborted) break;
       }
 
       startAgentWebSocket();
@@ -1828,10 +2054,24 @@ interface DiscoveredChannel {
    *  non-direct channel, so a missing type doesn't accidentally make
    *  the agent auto-reply in a shared room. */
   channelType: string | null;
+  /** Newest published post serial, or null when the channel is empty or the
+   *  payload predates the field. With `lastReadPostId` this answers "did
+   *  anything move while I was down" without a posts GET. */
+  latestPostId: number | null;
+  /** This agent's server-side read pointer (acked on turn settle), or null
+   *  on servers that predate it / when the agent never acked. Null selects
+   *  the legacy timestamp-window catch-up. */
+  lastReadPostId: number | null;
+}
+
+function extractSerial(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : null;
 }
 
 /**
- * Extract channels (id + type) from `GET /api/agentic/mm/channels`.
+ * Extract channels (id + type + read state) from `GET /api/agentic/mm/channels`.
  * Tolerates either a bare array or a `{ channels: [...] }` envelope.
  */
 function extractChannels(raw: unknown): DiscoveredChannel[] {
@@ -1840,11 +2080,18 @@ function extractChannels(raw: unknown): DiscoveredChannel[] {
     const out: DiscoveredChannel[] = [];
     for (const c of raw) {
       if (!c || typeof c !== "object") continue;
-      const obj = c as { channel_id?: unknown; channel_type?: unknown };
+      const obj = c as {
+        channel_id?: unknown;
+        channel_type?: unknown;
+        latest_post_id?: unknown;
+        last_read_post_id?: unknown;
+      };
       if (typeof obj.channel_id !== "string" || obj.channel_id.length === 0) continue;
       out.push({
         id: obj.channel_id,
         channelType: typeof obj.channel_type === "string" ? obj.channel_type : null,
+        latestPostId: extractSerial(obj.latest_post_id),
+        lastReadPostId: extractSerial(obj.last_read_post_id),
       });
     }
     return out;
