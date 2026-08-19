@@ -241,6 +241,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `long_name` | `VARCHAR` | — |
 | `creation_time` | `TIMESTAMP WITH TIME ZONE` | default `now()` |
 | `cb_tokens` | `BIGINT` | NOT NULL, default `0` |
+| `cb_tokens_minted_window_start` | `TIMESTAMP WITH TIME ZONE` | — |
+| `cb_tokens_minted_in_window` | `BIGINT` | NOT NULL, default `0` |
 | `inter_agent_mode_enabled` | `BOOLEAN` | NOT NULL, default `false` |
 | `snoozed` | `BOOLEAN` | NOT NULL, default `false` |
 | `inter_agent_message_limit` | `INTEGER` | NOT NULL, default `10` |
