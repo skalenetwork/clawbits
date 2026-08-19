@@ -384,14 +384,23 @@ export function useChannelEvents(
           const next = cur.slice();
           const done = next[idx];
           if (done) {
+            // Keep the COMMAND captured at tool-start: the tool_done event's
+            // label is USUALLY only the tool NAME, and using it would blank the
+            // command the instant the step finishes (the "shows then vanishes"
+            // bug). But a done label carrying DETAIL (≠ the bare tool name) is
+            // worth adopting when the start had none — the Codex harness only
+            // learns a web_search's query on completion, so that event is the
+            // first thing that can say what was searched.
+            const hasDetail = (l?: string) => Boolean(l && l !== done.tool);
             next[idx] = {
               ...done,
               status: act.ok === false ? "error" : "done",
               duration_ms: act.duration_ms,
-              // Keep the COMMAND captured at tool-start. The tool_done event's
-              // label is only the tool NAME — using it would blank the command
-              // the instant the step finishes (the "shows then vanishes" bug).
-              label: done.label ?? act.label,
+              label: hasDetail(done.label)
+                ? done.label
+                : hasDetail(act.label)
+                  ? act.label
+                  : (done.label ?? act.label),
             };
           }
           return { ...prev, [key]: next };

@@ -7,7 +7,12 @@ import { ClawBitsError } from "../errors.js";
 import { pluginDebug } from "../file-logger.js";
 import * as realtimeTools from "../tools/realtime.js";
 import type { AgentActivity } from "../tools/realtime.js";
-import { sanitizeThinkingTail, sanitizeToolSummary } from "./sanitize.js";
+import {
+  sanitizeThinkingTail,
+  sanitizeToolDetail,
+  sanitizeToolResultDescriptor,
+  sanitizeToolSummary,
+} from "./sanitize.js";
 import type { InFlightTurn } from "./turn-registry.js";
 
 /** Thinking updates are a ticker — latest-wins at ~1/s. Tool start/done are
@@ -127,7 +132,14 @@ export function onToolEvent(turn: InFlightTurn, data: unknown): void {
     queueSend(turn, state, {
       kind: "tool_done",
       tool: name,
-      label: name,
+      // Usually just the tool name — the UI keeps whatever the START label
+      // captured. The exception is a harness that only knows the interesting
+      // argument once the call finishes (Codex web_search: the query and the
+      // opened URL both land with `item/completed`). `meta` is OpenClaw's own
+      // formatted detail and covers queries; the result descriptor covers the
+      // URL of a page-open, which `meta` has no formatter for.
+      label:
+        sanitizeToolDetail(name, d.meta) ?? sanitizeToolResultDescriptor(name, d.result) ?? name,
       ok: d.isError !== true,
       ...(startedAt !== undefined ? { duration_ms: Date.now() - startedAt } : {}),
     });
