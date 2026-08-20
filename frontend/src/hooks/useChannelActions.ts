@@ -4,17 +4,16 @@ import {useMutation, useQueryClient} from "@tanstack/react-query";
 import {useAuth} from "@/context/AuthContext";
 import {
     deleteMmChannel,
-    exportMmChannel,
     leaveMmChannel,
     listMmChannelMembers,
     setMmChannelMuted,
     setMmChannelPinned,
     type MmChannel,
 } from "@/lib/api";
-import {filenameFromDisposition, saveBlob} from "@/lib/download";
 import {queryKeys} from "@/lib/queryKeys";
+import {exportChatToDisk} from "@/lib/exportChat";
 import {draftStore} from "@/lib/messageDrafts";
-import {errMsg, toast} from "@/lib/toast";
+import {toast} from "@/lib/toast";
 import {confirm} from "@/lib/confirm";
 
 type ChannelsCache = {channels: MmChannel[]; total: number};
@@ -106,39 +105,18 @@ export function useChannelActions(): ChannelActions {
         },
     });
 
-    // Exporting walks the whole channel server-side, so a long history can
-    // take a few seconds with nothing else on screen to show for it — the
-    // loading toast is replaced in place by the result rather than stacking.
-    const exportMutation = useMutation({
-        mutationFn: (channel: MmChannel) => exportMmChannel(channel.channel_id),
-        onMutate: () => ({toastId: toast.loading("Preparing export\u2026")}),
-        onSuccess: ({blob, disposition}, channel, ctx) => {
-            saveBlob(
-                blob,
-                filenameFromDisposition(
-                    disposition,
-                    `clawbits-${channel.channel_id}.json`,
-                ),
-            );
-            toast.success("Chat exported", {id: ctx.toastId});
-        },
-        onError: (err: unknown, _channel, ctx) => {
-            toast.error(errMsg(err, "Couldn't export chat"), {id: ctx?.toastId});
-        },
-    });
-
-    // "Save a copy before you destroy it" for the confirms below. Reuses the
-    // same mutation as the menu action (so the toast + filename behaviour is
-    // identical) but in its awaitable form, because the dialog has to know
-    // whether the download actually succeeded before it says "Exported".
+    // "Save a copy before you destroy it" for the confirms below. Shares one
+    // routine with the menu action so the toast, filename and — the part that
+    // matters — the failure signalling stay identical: ``exportChatToDisk``
+    // rethrows, which is how the dialog tells a saved copy from a failed one.
     const exportAction = useCallback(
         (channel: MmChannel) => ({
             label: "Export chat",
             busyLabel: "Exporting\u2026",
             doneLabel: "Exported",
-            run: () => exportMutation.mutateAsync(channel),
+            run: () => exportChatToDisk(channel.channel_id),
         }),
-        [exportMutation],
+        [],
     );
 
     // Deleting a channel you created removes it for everyone, even when other
@@ -222,6 +200,6 @@ export function useChannelActions(): ChannelActions {
             copyToClipboard(`${window.location.origin}/channels/${c.channel_id}`, "Link copied");
         },
         copyId: (c) => { copyToClipboard(c.channel_id, "Channel ID copied"); },
-        exportChat: (c) => { exportMutation.mutate(c); },
+        exportChat: (c) => { void exportChatToDisk(c.channel_id); },
     };
 }

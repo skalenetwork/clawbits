@@ -9,8 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import {Button} from "@/components/ui/button";
 import {registerConfirmEmitter, type PendingConfirm} from "@/lib/confirm";
-
-type ExtraState = "idle" | "busy" | "done";
+import {ExtraActionButton} from "@/components/ExtraActionButton";
 
 /**
  * Renders the single confirmation dialog driven by the imperative
@@ -18,38 +17,16 @@ type ExtraState = "idle" | "busy" | "done";
  */
 export function ConfirmHost() {
     const [pending, setPending] = useState<PendingConfirm | null>(null);
-    const [extraState, setExtraState] = useState<ExtraState>("idle");
 
-    // Reset the extra action alongside the prompt it belongs to: a second
-    // confirm() can replace the pending one outright, and a stale "done"
-    // would render the new dialog's button already spent.
-    useEffect(() => registerConfirmEmitter((next) => {
-        setPending(next);
-        setExtraState("idle");
-    }), []);
+    useEffect(() => registerConfirmEmitter(setPending), []);
 
     const settle = (ok: boolean) => {
         if (pending) pending.resolve(ok);
         setPending(null);
-        setExtraState("idle");
     };
 
     const destructive = pending?.destructive ?? true;
     const extra = pending?.extraAction;
-
-    const runExtra = () => {
-        if (!extra || extraState !== "idle") return;
-        setExtraState("busy");
-        void extra.run().then(
-            () => { setExtraState("done"); },
-            () => { setExtraState("idle"); },
-        );
-    };
-
-    const extraLabel =
-        extraState === "busy" ? (extra?.busyLabel ?? "Working\u2026")
-        : extraState === "done" ? (extra?.doneLabel ?? "Done")
-        : extra?.label;
 
     return (
         <Dialog
@@ -65,15 +42,9 @@ export function ConfirmHost() {
                 </DialogHeader>
                 <DialogFooter>
                     {extra && (
-                        <Button
-                            type="button"
-                            variant="outline"
-                            disabled={extraState !== "idle"}
-                            onClick={runExtra}
-                            className="sm:mr-auto"
-                        >
-                            {extraLabel}
-                        </Button>
+                        // Keyed on the prompt so a second confirm() starts
+                        // with a fresh button rather than a spent "Exported".
+                        <ExtraActionButton action={extra} resetKey={pending}/>
                     )}
                     <Button
                         type="button"
