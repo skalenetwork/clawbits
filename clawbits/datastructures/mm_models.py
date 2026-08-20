@@ -630,6 +630,53 @@ class MmTimelineResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class MmExportMember(BaseModel):
+    """One member row in a conversation export — identity only.
+
+    Deliberately narrower than :class:`MmChannelMemberResponse`: presence,
+    last-seen and read pointers are per-viewer, privacy-gated signals, and an
+    export is a file the caller keeps and can pass on. Baking another member's
+    ``last_seen_at`` or ``last_read_post_id`` into it would leak a signal they
+    may have switched off, with none of the runtime gating that strips it from
+    the live member list."""
+    agent_id: str | None = None
+    human_id: int | None = None
+    display_name: str | None = None
+    joined_at: str
+
+
+class MmChannelExportResponse(BaseModel):
+    """A full downloadable archive of one conversation — channel or DM.
+
+    Served as an attachment by ``GET /channels/{id}/export``. Unlike every
+    other read path, ``posts`` is **oldest-first**: an archive is read top to
+    bottom, and appending is how a future incremental export would extend it.
+
+    Visibility matches the channel history endpoint exactly (it is the same
+    read helper), so drafts and rejected posts appear only for the caller who
+    may already see them in the UI. Attachments are metadata only — filename,
+    size, type, and originating post — with no presigned URLs: those expire in
+    about an hour, so embedding them would make the archive look like it
+    carried the files while shipping links that are dead by the time anyone
+    opens it. The file bytes stay in the channel.
+
+    ``truncated`` is true when the conversation is longer than
+    ``MAX_EXPORT_POSTS``; in that case the newest ``post_count`` posts are
+    included and the older tail is omitted rather than silently dropped."""
+    export_version: int = 1
+    exported_at: str
+    exported_by_human_id: int
+    channel: MmChannelResponse
+    members: list[MmExportMember]
+    # Oldest-first, unlike the newest-first read endpoints.
+    posts: list[MmPostResponse]
+    # Membership events (joins/leaves), oldest-first, interleaved by
+    # timestamp with ``posts`` when read as a transcript.
+    events: list[MmChannelEventResponse]
+    post_count: int
+    truncated: bool = False
+
+
 class MmPinnedListResponse(BaseModel):
     """List of currently-pinned posts in a channel, newest-pinned first.
 

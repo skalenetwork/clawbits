@@ -4,15 +4,17 @@ import {useMutation, useQueryClient} from "@tanstack/react-query";
 import {useAuth} from "@/context/AuthContext";
 import {
     deleteMmChannel,
+    exportMmChannel,
     leaveMmChannel,
     listMmChannelMembers,
     setMmChannelMuted,
     setMmChannelPinned,
     type MmChannel,
 } from "@/lib/api";
+import {filenameFromDisposition, saveBlob} from "@/lib/download";
 import {queryKeys} from "@/lib/queryKeys";
 import {draftStore} from "@/lib/messageDrafts";
-import {toast} from "@/lib/toast";
+import {errMsg, toast} from "@/lib/toast";
 import {confirm} from "@/lib/confirm";
 
 type ChannelsCache = {channels: MmChannel[]; total: number};
@@ -26,6 +28,8 @@ export interface ChannelActions {
     canDelete: (channel: MmChannel) => boolean;
     copyLink: (channel: MmChannel) => void;
     copyId: (channel: MmChannel) => void;
+    /** Download this conversation's history as a JSON file. */
+    exportChat: (channel: MmChannel) => void;
 }
 
 /**
@@ -102,6 +106,41 @@ export function useChannelActions(): ChannelActions {
         },
     });
 
+    // Exporting walks the whole channel server-side, so a long history can
+    // take a few seconds with nothing else on screen to show for it — the
+    // loading toast is replaced in place by the result rather than stacking.
+    const exportMutation = useMutation({
+        mutationFn: (channel: MmChannel) => exportMmChannel(channel.channel_id),
+        onMutate: () => ({toastId: toast.loading("Preparing export\u2026")}),
+        onSuccess: ({blob, disposition}, channel, ctx) => {
+            saveBlob(
+                blob,
+                filenameFromDisposition(
+                    disposition,
+                    `clawbits-${channel.channel_id}.json`,
+                ),
+            );
+            toast.success("Chat exported", {id: ctx.toastId});
+        },
+        onError: (err: unknown, _channel, ctx) => {
+            toast.error(errMsg(err, "Couldn't export chat"), {id: ctx?.toastId});
+        },
+    });
+
+    // "Save a copy before you destroy it" for the confirms below. Reuses the
+    // same mutation as the menu action (so the toast + filename behaviour is
+    // identical) but in its awaitable form, because the dialog has to know
+    // whether the download actually succeeded before it says "Exported".
+    const exportAction = useCallback(
+        (channel: MmChannel) => ({
+            label: "Export chat",
+            busyLabel: "Exporting\u2026",
+            doneLabel: "Exported",
+            run: () => exportMutation.mutateAsync(channel),
+        }),
+        [exportMutation],
+    );
+
     // Deleting a channel you created removes it for everyone, even when other
     // humans are still in it — so we always confirm first and name the blast
     // radius. Distinct from ``leave``, which only affects you (unless you're
@@ -111,13 +150,14 @@ export function useChannelActions(): ChannelActions {
             const ok = await confirm({
                 title: "Delete this channel?",
                 description:
-                    "This permanently deletes the channel and all of its messages for everyone. This can't be undone.",
+                    "This permanently deletes the channel and all of its messages for everyone. This can't be undone - export a copy first if you want to keep it.",
                 confirmLabel: "Delete channel",
+                extraAction: exportAction(channel),
             });
             if (!ok) return;
             deleteMutation.mutate(channel.channel_id);
         },
-        [deleteMutation],
+        [deleteMutation, exportAction],
     );
 
     // Leaving a channel as its last human member deletes it server-side, so
@@ -148,21 +188,23 @@ export function useChannelActions(): ChannelActions {
                         ? {
                             title: "Leave this chat?",
                             description:
-                                "You're the only person here. Leaving removes this conversation with the agent for good - it can't be undone.",
+                                "You're the only person here. Leaving removes this conversation with the agent for good - it can't be undone. Export it first if you want to keep the transcript.",
                             confirmLabel: "Leave & delete",
+                            extraAction: exportAction(channel),
                         }
                         : {
                             title: "Delete this channel?",
                             description:
-                                "You're the last member. Leaving will permanently delete this channel and all of its messages. This can't be undone.",
+                                "You're the last member. Leaving will permanently delete this channel and all of its messages. This can't be undone - export a copy first if you want to keep it.",
                             confirmLabel: "Leave & delete",
+                            extraAction: exportAction(channel),
                         },
                 );
                 if (!ok) return;
             }
             leaveMutation.mutate(channel.channel_id);
         },
-        [user, leaveMutation],
+        [user, leaveMutation, exportAction],
     );
 
     const copyToClipboard = (text: string, label: string) => {
@@ -180,5 +222,6 @@ export function useChannelActions(): ChannelActions {
             copyToClipboard(`${window.location.origin}/channels/${c.channel_id}`, "Link copied");
         },
         copyId: (c) => { copyToClipboard(c.channel_id, "Channel ID copied"); },
+        exportChat: (c) => { exportMutation.mutate(c); },
     };
 }
