@@ -12,6 +12,26 @@ import { toast } from "@/lib/toast";
 
 const EMPTY_TOKENS: ReadonlySet<string> = new Set<string>();
 
+/**
+ * What a desktop notification should actually say for a post.
+ *
+ * The sidebar snippet can be empty for a file-only post because the row shows
+ * a paperclip next to it; a notification has no such affordance, so an empty
+ * body left the banner reading "Author:" and nothing else. Mirrors the
+ * server-side `_preview` that builds the web push payload
+ * (clawbits/realtime/web_push.py) so both surfaces say the same thing.
+ *
+ * Whitespace is collapsed for the same reason: a pasted multi-line message
+ * became a multi-line banner.
+ */
+function notificationBody(preview: string, attachmentCount: number): string {
+  const text = preview.replace(/\s+/g, " ").trim();
+  if (text) return text;
+  if (attachmentCount === 1) return "Sent an attachment";
+  if (attachmentCount > 1) return `Sent ${String(attachmentCount)} attachments`;
+  return "New message";
+}
+
 type ChannelsCache = { channels: MmChannel[]; total: number };
 type OrgsCache = { organizations: Org[]; total: number };
 
@@ -245,7 +265,7 @@ export function useGlobalEvents({
               channelId: evt.channel_id,
               channelName: isDirect ? titleName : `#${titleName}`,
               authorName: post.poster_display_name ?? "Someone",
-              body: preview,
+              body: notificationBody(preview, attachmentCount),
             });
           }
         }

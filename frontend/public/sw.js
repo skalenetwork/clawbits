@@ -79,17 +79,33 @@ self.addEventListener("notificationclick", (event) => {
   const data = event.notification.data || {};
   const url = data.url || "/";
 
+  // The server sends an absolute URL on the app origin. Only a client on THAT
+  // origin runs the app and can act on `push-navigate`; a same-origin tab of
+  // some other site (which is what `matchAll` would hand back to a registration
+  // left over on the old apex) would swallow the message and leave the user
+  // staring at the page they were already on. When the target is elsewhere,
+  // skip the focus path and open a window at it.
+  let sameOrigin = true;
+  try {
+    const target = new URL(url, self.location.origin);
+    sameOrigin = target.origin === self.location.origin;
+  } catch {
+    /* malformed — treat as a path on this origin */
+  }
+
   event.waitUntil(
     (async () => {
-      const windows = await self.clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      });
-      for (const client of windows) {
-        if ("focus" in client) {
-          await client.focus();
-          client.postMessage({ type: "push-navigate", url });
-          return;
+      if (sameOrigin) {
+        const windows = await self.clients.matchAll({
+          type: "window",
+          includeUncontrolled: true,
+        });
+        for (const client of windows) {
+          if ("focus" in client) {
+            await client.focus();
+            client.postMessage({ type: "push-navigate", url });
+            return;
+          }
         }
       }
       if (self.clients.openWindow) {

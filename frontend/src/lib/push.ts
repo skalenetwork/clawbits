@@ -150,6 +150,26 @@ export async function refreshPushOnLoad(): Promise<void> {
   }
 }
 
+/** Fold a push payload's target into something react-router can navigate to.
+ *
+ *  The server sends an ABSOLUTE URL on the app origin (so a service worker
+ *  registered on the old apex still opens the right host — see the backend's
+ *  ``_build_payload``). react-router treats its argument as a path, so
+ *  ``navigate("https://app.clawbits.ai/channels/x")`` would route to a garbage
+ *  path. Strip the origin when it is ours; return null for a genuinely
+ *  cross-origin URL so the caller can hard-navigate instead of soft-routing
+ *  somewhere it doesn't belong. Bare paths pass through unchanged. */
+export function pushTargetToPath(raw: string): string | null {
+  if (raw.startsWith("/")) return raw;
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (url.origin !== window.location.origin) return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Soft-navigate when the service worker reports a notification click. The SW
  *  posts ``{type:"push-navigate", url}`` to the focused client. Returns a
  *  cleanup fn. No-op on desktop / unsupported. */
@@ -160,7 +180,9 @@ export function setupPushClickNavigation(navigate: (url: string) => void): () =>
   const handler = (event: MessageEvent) => {
     const data = event.data as { type?: string; url?: string } | null;
     if (data?.type === "push-navigate" && typeof data.url === "string") {
-      navigate(data.url);
+      const path = pushTargetToPath(data.url);
+      if (path) navigate(path);
+      else window.location.assign(data.url);
     }
   };
   navigator.serviceWorker.addEventListener("message", handler);

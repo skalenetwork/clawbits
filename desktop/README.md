@@ -62,11 +62,13 @@ sudo apt-get install -f       # fixes missing libnotify4 etc. if dpkg complained
 Checks worth doing after install:
 
 - **App icon + description** in GNOME Software / app drawer search ("clawbits-staging"): icon matches the channel build, `GenericName` shows "AI Agent Messaging (Staging)", search terms from `Keywords=` work.
-- **Notifications**: trigger one from another account, or via the in-app debug ping (see below). If the icon is missing or notifications don't appear, follow the diagnostic flow in the next section.
+- **Notifications**: **Settings → Notifications → Send a test**, or trigger one from another account. That panel also reports the notification daemon it found and whether a matching `.desktop` file is installed. If the icon is missing or notifications don't appear, follow the diagnostic flow in the next section.
 - **About dialog** (app menu → About clawbits-staging): name, version, icon, comment, website, copyright all populated.
 - **Deep link**: `xdg-open clawbits-staging://oauth-callback?token=foo` (or `clawbits://...` for prod) should focus the running app and trigger the auth flow.
 - **Window chrome**: solid window background (no see-through to desktop), menu bar (Edit/View/Window) has a proper background.
 - **Close hides, app keeps running**: red-X / `Cmd-W` hide the window but the process stays up (`pgrep clawbits-staging` still lists it), so notifications keep arriving. Reopen via the tray's Show, `Ctrl+Shift+C`, GNOME's Background Apps menu, or relaunch.
+- **Clicking a notification** raises the window and lands on the channel the message came from. Needs the daemon to advertise the `actions` capability (Settings → Notifications lists what yours reports); without it the banner still shows, it just isn't clickable. Not yet wired on macOS.
+- **A busy channel doesn't stack banners**: a second message in the same channel replaces the first rather than adding to the tray. Look for `replaces_id=Some(N)` in the log.
 - **Quit fully exits**: the tray's Quit, app-menu Quit (`Ctrl+Q`), or Background Apps → Quit terminate the process (`pgrep clawbits-staging` then returns nothing).
 
 ### Diagnosing Linux notifications
@@ -85,12 +87,8 @@ Reproduction recipe — run after installing the .deb:
    ```bash
    clawbits-staging
    ```
-2. **Open DevTools**: `View → Toggle DevTools`, or `Cmd+Alt+I`. (Built into every channel via the `devtools` Tauri feature, so it works in release/staging too.)
-3. **Either** receive a real chat message **or** fire a hand-crafted ping from the DevTools console — both go through the same code path with full payload logging:
-   ```js
-   await window.__TAURI_INTERNALS__.invoke('notify_debug_ping')
-   ```
-4. **Grab the log** and share it back:
+2. **Either** receive a real chat message **or** press **Send a test** in Settings → Notifications — both go through the same code path with full payload logging. (The same command is still reachable from DevTools, `View → Toggle DevTools` / `Cmd+Alt+I`, as `await window.__TAURI_INTERNALS__.invoke('notify_debug_ping')`.)
+3. **Grab the log** and share it back:
    ```bash
    cat ~/.local/share/ai.clawbits.staging/logs/clawbits.log
    ```
@@ -100,7 +98,8 @@ What to look for in the log:
 - A `--- notification environment ---` block at the top of each run. It dumps `XDG_CURRENT_DESKTOP`, the resolved executable path, every checked `.desktop` file location, whether `notify-send` is installed, and the notification daemon's identity + capabilities.
 - `.desktop check: ... -> FOUND` for at least one path with basename matching `desktop_entry_name`. **If every path says `missing`**, GNOME Shell silently drops our notifications — the install didn't register a `.desktop` file the Shell can match against. The `.deb` registers one system-wide; **AppImage** runs self-register one to `~/.local/share/applications/<slug>.desktop` on first launch — look for `appimage integration: wrote ...` (or `... already current`) in the log. If that line is missing on an AppImage run, `APPIMAGE`/`HOME` weren't set.
 - `notify server: name=... vendor=...` — confirms D-Bus reached a daemon. Missing this line means D-Bus itself is failing (sandbox, no daemon).
-- Per delivery: `notify send (message): ...` lists the exact summary, body, and every hint (icon, category, urgency, sound, timeout). `notify result (...): OK id=N` or `ERR err=...` follows.
+- Per delivery: `notify send (message): ...` lists the exact summary, body, and every hint (icon, category, urgency, sound, timeout), plus the `replaces_id` being reused for that channel. `notify result (...): OK id=N` or `ERR err=...` follows.
+- **The first thing to check, before anything above.** If a message produced no banner and there is *no* `notify send (message):` line for it at all, the shell never tried — the failure is in the frontend gate, not in D-Bus, and nothing else in this section applies. (This is what `isAppInForeground()` in `frontend/src/lib/desktop.ts` exists to get right: the app suppresses notifications while you are looking at it, and it must not mistake a window hidden to the tray for a focused one.)
 
 Cross-checks that quickly localize the failure:
 

@@ -1,6 +1,10 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { isDesktop, listenForOpenChannel } from "@/lib/desktop";
+import {
+  isDesktop,
+  listenForNotificationActivation,
+  listenForOpenChannel,
+} from "@/lib/desktop";
 
 /**
  * Wires the native View menu (Back / Forward / Reload) and Cmd+[/]
@@ -9,7 +13,9 @@ import { isDesktop, listenForOpenChannel } from "@/lib/desktop";
  *
  * Also subscribes to `desktop://open-channel` so Window → Recent menu
  * clicks navigate to the right route via react-router (rather than a
- * full window.location swap that would drop component state).
+ * full window.location swap that would drop component state), and to
+ * `clawbits://notification-activated` so clicking a native notification lands
+ * on the channel it came from.
  */
 export function useDesktopNav() {
   const navigate = useNavigate();
@@ -34,6 +40,17 @@ export function useDesktopNav() {
     let dispose: (() => void) | undefined;
     void (async () => {
       dispose = await listenForOpenChannel((path) => navigate(path));
+    })();
+    return () => { dispose?.(); };
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    let dispose: (() => void) | undefined;
+    void (async () => {
+      dispose = await listenForNotificationActivation((path) => {
+        void navigate(path);
+      });
     })();
     return () => { dispose?.(); };
   }, [navigate]);

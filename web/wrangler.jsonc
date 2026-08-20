@@ -20,7 +20,7 @@
     // request 500s.
     "binding": "ASSETS",
 
-    // The Worker runs ONLY on these two patterns. Everything else on the site -
+    // The Worker runs ONLY on these patterns. Everything else on the site -
     // every doc page, every /_astro/* bundle, every .md endpoint - is served
     // straight from the asset store with no Worker invocation, exactly as it
     // was before the Worker existed. Deleting this line does not break the
@@ -29,7 +29,24 @@
     //   /       - where the crawler/human branch happens.
     //   /_bot/* - where it is refused, so the trimmed variant never becomes a
     //             second crawlable copy of the homepage.
-    "run_worker_first": ["/", "/_bot/*"],
+    //
+    // The rest are app routes the apex served before the cutover and now 404s
+    // (a stale web-push service worker on this origin still opens them). The
+    // Worker 302s them to app.<zone>; see APP_PATH_PREFIXES in worker/index.ts,
+    // which is what actually decides - anything it does not own falls straight
+    // through to the asset store. These are listed wider than that check on
+    // purpose, so a near-miss costs one Worker invocation, never a 404.
+    "run_worker_first": [
+      "/",
+      "/_bot/*",
+      "/channels/*",
+      "/home*",
+      "/agents*",
+      "/skills*",
+      "/automations*",
+      "/settings*",
+      "/login*"
+    ],
 
     // Without this, `not_found_handling` defaults to "none" and every miss
     // returns a bare zero-byte 404 - dist/404.html is built and then never
