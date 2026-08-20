@@ -29,6 +29,8 @@ import json
 import logging
 import os
 
+from clawbits.domain import APP_URL
+
 log = logging.getLogger(__name__)
 
 # Bound concurrent sends so a fan-out to a large channel doesn't open
@@ -369,7 +371,15 @@ def _build_payload(channel_meta: dict | None, post: dict) -> dict:
         "body": body,
         "author": author,
         "channelId": channel_id,
-        "url": f"/channels/{channel_id}" if channel_id else "/",
+        # ABSOLUTE, on the app origin — never a bare path. A relative URL is
+        # resolved by the service worker against *its own* origin, and browsers
+        # that registered the SW before the apex cutover (2026-08-12, when the
+        # app moved off clawbits.ai) still hold a registration on the apex. Those
+        # clients opened ``clawbits.ai/channels/…``, which the marketing site
+        # 404s. Sending the origin in the payload steers even those stale
+        # registrations to the right host. See ``setupPushClickNavigation``,
+        # which folds a same-origin absolute URL back to a path for soft nav.
+        "url": f"{APP_URL}/channels/{channel_id}" if channel_id else f"{APP_URL}/",
         # Same tag per channel → a newer message replaces the older banner
         # instead of stacking, even if delivery races a streaming finalise.
         "tag": f"channel:{channel_id}",
