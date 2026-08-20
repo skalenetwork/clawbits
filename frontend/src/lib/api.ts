@@ -1723,6 +1723,27 @@ export async function setMmChannelPinned(
   return res.json() as Promise<MmPinResponse>;
 }
 
+/** Download one conversation's full history as a JSON archive.
+ *
+ *  Works the same for a DM and a channel — the server gates on membership
+ *  (plus the agent contact allowlist for an agent DM). Returns the raw blob
+ *  and the server-chosen filename instead of parsed JSON: the body is headed
+ *  straight for disk, and a long channel is megabytes we would otherwise
+ *  materialise a second time just to re-serialise it. */
+export async function exportMmChannel(
+  channelId: string,
+): Promise<{ blob: Blob; disposition: string | null }> {
+  const res = await fetch(
+    `/api/human/mm/channels/${encodeURIComponent(channelId)}/export`,
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return {
+    blob: await res.blob(),
+    disposition: res.headers.get("Content-Disposition"),
+  };
+}
+
 export interface AgentSettingsResponse {
   agent_id: string;
   inter_agent_mode_enabled: boolean;
