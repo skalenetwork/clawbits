@@ -12,6 +12,7 @@ import {
 import {Button} from "@/components/ui/button";
 import {Switch} from "@/components/ui/switch";
 import {Label} from "@/components/ui/label";
+import {ExtraActionButton, type ExtraAction} from "@/components/ExtraActionButton";
 
 interface DeleteAgentDialogProps {
     open: boolean;
@@ -22,6 +23,9 @@ interface DeleteAgentDialogProps {
     isPending: boolean;
     /** Called with the operator's "keep messages" choice when they confirm. */
     onConfirm: (keepContent: boolean) => void;
+    /** Optional "save the DM first" action. Null when the operator has no DM
+     *  with this agent, in which case no export button is offered. */
+    exportAction?: ExtraAction | null;
 }
 
 /**
@@ -39,6 +43,7 @@ export function DeleteAgentDialog({
     agentName,
     isPending,
     onConfirm,
+    exportAction,
 }: DeleteAgentDialogProps) {
     const [keepContent, setKeepContent] = useState(true);
 
@@ -84,12 +89,23 @@ export function DeleteAgentDialog({
                         <p className="text-xs text-muted-foreground">
                             {keepContent
                                 ? "Its posts, files, and conversations stay, reattributed to “Deleted agent.”"
-                                : "Its posts, files, and conversations will also be permanently deleted."}
+                                : exportAction
+                                    ? "Its posts, files, and conversations will also be permanently deleted — export your chat first if you want to keep it."
+                                    : "Its posts, files, and conversations will also be permanently deleted."}
                         </p>
                     </div>
                 </div>
 
                 <DialogFooter>
+                    {exportAction && (
+                        // Reset on reopen so a previous agent's "Exported"
+                        // doesn't greet the next delete.
+                        <ExtraActionButton
+                            action={exportAction}
+                            resetKey={open}
+                            disabled={isPending}
+                        />
+                    )}
                     <Button
                         type="button"
                         variant="ghost"

@@ -2382,12 +2382,12 @@ describe("runInboundPoller — boot catch-up", () => {
     );
   });
 
-  it("never leaves a low floor behind when catch-up cannot run", async () => {
-    // If the control fetch fails, catch-up is deferred (agentSnoozed is only
-    // ever set by a real control payload, so running blind could make a snoozed
-    // agent answer its backlog). The ordinary poll still runs at the end of
-    // that same iteration — and it must NOT inherit a lowered floor and
-    // dispatch the backlog one turn per post.
+  it("degrades to ONE bounded turn when the control fetch keeps failing", async () => {
+    // If the boot control fetch fails, catch-up defers briefly (holding
+    // realtime startup so a live settle can't ack past the unread gap), then
+    // proceeds against the fallback channel set. The contract under failure:
+    // exactly one catch-up turn — the newest addressed post as the trigger
+    // with the older backlog as context — and NEVER a per-post burst.
     const posts: MattermostPost[] = [
       { id: "b1", create_at: NOW - 90_000, human_id: 1, message: "one", channel_id: "chan-123" },
       { id: "b2", create_at: NOW - 80_000, human_id: 1, message: "two", channel_id: "chan-123" },
@@ -2422,7 +2422,14 @@ describe("runInboundPoller — boot catch-up", () => {
       clearTimeout(timer);
       stub.restore();
     }
-    assert.deepEqual(received, [], "a deferred catch-up must not turn into a per-post burst");
+    assert.equal(received.length, 1, "a deferred catch-up must not turn into a per-post burst");
+    assert.equal(received[0]?.postId, "b3", "the newest addressed post is the single trigger");
+    assert.equal(received[0]?.catchUp, true, "the turn is framed as catch-up");
+    assert.deepEqual(
+      (received[0]?.priorContext ?? []).map((p) => p.postId),
+      ["b1", "b2"],
+      "the older backlog rides as context, not as extra turns",
+    );
   });
 
   it("skips a channel whose missed posts never address the agent", async () => {
@@ -2435,5 +2442,198 @@ describe("runInboundPoller — boot catch-up", () => {
       account: { channelId: "team-room-not-this", config: { websocketEnabled: false } },
     });
     assert.deepEqual(received, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boot catch-up — server-cursor mode (`last_read_post_id` on the channel
+// payload). The pointer is the resume point: the gap is drained with
+// `after_post_id` paging, and the ack advances only on settle.
+// ---------------------------------------------------------------------------
+
+/** Serial-id posts `from..to` (inclusive), one minute apart, oldest first. */
+function serialPosts(
+  channelId: string,
+  from: number,
+  to: number,
+  build: (serial: number) => Partial<MattermostPost> = () => ({}),
+): MattermostPost[] {
+  const posts: MattermostPost[] = [];
+  for (let serial = from; serial <= to; serial += 1) {
+    posts.push({
+      id: String(serial),
+      create_at: NOW - (to - serial + 1) * 60_000,
+      human_id: 1,
+      message: `msg ${serial}`,
+      channel_id: channelId,
+      ...build(serial),
+    });
+  }
+  return posts;
+}
+
+function postsBody(posts: MattermostPost[]): unknown {
+  return {
+    order: posts.map((p) => p.id),
+    posts: Object.fromEntries(posts.map((p) => [p.id, p])),
+  };
+}
+
+async function runServerCursorHarness(opts: {
+  channel: {
+    channel_type?: string | null;
+    latest_post_id?: number | null;
+    last_read_post_id?: number | null;
+  };
+  gapPosts: MattermostPost[];
+  account?: Partial<ResolvedClawBitsAccount>;
+  watermarks?: ChannelWatermarkStore;
+  /** Control payload extras (snoozed etc.) per call index; the last entry
+   *  repeats for later calls. */
+  controlSequence?: Array<Record<string, unknown>>;
+  abortAfterMs?: number;
+  abortOnMessage?: boolean;
+}): Promise<{ received: InboundMessage[]; calls: string[]; reads: string[] }> {
+  const reads: string[] = [];
+  let controlCalls = 0;
+  const stub = installFetchStub((url, init) => {
+    if (url.endsWith("/read")) {
+      reads.push(String(init?.body ?? ""));
+      return { body: { channel_id: "chan-123", last_read_post_id: 0 } };
+    }
+    if (url.includes("/mm/channels") && !url.includes("/posts") && !url.includes("/events")) {
+      const extras =
+        opts.controlSequence?.[Math.min(controlCalls, (opts.controlSequence?.length ?? 1) - 1)] ??
+        {};
+      controlCalls += 1;
+      return {
+        body: {
+          channels: [
+            {
+              channel_id: "chan-123",
+              channel_type: opts.channel.channel_type ?? "direct",
+              latest_post_id: opts.channel.latest_post_id ?? null,
+              last_read_post_id: opts.channel.last_read_post_id ?? null,
+            },
+          ],
+          ...extras,
+        },
+      };
+    }
+    if (url.includes("/posts")) {
+      const match = /after_post_id=(\d+)/.exec(url);
+      if (match) {
+        const after = Number(match[1]);
+        return { body: postsBody(opts.gapPosts.filter((p) => Number(p.id) > after)) };
+      }
+      return { body: postsBody(opts.gapPosts) };
+    }
+    return { body: { detail: "unexpected" }, status: 500 };
+  });
+  const ac = new AbortController();
+  const received: InboundMessage[] = [];
+  const timer = setTimeout(() => ac.abort(), opts.abortAfterMs ?? 80);
+  try {
+    await runInboundPoller({
+      client: makeClient(),
+      account: makeAccount(opts.account),
+      abortSignal: ac.signal,
+      pollIntervalMs: 1,
+      now: () => NOW,
+      ...(opts.watermarks ? { watermarkStore: opts.watermarks } : {}),
+      onInboundMessage: (msg) => {
+        received.push(msg);
+        if (opts.abortOnMessage !== false) ac.abort();
+      },
+    });
+  } finally {
+    clearTimeout(timer);
+    stub.restore();
+  }
+  return { received, calls: stub.calls, reads };
+}
+
+describe("runInboundPoller — server-cursor catch-up", () => {
+  it("drains the after_post_id gap and replays the newest addressed post with the rest as context", async () => {
+    const { received, calls, reads } = await runServerCursorHarness({
+      channel: { channel_type: "direct", latest_post_id: 30, last_read_post_id: 10 },
+      gapPosts: serialPosts("chan-123", 11, 30),
+    });
+    assert.equal(received.length, 1, "exactly one catch-up turn");
+    assert.equal(received[0]?.postId, "30", "newest gap post is the trigger");
+    assert.equal(received[0]?.catchUp, true);
+    assert.deepEqual(
+      (received[0]?.priorContext ?? []).map((p) => p.postId),
+      serialPosts("chan-123", 11, 29).map((p) => p.id),
+      "older gap posts ride as context",
+    );
+    assert.equal(
+      calls.some((u) => u.includes("after_post_id=10")),
+      true,
+      "the drain resumes from the server pointer",
+    );
+    assert.equal(reads.length, 1, "the settled turn acks the pointer once");
+    assert.equal(JSON.parse(reads[0]!).post_id, 30, "ack lands on the trigger serial");
+  });
+
+  it("skips the drain entirely when the pointer already covers the newest post", async () => {
+    const { received, calls } = await runServerCursorHarness({
+      channel: { channel_type: "direct", latest_post_id: 30, last_read_post_id: 30 },
+      gapPosts: [],
+    });
+    assert.deepEqual(received, []);
+    assert.equal(
+      calls.some((u) => u.includes("after_post_id=")),
+      false,
+      "a quiet channel costs zero cursor reads",
+    );
+  });
+
+  it("acks past an examined gap that never addresses the agent", async () => {
+    const { received, reads } = await runServerCursorHarness({
+      channel: { channel_type: "public", latest_post_id: 15, last_read_post_id: 10 },
+      gapPosts: serialPosts("chan-123", 11, 15),
+      // Not the operator channel: un-mentioned shared-room chatter.
+      account: { channelId: "another-chan", config: { websocketEnabled: false } },
+    });
+    assert.deepEqual(received, [], "nothing addressed → no turn");
+    assert.equal(reads.length >= 1, true, "the examined gap is acked");
+    assert.equal(
+      JSON.parse(reads[0]!).post_id,
+      15,
+      "ack covers the newest examined serial so the gap is not re-drained every boot",
+    );
+  });
+
+  it("runs catch-up at unsnooze when the agent booted snoozed", async () => {
+    const { received } = await runServerCursorHarness({
+      channel: { channel_type: "direct", latest_post_id: 12, last_read_post_id: 10 },
+      gapPosts: serialPosts("chan-123", 11, 12),
+      controlSequence: [{ snoozed: true }, { snoozed: false }],
+      abortAfterMs: 150,
+    });
+    assert.equal(received.length, 1, "the boot gap survives a snoozed boot and replays at unsnooze");
+    assert.equal(received[0]?.postId, "12");
+    assert.equal(received[0]?.catchUp, true);
+  });
+
+  it("leaves the durable cursor and the server pointer untouched on a transient refusal", async () => {
+    const store = ChannelWatermarkStore.inMemory();
+    const { received, reads } = await runServerCursorHarness({
+      channel: { channel_type: "direct", latest_post_id: 12, last_read_post_id: 10 },
+      gapPosts: serialPosts("chan-123", 11, 12),
+      // The sender is not on the allowlist: the recovered trigger is blocked
+      // AFTER catch-up picked it — a transient refusal (the operator can
+      // widen the list), so nothing durable may advance past the post.
+      account: { allowFrom: ["human:999"], config: { websocketEnabled: false } },
+      watermarks: store,
+    });
+    assert.deepEqual(received, [], "blocked sender → no dispatch");
+    assert.equal(reads.length, 0, "no server ack for a transiently refused post");
+    assert.equal(
+      store.get("default", "cursor:chan-123"),
+      undefined,
+      "no durable watermark either — the next boot must retry the gap",
+    );
   });
 });

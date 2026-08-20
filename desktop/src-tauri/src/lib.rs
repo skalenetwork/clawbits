@@ -63,34 +63,66 @@ fn set_recent_channels(
     Ok(())
 }
 
-/// Post a notification for a new channel message. Each delivery is a
-/// fresh notification with a unique identifier — macOS and Linux both
-/// banner on every new message; macOS additionally groups them per
-/// channel via `threadIdentifier` in Notification Center.
-#[tauri::command]
+/// Post a notification for a new channel message. macOS banners every message
+/// and groups them per channel via `threadIdentifier`; Linux replaces the
+/// channel's previous banner in place.
+///
+/// `async` is load-bearing, not stylistic. Tauri executes non-async commands
+/// **on the main thread**, and the Linux path used to make a blocking D-Bus
+/// call from here — one that can wait out the 25s service-activation timeout
+/// when no notification daemon is running, freezing the window for that long.
+/// Delivery is now queued onto a notifier thread, and `async` keeps this
+/// handler off the UI thread regardless.
+#[tauri::command(async)]
 fn notify_channel_message(
     app: tauri::AppHandle,
     message: notifications::ChannelMessage,
 ) -> Result<(), String> {
-    // NSUserNotification (dev) requires main-thread dispatch;
-    // UNUserNotificationCenter (prod) and D-Bus (Linux) don't strictly
-    // need it, but routing through `run_on_main_thread` keeps the call
-    // site uniform.
-    app.run_on_main_thread(move || {
+    // NSUserNotification (dev) requires main-thread dispatch, so macOS keeps
+    // it. Linux must NOT go anywhere near the main thread — see above.
+    #[cfg(target_os = "macos")]
+    {
+        app.run_on_main_thread(move || {
+            notifications::deliver(&message);
+        })
+        .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
         notifications::deliver(&message);
-    })
-    .map_err(|e| e.to_string())
+        Ok(())
+    }
 }
 
-/// Debug-only: fire a hand-crafted test notification through the same
-/// Linux delivery path as real messages. Used to isolate "is the daemon
-/// dropping our payload, or is it dropping our connection?" without
-/// needing a second account to post a real message. Callable from the
-/// frontend via `invoke('notify_debug_ping')`; on macOS / Windows it
-/// just logs and returns.
-#[tauri::command]
+/// Fire a test notification through the same delivery path as real messages.
+/// Backs the "Send a test notification" button in Settings → Notifications;
+/// isolates "the daemon dropped our payload" from "the app never sent one".
+#[tauri::command(async)]
 fn notify_debug_ping(app: tauri::AppHandle) -> Result<(), String> {
-    app.run_on_main_thread(notifications::debug_ping)
+    #[cfg(target_os = "macos")]
+    {
+        app.run_on_main_thread(notifications::debug_ping)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        notifications::debug_ping();
+        Ok(())
+    }
+}
+
+/// What this machine can tell us about notification delivery — daemon
+/// identity, capabilities, and whether an installed `.desktop` file matches
+/// the hint we send. Backs the diagnostics panel in Settings → Notifications.
+///
+/// On Linux this waits on the notifier thread, so it runs via `spawn_blocking`
+/// rather than occupying an async worker for the duration.
+#[tauri::command]
+async fn notify_diagnostics() -> Result<notifications::Diagnostics, String> {
+    tauri::async_runtime::spawn_blocking(notifications::diagnostics)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -330,6 +362,26 @@ pub fn run() {
                     .clone()
                     .unwrap_or_else(|| binary.clone());
                 notifications::set_app_identity(&binary, &product_name);
+                // Clicking a notification should land the user in the channel
+                // it came from, the same as the web build's service worker
+                // does. The handler runs on the watcher thread that the D-Bus
+                // signal wakes, so the window calls are bounced back onto the
+                // main thread; emitting the event is thread-safe either way.
+                {
+                    use tauri::Emitter;
+                    let handle = app.handle().clone();
+                    notifications::set_activation_handler(move |channel_id| {
+                        let _ = handle.emit("clawbits://notification-activated", channel_id);
+                        let window_handle = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            if let Some(window) = window_handle.get_webview_window("main") {
+                                let _ = window.unminimize();
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        });
+                    });
+                }
                 // AppImage runs install nothing system-wide, so GNOME has
                 // no `.desktop` to match our notifications' `desktop-entry`
                 // hint against and silently drops them. Write a user-level
@@ -361,6 +413,7 @@ pub fn run() {
             set_recent_channels,
             notify_channel_message,
             notify_debug_ping,
+            notify_diagnostics,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -7,6 +7,8 @@ shared infra for development).
 Domains
 -------
 - ``BASE_DOMAIN``       – top-level domain (``freeclaws.ai`` or ``clawbits.ai``)
+- ``APP_DOMAIN``        – the web app host (``app.<BASE_DOMAIN>``)
+- ``APP_URL``           – origin of the web app (``https://<APP_DOMAIN>``)
 - ``SHARE_DOMAIN``      – R2 public file hosting (``share.<BASE_DOMAIN>``)
 - ``EMAIL_DOMAIN``      – agent email addresses (``<agent>@<BASE_DOMAIN>``)
 - ``SYSTEM_EMAIL``      – system git-commit author email
@@ -26,6 +28,12 @@ IS_PRODUCTION: bool = CLAWBITS_ENV == "production"
 BASE_DOMAIN: str = "clawbits.ai" if IS_PRODUCTION else "freeclaws.ai"
 
 # Sub-domains / derived
+# The web app lives on ``app.<BASE_DOMAIN>``; the apex serves the marketing
+# site and 404s on every app route (see the apex cutover, 2026-08-12). Anything
+# that hands a *user* a link into the app - notably the web-push payload - must
+# build it from here, never from BASE_DOMAIN.
+APP_DOMAIN: str = os.getenv("CLAWBITS_APP_DOMAIN", f"app.{BASE_DOMAIN}")
+APP_URL: str = os.getenv("CLAWBITS_APP_URL", f"https://{APP_DOMAIN}").rstrip("/")
 SHARE_DOMAIN: str = os.getenv("CUSTOM_DOMAIN", f"share.{BASE_DOMAIN}")
 EMAIL_DOMAIN: str = os.getenv("STALWART_EMAIL_DOMAIN", BASE_DOMAIN)
 SYSTEM_EMAIL: str = f"system@{BASE_DOMAIN}"

@@ -76,6 +76,7 @@ _ALL_TABLES_FK_ORDER = (
     "agent_posts",
     # FK to mm_posts.post_id — must wipe before mm_posts.
     "human_channel_state",
+    "agent_channel_state",
     "mm_post_reactions",
     # FK to mm_posts.post_id and mm_channels.channel_id — wipe before both.
     "mm_files",
@@ -110,6 +111,7 @@ _ALL_TABLES_FK_ORDER = (
     "organizations",
     # FK to human_users.id — wipe before human_users.
     "human_api_tokens",
+    "push_devices",
     "human_users",
 )
 

@@ -22,11 +22,11 @@ import { isAiCrawler } from "../src/lib/crawlers";
  *
  * WHY IT BARELY RUNS
  *
- * `assets.run_worker_first` in wrangler.jsonc lists exactly two patterns, so
- * every other request on the site - every doc page, every asset, every .md
- * endpoint - is served straight from the asset store with no Worker invocation
- * at all, exactly as before. The Worker is on the path for `/` and `/_bot/*`
- * and nothing else.
+ * `assets.run_worker_first` in wrangler.jsonc lists a short, explicit set of
+ * patterns, so every other request on the site - every doc page, every asset,
+ * every .md endpoint - is served straight from the asset store with no Worker
+ * invocation at all, exactly as before. The Worker is on the path for `/`,
+ * `/_bot/*`, and the handful of legacy app routes below, and nothing else.
  *
  * WHAT IT IS CAREFUL ABOUT
  *
@@ -51,9 +51,59 @@ interface Env {
 /** The variant's path in the asset store. Written by build-bot-page.mjs. */
 const BOT_PAGE = "/_bot/";
 
+/**
+ * Paths the app owns, which the apex used to serve and now 404s.
+ *
+ * The app moved to app.<zone> in the apex cutover (2026-08-12), but browsers
+ * that had granted web-push before that still hold a service-worker
+ * registration on the apex, and a notification click there landed on this
+ * site's 404 page. The payload now carries an absolute app-origin URL, which
+ * fixes new pushes; this catches everything that predates it - notifications
+ * already sitting in the tray, bookmarks, links pasted before the move.
+ *
+ * Deliberately narrow: only prefixes this site has no page of its own for, and
+ * matched on whole path segments so a marketing page is never shadowed by a
+ * near-miss - /agent-pit is a page here, /agents is not.
+ */
+const APP_PATH_PREFIXES = [
+  "/channels",
+  "/home",
+  "/agents",
+  "/skills",
+  "/automations",
+  "/settings",
+  "/login",
+];
+
+/** The app host for the zone this request arrived on, so the staging worker
+ *  never bounces anyone into production. Unknown hosts get null - a preview or
+ *  *.workers.dev deploy should keep 404ing rather than guess. */
+function appOriginFor(hostname: string): string | null {
+  for (const zone of ["clawbits.ai", "freeclaws.ai"]) {
+    if (hostname === zone || hostname.endsWith(`.${zone}`))
+      return `https://app.${zone}`;
+  }
+  return null;
+}
+
+function legacyAppRedirect(url: URL): Response | null {
+  const owned = APP_PATH_PREFIXES.some(
+    (p) => url.pathname === p || url.pathname.startsWith(`${p}/`),
+  );
+  if (!owned) return null;
+  const origin = appOriginFor(url.hostname);
+  if (!origin) return null;
+  return Response.redirect(`${origin}${url.pathname}${url.search}`, 302);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // App routes that outlived the apex cutover. See the note on
+    // APP_PATH_PREFIXES.
+    const moved = legacyAppRedirect(url);
+    if (moved) return moved;
 
     // Not a URL. See the note above.
     if (url.pathname.startsWith("/_bot")) {

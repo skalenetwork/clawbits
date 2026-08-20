@@ -322,14 +322,42 @@ export async function setDockBadge(count: number): Promise<void> {
 }
 
 /**
+ * Is the user actually looking at the app right now?
+ *
+ * `document.hasFocus()` is not trustworthy in the desktop shell. Closing the
+ * window hides it rather than destroying it (see the CloseRequested handler in
+ * src-tauri/src/lib.rs), and WebKitGTK does not reliably clear the document's
+ * focus flag when the GTK window is hidden — so on Linux `hasFocus()` could
+ * keep reporting `true` for a window the user cannot see, suppressing every
+ * notification for the entire session.
+ *
+ * The window manager is the authority, so ask Tauri. Both conditions are
+ * required: a minimised or fully-hidden window still reports visible on some
+ * platforms, and a window on another workspace is visible but not focused.
+ * Falls back to the DOM only if the Tauri call fails outright.
+ */
+export async function isAppInForeground(): Promise<boolean> {
+  const domFocus = typeof document !== "undefined" && document.hasFocus();
+  if (!isDesktop) return domFocus;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const win = getCurrentWindow();
+    const [visible, focused] = await Promise.all([win.isVisible(), win.isFocused()]);
+    return visible && focused;
+  } catch {
+    return domFocus;
+  }
+}
+
+/**
  * Fire a native desktop notification for an incoming chat message.
  *
- * Routes through the `notify_channel_message` Rust command instead of
- * the Tauri notification plugin so we can pass `channelId` — the
- * Rust side keeps a per-channel running counter and re-uses the same
- * native identifier across deliveries, which makes the notification
- * update in place rather than stack. The Tauri plugin discards
- * identifier/group fields on desktop, hence the bypass.
+ * Routes through the `notify_channel_message` Rust command instead of the
+ * Tauri notification plugin so we can pass `channelId`: the Rust side keeps
+ * the last notification id per channel and replaces that banner in place
+ * (`replaces_id` on Linux, `threadIdentifier` grouping on macOS) rather than
+ * stacking one banner per message. The Tauri plugin discards identifier/group
+ * fields on desktop, hence the bypass.
  */
 export async function notifyForPost(opts: {
   channelId: string;
@@ -340,7 +368,7 @@ export async function notifyForPost(opts: {
   if (!isDesktop) return;
   // Skip when the user is already looking at the app — the unread badge
   // is feedback enough; a notification would be redundant noise.
-  if (typeof document !== "undefined" && document.hasFocus()) return;
+  if (await isAppInForeground()) return;
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -354,6 +382,44 @@ export async function notifyForPost(opts: {
     });
   } catch {
     /* Notification daemon unavailable or user denied — silent failure. */
+  }
+}
+
+/** What the shell can tell us about native notification delivery. Mirrors the
+ *  `Diagnostics` struct in src-tauri/src/notifications.rs. */
+export interface NotificationDiagnostics {
+  /** "linux" | "macos" | "other" */
+  platform: string;
+  supported: boolean;
+  serverName: string | null;
+  serverVendor: string | null;
+  capabilities: string[];
+  /** The `DesktopEntry` hint we send, and the installed .desktop file matching
+   *  it. A hint with no matching file is why GNOME drops notifications. */
+  desktopEntry: string | null;
+  desktopFile: string | null;
+  notifySend: string | null;
+  error: string | null;
+}
+
+/** Fire a test notification through the real delivery path. Throws when the
+ *  command itself fails, which is distinct from the daemon dropping it — the
+ *  caller should say so rather than claiming success. */
+export async function sendTestNotification(): Promise<void> {
+  if (!isDesktop) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("notify_debug_ping");
+}
+
+/** Read notification diagnostics from the shell. Returns null off-desktop or
+ *  when the shell is too old to know the command. */
+export async function getNotificationDiagnostics(): Promise<NotificationDiagnostics | null> {
+  if (!isDesktop) return null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<NotificationDiagnostics>("notify_diagnostics");
+  } catch {
+    return null;
   }
 }
 
@@ -593,4 +659,34 @@ export async function listenForOpenChannel(
     }
   });
   return unlisten;
+}
+
+// =========================================================================
+// Notification click
+// =========================================================================
+// Rust emits `clawbits://notification-activated` with the channel id when the
+// user clicks one of our native notifications. The shell has already raised
+// the window by the time this arrives; all that is left is to land on the
+// right channel — the desktop counterpart of the service worker's
+// `push-navigate` message on the web (see lib/push.ts).
+//
+// Linux only today: routing a click needs the notification daemon's `actions`
+// capability. On macOS a click still activates the app but stays wherever the
+// user was, until a UNUserNotificationCenterDelegate is wired up.
+
+export async function listenForNotificationActivation(
+  navigate: (path: string) => void,
+): Promise<() => void> {
+  const noop = (): void => {
+    /* no listener to detach on web */
+  };
+  if (!isDesktop) return noop;
+  const { listen } = await import("@tauri-apps/api/event");
+  return await listen<string>("clawbits://notification-activated", (event) => {
+    const channelId = event.payload;
+    // The payload is an opaque channel id from our own shell, but it lands in
+    // a router path, so keep it to characters an id can actually contain.
+    if (typeof channelId !== "string" || !/^[A-Za-z0-9_-]+$/.test(channelId)) return;
+    navigate(`/channels/${channelId}`);
+  });
 }
