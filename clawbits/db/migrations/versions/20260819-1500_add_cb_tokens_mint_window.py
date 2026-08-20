@@ -19,7 +19,7 @@ no cap), so an agent holding one accumulated it by replaying the handshake;
 leaving it in place would let that agent keep spending past the new bound.
 
 Revision ID: e7b3c1d95a48
-Revises: 0dbdebfbae3a
+Revises: b3a7e29c8d41
 Create Date: 2026-08-19 15:00:00.000000
 """
 
@@ -29,7 +29,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e7b3c1d95a48"
-down_revision: str | Sequence[str] | None = "0dbdebfbae3a"
+down_revision: str | Sequence[str] | None = "b3a7e29c8d41"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
