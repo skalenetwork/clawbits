@@ -25,6 +25,7 @@ queue and runs :func:`dispatch_post_web_push` off the request path. See below.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -45,13 +46,183 @@ VAPID_PRIVATE_KEY = os.environ.get("CLAWBITS_VAPID_PRIVATE_KEY", "").strip()
 # it to reach us about a misbehaving sender. mailto: or https: URL.
 VAPID_SUBJECT = os.environ.get("CLAWBITS_VAPID_SUBJECT", "").strip() or "mailto:support@clawbits.ai"
 
+# The push endpoint is a *client-supplied URL the server then POSTs to*, so it
+# is an SSRF sink and gets the same treatment as the LobsterTalk LLM base URL
+# and link-preview unfurls: scheme pinned, host vetted, no redirects. The
+# browser only ever hands us one of the real push services, so an allowlist is
+# affordable here and shrinks the reachable surface to ~nothing — a
+# private-address check alone would still permit a blind POST to any public
+# host on the internet.
+#
+# FCM is pinned to exact hosts rather than a ``.googleapis.com`` suffix: that
+# suffix would also clear storage.googleapis.com and every other Google API,
+# handing back a chunk of the surface the allowlist exists to remove. The other
+# three genuinely vary by shard, so they match on suffix.
+_PUSH_HOSTS = frozenset(
+    {
+        "fcm.googleapis.com",       # FCM — Chrome, Edge (Chromium), Brave
+        "android.googleapis.com",   # legacy GCM endpoint, still issued
+    }
+)
+_PUSH_HOST_SUFFIXES = (
+    ".push.services.mozilla.com",   # Firefox
+    ".push.apple.com",              # Safari / macOS + iOS
+    ".notify.windows.com",          # WNS — legacy Edge
+)
+
+# Endpoints are ~150-500 chars in practice. The DB column is untyped-length
+# ``Text`` (models.PushDevice.token), so this is the only cap that exists.
+MAX_ENDPOINT_LEN = 2048
+
+# Named, because a bare backslash literal in the check below reads as a typo.
+BSLASH = "\\"
+
+
+def _extra_push_hosts() -> frozenset[str]:
+    """Hostnames the operator has cleared in addition to the real push
+    services — a self-hosted or dev push relay is the motivating case.
+    Comma-separated in ``CLAWBITS_PUSH_ALLOW_HOSTS``; empty by default,
+    because the endpoint is chosen by whoever calls subscribe."""
+    raw = os.environ.get("CLAWBITS_PUSH_ALLOW_HOSTS", "")
+    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+
+
+def _transport_host(endpoint: str) -> str:
+    """The host ``requests`` will actually dial, resolved by its own pipeline.
+
+    Vetting a URL with one parser and dialing it with another is an exploitable
+    gap, so the authoritative answer has to come from the library that opens
+    the socket — not from httpx, which we use only for the shared SSRF helpers.
+    """
+    import urllib3
+    from requests.models import PreparedRequest
+
+    pr = PreparedRequest()
+    pr.prepare_url(endpoint, None)  # requote/IDNA exactly as a real send would
+    return (urllib3.util.parse_url(pr.url).host or "").lower()
+
+
+def validate_push_endpoint(endpoint: str) -> None:
+    """Raise :class:`clawbits.ssrf.UnsafeHostError` unless ``endpoint`` is a
+    real push-service URL we are willing to POST to.
+
+    Called both when a browser subscribes — immediate feedback, and it keeps
+    junk out of the table — and again immediately before every send, because
+    the first check alone constrains only what someone is willing to store,
+    not where the name points by the time we dial it.
+
+    The host is taken from the *transport's* parser and cross-checked against
+    httpx's. The two disagree on an authority containing a backslash before an
+    ``@``: httpx reads everything up to the ``@`` as userinfo and reports the
+    trailing (allowlisted) host, while requests treats the backslash as a path
+    separator and dials the *leading* name instead. Vetting one host and
+    connecting to another defeats both the allowlist and the private-address
+    check, so anything the two parsers disagree about is refused outright.
+    """
+    from clawbits.ssrf import UnsafeHostError, check_host_is_public, dialed_host, parse_url
+
+    # UnsafeHostError (the base) rather than PrivateAddressError for the checks
+    # that aren't about the resolved address — callers catch the base, and
+    # mislabelling a scheme or length rejection as "private address" would send
+    # whoever reads the log looking for a DNS answer that was never involved.
+    if len(endpoint) > MAX_ENDPOINT_LEN:
+        raise UnsafeHostError(
+            f"push endpoint too long: {len(endpoint)} > {MAX_ENDPOINT_LEN}"
+        )
+
+    # Characters the two parsers treat differently, refused before either one
+    # sees them. The backslash is the live bypass (see the docstring);
+    # whitespace and C0/DEL controls are silently stripped by WHATWG-style
+    # parsers but not by all of them; non-ASCII would go through IDNA, and no
+    # real push endpoint needs any of it.
+    if not endpoint.isascii():
+        raise UnsafeHostError("push endpoint must be ASCII")
+    forbidden = {
+        c for c in endpoint if c == BSLASH or c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F
+    }
+    if forbidden:
+        raise UnsafeHostError(f"push endpoint contains forbidden characters: {sorted(forbidden)!r}")
+
+    # parse_url turns an unparseable URL into an UnsafeHostError rather than
+    # letting it escape as a 500.
+    url = parse_url(endpoint)
+    if url.scheme != "https":
+        raise UnsafeHostError(f"push endpoint must be https, got {url.scheme!r}")
+
+    # Userinfo is the other half of the confusion — it is what lets a hostile
+    # host masquerade as an allowlisted one — and a real push subscription
+    # never carries credentials.
+    if url.userinfo:
+        raise UnsafeHostError("push endpoint must not contain userinfo")
+
+    # The host we vet must be the host we dial, so the transport's parser is
+    # authoritative. raw_host (never .host) on the httpx side: for an
+    # internationalised name the decoded unicode form and the punycode form the
+    # transport dials can resolve to different places. See ssrf.dialed_host.
+    host = _transport_host(endpoint)
+    if not host:
+        raise UnsafeHostError("push endpoint has no host")
+    httpx_host = dialed_host(url).lower()
+    if host != httpx_host:
+        raise UnsafeHostError(f"URL parsers disagree on the host ({host} vs {httpx_host})")
+    extra = _extra_push_hosts()
+    known = host in _PUSH_HOSTS or host.endswith(_PUSH_HOST_SUFFIXES)
+    if host not in extra and not known:
+        raise UnsafeHostError(f"not a known web-push service host: {host}")
+
+    # Belt and braces behind the allowlist: an allowlisted name can still be
+    # pointed at a private address, and an operator-supplied host has had no
+    # vetting at all. ``extra`` doubles as the private-address escape hatch so
+    # a deployment pointing push at localhost opts that name in once.
+    check_host_is_public(host, allow_hosts=extra)
+
+
+@functools.cache
+def _no_redirect_session_class() -> type:
+    """The ``requests.Session`` subclass used for sends, built on first use.
+
+    Importing ``requests`` at module scope would pull it into every process
+    that touches this module, including ones with no VAPID keys that never
+    send — so the import (and the class) are built lazily and cached.
+    """
+    import requests
+
+    class _NoRedirectSession(requests.Session):
+        """A session that refuses to follow redirects.
+
+        pywebpush calls ``requests.post`` without ``allow_redirects`` and the
+        ``requests`` default is True, so an allowlisted push host answering a
+        307 would bounce our POST wherever it liked — defeating the host check
+        in :func:`validate_push_endpoint`. pywebpush exposes no flag for this,
+        only the ``requests_session`` seam, so we pin it on the way through.
+        """
+
+        def request(self, *args, **kwargs):
+            kwargs["allow_redirects"] = False
+            return super().request(*args, **kwargs)
+
+    return _NoRedirectSession
+
+
+def _new_send_session():
+    """A fresh session per send.
+
+    Not shared: ``requests.Session`` isn't thread-safe and sends run eight-way
+    concurrent, and a shared jar would carry cookies between pushes to
+    different services. This matches what pywebpush did before — bare
+    ``requests.post`` also builds a session per call — so it costs nothing we
+    weren't already paying.
+    """
+    return _no_redirect_session_class()()
+
 
 def vapid_configured() -> bool:
     """True only when both halves of the keypair are present.
 
-    Gates the entire web-push surface: the subscribe endpoints 404 and the
-    fan-out dispatch returns early when this is False, so a deployment
-    without keys behaves exactly as before this feature existed.
+    Gates the entire web-push surface: the subscribe/unsubscribe endpoints
+    404 and the fan-out dispatch returns early when this is False, so a
+    deployment without keys behaves exactly as before this feature existed —
+    and in particular accumulates no ``push_devices`` rows.
     """
     return bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)
 
@@ -308,6 +479,19 @@ def _send_one(target: dict, data: str) -> str:
     """
     from pywebpush import WebPushException, webpush
 
+    from clawbits.ssrf import UnsafeHostError, redact_url
+
+    # Re-vet at dial time, not just at subscribe time: the row outlives the
+    # check that let it in, and DNS can move under us in between. Deliberately
+    # returns "error" rather than "dead" — a refused endpoint must be logged,
+    # not silently pruned, or a transient resolver failure would quietly delete
+    # a legitimate subscription.
+    try:
+        validate_push_endpoint(target["token"])
+    except UnsafeHostError as exc:
+        log.warning("web push: refusing endpoint %s: %s", redact_url(target["token"]), exc)
+        return "error"
+
     subscription = {
         "endpoint": target["token"],
         "keys": {"p256dh": target["p256dh"], "auth": target["auth"]},
@@ -321,6 +505,10 @@ def _send_one(target: dict, data: str) -> str:
             vapid_claims={"sub": VAPID_SUBJECT},
             content_encoding="aes128gcm",
             timeout=10,
+            # Without this pywebpush uses the bare ``requests`` module, which
+            # follows redirects by default. A 30x now surfaces as a >202 status
+            # (an "error", not "dead"), so the row survives.
+            requests_session=_new_send_session(),
         )
         return "ok"
     except WebPushException as exc:

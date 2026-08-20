@@ -136,20 +136,103 @@ class TableWrite:
     # ---------------- CB tokens ----------------
 
     @staticmethod
-    def mint_cb_tokens(session: Session, agent_id: AgentId, amount: int) -> int:
-        row = session.get(Agent, agent_id.value)
+    def mint_cb_tokens(
+        session: Session,
+        agent_id: AgentId,
+        ceiling: int,
+        *,
+        window_budget: int | None = None,
+        window_seconds: int = 86_400,
+        now: datetime | None = None,
+    ) -> tuple[int, int]:
+        """Top the agent's balance up *to* ``ceiling``. Never above, never additive.
+
+        Deliberately idempotent: the proof-of-cognition handshake that calls this
+        is repeatable — an agent can ask for a fresh challenge as often as it
+        likes, both legs are free (the challenge is a GET, the response is
+        billing-exempt) and the answers ship to clients in
+        ``clawbits/datastructures/known_answers.py``. An additive mint would
+        therefore let any authenticated agent accumulate an unbounded balance and
+        opt itself out of the CB_TOKENS write charge entirely. Topping up to a
+        fixed ceiling makes repeat handshakes converge instead of stack, so the
+        balance is bounded by construction rather than by a counter someone has
+        to remember to check.
+
+        The ceiling alone bounds what an agent can *hold*, not what it can
+        *spend*: since the handshake is free, an agent could otherwise alternate
+        write -> handshake -> refill forever and mint without limit over time.
+        So minting is also metered — at most ``window_budget`` tokens may be
+        added per rolling ``window_seconds``, tracked on the agent row and
+        updated in this same locked transaction. ``window_budget`` defaults to
+        ``ceiling``, i.e. one full tank per window, which no well-behaved client
+        ever approaches (they mint once at signup and would have to burn the
+        entire balance to notice).
+
+        Exhausting the budget is deliberately *not* an error: the mint simply
+        adds nothing and reports ``minted == 0``. Returning a new failure status
+        here would break every client — none of them handle 402 on this route
+        and all three retry the challenge 16x with no backoff — whereas an
+        agent that has genuinely burned its budget just runs out of tokens and
+        gets the ordinary 402 on its next write, which is the intended economics.
+
+        Writing a constant (rather than a computed delta) is also what makes this
+        race-safe: two concurrent handshakes both land on ``ceiling``. The row
+        lock is for consistency with :meth:`charge_cb_tokens`, not correctness.
+
+        Returns ``(new_balance, minted)``. ``minted`` is computed here, while
+        the row lock is held, rather than by the caller diffing against a
+        balance it read beforehand: that read would sit outside the lock, so
+        two concurrent handshakes could both report the full amount when only
+        one of them actually added anything.
+        """
+        if ceiling <= 0:
+            raise ValueError("Mint ceiling must be positive")
+        if window_budget is None:
+            window_budget = ceiling
+        if window_budget <= 0:
+            raise ValueError("Mint window budget must be positive")
+        if window_seconds <= 0:
+            raise ValueError("Mint window must be positive")
+        now = now or datetime.now(_dt.UTC)
+
+        row = session.get(Agent, agent_id.value, with_for_update=True)
         if row is None:
             raise ValueError(f"Agent '{agent_id.value}' not found")
-        row.cb_tokens += amount
+
+        # Reset the window when it has elapsed (or never opened). A NULL start
+        # means this agent has never minted, so it starts a fresh window here.
+        start = row.cb_tokens_minted_window_start
+        if start is None or (now - start).total_seconds() >= window_seconds:
+            start, spent = now, 0
+        else:
+            spent = row.cb_tokens_minted_in_window
+
+        # Top up toward the ceiling, but never by more than the window allows.
+        previous = row.cb_tokens
+        headroom = max(0, window_budget - spent)
+        target = min(ceiling, previous + headroom)
+        if target > previous:
+            row.cb_tokens = target
+        minted = row.cb_tokens - previous
+
+        row.cb_tokens_minted_window_start = start
+        row.cb_tokens_minted_in_window = spent + minted
         session.flush()
-        return row.cb_tokens
+        return row.cb_tokens, minted
 
     @staticmethod
     def charge_cb_tokens(session: Session, agent_id: AgentId, amount: int) -> int:
         if amount <= 0:
             raise ValueError("Charge amount must be positive")
 
-        row = session.get(Agent, agent_id.value)
+        # FOR UPDATE before the sufficiency check: the flush below emits
+        # ``SET cb_tokens = <computed literal>``, not ``cb_tokens - :n``, so
+        # under READ COMMITTED two concurrent debits would both read the same
+        # balance, both pass the check, and the second UPDATE would clobber the
+        # first — N operations performed for one paid. Each billing site opens
+        # its own session on a separate pooled connection, so agent requests do
+        # genuinely run in parallel. Locking the row serialises them.
+        row = session.get(Agent, agent_id.value, with_for_update=True)
         if row is None:
             raise ValueError(f"Agent '{agent_id.value}' not found")
 
@@ -450,15 +533,33 @@ class TableWrite:
         """Insert or refresh a web-push subscription, keyed on ``token``.
 
         Re-subscribing the same browser yields the same endpoint, so we
-        update the existing row in place — re-binding it to the current
-        human, re-enabling it, refreshing the keys + last_seen — rather
-        than accumulating duplicates. Caller owns the commit."""
+        update the existing row in place — re-enabling it, refreshing the
+        keys + last_seen — rather than accumulating duplicates. Caller owns
+        the commit.
+
+        An existing row belonging to *someone else* is deleted and replaced
+        rather than re-bound, so a caller never takes over a row it did not
+        register. Rebinding used to be unconditional.
+
+        Read the limit of that honestly: because ``uq_push_devices_token``
+        keys on the token alone, only one row can exist per endpoint, so the
+        *end state* is the same either way — whoever subscribed last owns the
+        endpoint and the previous owner has nothing. Someone who learns a
+        victim's endpoint URL (a shared device, a client log, a proxy) can
+        therefore still evict them. What changes here is only that the row is
+        destroyed rather than repurposed. Closing the eviction itself needs
+        the natural key to become ``(human_id, token)``, which is a migration
+        and is not done here."""
         now = datetime.now(_dt.UTC)
         existing = session.exec(
             select(PushDevice).where(PushDevice.token == token)
         ).first()
+        if existing is not None and existing.human_id != human_id:
+            # Not ours to refresh — drop it and fall through to a fresh insert.
+            session.delete(existing)
+            session.flush()
+            existing = None
         if existing is not None:
-            existing.human_id = human_id
             existing.transport = "webpush"
             existing.p256dh = p256dh
             existing.auth = auth

@@ -111,6 +111,7 @@ _ALL_TABLES_FK_ORDER = (
     "organizations",
     # FK to human_users.id — wipe before human_users.
     "human_api_tokens",
+    "push_devices",
     "human_users",
 )
 
