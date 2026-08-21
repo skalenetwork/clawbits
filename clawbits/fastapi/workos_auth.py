@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -906,6 +907,13 @@ _SOCIAL_PROVIDERS: dict[str, str] = {
     "github": "GitHubOAuth",
 }
 
+# Nonce a native client mints for itself before handing the login off to the
+# system browser, echoed back to it in the deep link. Charset excludes "."
+# because that is the separator in the native ``state`` layout below; the
+# length floor keeps a client from weakening its own binding to something
+# guessable. See :func:`_split_native_state`.
+_CLIENT_STATE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
 
 @workos_router.get("/social/{provider}/start")
 def social_start(
@@ -914,6 +922,7 @@ def social_start(
     desktop: int = 0,
     bridge: str = "",
     next: str = "",
+    client_state: str = "",
 ):
     """Redirect the browser to the provider via WorkOS.
 
@@ -939,13 +948,27 @@ def social_start(
     cookie rather than the OAuth ``state`` (see OAUTH_RETURN_TO_COOKIE) and is
     validated on the way in AND on the way out — a cookie is not a trust
     boundary, and re-checking at the redirect costs nothing.
+
+    ``client_state`` is a nonce the native client minted for itself. We
+    carry it through the WorkOS round trip and hand it back in the deep
+    link so the client can tell a callback from a login *it* started
+    apart from a ``clawbits://oauth-callback?token=…`` URL fired by a
+    hostile web page. It rides inside ``state`` rather than in its own
+    cookie so it inherits the ``state == cookie`` equality check in
+    :func:`social_callback` — an attacker who rewrites the nonce on the
+    callback URL invalidates the whole flow.
     """
+    if client_state and not _CLIENT_STATE_RE.fullmatch(client_state):
+        # Fail loudly rather than dropping the nonce: a silently discarded
+        # binding is a silently downgraded login.
+        raise HTTPException(status_code=400, detail="Invalid client_state")
+
     client = _client(request)
     state_token = secrets.token_urlsafe(24)
     if bridge == "deeplink":
-        state = f"mobile.{state_token}"
+        state = f"mobile.{client_state}.{state_token}"
     elif desktop:
-        state = f"desktop.{state_token}"
+        state = f"desktop.{client_state}.{state_token}"
     else:
         state = state_token
     auth_url = client.user_management.get_authorization_url(
@@ -973,6 +996,22 @@ def social_start(
         # previous one's destination.
         response.delete_cookie(OAUTH_RETURN_TO_COOKIE, path="/")
     return response
+
+
+def _split_native_state(state: str) -> tuple[str | None, str]:
+    """Split a native-client OAuth ``state`` into ``(kind, client_nonce)``.
+
+    Native states are ``<kind>.<nonce>.<random>`` where *kind* is
+    ``desktop`` or ``mobile`` and *nonce* is the client-minted value from
+    ``?client_state=`` (empty when the client sent none). The two-segment
+    ``<kind>.<random>`` form predates the nonce and is still accepted, so
+    a flow started before a deploy can still finish after it. Web states
+    carry no prefix and yield ``(None, "")``.
+    """
+    parts = state.split(".", 2)
+    if len(parts) < 2 or parts[0] not in ("desktop", "mobile"):
+        return None, ""
+    return parts[0], parts[1] if len(parts) == 3 else ""
 
 
 @workos_router.get("/social/callback")
@@ -1072,8 +1111,9 @@ async def social_callback(
     # the browser tab after firing the deep link. window.close() is honored
     # by Chrome on protocol-handler tabs; Safari is hit-or-miss, hence the
     # visible "you can close this tab" fallback.
+    native_kind, client_state = _split_native_state(state)
     deep_link_scheme: str | None = None
-    if state.startswith("desktop."):
+    if native_kind == "desktop":
         # The desktop binary registers a channel-specific URL scheme so
         # prod, staging, and dev installs can coexist without colliding
         # on `xdg-mime` / Launch Services routing. Pick the scheme this
@@ -1081,7 +1121,7 @@ async def social_callback(
         # build for the matching channel is the only thing that can open
         # this URL.
         deep_link_scheme = _desktop_url_scheme()
-    elif state.startswith("mobile."):
+    elif native_kind == "mobile":
         # Mobile bundles ship one scheme per binary (``clawbits`` only).
         # Env separation comes from the API base URL the client points
         # at, not from the scheme — so we always hand back the bare
@@ -1089,9 +1129,15 @@ async def social_callback(
         deep_link_scheme = "clawbits"
 
     if deep_link_scheme is not None:
+        # Echo the client's nonce so it can bind this callback to the
+        # login it started. Absent for clients that didn't send one —
+        # they get the pre-nonce URL shape and keep working.
+        params = {"token": sealed}
+        if client_state:
+            params["state"] = client_state
         deep_link = (
             f"{deep_link_scheme}://oauth-callback?"
-            + urllib.parse.urlencode({"token": sealed})
+            + urllib.parse.urlencode(params)
         )
         html = f"""<!DOCTYPE html>
 <html lang="en">

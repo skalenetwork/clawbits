@@ -10,6 +10,8 @@ tests pin that.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
@@ -56,6 +58,22 @@ def _set_balance(engine, agent_id: str, value: int) -> None:
         db.commit()
 
 
+def _reset_mint_window(engine, agent_id: str) -> None:
+    """Clear the rolling-window meter.
+
+    Agent creation runs a full handshake, which spends a whole window budget.
+    Tests that want to observe a *fresh* window have to say so explicitly —
+    ``_set_balance`` only moves the balance, on purpose, because conflating the
+    two would hide exactly the coupling these tests exist to check.
+    """
+    with Session(engine) as db:
+        agent = db.get(Agent, agent_id)
+        agent.cb_tokens_minted_window_start = None
+        agent.cb_tokens_minted_in_window = 0
+        db.add(agent)
+        db.commit()
+
+
 def test_repeat_handshake_does_not_stack(test_client: TestClient, api_key, _test_engine):
     """The whole point: repeat handshakes converge, they do not accumulate.
 
@@ -79,14 +97,125 @@ def test_repeat_handshake_does_not_stack(test_client: TestClient, api_key, _test
 
 
 def test_handshake_tops_up_a_drained_balance(test_client: TestClient, api_key, _test_engine):
-    """Minting still has to work — it restores exactly to the ceiling."""
+    """Minting still has to work — but only within the window budget.
+
+    The fixture already spent one full ceiling of budget minting this agent at
+    signup, so a same-window top-up after spending adds nothing. That is the
+    point: it is what stops write -> handshake -> refill from looping.
+    """
     agent_id = test_client.agent_id
     _set_balance(_test_engine, agent_id, 4_000)
     resp = _handshake(test_client, api_key)
 
-    assert resp["minted"] == CEILING - 4_000
-    assert resp["new_balance"] == CEILING
-    assert _balance(_test_engine, agent_id) == CEILING
+    assert resp["minted"] == 0, "budget for this window was already spent at signup"
+    assert resp["new_balance"] == 4_000
+    assert _balance(_test_engine, agent_id) == 4_000
+
+
+def test_spend_then_refill_loop_is_bounded(_test_engine, create_agent_and_key):
+    """The attack the ceiling alone did not stop.
+
+    With only a balance cap, an agent could spend, replay the free handshake,
+    top back up, and repeat forever — bounding what it *holds* while leaving
+    what it *spends* unbounded. Metering the mint is what closes it.
+    """
+    agent_id, _ = create_agent_and_key
+    _set_balance(_test_engine, agent_id.value, 0)
+    _reset_mint_window(_test_engine, agent_id.value)
+
+    with Session(_test_engine) as db:
+        _, first = TableWrite.mint_cb_tokens(db, agent_id, CEILING)
+        db.commit()
+    assert first == CEILING, "the first mint of the window fills the tank"
+
+    # Now burn tokens and try to refill, repeatedly, inside the same window.
+    total_refilled = 0
+    for _ in range(5):
+        _set_balance(_test_engine, agent_id.value, 0)
+        with Session(_test_engine) as db:
+            balance, minted = TableWrite.mint_cb_tokens(db, agent_id, CEILING)
+            db.commit()
+        total_refilled += minted
+        assert minted == 0
+        assert balance == 0, "drained agent stays drained until the window rolls"
+
+    assert total_refilled == 0, "no tokens may be minted beyond the window budget"
+
+
+def test_window_rolls_over(_test_engine, create_agent_and_key):
+    """Once the window elapses the budget is fresh again — this is a rate
+    limit, not a lifetime cap, so a legitimate long-lived agent recovers."""
+    agent_id, _ = create_agent_and_key
+    _set_balance(_test_engine, agent_id.value, 0)
+    _reset_mint_window(_test_engine, agent_id.value)
+    t0 = datetime(2026, 8, 19, 12, 0, tzinfo=UTC)
+
+    with Session(_test_engine) as db:
+        assert TableWrite.mint_cb_tokens(db, agent_id, CEILING, now=t0)[1] == CEILING
+        db.commit()
+
+    # Spend it all; still inside the window, so no refill.
+    _set_balance(_test_engine, agent_id.value, 0)
+    with Session(_test_engine) as db:
+        assert TableWrite.mint_cb_tokens(
+            db, agent_id, CEILING, now=t0 + timedelta(hours=23, minutes=59)
+        )[1] == 0
+        db.commit()
+
+    # Just past the window: full budget again.
+    with Session(_test_engine) as db:
+        balance, minted = TableWrite.mint_cb_tokens(
+            db, agent_id, CEILING, now=t0 + timedelta(hours=24, seconds=1)
+        )
+        db.commit()
+    assert (balance, minted) == (CEILING, CEILING)
+
+
+def test_partial_budget_is_respected(_test_engine, create_agent_and_key):
+    """A top-up larger than the remaining budget is truncated, not refused."""
+    agent_id, _ = create_agent_and_key
+    _set_balance(_test_engine, agent_id.value, 0)
+    _reset_mint_window(_test_engine, agent_id.value)
+    t0 = datetime(2026, 8, 19, 12, 0, tzinfo=UTC)
+
+    with Session(_test_engine) as db:
+        TableWrite.mint_cb_tokens(db, agent_id, CEILING, window_budget=1_000, now=t0)
+        db.commit()
+    assert _balance(_test_engine, agent_id.value) == 1_000
+
+    _set_balance(_test_engine, agent_id.value, 400)
+    with Session(_test_engine) as db:
+        balance, minted = TableWrite.mint_cb_tokens(
+            db, agent_id, CEILING, window_budget=1_000, now=t0 + timedelta(minutes=1)
+        )
+        db.commit()
+    assert (balance, minted) == (400, 0), "budget already spent this window"
+
+
+def test_minted_is_the_delta_not_the_ceiling(_test_engine, create_agent_and_key):
+    """``minted`` is computed under the row lock, inside mint_cb_tokens.
+
+    It used to be derived by the caller from a balance read *before* the lock
+    was taken, so two concurrent handshakes could both claim to have added the
+    full amount when only one of them did.
+    """
+    agent_id, _ = create_agent_and_key
+    _set_balance(_test_engine, agent_id.value, 0)
+    _reset_mint_window(_test_engine, agent_id.value)
+    with Session(_test_engine) as db:
+        assert TableWrite.mint_cb_tokens(db, agent_id, CEILING) == (CEILING, CEILING)
+        db.commit()
+    # Second call adds nothing, and says so.
+    with Session(_test_engine) as db:
+        assert TableWrite.mint_cb_tokens(db, agent_id, CEILING) == (CEILING, 0)
+        db.commit()
+    # Partial top-up reports only what it added (fresh window, so there is
+    # budget available to add it from).
+    _set_balance(_test_engine, agent_id.value, CEILING - 250)
+    _reset_mint_window(_test_engine, agent_id.value)
+    with Session(_test_engine) as db:
+        assert TableWrite.mint_cb_tokens(db, agent_id, CEILING) == (CEILING, 250)
+        db.commit()
 
 
 def test_mint_never_lowers_a_balance(_test_engine, create_agent_and_key):
@@ -94,7 +223,7 @@ def test_mint_never_lowers_a_balance(_test_engine, create_agent_and_key):
     agent_id, _ = create_agent_and_key
     _set_balance(_test_engine, agent_id.value, CEILING * 2)
     with Session(_test_engine) as db:
-        assert TableWrite.mint_cb_tokens(db, agent_id, CEILING) == CEILING * 2
+        assert TableWrite.mint_cb_tokens(db, agent_id, CEILING) == (CEILING * 2, 0)
         db.commit()
     assert _balance(_test_engine, agent_id.value) == CEILING * 2
 

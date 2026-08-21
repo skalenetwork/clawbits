@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Cancel01Icon, UserMultiple02Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Download01Icon, UserMultiple02Icon } from "@hugeicons/core-free-icons";
 import { Icon } from "@/components/Icon";
 import { useAuth } from "@/context/AuthContext";
 import { useAgentPresence } from "@/hooks/useAgentPresence";
 import { useUserPresence } from "@/hooks/useUserPresence";
+import { useChannelActions } from "@/hooks/useChannelActions";
 import {
   getMmChannel,
   listMmChannelMembers,
@@ -91,6 +92,7 @@ export default function ChatInfoSidebar({ channelId, open, onClose }: ChatInfoSi
   const { seed } = useUserPresence();
   const { seed: seedAgents } = useAgentPresence();
   const [manageOpen, setManageOpen] = useState(false);
+  const channelActions = useChannelActions();
 
   const channelQuery = useQuery({
     queryKey: queryKeys.mm.channel(channelId),
@@ -229,8 +231,8 @@ export default function ChatInfoSidebar({ channelId, open, onClose }: ChatInfoSi
             ))}
           </div>
 
-          {canManage && (
-            <div className="shrink-0 p-2">
+          <div className="flex shrink-0 flex-col gap-1.5 p-2">
+            {canManage && (
               <button
                 type="button"
                 onClick={() => { setManageOpen(true); }}
@@ -239,8 +241,21 @@ export default function ChatInfoSidebar({ channelId, open, onClose }: ChatInfoSi
                 <Icon icon={UserMultiple02Icon} className="size-3 text-muted-foreground" />
                 <span className="truncate">Manage members</span>
               </button>
-            </div>
-          )}
+            )}
+            {/* Export is the one action here a DM gets too: a DM has no
+                "Manage members", and the chat list's right-click menu isn't
+                reachable from inside the thread. */}
+            {channel && (
+              <button
+                type="button"
+                onClick={() => { channelActions.exportChat(channel); }}
+                className="flex w-full items-center justify-center gap-1.5 rounded-md border border-sidebar-border bg-sidebar-accent/40 px-2.5 py-1 text-[12px] font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              >
+                <Icon icon={Download01Icon} className="size-3 text-muted-foreground" />
+                <span className="truncate">Export chat</span>
+              </button>
+            )}
+          </div>
         </div>
       </aside>
 

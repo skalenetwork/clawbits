@@ -1,11 +1,17 @@
 //! Per-channel desktop notifications.
 //!
-//! Design: every incoming message gets its own fresh notification with
-//! a unique identifier — that way macOS treats each delivery as a new
-//! arrival (banner + sound) instead of as an "update to existing"
-//! (silent, in-place mutation). On macOS we use `threadIdentifier` so
-//! Notification Center still groups them per channel; on Linux we just
-//! let the daemon stack them however it likes.
+//! Design differs per platform because the two systems coalesce differently.
+//! On macOS every delivery is a fresh notification with a unique identifier —
+//! that way the OS treats it as a new arrival (banner + sound) rather than an
+//! "update to existing" (silent, in-place mutation) — and `threadIdentifier`
+//! groups them per channel in Notification Center. On Linux there is no such
+//! grouping, so each channel instead reuses its previous notification id via
+//! `replaces_id`: the newest message supersedes the last banner from that
+//! channel, matching what the web build gets from a per-channel push `tag`.
+//!
+//! Linux delivery is never inline. A dedicated notifier thread owns every
+//! D-Bus call, because those calls block and Tauri runs non-async commands on
+//! the main thread. See the `linux` module for why that mattered.
 //!
 //! Two macOS backends:
 //!
@@ -25,7 +31,39 @@
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+/// What this machine can actually tell us about notification delivery.
+///
+/// Everything here was already gathered at boot and written to the log file,
+/// where only someone who knows to look for it ever saw it. Returning it to
+/// the frontend is what turns "notifications don't work" into a report that
+/// names the daemon and says whether GNOME has a `.desktop` file to attribute
+/// us to. Linux fills every field; macOS has no equivalent surface (the OS
+/// owns permission state) and reports only that it is supported.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagnostics {
+    /// `"linux"` | `"macos"` | `"other"`.
+    pub platform: String,
+    /// False on platforms with no native backend compiled in (Windows today).
+    pub supported: bool,
+    /// Notification daemon identity — GNOME Shell, Plasma, dunst, mako, …
+    pub server_name: Option<String>,
+    pub server_vendor: Option<String>,
+    /// Daemon capability list, verbatim from `org.freedesktop.Notifications`.
+    pub capabilities: Vec<String>,
+    /// The `DesktopEntry` hint we send, and the installed `.desktop` file
+    /// whose basename matches it. A `None` file with a `Some` hint is the
+    /// single highest-signal failure: GNOME has nothing to attribute us to
+    /// and drops every notification silently.
+    pub desktop_entry: Option<String>,
+    pub desktop_file: Option<String>,
+    /// Path to `notify-send`, when libnotify-bin is installed.
+    pub notify_send: Option<String>,
+    /// Set when the daemon could not be reached at all.
+    pub error: Option<String>,
+}
 
 // Tauri serializes JS payloads via serde_json with default field-name
 // matching, so the Rust struct has to declare the camelCase shape the
@@ -87,9 +125,15 @@ pub fn deliver(message: &ChannelMessage) {
     }
 }
 
+/// Linux delivery never happens inline. Every D-Bus call this module makes is
+/// a blocking round trip, and D-Bus will try to *service-activate* a
+/// notification daemon that isn't running — a wait bounded only by the 25s
+/// activation timeout. Tauri runs non-async commands on the main thread, so an
+/// inline call froze the UI for as long as the daemon took to answer. Handing
+/// the message to the notifier thread returns immediately.
 #[cfg(target_os = "linux")]
 pub fn deliver(message: &ChannelMessage) {
-    linux::deliver(message);
+    linux::enqueue(linux::Job::Message(message.clone()));
 }
 
 /// Linux-only: dump everything relevant to D-Bus notification routing
@@ -97,9 +141,17 @@ pub fn deliver(message: &ChannelMessage) {
 /// name and `DesktopEntry` we'll be sending are known. Call site in
 /// `lib.rs` is gated on `target_os = "linux"`, so no stub is needed
 /// elsewhere.
+///
+/// Queued rather than run inline: the dump probes the daemon over D-Bus, and
+/// doing that from `setup()` blocked the window from appearing at all on a
+/// machine with no daemon running.
 #[cfg(target_os = "linux")]
 pub fn log_linux_environment(binary: &str, product_name: &str, identifier: &str) {
-    linux::log_environment(binary, product_name, identifier);
+    linux::enqueue(linux::Job::LogEnvironment {
+        binary: binary.to_string(),
+        product_name: product_name.to_string(),
+        identifier: identifier.to_string(),
+    });
 }
 
 /// Linux + AppImage only: ensure a user-level `.desktop` file exists so
@@ -109,14 +161,61 @@ pub fn log_linux_environment(binary: &str, product_name: &str, identifier: &str)
 /// send. No-op when the app wasn't launched from an AppImage (`.deb` /
 /// `cargo tauri dev`). Call site in `lib.rs` is gated on `target_os =
 /// "linux"`, so no stub is needed elsewhere.
+///
+/// Also queued — it shells out to `update-desktop-database`, and the notifier
+/// thread is FIFO, so this still lands before the first message notification.
 #[cfg(target_os = "linux")]
 pub fn ensure_appimage_desktop_integration() {
-    linux::ensure_appimage_desktop_file();
+    linux::enqueue(linux::Job::AppImageIntegration);
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn deliver(_message: &ChannelMessage) {
     // Windows / unsupported — fall through.
+}
+
+/// Report what this machine can tell us about notification delivery. Backs the
+/// diagnostics panel in Settings → Notifications.
+#[cfg(target_os = "macos")]
+pub fn diagnostics() -> Diagnostics {
+    // macOS keeps permission state in System Settings and exposes it only
+    // through an async completion handler; there is nothing honest to report
+    // here beyond "the backend exists", so we don't invent a field.
+    Diagnostics {
+        platform: "macos".to_string(),
+        supported: true,
+        ..Default::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn diagnostics() -> Diagnostics {
+    linux::diagnostics()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn diagnostics() -> Diagnostics {
+    Diagnostics {
+        platform: "other".to_string(),
+        supported: false,
+        ..Default::default()
+    }
+}
+
+/// Install the callback invoked when the user clicks one of our notifications,
+/// with the channel id it was posted for. Call once at startup.
+///
+/// Linux only, and cfg-gated rather than stubbed so the compiler keeps saying
+/// so: routing a click needs the daemon's `actions` capability and a thread
+/// waiting on the D-Bus signal. The macOS equivalent is a
+/// `UNUserNotificationCenterDelegate` and is not wired up — clicking there
+/// still activates the app, it just doesn't land on the channel.
+#[cfg(target_os = "linux")]
+pub fn set_activation_handler<F>(handler: F)
+where
+    F: Fn(&str) + Send + Sync + 'static,
+{
+    linux::set_activation_handler(Box::new(handler));
 }
 
 /// Production-only: ask the user once for permission to post
@@ -306,38 +405,180 @@ mod macos_modern {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
-    use std::sync::Once;
+    use std::sync::mpsc::{channel, Sender};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
 
-    use super::{desktop_entry_name, icon_name, ChannelMessage};
+    use super::{desktop_entry_name, icon_name, ChannelMessage, Diagnostics};
 
     /// Hint values are kept as module constants so the boot-time
     /// environment dump and the per-delivery log line both report the
     /// exact same strings the daemon actually sees.
+    /// freedesktop reserves the action key `default` for "the user clicked the
+    /// notification body". Daemons render no button for it, which is exactly
+    /// what we want — a chat banner should open on click, not grow an Open
+    /// button.
+    const DEFAULT_ACTION: &str = "default";
     const URGENCY_LABEL: &str = "Normal";
     const CATEGORY: &str = "im.received";
     const SOUND_NAME: &str = "message-new-instant";
     const TIMEOUT_MS: u32 = 5_000;
 
-    /// Probe the notification server once and dump its identity + capability
-    /// list to the log. GNOME Shell, KDE Plasma, dunst, mako, xfce4-notifyd
-    /// all report different combinations — this is the first place to look
-    /// when "the dock counter flashes but nothing lands in the tray".
-    static PROBE: Once = Once::new();
-    fn log_server_probe_once() {
-        PROBE.call_once(|| {
+    /// Cached identity + capability list of the notification daemon. GNOME
+    /// Shell, KDE Plasma, dunst, mako and xfce4-notifyd all report different
+    /// combinations — this is the first place to look when "the dock counter
+    /// flashes but nothing lands in the tray".
+    ///
+    /// Both probes are blocking D-Bus round trips, so this is initialised
+    /// **only from the notifier thread**. Every caller below is already on it.
+    #[derive(Default)]
+    struct Probe {
+        server: Option<ServerInfo>,
+        caps: Vec<String>,
+        error: Option<String>,
+    }
+
+    struct ServerInfo {
+        name: String,
+        vendor: String,
+    }
+
+    static PROBE: OnceLock<Probe> = OnceLock::new();
+
+    fn probe() -> &'static Probe {
+        PROBE.get_or_init(|| {
+            let mut out = Probe::default();
             match notify_rust::get_server_information() {
-                Ok(info) => log::info!(
-                    "notify server: name={} vendor={} version={} spec={}",
-                    info.name, info.vendor, info.version, info.spec_version,
-                ),
-                Err(err) => log::warn!("notify server: get_server_information failed: {err}"),
+                Ok(info) => {
+                    log::info!(
+                        "notify server: name={} vendor={} version={} spec={}",
+                        info.name,
+                        info.vendor,
+                        info.version,
+                        info.spec_version,
+                    );
+                    out.server = Some(ServerInfo {
+                        name: info.name,
+                        vendor: info.vendor,
+                    });
+                }
+                Err(err) => {
+                    log::warn!("notify server: get_server_information failed: {err}");
+                    out.error = Some(err.to_string());
+                }
             }
             match notify_rust::get_capabilities() {
-                Ok(caps) => log::info!("notify caps: {:?}", caps),
-                Err(err) => log::warn!("notify caps: get_capabilities failed: {err}"),
+                Ok(caps) => {
+                    log::info!("notify caps: {:?}", caps);
+                    out.caps = caps;
+                }
+                Err(err) => {
+                    log::warn!("notify caps: get_capabilities failed: {err}");
+                    out.error.get_or_insert_with(|| err.to_string());
+                }
             }
-        });
+            out
+        })
+    }
+
+    // ---------------------------------------------------------------------
+    // The notifier thread
+    // ---------------------------------------------------------------------
+    //
+    // One long-lived thread owns every D-Bus call this module makes. Two
+    // reasons it is a thread and not just an async command:
+    //
+    //   1. Nothing here may touch the UI thread. `Notification::show()` blocks
+    //      until the daemon answers, and when no daemon is running D-Bus tries
+    //      to service-activate one — a wait bounded only by the 25s activation
+    //      timeout. Tauri runs non-async commands on the main thread, so that
+    //      wait used to freeze the whole window.
+    //
+    //   2. Deliveries must serialise. A burst of messages arriving while the
+    //      daemon is slow would otherwise pile up concurrent blocking calls,
+    //      and the `replaces_id` bookkeeping below assumes a single writer.
+    //
+    // FIFO ordering is load-bearing: the AppImage `.desktop` integration is
+    // queued from `setup()` and has to land before the first message, or GNOME
+    // has nothing to attribute that message to.
+
+    pub enum Job {
+        Message(ChannelMessage),
+        Ping,
+        LogEnvironment {
+            binary: String,
+            product_name: String,
+            identifier: String,
+        },
+        AppImageIntegration,
+        /// Reply channel for the Settings diagnostics panel. Answered on this
+        /// thread so it observes the same probe cache the real sends use.
+        Diagnostics(Sender<Diagnostics>),
+    }
+
+    static QUEUE: OnceLock<Sender<Job>> = OnceLock::new();
+
+    fn queue() -> &'static Sender<Job> {
+        QUEUE.get_or_init(|| {
+            let (tx, rx) = channel::<Job>();
+            let spawned = std::thread::Builder::new()
+                .name("clawbits-notify".to_string())
+                .spawn(move || {
+                    // Ends when the sender is dropped, which only happens at
+                    // process exit — the sender lives in a static.
+                    for job in rx {
+                        match job {
+                            Job::Message(message) => deliver_now(&message),
+                            Job::Ping => ping_now(),
+                            Job::LogEnvironment {
+                                binary,
+                                product_name,
+                                identifier,
+                            } => log_environment_now(&binary, &product_name, &identifier),
+                            Job::AppImageIntegration => ensure_appimage_desktop_file(),
+                            Job::Diagnostics(reply) => {
+                                let _ = reply.send(collect_diagnostics());
+                            }
+                        }
+                    }
+                });
+            if let Err(err) = &spawned {
+                log::error!("notify: could not spawn notifier thread: {err}");
+            }
+            tx
+        })
+    }
+
+    pub fn enqueue(job: Job) {
+        if queue().send(job).is_err() {
+            log::error!("notify: notifier thread is gone — dropping job");
+        }
+    }
+
+    /// Ask the notifier thread for a diagnostics snapshot.
+    ///
+    /// Blocks the caller, so the command wrapping this must be off the UI
+    /// thread. The timeout is generous on purpose: the answer is worth waiting
+    /// for precisely when the daemon is being slow, which is the case a user
+    /// opens this panel to investigate.
+    pub fn diagnostics() -> Diagnostics {
+        let (tx, rx) = channel::<Diagnostics>();
+        enqueue(Job::Diagnostics(tx));
+        rx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| {
+            log::warn!("notify diagnostics: notifier thread did not answer in time");
+            Diagnostics {
+                platform: "linux".to_string(),
+                supported: true,
+                desktop_entry: Some(desktop_entry_name().to_string()),
+                error: Some(
+                    "The notification daemon did not respond. It may not be running."
+                        .to_string(),
+                ),
+                ..Default::default()
+            }
+        })
     }
 
     /// Candidate paths where the freedesktop `.desktop` file for this
@@ -410,7 +651,38 @@ mod linux {
         None
     }
 
-    pub fn log_environment(binary: &str, product_name: &str, identifier: &str) {
+    /// The installed `.desktop` file whose basename equals the `DesktopEntry`
+    /// hint we send — the one GNOME Shell actually matches on. `None` means
+    /// the Shell has nothing to attribute us to and will drop our
+    /// notifications, which is the single highest-signal failure on Linux.
+    fn matching_desktop_file() -> Option<PathBuf> {
+        let basenames = candidate_basenames(icon_name(), desktop_entry_name());
+        desktop_file_candidates(&basenames)
+            .into_iter()
+            .find(|path| {
+                path.exists()
+                    && path.file_stem().and_then(|s| s.to_str()) == Some(desktop_entry_name())
+            })
+    }
+
+    /// Snapshot for the Settings diagnostics panel. Runs on the notifier
+    /// thread; `probe()` may block here, which is exactly why it does.
+    pub fn collect_diagnostics() -> Diagnostics {
+        let probed = probe();
+        Diagnostics {
+            platform: "linux".to_string(),
+            supported: true,
+            server_name: probed.server.as_ref().map(|s| s.name.clone()),
+            server_vendor: probed.server.as_ref().map(|s| s.vendor.clone()),
+            capabilities: probed.caps.clone(),
+            desktop_entry: Some(desktop_entry_name().to_string()),
+            desktop_file: matching_desktop_file().map(|p| p.display().to_string()),
+            notify_send: which("notify-send"),
+            error: probed.error.clone(),
+        }
+    }
+
+    pub fn log_environment_now(binary: &str, product_name: &str, identifier: &str) {
         log::info!("--- notification environment ---");
         log::info!(
             "binary={binary} product_name={product_name:?} identifier={identifier}"
@@ -505,8 +777,8 @@ mod linux {
         // Reach out to the daemon now rather than waiting for the first
         // message — failures here mean D-Bus itself can't talk to the
         // notification server (no daemon running, sandbox blocks the
-        // bus, etc.).
-        log_server_probe_once();
+        // bus, etc.). Blocking is fine: we are on the notifier thread.
+        probe();
 
         log::info!("--- end notification environment ---");
     }
@@ -558,7 +830,7 @@ mod linux {
         //   defensive.
         let mut n = notify_rust::Notification::new();
         n.summary(summary)
-            .body(body)
+            .body(&escape_body(body))
             .icon(icon_name())
             .hint(notify_rust::Hint::DesktopEntry(desktop_entry_name().into()))
             .hint(notify_rust::Hint::Category(CATEGORY.into()))
@@ -566,6 +838,27 @@ mod linux {
             .hint(notify_rust::Hint::SoundName(SOUND_NAME.into()))
             .timeout(notify_rust::Timeout::Milliseconds(TIMEOUT_MS));
         n
+    }
+
+    /// Escape the body when the daemon parses it as markup.
+    ///
+    /// Daemons advertising `body-markup` run the body through a limited
+    /// HTML/Pango parser. Chat messages here routinely carry `<`, `&` and code
+    /// fences, and an unescaped body either renders mangled or — when the parse
+    /// fails outright — is dropped by the daemon. That reads as "notifications
+    /// are broken", intermittently, for exactly the messages that happen to
+    /// contain a bracket.
+    ///
+    /// Body only: per the freedesktop spec the summary is never markup, so
+    /// escaping it would show users literal `&amp;` in a channel name.
+    fn escape_body(body: &str) -> String {
+        if !supports("body-markup") {
+            return body.to_string();
+        }
+        // Ampersand first, or the entities introduced below get double-escaped.
+        body.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
     }
 
     /// Log the exact payload we're about to hand to `org.freedesktop.
@@ -586,8 +879,130 @@ mod linux {
         );
     }
 
-    pub fn deliver(message: &ChannelMessage) {
-        log_server_probe_once();
+    /// The banner currently on screen for a channel.
+    ///
+    /// `id` is the `replaces_id` the crate was picked for (see Cargo.toml) and
+    /// the direct counterpart of the web push payload's `tag: channel:<id>`:
+    /// the next message in a channel supersedes that channel's banner instead
+    /// of stacking a new one. Without it a chatty channel buried the tray under
+    /// one banner per message, which reads as broken every bit as much as
+    /// silence does.
+    ///
+    /// `watched` prevents a thread pile-up. Every delivery could spawn its own
+    /// `wait_for_action` thread, and because replacement reuses the same id
+    /// they would *all* still be listening to it — so one click would fire N
+    /// navigations and N zbus connections would sit open until the user finally
+    /// dismissed the banner. One watcher per live id is enough.
+    ///
+    /// Entries are dropped when the notification ends, so a message arriving
+    /// after the user dismissed a banner opens a fresh one (and re-alerts)
+    /// rather than quietly replacing something no longer on screen.
+    struct Banner {
+        id: u32,
+        watched: bool,
+    }
+
+    static BANNERS: Mutex<Option<HashMap<String, Banner>>> = Mutex::new(None);
+
+    fn previous_id(channel_id: &str) -> Option<u32> {
+        let guard = BANNERS.lock().ok()?;
+        Some(guard.as_ref()?.get(channel_id)?.id)
+    }
+
+    /// Is this id going unwatched? False when a live thread already has it.
+    fn needs_watcher(channel_id: &str, id: u32) -> bool {
+        let Ok(guard) = BANNERS.lock() else {
+            return false;
+        };
+        !guard
+            .as_ref()
+            .and_then(|map| map.get(channel_id))
+            .is_some_and(|banner| banner.watched && banner.id == id)
+    }
+
+    /// Store the banner now on screen for a channel. `watched` must say
+    /// whether a thread is *actually* listening to this id, not whether we
+    /// wanted one — see the call site.
+    fn record(channel_id: &str, id: u32, watched: bool) {
+        if let Ok(mut guard) = BANNERS.lock() {
+            guard
+                .get_or_insert_with(HashMap::new)
+                .insert(channel_id.to_string(), Banner { id, watched });
+        }
+    }
+
+    /// Forget a banner once it is off screen — but only if it is still the one
+    /// we know about. A newer delivery may already have taken this channel's
+    /// slot, and dropping that would lose a live `replaces_id`.
+    fn forget(channel_id: &str, id: u32) {
+        if let Ok(mut guard) = BANNERS.lock() {
+            if let Some(map) = guard.as_mut() {
+                if map.get(channel_id).is_some_and(|banner| banner.id == id) {
+                    map.remove(channel_id);
+                }
+            }
+        }
+    }
+
+    /// Does the daemon advertise a capability? GNOME Shell, Plasma, dunst and
+    /// mako all differ; `probe()` cached the list on first use.
+    fn supports(capability: &str) -> bool {
+        probe().caps.iter().any(|c| c == capability)
+    }
+
+    /// Called when the user clicks one of our notifications, with the channel
+    /// id it carried. Installed by `lib.rs` so this module needs no dependency
+    /// on Tauri — it is spawned from a plain worker thread, and keeping the
+    /// boundary a callback is what lets the whole module be type-checked for
+    /// Linux from a host that isn't Linux.
+    type ActivationHandler = Box<dyn Fn(&str) + Send + Sync + 'static>;
+    static ON_ACTIVATE: OnceLock<ActivationHandler> = OnceLock::new();
+
+    pub fn set_activation_handler(handler: ActivationHandler) {
+        if ON_ACTIVATE.set(handler).is_err() {
+            log::warn!("notify: activation handler was already installed");
+        }
+    }
+
+    /// Wait for the user to act on one notification, on a thread of its own.
+    ///
+    /// `wait_for_action` consumes the handle and blocks until the daemon
+    /// reports either an invoked action or a close, so it cannot run on the
+    /// notifier thread — that thread has to stay free to deliver the next
+    /// message. Either outcome ends the thread.
+    ///
+    /// Returns whether the thread actually started, so the caller can leave
+    /// `watched` false and try again on the next message if it did not.
+    fn watch_for_activation(handle: notify_rust::NotificationHandle, channel_id: String) -> bool {
+        let id = handle.id();
+        let spawned = std::thread::Builder::new()
+            .name("clawbits-notify-action".to_string())
+            .spawn(move || {
+                handle.wait_for_action(|action| {
+                    // notify-rust reports a dismissal as the pseudo-action
+                    // "__closed"; anything that isn't our own key is a close.
+                    if action == DEFAULT_ACTION {
+                        log::info!("notify activated: channel_id={channel_id:?} id={id}");
+                        if let Some(handler) = ON_ACTIVATE.get() {
+                            handler(&channel_id);
+                        } else {
+                            log::warn!("notify activated but no handler is installed");
+                        }
+                    }
+                    forget(&channel_id, id);
+                });
+            });
+        match spawned {
+            Ok(_) => true,
+            Err(err) => {
+                log::warn!("notify: could not spawn action watcher: {err}");
+                false
+            }
+        }
+    }
+
+    fn deliver_now(message: &ChannelMessage) {
+        probe();
         // Body folds the author in since Linux notifications have no
         // subtitle slot. For DMs (where the channel name IS the author)
         // we'd otherwise read "Dmytro Tkachuk: msg" with "Dmytro Tkachuk"
@@ -597,17 +1012,42 @@ mod linux {
         } else {
             format!("{}: {}", message.author_name, message.body)
         };
+        let replaces = previous_id(&message.channel_id);
         let extra = format!(
-            "channel_id={:?} channel_name={:?} author={:?} ",
-            message.channel_id, message.channel_name, message.author_name,
+            "channel_id={:?} channel_name={:?} author={:?} replaces_id={:?} ",
+            message.channel_id, message.channel_name, message.author_name, replaces,
         );
         log_payload(&message.channel_name, &body, "message", &extra);
-        match base_notification(&message.channel_name, &body).show() {
-            Ok(handle) => log::info!(
-                "notify result (message): OK id={} channel_id={:?}",
-                handle.id(),
-                message.channel_id,
-            ),
+
+        let mut notification = base_notification(&message.channel_name, &body);
+        if let Some(id) = replaces {
+            notification.id(id);
+        }
+        // Only offered when the daemon says it handles actions at all. Per
+        // spec an unsupported action is ignored, but a couple of daemons
+        // render a stray button for it instead.
+        let actionable = supports("actions");
+        if actionable {
+            notification.action(DEFAULT_ACTION, "Open");
+        }
+
+        match notification.show() {
+            Ok(handle) => {
+                let id = handle.id();
+                log::info!(
+                    "notify result (message): OK id={} channel_id={:?}",
+                    id,
+                    message.channel_id,
+                );
+                // At most one watcher per live id. A replacement reuses the
+                // id, so a thread already waiting on it is still the right
+                // one; `||` short-circuits before the handle is moved.
+                // Recording last, with whether anything is *actually*
+                // listening, keeps a failed spawn from marking it watched.
+                let watched = !needs_watcher(&message.channel_id, id)
+                    || (actionable && watch_for_activation(handle, message.channel_id.clone()));
+                record(&message.channel_id, id, watched);
+            }
             Err(err) => log::error!(
                 "notify result (message): ERR channel_id={:?} err={err:#}",
                 message.channel_id,
@@ -615,14 +1055,17 @@ mod linux {
         }
     }
 
-    /// One-shot debug ping. Lets the user trigger a hand-crafted test
-    /// notification from DevTools (`invoke('notify_debug_ping')`) without
-    /// needing a real incoming chat message. The payload is intentionally
-    /// minimal and all-ASCII so we can rule out malformed body content.
-    pub fn debug_ping() {
-        log_server_probe_once();
-        let summary = "Clawbits debug ping";
-        let body = "If you see this, the daemon is wired up.";
+    /// One-shot test notification, triggered from Settings → Notifications.
+    /// Lets a user prove out the path without needing a second account to post
+    /// a real message. The payload is intentionally minimal and all-ASCII so a
+    /// failure can't be blamed on malformed body content.
+    ///
+    /// Deliberately carries no `replaces_id`: the test must produce a visible
+    /// banner every time it is pressed, not silently overwrite the last one.
+    fn ping_now() {
+        probe();
+        let summary = "Clawbits";
+        let body = "Test notification - delivery is working.";
         log_payload(summary, body, "debug-ping", "");
         match base_notification(summary, body).show() {
             Ok(handle) => log::info!("notify result (debug-ping): OK id={}", handle.id()),
@@ -641,7 +1084,7 @@ mod linux {
     /// Idempotent: rewrites only when the file is missing or its `Exec`
     /// no longer points at the current AppImage (it moved or
     /// auto-updated). No-op when `APPIMAGE` is unset (`.deb` / dev run).
-    pub fn ensure_appimage_desktop_file() {
+    fn ensure_appimage_desktop_file() {
         // The AppImage runtime exports APPIMAGE (absolute path to the
         // .AppImage) and APPDIR (mounted squashfs root). Both are absent
         // on .deb installs and `cargo tauri dev`, so this whole routine
@@ -763,12 +1206,31 @@ mod linux {
     }
 }
 
-/// Trigger a hand-crafted debug notification. Linux-only path is wired
-/// up; on macOS and Windows it logs and returns so the JS caller doesn't
-/// crash if a developer invokes it on the wrong platform.
+/// Trigger a hand-crafted test notification through the same delivery path as
+/// a real message.
+///
+/// Reachable from Settings → Notifications on every desktop platform. It used
+/// to be Linux-only and DevTools-only, which meant the one platform where
+/// delivery is fragile had no way for a user to tell "the daemon dropped it"
+/// apart from "the app never sent it" — the log line this produces is exactly
+/// that distinction.
 pub fn debug_ping() {
     #[cfg(target_os = "linux")]
-    linux::debug_ping();
-    #[cfg(not(target_os = "linux"))]
-    log::info!("notify debug_ping called on non-Linux platform — no-op");
+    linux::enqueue(linux::Job::Ping);
+
+    #[cfg(target_os = "macos")]
+    {
+        // Routed through the real delivery path rather than a bespoke one, so
+        // a passing test genuinely exercises what messages use.
+        let message = ChannelMessage {
+            channel_id: "clawbits-test".to_string(),
+            channel_name: "Clawbits".to_string(),
+            author_name: "Clawbits".to_string(),
+            body: "Test notification — delivery is working.".to_string(),
+        };
+        deliver(&message);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    log::info!("notify debug_ping: no native backend on this platform — no-op");
 }

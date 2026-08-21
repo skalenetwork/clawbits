@@ -18,6 +18,8 @@ from sqlmodel import Session, select
 
 from clawbits.db.models import PushDevice
 from clawbits.realtime import web_push
+from clawbits.realtime.web_push import BSLASH
+from clawbits.ssrf import UnsafeHostError
 from tests.fastapi._auth_helpers import auth_headers, login_human
 
 # Shaped like a real FCM subscription; the host is what matters.
@@ -76,6 +78,29 @@ def test_accepts_a_real_push_service_endpoint(test_client, _test_engine, vapid, 
         ("https://storage.googleapis.com/bucket/x", "a Google API that is not FCM"),
         ("https://evil.example.com/.push.apple.com", "push host only in the path"),
         ("https://fcm.googleapis.com/" + "a" * 4096, "over the length cap"),
+        # Parser-confusion: httpx reads everything before the "@" as userinfo
+        # and reports the allowlisted trailing host, while requests treats the
+        # backslash as a path separator and dials the LEADING name. Vetting one
+        # host and dialing another defeats both the allowlist and the
+        # private-address guard, so these must never be stored.
+        (
+            "https://attacker.example" + BSLASH + "@fcm.googleapis.com/x",
+            "backslash-before-@ splits the host between parsers",
+        ),
+        (
+            "https://127.0.0.1" + BSLASH + "@fcm.googleapis.com/x",
+            "same trick pointed at loopback",
+        ),
+        (
+            "https://169.254.169.254" + BSLASH + "@web.push.apple.com/x",
+            "same trick pointed at cloud metadata",
+        ),
+        ("https://user:pw@fcm.googleapis.com/x", "userinfo on an allowlisted host"),
+        ("https://evil.example.com@fcm.googleapis.com/x", "userinfo masquerade"),
+        ("https://fcm.googleapis.com\t/x", "tab in the authority"),
+        ("https://fcm.googleapis.com\n/x", "newline in the authority"),
+        ("https://fcm.googleapis.com\r/x", "carriage return in the authority"),
+        ("https://fcm.googleap\u0131s.com/x", "dotless-i homoglyph (IDNA)"),
     ],
 )
 def test_rejects_unsafe_endpoints(test_client, _test_engine, vapid, endpoint, why):
@@ -104,6 +129,30 @@ def test_subscribe_404s_without_vapid(test_client, _test_engine, public_dns, mon
     token, _ = login_human(test_client, "push-novapid@clawbits.ai")
     resp = _subscribe(test_client, token, GOOD_ENDPOINT)
     assert resp.status_code == 404, resp.text
+    assert _devices(_test_engine, GOOD_ENDPOINT) == []
+
+
+def test_unsubscribe_works_without_vapid(test_client, _test_engine, vapid, public_dns, monkeypatch):
+    """Removing a subscription must not depend on the *sending* config.
+
+    Subscribe is gated on VAPID because a row that can never be sent to is
+    pure risk. Unsubscribe is the opposite: gating it means pulling or
+    fat-fingering the keys strands every existing subscriber with a row they
+    can no longer delete. The row is created while VAPID is configured, then
+    removed after it is taken away.
+    """
+    token, _ = login_human(test_client, "push-unsub-novapid@clawbits.ai")
+    assert _subscribe(test_client, token, GOOD_ENDPOINT).status_code == 200
+    assert len(_devices(_test_engine, GOOD_ENDPOINT)) == 1
+
+    monkeypatch.setattr(web_push, "VAPID_PUBLIC_KEY", "")
+    monkeypatch.setattr(web_push, "VAPID_PRIVATE_KEY", "")
+    resp = test_client.post(
+        "/api/push/web/unsubscribe",
+        headers=auth_headers(token),
+        json={"endpoint": GOOD_ENDPOINT},
+    )
+    assert resp.status_code == 200, resp.text
     assert _devices(_test_engine, GOOD_ENDPOINT) == []
 
 
@@ -166,6 +215,25 @@ def test_resubscribing_own_endpoint_refreshes_in_place(
     assert len(rows) == 1
     assert rows[0].id == first.id, "re-subscribing must not churn the row"
     assert rows[0].human_id == int(user["id"])
+
+
+def test_vetted_host_is_the_host_the_transport_dials():
+    """The invariant behind the reject table above.
+
+    Validation used to read the host with httpx while the send dialed it with
+    requests. Any input the two parsers disagree about is a bypass, so the
+    check now takes the host from the transport and refuses on disagreement.
+    """
+    hostile = "https://attacker.example" + BSLASH + "@fcm.googleapis.com/x"
+    # The transport really would go somewhere else — this is the bug, not a
+    # hypothetical.
+    assert web_push._transport_host(hostile) == "attacker.example"
+    with pytest.raises(UnsafeHostError):
+        web_push.validate_push_endpoint(hostile)
+
+    # A legitimate endpoint still passes, and vets the host it actually dials.
+    web_push.validate_push_endpoint(GOOD_ENDPOINT)
+    assert web_push._transport_host(GOOD_ENDPOINT) == "fcm.googleapis.com"
 
 
 def test_send_refuses_a_row_that_no_longer_validates(monkeypatch):

@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import {Button} from "@/components/ui/button";
 import {registerConfirmEmitter, type PendingConfirm} from "@/lib/confirm";
+import {ExtraActionButton} from "@/components/ExtraActionButton";
 
 /**
  * Renders the single confirmation dialog driven by the imperative
@@ -25,6 +26,7 @@ export function ConfirmHost() {
     };
 
     const destructive = pending?.destructive ?? true;
+    const extra = pending?.extraAction;
 
     return (
         <Dialog
@@ -39,6 +41,11 @@ export function ConfirmHost() {
                     )}
                 </DialogHeader>
                 <DialogFooter>
+                    {extra && (
+                        // Keyed on the prompt so a second confirm() starts
+                        // with a fresh button rather than a spent "Exported".
+                        <ExtraActionButton action={extra} resetKey={pending}/>
+                    )}
                     <Button
                         type="button"
                         variant="ghost"

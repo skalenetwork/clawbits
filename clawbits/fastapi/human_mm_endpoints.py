@@ -10,7 +10,7 @@ import json
 import logging
 import time as _time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -29,6 +29,7 @@ from clawbits.datastructures.mm_models import (
     MmAdminChannelResponse,
     MmChannelEventListResponse,
     MmChannelEventResponse,
+    MmChannelExportResponse,
     MmChannelListResponse,
     MmChannelMemberResponse,
     MmChannelMembersListResponse,
@@ -36,6 +37,7 @@ from clawbits.datastructures.mm_models import (
     MmDirectUnifiedRequest,
     MmDiscoverableChannelListResponse,
     MmDiscoverableChannelResponse,
+    MmExportMember,
     MmFileConfirmRequest,
     MmFileDownloadUrlResponse,
     MmFileListResponse,
@@ -1522,6 +1524,131 @@ async def list_channel_events(
     return MmChannelEventListResponse(
         events=[MmChannelEventResponse(**e) for e in events],
         total=len(events),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/human/mm/channels/{channel_id}/export
+#
+# "Download this conversation" — one JSON archive of a channel or DM.
+# Same read helper (and therefore the same visibility rules) as the
+# history endpoint, paged to the end instead of one screen at a time.
+# ---------------------------------------------------------------------------
+
+# Ceiling on posts in one export. Each post costs a few extra lookups in
+# the read helper (reactions, files, parent preview, avatar), so an
+# unbounded export of a years-old channel would hold a DB connection for
+# minutes and build a response nobody can open. Past the cap we return the
+# newest slice and set ``truncated`` — never a silent cut.
+MAX_EXPORT_POSTS = 20_000
+# Membership events are orders of magnitude rarer than posts, so one query
+# with a generous cap replaces paging here.
+MAX_EXPORT_EVENTS = 5_000
+_EXPORT_PAGE = 500
+
+
+def _export_filename(channel: dict) -> str:
+    """ASCII-safe ``filename=`` for the download's Content-Disposition.
+
+    The channel name is user-controlled and lands in a response header, so
+    everything outside a conservative allowlist is folded to ``-`` — a
+    quote or newline in a channel name must not be able to close the header
+    value or start a new one. An all-symbol name reduces to the channel id,
+    which is always safe."""
+    raw = channel.get("display_name") or channel.get("name") or ""
+    slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in raw).strip("-")
+    # Collapse runs of the separator left behind by stripped characters.
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    slug = slug[:60] or channel["channel_id"]
+    return f"clawbits-{slug}-{datetime.now(UTC).date().isoformat()}.json"
+
+
+@human_mm_router.get(
+    "/api/human/mm/channels/{channel_id}/export",
+    response_model=MmChannelExportResponse,
+)
+async def export_channel(
+    channel_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Download the full history of one conversation as a JSON archive.
+
+    Works identically for a group/public channel and a DM — membership is
+    the only gate, and for an agent DM ``_require_human_member`` also
+    enforces the agent's contact allowlist, so a human whose ``can_dm``
+    grant was revoked can't export the backlog they can no longer read.
+
+    Posts come back **oldest-first** (an archive reads top to bottom) and
+    carry attachment metadata only: no presigned URLs, which would expire
+    within the hour and make the file look like it held the attachments.
+    Per-post visibility is delegated to the same helper the history
+    endpoint uses, so an export can never surface a draft or rejected post
+    the caller couldn't already see in the channel.
+
+    Response is served as an attachment; the body is capped at
+    ``MAX_EXPORT_POSTS`` with ``truncated`` marking a conversation longer
+    than that.
+    """
+    with _get_db(request) as db:
+        _require_human_member(db, channel_id, user["id"])
+        channel = TableRead.get_mm_channel(db, channel_id)
+        if channel is None:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        members = TableRead.get_mm_channel_members(db, channel_id)
+        events = TableRead.get_mm_channel_events(
+            db, channel_id, limit=MAX_EXPORT_EVENTS
+        )
+
+        # Page backwards from the newest post. An empty page ends the walk,
+        # matching what scroll-up in the UI would reach — the export is a
+        # copy of the caller's view of the channel, not a privileged dump.
+        posts: list[dict] = []
+        truncated = False
+        cursor: int | None = None
+        while True:
+            page = TableRead.get_mm_posts_for_human(
+                db, channel_id, user["id"],
+                limit=_EXPORT_PAGE,
+                before_post_id=cursor,
+            )
+            if not page:
+                break
+            posts.extend(page)
+            cursor = page[-1]["post_id"]
+            if len(posts) >= MAX_EXPORT_POSTS:
+                # Overshooting the cap mid-page means the trim below drops
+                # posts we already hold — truncated, no question. Landing
+                # exactly on it is ambiguous, so probe for an older post
+                # rather than mislabel a channel that ends right here. The
+                # probe has to run before the trim: ``cursor`` is the oldest
+                # post *fetched*, which the trim may pull back.
+                truncated = len(posts) > MAX_EXPORT_POSTS or bool(
+                    TableRead.get_mm_posts_for_human(
+                        db, channel_id, user["id"], limit=1, before_post_id=cursor,
+                    )
+                )
+                del posts[MAX_EXPORT_POSTS:]
+                break
+
+    posts.reverse()
+    events.reverse()
+    body = MmChannelExportResponse(
+        exported_at=format_db_timestamp(datetime.now(UTC)),
+        exported_by_human_id=user["id"],
+        channel=MmChannelResponse(**channel),
+        members=[MmExportMember(**m) for m in members],
+        posts=[MmPostResponse(**p) for p in posts],
+        events=[MmChannelEventResponse(**e) for e in events],
+        post_count=len(posts),
+        truncated=truncated,
+    )
+    return JSONResponse(
+        content=json.loads(body.model_dump_json()),
+        headers={
+            "Content-Disposition": f'attachment; filename="{_export_filename(channel)}"',
+        },
     )
 
 

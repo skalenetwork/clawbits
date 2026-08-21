@@ -15,6 +15,7 @@ import { agentDisplay } from "@/lib/agentDisplay";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 import { useActiveOrg } from "@/hooks/useActiveOrg";
+import { useAgentDmExport } from "@/hooks/useAgentDmExport";
 import { PageHeader } from "@/components/PageHeader";
 import { RenameAgentDialog } from "@/components/RenameAgentDialog";
 import { DeleteAgentDialog } from "@/components/agent/DeleteAgentDialog";
@@ -49,6 +50,10 @@ export default function AgentManagePage() {
       toast.error(errMsg(err, "Couldn't delete agent"));
     },
   });
+
+  // Deleting an agent with "keep messages" off destroys the DM with it, so the
+  // dialog offers to save that transcript first. Null when there's no DM.
+  const exportAction = useAgentDmExport(orgId, profile?.agent_id);
 
   const canManage = Boolean(profile?.is_operator) || isOrgOwner;
   const name = profile ? agentDisplay(profile) : "";
@@ -124,6 +129,7 @@ export default function AgentManagePage() {
             onConfirm={(keepContent) => {
               deleteMutation.mutate(keepContent);
             }}
+            exportAction={exportAction}
           />
         </>
       )}

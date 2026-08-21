@@ -13,6 +13,7 @@ import {
   verifySocialEmail,
 } from "../lib/api";
 import { queryKeys } from "../lib/queryKeys";
+import { setDesktopSessionLive } from "../lib/desktop";
 
 const ACTIVE_ORG_KEY = "fc_active_org_id";
 
@@ -127,6 +128,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Mount-only. ``queryClient`` is a stable singleton; the boot org is read
     // from localStorage inside the effect so an org switch never re-runs it.
   }, [queryClient]);
+
+  // Keep the desktop deep-link handler in step with the session: while a
+  // user is signed in it refuses a `clawbits://oauth-callback` token
+  // hand-off, so an OS-routed URL can't silently move the app into
+  // someone else's account. Tracked from `user` rather than from the
+  // stored token, which survives its own session and would otherwise
+  // block a legitimate sign-in after expiry.
+  useEffect(() => { setDesktopSessionLive(user !== null); }, [user]);
 
   const setActiveOrgId = (orgId: string) => {
     localStorage.setItem(ACTIVE_ORG_KEY, orgId);

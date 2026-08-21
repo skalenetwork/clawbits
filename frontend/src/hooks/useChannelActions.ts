@@ -11,6 +11,7 @@ import {
     type MmChannel,
 } from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
+import {exportChatToDisk} from "@/lib/exportChat";
 import {draftStore} from "@/lib/messageDrafts";
 import {toast} from "@/lib/toast";
 import {confirm} from "@/lib/confirm";
@@ -26,6 +27,8 @@ export interface ChannelActions {
     canDelete: (channel: MmChannel) => boolean;
     copyLink: (channel: MmChannel) => void;
     copyId: (channel: MmChannel) => void;
+    /** Download this conversation's history as a JSON file. */
+    exportChat: (channel: MmChannel) => void;
 }
 
 /**
@@ -102,6 +105,20 @@ export function useChannelActions(): ChannelActions {
         },
     });
 
+    // "Save a copy before you destroy it" for the confirms below. Shares one
+    // routine with the menu action so the toast, filename and — the part that
+    // matters — the failure signalling stay identical: ``exportChatToDisk``
+    // rethrows, which is how the dialog tells a saved copy from a failed one.
+    const exportAction = useCallback(
+        (channel: MmChannel) => ({
+            label: "Export chat",
+            busyLabel: "Exporting\u2026",
+            doneLabel: "Exported",
+            run: () => exportChatToDisk(channel.channel_id),
+        }),
+        [],
+    );
+
     // Deleting a channel you created removes it for everyone, even when other
     // humans are still in it — so we always confirm first and name the blast
     // radius. Distinct from ``leave``, which only affects you (unless you're
@@ -111,13 +128,14 @@ export function useChannelActions(): ChannelActions {
             const ok = await confirm({
                 title: "Delete this channel?",
                 description:
-                    "This permanently deletes the channel and all of its messages for everyone. This can't be undone.",
+                    "This permanently deletes the channel and all of its messages for everyone. This can't be undone - export a copy first if you want to keep it.",
                 confirmLabel: "Delete channel",
+                extraAction: exportAction(channel),
             });
             if (!ok) return;
             deleteMutation.mutate(channel.channel_id);
         },
-        [deleteMutation],
+        [deleteMutation, exportAction],
     );
 
     // Leaving a channel as its last human member deletes it server-side, so
@@ -148,21 +166,23 @@ export function useChannelActions(): ChannelActions {
                         ? {
                             title: "Leave this chat?",
                             description:
-                                "You're the only person here. Leaving removes this conversation with the agent for good - it can't be undone.",
+                                "You're the only person here. Leaving removes this conversation with the agent for good - it can't be undone. Export it first if you want to keep the transcript.",
                             confirmLabel: "Leave & delete",
+                            extraAction: exportAction(channel),
                         }
                         : {
                             title: "Delete this channel?",
                             description:
-                                "You're the last member. Leaving will permanently delete this channel and all of its messages. This can't be undone.",
+                                "You're the last member. Leaving will permanently delete this channel and all of its messages. This can't be undone - export a copy first if you want to keep it.",
                             confirmLabel: "Leave & delete",
+                            extraAction: exportAction(channel),
                         },
                 );
                 if (!ok) return;
             }
             leaveMutation.mutate(channel.channel_id);
         },
-        [user, leaveMutation],
+        [user, leaveMutation, exportAction],
     );
 
     const copyToClipboard = (text: string, label: string) => {
@@ -180,5 +200,6 @@ export function useChannelActions(): ChannelActions {
             copyToClipboard(`${window.location.origin}/channels/${c.channel_id}`, "Link copied");
         },
         copyId: (c) => { copyToClipboard(c.channel_id, "Channel ID copied"); },
+        exportChat: (c) => { void exportChatToDisk(c.channel_id); },
     };
 }

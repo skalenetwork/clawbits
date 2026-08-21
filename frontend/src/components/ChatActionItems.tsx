@@ -8,6 +8,7 @@ import {
     Copy01Icon,
     LinkSquare02Icon,
     ArrowUpRight01Icon,
+    Download01Icon,
 } from "@hugeicons/core-free-icons";
 import type {IconSvgElement} from "@hugeicons/react";
 import {Icon} from "@/components/Icon";
@@ -45,6 +46,9 @@ export function ChatContextMenuItems({
             </ContextMenuItem>
             <ContextMenuItem onClick={() => { actions.copyId(channel); }}>
                 <Icon icon={Copy01Icon}/> Copy channel ID
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => { actions.exportChat(channel); }}>
+                <Icon icon={Download01Icon}/> Export chat
             </ContextMenuItem>
             <ContextMenuSeparator/>
             <ContextMenuItem onClick={() => { actions.togglePin(channel); }}>
@@ -139,6 +143,11 @@ export function ChatActionSheet({
                         icon={muted ? Bell : BellOff}
                         label={muted ? "Unmute" : "Mute"}
                         onSelect={() => { run(() => { actions.toggleMute(channel); }); }}
+                    />
+                    <SheetRow
+                        icon={Download01Icon}
+                        label="Export chat"
+                        onSelect={() => { run(() => { actions.exportChat(channel); }); }}
                     />
                     <SheetRow
                         icon={LogOut}

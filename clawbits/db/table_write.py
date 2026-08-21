@@ -30,6 +30,7 @@ from clawbits.db.models import (
     UNKNOWN_PROVIDER,
     Agent,
     AgentAction,
+    AgentChannelState,
     AgentClaim,
     AgentContactPermission,
     AgentPost,
@@ -135,7 +136,15 @@ class TableWrite:
     # ---------------- CB tokens ----------------
 
     @staticmethod
-    def mint_cb_tokens(session: Session, agent_id: AgentId, ceiling: int) -> int:
+    def mint_cb_tokens(
+        session: Session,
+        agent_id: AgentId,
+        ceiling: int,
+        *,
+        window_budget: int | None = None,
+        window_seconds: int = 86_400,
+        now: datetime | None = None,
+    ) -> tuple[int, int]:
         """Top the agent's balance up *to* ``ceiling``. Never above, never additive.
 
         Deliberately idempotent: the proof-of-cognition handshake that calls this
@@ -149,24 +158,67 @@ class TableWrite:
         balance is bounded by construction rather than by a counter someone has
         to remember to check.
 
+        The ceiling alone bounds what an agent can *hold*, not what it can
+        *spend*: since the handshake is free, an agent could otherwise alternate
+        write -> handshake -> refill forever and mint without limit over time.
+        So minting is also metered — at most ``window_budget`` tokens may be
+        added per rolling ``window_seconds``, tracked on the agent row and
+        updated in this same locked transaction. ``window_budget`` defaults to
+        ``ceiling``, i.e. one full tank per window, which no well-behaved client
+        ever approaches (they mint once at signup and would have to burn the
+        entire balance to notice).
+
+        Exhausting the budget is deliberately *not* an error: the mint simply
+        adds nothing and reports ``minted == 0``. Returning a new failure status
+        here would break every client — none of them handle 402 on this route
+        and all three retry the challenge 16x with no backoff — whereas an
+        agent that has genuinely burned its budget just runs out of tokens and
+        gets the ordinary 402 on its next write, which is the intended economics.
+
         Writing a constant (rather than a computed delta) is also what makes this
         race-safe: two concurrent handshakes both land on ``ceiling``. The row
         lock is for consistency with :meth:`charge_cb_tokens`, not correctness.
 
-        Returns the balance after the call; the caller derives how much was
-        actually added by diffing against the balance it read beforehand.
+        Returns ``(new_balance, minted)``. ``minted`` is computed here, while
+        the row lock is held, rather than by the caller diffing against a
+        balance it read beforehand: that read would sit outside the lock, so
+        two concurrent handshakes could both report the full amount when only
+        one of them actually added anything.
         """
         if ceiling <= 0:
             raise ValueError("Mint ceiling must be positive")
+        if window_budget is None:
+            window_budget = ceiling
+        if window_budget <= 0:
+            raise ValueError("Mint window budget must be positive")
+        if window_seconds <= 0:
+            raise ValueError("Mint window must be positive")
+        now = now or datetime.now(_dt.UTC)
 
         row = session.get(Agent, agent_id.value, with_for_update=True)
         if row is None:
             raise ValueError(f"Agent '{agent_id.value}' not found")
 
-        if row.cb_tokens < ceiling:
-            row.cb_tokens = ceiling
-            session.flush()
-        return row.cb_tokens
+        # Reset the window when it has elapsed (or never opened). A NULL start
+        # means this agent has never minted, so it starts a fresh window here.
+        start = row.cb_tokens_minted_window_start
+        if start is None or (now - start).total_seconds() >= window_seconds:
+            start, spent = now, 0
+        else:
+            spent = row.cb_tokens_minted_in_window
+
+        # Top up toward the ceiling, but never by more than the window allows.
+        previous = row.cb_tokens
+        headroom = max(0, window_budget - spent)
+        target = min(ceiling, previous + headroom)
+        if target > previous:
+            row.cb_tokens = target
+        minted = row.cb_tokens - previous
+
+        row.cb_tokens_minted_window_start = start
+        row.cb_tokens_minted_in_window = spent + minted
+        session.flush()
+        return row.cb_tokens, minted
 
     @staticmethod
     def charge_cb_tokens(session: Session, agent_id: AgentId, amount: int) -> int:
@@ -958,6 +1010,19 @@ class TableWrite:
             delete(AgentUsageDaily).where(AgentUsageDaily.agent_id == agent_id)
         )
 
+        # The skills sync plane (mirrored installs + the per-agent sync state
+        # every self-report writes) FKs the agent with no cascade either. Like
+        # automations and usage it's control-plane state rather than authored
+        # content, so both delete paths drop it -- and because the sync-state
+        # row exists for every agent whose plugin ever reported, leaving it
+        # behind makes essentially every agent undeletable.
+        session.exec(
+            delete(AgentSkillInstall).where(AgentSkillInstall.agent_id == agent_id)
+        )
+        session.exec(
+            delete(AgentSkillSyncState).where(AgentSkillSyncState.agent_id == agent_id)
+        )
+
         if keep_content:
             TableWrite._delete_agent_keep_content(session, agent)
             return departures
@@ -1004,6 +1069,30 @@ class TableWrite:
                 .where(MmPost.agent_id.is_distinct_from(agent_id))
             ).one()
             session.add(state)
+        # Same rewind for OTHER agents' read pointers (same FK, same phantom-
+        # unread hazard: a nulled pointer would replay the whole channel as a
+        # restart backlog for every agent whose last settled turn answered
+        # this agent).
+        stale_agent_pointers = session.exec(
+            select(AgentChannelState)
+            .where(AgentChannelState.last_read_post_id.in_(agent_post_ids_subq))
+            # The agent's own rows are bulk-deleted just below — rewinding
+            # them too would leave dirty ORM instances behind a bulk DELETE,
+            # which explodes at flush with a zero-row UPDATE.
+            .where(AgentChannelState.agent_id != agent_id)
+        ).all()
+        for state in stale_agent_pointers:
+            state.last_read_post_id = session.exec(
+                select(func.max(MmPost.post_id))
+                .where(MmPost.channel_id == state.channel_id)
+                .where(MmPost.post_id < state.last_read_post_id)
+                .where(MmPost.agent_id.is_distinct_from(agent_id))
+            ).one()
+            session.add(state)
+        # The deleted agent's own read pointers go outright (FK on agent_id).
+        session.exec(
+            delete(AgentChannelState).where(AgentChannelState.agent_id == agent_id)
+        )
         session.exec(
             update(MmPost)
             .where(MmPost.parent_post_id.in_(agent_post_ids_subq))
@@ -1444,6 +1533,15 @@ class TableWrite:
             .where(HumanChannelState.last_read_post_id.in_(user_post_ids_subq))
             .values(last_read_post_id=None)
         )
+        # Agent read pointers parked on the user's posts share the same FK.
+        # Null (not rewind) mirrors the human treatment on this path; agents
+        # cap their own catch-up, so a null pointer costs one bounded
+        # first-boot pass, not a full-history replay.
+        session.exec(
+            update(AgentChannelState)
+            .where(AgentChannelState.last_read_post_id.in_(user_post_ids_subq))
+            .values(last_read_post_id=None)
+        )
         session.exec(
             update(MmPost)
             .where(MmPost.parent_post_id.in_(user_post_ids_subq))
@@ -1494,6 +1592,30 @@ class TableWrite:
             update(AgentSignupRequest)
             .where(AgentSignupRequest.reviewed_by == human_id)
             .values(reviewed_by=None)
+        )
+        # Same treatment for everything else that only *names* the user as the
+        # person who authored/published/installed/created it. These are all
+        # plain NO ACTION FKs, so an uncleared one blocks the user delete; the
+        # rows themselves belong to an org that outlives the account (a skill
+        # in a shared library, an automation on someone else's agent), so they
+        # survive with attribution dropped rather than being deleted.
+        session.exec(
+            update(Skill).where(Skill.created_by == human_id).values(created_by=None)
+        )
+        session.exec(
+            update(SkillVersion)
+            .where(SkillVersion.published_by == human_id)
+            .values(published_by=None)
+        )
+        session.exec(
+            update(AgentSkillInstall)
+            .where(AgentSkillInstall.installed_by == human_id)
+            .values(installed_by=None)
+        )
+        session.exec(
+            update(Automation)
+            .where(Automation.created_by == human_id)
+            .values(created_by=None)
         )
         # Sidebar preview attribution for channels where the user authored the
         # last message — recompute below once their posts are gone.
@@ -1557,8 +1679,45 @@ class TableWrite:
             session.exec(
                 delete(Repository).where(Repository.org_id == org_id)
             )
+            # The org's skill library goes with the org: ``skills.org_id`` is
+            # NOT NULL, so there's nowhere to re-home it to. Order matters —
+            # versions and installs both reference ``skills.skill_id`` with no
+            # cascade, and a fork in a surviving org references the source
+            # skill (the model keeps that FK precisely so deleting the source
+            # never deletes the fork, so null the pointer rather than follow
+            # it).
+            org_skill_ids = list(session.exec(
+                select(Skill.skill_id).where(Skill.org_id == org_id)
+            ).all())
+            if org_skill_ids:
+                session.exec(
+                    update(Skill)
+                    .where(Skill.forked_from_skill_id.in_(org_skill_ids))
+                    .values(forked_from_skill_id=None)
+                )
+                # Defensive, like the agent detach below: an install row is a
+                # mirror of what's on the agent's disk, and the next self-report
+                # re-creates it as an unmanaged ('external') row — there's just
+                # no catalog entry left to manage it from.
+                session.exec(
+                    delete(AgentSkillInstall).where(
+                        AgentSkillInstall.skill_id.in_(org_skill_ids)
+                    )
+                )
+                session.exec(
+                    delete(SkillVersion).where(
+                        SkillVersion.skill_id.in_(org_skill_ids)
+                    )
+                )
+                session.exec(delete(Skill).where(Skill.skill_id.in_(org_skill_ids)))
             # Defensive: detach any agent still tagged to this org (the operate
-            # guard means none should remain operated by this user).
+            # guard means none should remain operated by this user), and with it
+            # the install rows tagged to the org the agent is leaving.
+            session.exec(
+                update(AgentSkillInstall)
+                .where(AgentSkillInstall.org_id == org_id)
+                .values(org_id=None)
+            )
             session.exec(
                 update(Agent).where(Agent.org_id == org_id).values(org_id=None)
             )
@@ -2691,6 +2850,31 @@ class TableWrite:
         return row.last_read_post_id or 0
 
     @staticmethod
+    def mark_mm_channel_read_agent(
+        session: Session, channel_id: str, agent_id: str, post_id: int
+    ) -> int:
+        """Upsert the agent read pointer for (agent, channel). Monotonic —
+        the pointer never moves backwards, so replays and out-of-order acks
+        are harmless. The caller clamps ``post_id`` to a real post in the
+        channel; this helper only enforces forward motion.
+
+        Returns the new effective ``last_read_post_id``.
+        """
+        row = session.exec(
+            select(AgentChannelState)
+            .where(AgentChannelState.agent_id == agent_id)
+            .where(AgentChannelState.channel_id == channel_id)
+        ).first()
+        if row is None:
+            row = AgentChannelState(agent_id=agent_id, channel_id=channel_id)
+        if row.last_read_post_id is None or post_id > row.last_read_post_id:
+            row.last_read_post_id = post_id
+        row.updated_at = _dt.datetime.now(_dt.UTC)
+        session.add(row)
+        session.flush()
+        return row.last_read_post_id or 0
+
+    @staticmethod
     def set_mm_channel_muted(
         session: Session, channel_id: str, human_id: int, muted: bool
     ) -> bool:
@@ -2729,9 +2913,10 @@ class TableWrite:
         personal SSE topic. Returns ``None`` if the channel doesn't exist.
 
         Deletion order matters because not every FK has ``ondelete``:
-          1. ``human_channel_state`` — references both ``mm_channels`` and
-             ``mm_posts`` (the ``last_read_post_id`` pointer). Clear first
-             so the post delete below isn't blocked.
+          1. ``human_channel_state`` and ``agent_channel_state`` — both
+             reference ``mm_channels`` and ``mm_posts`` (the
+             ``last_read_post_id`` pointer). Clear first so the post delete
+             below isn't blocked.
           2. ``mm_channel_members`` — direct FK to ``mm_channels``.
           3. ``mm_files`` (channel scope) — direct FK to ``mm_channels``.
              ``mm_files.post_id`` is ``ON DELETE SET NULL`` so order versus
@@ -2770,6 +2955,11 @@ class TableWrite:
         session.exec(
             delete(HumanChannelState).where(
                 HumanChannelState.channel_id == channel_id
+            )
+        )
+        session.exec(
+            delete(AgentChannelState).where(
+                AgentChannelState.channel_id == channel_id
             )
         )
         session.exec(
@@ -3000,6 +3190,17 @@ class TableWrite:
             )
         ).all()
         for state in stale_states:
+            state.last_read_post_id = predecessor_id
+            session.add(state)
+        # Agent read pointers share the FK and the same repoint-don't-null
+        # rationale: a nulled agent pointer replays the channel as restart
+        # backlog on the agent's next boot.
+        stale_agent_states = session.exec(
+            select(AgentChannelState).where(
+                AgentChannelState.last_read_post_id == post_id
+            )
+        ).all()
+        for state in stale_agent_states:
             state.last_read_post_id = predecessor_id
             session.add(state)
 

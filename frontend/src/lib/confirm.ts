@@ -17,6 +17,22 @@ export interface ConfirmOptions {
     /** Styles the confirm button as destructive (red). Default true, since
      *  every current caller is a delete/leave. */
     destructive?: boolean;
+    /** Optional third button that runs *without* settling the prompt.
+     *
+     *  For irreversible actions there is often something the user wants to do
+     *  before deciding — save a copy of what is about to be destroyed. Folding
+     *  that into the confirm button would force it on everyone; making it a
+     *  separate dialog would make them cancel and start over. So this runs in
+     *  place and leaves the choice open. The host disables the button while
+     *  ``run`` is in flight and after it resolves; a rejection re-enables it
+     *  (the action is expected to report its own failure) and never advances
+     *  to ``doneLabel``, which would wrongly imply a copy was saved. */
+    extraAction?: {
+        label: string;
+        busyLabel?: string;
+        doneLabel?: string;
+        run: () => Promise<unknown>;
+    };
 }
 
 export interface PendingConfirm extends ConfirmOptions {

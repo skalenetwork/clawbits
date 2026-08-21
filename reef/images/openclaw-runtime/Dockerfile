@@ -27,16 +27,25 @@ FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}${OPENCLAW_IMAGE_VARIANT} AS b
 # plugin root - kept BEFORE the entrypoint COPY so editing the entrypoint doesn't
 # invalidate this (network) layer.
 #
-# NOTE: this used to pass `--acknowledge-clawhub-risk`, which OpenClaw REMOVED -
-# `openclaw plugins install --help` no longer lists it and the CLI hard-errors on
-# it ("does not recognize option"), so every image build was failing. The gate moved
-# into `security.installPolicy`; a community package now prints a review warning and
-# installs rather than aborting. If a future OpenClaw tightens that policy back to
-# fail-closed, set `security.installPolicy` here rather than reintroducing a flag.
+# NOTE: the ClawHub trust gate has flip-flopped upstream. `--acknowledge-clawhub-risk`
+# existed, was then REMOVED (the CLI hard-errored on it, so it was dropped here),
+# and 2026.7.1-2 brought it back FAIL-CLOSED: a release with ClawHub scan findings
+# (e.g. 0.15.11's capability advisory, flagged Aug 2026) aborts the install unless
+# the flag is passed. So probe `--help` and pass the flag only when this OpenClaw
+# recognizes it - keeps both older pinned versions (no such flag) and current ones
+# (flag required) building. Deliberately NOT solved via `security.installPolicy`:
+# this stage's $HOME persists into the final image, so a config-level bypass would
+# also weaken the RUNTIME install policy for every agent, while the flag is scoped
+# to this one invocation. It only acknowledges findings for our own first-party
+# plugin - when ClawHub flags a release, review the scan, don't just assume noise.
 FROM base AS plugin-clawhub
 ARG CLAWBITS_PLUGIN_CACHE_KEY=dev
 RUN echo "clawbits plugin cache key=${CLAWBITS_PLUGIN_CACHE_KEY}" \
-    && openclaw plugins install clawhub:clawbits-openclaw-plugin --pin
+    && ack_flag=""; \
+    if openclaw plugins install --help 2>/dev/null | grep -q -- --acknowledge-clawhub-risk; then \
+      ack_flag="--acknowledge-clawhub-risk"; \
+    fi; \
+    openclaw plugins install clawhub:clawbits-openclaw-plugin --pin ${ack_flag}
 
 # .plugin-src/ is the working-tree ./plugin, staged into the context by build.sh.
 FROM base AS plugin-local

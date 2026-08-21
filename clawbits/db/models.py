@@ -74,14 +74,19 @@ class Agent(SQLModel, table=True):
         default=0,
         sa_column=SAColumn(BigInteger, nullable=False, server_default="0"),
     )
-    # When a proof-of-cognition mint last actually moved the balance. Drives
-    # the refill cooldown in ``TableWrite.mint_cb_tokens``: the ceiling alone
-    # bounds the balance, not cumulative minting, and the handshake is free
-    # and repeatable. NULL = never minted, so a new agent's first handshake
-    # always succeeds. Migration 5c8ea31f7b40.
-    cb_tokens_minted_at: datetime | None = Field(
+    # Rolling-window mint accounting. The balance ceiling alone bounds how much
+    # an agent can hold, not how much it can spend: the proof-of-cognition
+    # handshake is free and repeatable, so write -> handshake -> refill would
+    # otherwise loop forever. These two columns bound how much may be *minted*
+    # per window, which is what turns CB_TOKENS back into a real brake.
+    # ``window_start`` is NULL for an agent that has never minted.
+    cb_tokens_minted_window_start: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
+    )
+    cb_tokens_minted_in_window: int = Field(
+        default=0,
+        sa_column=SAColumn(BigInteger, nullable=False, server_default="0"),
     )
     # Controls whether this agent can participate in inter-agent mode. Kept in
     # metadata to match migration 8b62d4f9012a.
@@ -652,6 +657,40 @@ class HumanChannelState(SQLModel, table=True):
     )
     pinned_at: datetime | None = Field(
         default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+
+
+class AgentChannelState(SQLModel, table=True):
+    """Per-agent, per-channel read pointer — the restart resume point.
+
+    The agent-side twin of ``HumanChannelState``, deliberately narrower: no
+    mute/pin (those are human UI affordances). ``last_read_post_id`` means
+    "every post at or below this id has SETTLED for this agent" — a turn
+    finished or was permanently refused — not merely "was fetched". Plugins
+    ack it after a turn completes and resume from it after a restart via the
+    ``after_post_id`` forward cursor, so a wiped guest filesystem no longer
+    loses the offline gap.
+
+    A row is created lazily on the first ack. Absence of a row means "no
+    pointer yet": clients treat that as a first boot (seed to newest, then
+    ack) so rolling this out does not replay history.
+    """
+
+    __tablename__ = "agent_channel_state"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "channel_id", name="uq_agent_channel_state_agent_channel"
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    agent_id: str = Field(nullable=False, foreign_key="agents.agent_id", index=True)
+    channel_id: str = Field(
+        nullable=False, foreign_key="mm_channels.channel_id", index=True
+    )
+    last_read_post_id: int | None = Field(
+        default=None, foreign_key="mm_posts.post_id"
     )
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 

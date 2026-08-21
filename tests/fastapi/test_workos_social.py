@@ -97,6 +97,89 @@ def test_social_callback_mobile_bridge_emits_clawbits_deeplink(test_client):
 
 
 # --------------------------------------------------------------------------
+# Native-client nonce (``client_state``). The desktop app can't see the OAuth
+# state cookie — that lives in the system browser — so it mints its own nonce
+# and requires the deep link to echo it. Without that binding, any web page
+# firing ``clawbits://oauth-callback?token=<attacker session>`` at the OS
+# scheme handler could hand the app a session the attacker controls.
+# --------------------------------------------------------------------------
+
+
+def _desktop_start(test_client, **params):
+    return test_client.get(
+        "/api/auth/social/google/start",
+        params={"desktop": 1, **params},
+        follow_redirects=False,
+    )
+
+
+def test_social_start_embeds_client_state_in_oauth_state(test_client):
+    """The nonce rides inside ``state`` so it inherits the existing
+    state-vs-cookie equality check on callback."""
+    nonce = "a" * 32
+    resp = _desktop_start(test_client, client_state=nonce)
+    assert resp.status_code == 302
+    state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
+    assert state.startswith(f"desktop.{nonce}."), state
+
+
+def test_social_start_rejects_malformed_client_state(test_client):
+    """A nonce we can't round-trip is a 400, not a silently dropped binding —
+    a dropped binding is a silently downgraded login."""
+    for bad in ("short", "has.a.dot" + "x" * 20, "bad!chars" + "x" * 20, "z" * 65):
+        resp = _desktop_start(test_client, client_state=bad)
+        assert resp.status_code == 400, (bad, resp.status_code)
+
+
+def test_social_callback_echoes_client_state_into_deep_link(test_client):
+    """The deep link carries the nonce back so the desktop listener can tell
+    this callback apart from one any web page could fire."""
+    nonce = "b" * 32
+    start = _desktop_start(test_client, client_state=nonce)
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    adapter = test_client.app.state.workos
+    code = adapter.inject_social_code(email="desktop@test.com")
+
+    cb = test_client.get(
+        "/api/auth/social/callback",
+        params={"code": code, "state": state},
+        follow_redirects=False,
+    )
+    assert cb.status_code == 200
+    assert "://oauth-callback?token=" in cb.text
+    assert f"state={nonce}" in cb.text
+
+
+def test_social_callback_desktop_without_client_state_still_works(test_client):
+    """Pre-nonce desktop builds keep working against a nonce-aware backend:
+    they send no ``client_state`` and get the old URL shape back."""
+    start = _desktop_start(test_client)
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    adapter = test_client.app.state.workos
+    code = adapter.inject_social_code(email="olddesktop@test.com")
+
+    cb = test_client.get(
+        "/api/auth/social/callback",
+        params={"code": code, "state": state},
+        follow_redirects=False,
+    )
+    assert cb.status_code == 200
+    assert "://oauth-callback?token=" in cb.text
+    assert "state=" not in cb.text
+
+
+def test_split_native_state_accepts_pre_nonce_layout():
+    """A flow started before a deploy must still resolve its scheme after it,
+    so the two-segment ``<kind>.<random>`` layout stays readable."""
+    from clawbits.fastapi.workos_auth import _split_native_state
+
+    assert _split_native_state("desktop.abc123") == ("desktop", "")
+    assert _split_native_state("desktop.NONCE.abc123") == ("desktop", "NONCE")
+    assert _split_native_state("mobile..abc123") == ("mobile", "")
+    assert _split_native_state("plainwebstate") == (None, "")
+
+
+# --------------------------------------------------------------------------
 # Email verification gate (WorkOS raises EmailVerificationRequiredError when
 # linking a new IdP to an email it doesn't yet trust).
 # --------------------------------------------------------------------------

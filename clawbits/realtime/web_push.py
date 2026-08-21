@@ -30,6 +30,8 @@ import json
 import logging
 import os
 
+from clawbits.domain import APP_URL
+
 log = logging.getLogger(__name__)
 
 # Bound concurrent sends so a fan-out to a large channel doesn't open
@@ -49,9 +51,9 @@ VAPID_SUBJECT = os.environ.get("CLAWBITS_VAPID_SUBJECT", "").strip() or "mailto:
 # The push endpoint is a *client-supplied URL the server then POSTs to*, so it
 # is an SSRF sink and gets the same treatment as the LobsterTalk LLM base URL
 # and link-preview unfurls: scheme pinned, host vetted, no redirects. The
-# browser only ever hands us one of the four real push services, so an
-# allowlist is affordable here and shrinks the reachable surface to ~nothing —
-# a private-address check alone would still permit a blind POST to any public
+# browser only ever hands us one of the real push services, so an allowlist is
+# affordable here and shrinks the reachable surface to ~nothing — a
+# private-address check alone would still permit a blind POST to any public
 # host on the internet.
 #
 # FCM is pinned to exact hosts rather than a ``.googleapis.com`` suffix: that
@@ -74,6 +76,9 @@ _PUSH_HOST_SUFFIXES = (
 # ``Text`` (models.PushDevice.token), so this is the only cap that exists.
 MAX_ENDPOINT_LEN = 2048
 
+# Named, because a bare backslash literal in the check below reads as a typo.
+BSLASH = "\\"
+
 
 def _extra_push_hosts() -> frozenset[str]:
     """Hostnames the operator has cleared in addition to the real push
@@ -84,31 +89,19 @@ def _extra_push_hosts() -> frozenset[str]:
     return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
 
 
-def _requests_dialed_host(endpoint: str) -> str:
-    """The host ``requests`` — i.e. the library that actually sends the push —
-    will connect to, via the same ``urllib3`` parser it uses internally.
+def _transport_host(endpoint: str) -> str:
+    """The host ``requests`` will actually dial, resolved by its own pipeline.
 
-    Exists because validating with a *different* parser than the one that
-    dials is only a check of what we think the URL says. See
-    :func:`validate_push_endpoint` for the concrete divergence this closes.
-
-    Imported lazily to match the rest of this module: processes with no VAPID
-    keys never send and shouldn't pay for ``requests``/``urllib3`` at import.
+    Vetting a URL with one parser and dialing it with another is an exploitable
+    gap, so the authoritative answer has to come from the library that opens
+    the socket — not from httpx, which we use only for the shared SSRF helpers.
     """
-    from clawbits.ssrf import UnsafeHostError
+    import urllib3
+    from requests.models import PreparedRequest
 
-    try:
-        from urllib3.util import parse_url as _urllib3_parse_url
-    except Exception as exc:  # pragma: no cover - urllib3 ships with requests
-        raise UnsafeHostError(f"cannot verify push endpoint host: {exc}") from exc
-
-    try:
-        parsed = _urllib3_parse_url(endpoint)
-    except Exception as exc:
-        raise UnsafeHostError(f"unparseable push endpoint: {exc}") from exc
-    if not parsed.host:
-        raise UnsafeHostError("push endpoint has no host")
-    return parsed.host
+    pr = PreparedRequest()
+    pr.prepare_url(endpoint, None)  # requote/IDNA exactly as a real send would
+    return (urllib3.util.parse_url(pr.url).host or "").lower()
 
 
 def validate_push_endpoint(endpoint: str) -> None:
@@ -120,16 +113,13 @@ def validate_push_endpoint(endpoint: str) -> None:
     the first check alone constrains only what someone is willing to store,
     not where the name points by the time we dial it.
 
-    The host is taken from the parser that *sends* (``urllib3``, via
-    ``requests``, via pywebpush) rather than the one that merely parses here.
-    Those two disagree on authorities containing a backslash, and the gap was
-    exploitable: in ``https://169.254.169.254\\@fcm.googleapis.com/x`` httpx
-    reads the host as ``fcm.googleapis.com`` — allowlisted, resolves public,
-    passes every check — while urllib3 reads ``169.254.169.254`` and dials the
-    metadata service. Validating on the sending parser closes the class; the
-    explicit rejection of userinfo and backslashes below closes the *category*
-    of authority the divergence needs, so a future parser change can't reopen
-    it. Real push endpoints have neither.
+    The host is taken from the *transport's* parser and cross-checked against
+    httpx's. The two disagree on an authority containing a backslash before an
+    ``@``: httpx reads everything up to the ``@`` as userinfo and reports the
+    trailing (allowlisted) host, while requests treats the backslash as a path
+    separator and dials the *leading* name instead. Vetting one host and
+    connecting to another defeats both the allowlist and the private-address
+    check, so anything the two parsers disagree about is refused outright.
     """
     from clawbits.ssrf import UnsafeHostError, check_host_is_public, dialed_host, parse_url
 
@@ -142,16 +132,18 @@ def validate_push_endpoint(endpoint: str) -> None:
             f"push endpoint too long: {len(endpoint)} > {MAX_ENDPOINT_LEN}"
         )
 
-    # Reject the ambiguous authority outright, before any parser gets a vote.
-    # A backslash is what makes the two parsers disagree, and userinfo
-    # (``user@host``) is the shape that lets a bogus host sit where a reader —
-    # or a parser — might take it for the real one. No push service issues
-    # either, so nothing legitimate is lost.
-    if "\\" in endpoint:
-        raise UnsafeHostError("push endpoint must not contain a backslash")
-    authority = endpoint.split("://", 1)[-1].split("/", 1)[0]
-    if "@" in authority:
-        raise UnsafeHostError("push endpoint must not carry userinfo")
+    # Characters the two parsers treat differently, refused before either one
+    # sees them. The backslash is the live bypass (see the docstring);
+    # whitespace and C0/DEL controls are silently stripped by WHATWG-style
+    # parsers but not by all of them; non-ASCII would go through IDNA, and no
+    # real push endpoint needs any of it.
+    if not endpoint.isascii():
+        raise UnsafeHostError("push endpoint must be ASCII")
+    forbidden = {
+        c for c in endpoint if c == BSLASH or c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F
+    }
+    if forbidden:
+        raise UnsafeHostError(f"push endpoint contains forbidden characters: {sorted(forbidden)!r}")
 
     # parse_url turns an unparseable URL into an UnsafeHostError rather than
     # letting it escape as a 500.
@@ -159,20 +151,22 @@ def validate_push_endpoint(endpoint: str) -> None:
     if url.scheme != "https":
         raise UnsafeHostError(f"push endpoint must be https, got {url.scheme!r}")
 
-    # The authoritative host: what requests/urllib3 will actually dial.
-    host = _requests_dialed_host(endpoint).lower()
+    # Userinfo is the other half of the confusion — it is what lets a hostile
+    # host masquerade as an allowlisted one — and a real push subscription
+    # never carries credentials.
+    if url.userinfo:
+        raise UnsafeHostError("push endpoint must not contain userinfo")
 
-    # Both parsers must agree. Belt-and-braces behind the two rejections above:
-    # any *future* divergence shows up here as a refusal rather than as a
-    # validated-one-host-dialed-another. ``dialed_host`` is raw_host, never
-    # .host: for an internationalised name the decoded unicode form and the
-    # punycode form the transport dials can resolve to different places.
-    parsed_host = dialed_host(url).lower()
-    if parsed_host != host:
-        raise UnsafeHostError(
-            f"ambiguous push endpoint host: {parsed_host!r} vs {host!r}"
-        )
-
+    # The host we vet must be the host we dial, so the transport's parser is
+    # authoritative. raw_host (never .host) on the httpx side: for an
+    # internationalised name the decoded unicode form and the punycode form the
+    # transport dials can resolve to different places. See ssrf.dialed_host.
+    host = _transport_host(endpoint)
+    if not host:
+        raise UnsafeHostError("push endpoint has no host")
+    httpx_host = dialed_host(url).lower()
+    if host != httpx_host:
+        raise UnsafeHostError(f"URL parsers disagree on the host ({host} vs {httpx_host})")
     extra = _extra_push_hosts()
     known = host in _PUSH_HOSTS or host.endswith(_PUSH_HOST_SUFFIXES)
     if host not in extra and not known:
@@ -565,7 +559,15 @@ def _build_payload(channel_meta: dict | None, post: dict) -> dict:
         "body": body,
         "author": author,
         "channelId": channel_id,
-        "url": f"/channels/{channel_id}" if channel_id else "/",
+        # ABSOLUTE, on the app origin — never a bare path. A relative URL is
+        # resolved by the service worker against *its own* origin, and browsers
+        # that registered the SW before the apex cutover (2026-08-12, when the
+        # app moved off clawbits.ai) still hold a registration on the apex. Those
+        # clients opened ``clawbits.ai/channels/…``, which the marketing site
+        # 404s. Sending the origin in the payload steers even those stale
+        # registrations to the right host. See ``setupPushClickNavigation``,
+        # which folds a same-origin absolute URL back to a path for soft nav.
+        "url": f"{APP_URL}/channels/{channel_id}" if channel_id else f"{APP_URL}/",
         # Same tag per channel → a newer message replaces the older banner
         # instead of stacking, even if delivery races a streaming finalise.
         "tag": f"channel:{channel_id}",
