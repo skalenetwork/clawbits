@@ -18,6 +18,7 @@ from datetime import date, timedelta
 
 from starlette.testclient import TestClient
 
+from tests.fastapi._auth_helpers import add_human_to_org
 from tests.fastapi._auth_helpers import auth_headers as _auth
 from tests.fastapi._auth_helpers import register_human as _register
 
@@ -57,7 +58,16 @@ def _post(tc: TestClient, token: str, channel_id: str, message: str) -> int:
     return r.json()["post_id"]
 
 
-def _add_human(tc: TestClient, owner_token: str, channel_id: str, user_id: int) -> None:
+def _add_human(
+    tc: TestClient,
+    owner_token: str,
+    channel_id: str,
+    user_id: int,
+    user_email: str,
+) -> None:
+    add_human_to_org(
+        tc, owner_token, _personal_org(tc, owner_token), user_email
+    )
     r = tc.post(
         f"/api/human/mm/channels/{channel_id}/members",
         json={"member_id": str(user_id), "member_type": "human"},
@@ -299,7 +309,13 @@ def test_search_from_filter(test_client):
     owner = _register(test_client, "owner@test.com", display_name="Owner")
     bob = _register(test_client, "bob@test.com", display_name="Bob")
     ch = _create_channel(test_client, owner["access_token"], "topic")
-    _add_human(test_client, owner["access_token"], ch, bob["user"]["id"])
+    _add_human(
+        test_client,
+        owner["access_token"],
+        ch,
+        bob["user"]["id"],
+        "bob@test.com",
+    )
     _post(test_client, owner["access_token"], ch, "shared roadmap notes")
     bob_pid = _post(test_client, bob["access_token"], ch, "shared roadmap update")
 
@@ -319,7 +335,13 @@ def test_search_filter_only_empty_query(test_client):
     owner = _register(test_client, "owner@test.com")
     bob = _register(test_client, "bob@test.com", display_name="Bob")
     ch = _create_channel(test_client, owner["access_token"], "topic")
-    _add_human(test_client, owner["access_token"], ch, bob["user"]["id"])
+    _add_human(
+        test_client,
+        owner["access_token"],
+        ch,
+        bob["user"]["id"],
+        "bob@test.com",
+    )
     _post(test_client, owner["access_token"], ch, "anything one")
     _post(test_client, bob["access_token"], ch, "anything two")
 

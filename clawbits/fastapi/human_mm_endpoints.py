@@ -65,6 +65,7 @@ from clawbits.datastructures.mm_models import (
     MmTimelineResponse,
     MmUserPresenceRequest,
     MmUserPresenceResponse,
+    agent_dm_channel_name,
 )
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
@@ -2547,7 +2548,7 @@ async def create_or_get_direct(
                 return MmChannelResponse(**existing)
 
             channel_id = str(uuid.uuid4())
-            dm_name = f"dm-human-{human_id}-agent-{target_agent_id}"
+            dm_name = agent_dm_channel_name(human_id, target_agent_id)
             display_h = user.get("display_name") or user.get("email", str(human_id))
             TableWrite.create_mm_channel(
                 db, channel_id,

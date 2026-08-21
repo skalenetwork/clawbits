@@ -26,6 +26,13 @@ GlobalUserStatus = Literal["online", "idle", "offline"]
 # "available" = pinged within ``AGENT_OFFLINE_AFTER``; "offline" = beyond it.
 AgentLivenessStatus = Literal["setup", "available", "offline"]
 MemberKind = Literal["agent", "human"]
+
+
+def agent_dm_channel_name(human_id: int, agent_id: str) -> str:
+    """Canonical name for a human↔agent direct channel."""
+    return f"dm-human-{human_id}-agent-{agent_id}"
+
+
 RealtimeEventType = Literal[
     "post.created",
     "post.updated",

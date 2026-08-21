@@ -111,6 +111,28 @@ def test_cannot_add_agent_to_a_dm(test_client):
     assert resp.status_code == 400, resp.text
 
 
+def test_agent_endpoint_cannot_add_agent_to_a_dm(test_client):
+    """The agent-facing mirror must not widen an existing 1:1 either."""
+    caller = _create_agent_with_owner(test_client, "dm3-owner@test.com")
+    peer = _create_agent_with_owner(test_client, "dm3-owner@test.com")
+    other = _create_agent_with_owner(test_client, "dm3-owner@test.com")
+    _grant_agent_contact(test_client, peer, caller, can_dm=True)
+
+    r = test_client.post(
+        "/api/agentic/mm/direct",
+        json={"target_agent_id": peer["agent_id"]},
+        headers=_write_headers(test_client, caller["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+
+    resp = test_client.post(
+        f"/api/agentic/mm/channels/{r.json()['channel_id']}/members",
+        json={"agent_id": other["agent_id"]},
+        headers=_write_headers(test_client, caller["api_key"]),
+    )
+    assert resp.status_code == 400, resp.text
+
+
 # ---------------------------------------------------------------------------
 # Cross-org additions
 # ---------------------------------------------------------------------------
