@@ -8,9 +8,9 @@ NULL subject), the DM suppression, and the read-side merge."""
 from starlette.testclient import TestClient
 
 from clawbits.datastructures.known_answers import get_answer_for_question
+from tests.fastapi._auth_helpers import add_human_to_org, signup_agent_via_email
 from tests.fastapi._auth_helpers import auth_headers as _auth
 from tests.fastapi._auth_helpers import register_human as _register
-from tests.fastapi._auth_helpers import signup_agent_via_email
 from tests.fastapi.approve_helper import _approve_signup
 
 
@@ -38,6 +38,14 @@ def _personal_org(tc: TestClient, token: str) -> str:
         if org.get("is_personal"):
             return org["org_id"]
     raise AssertionError("no personal org")
+
+
+def _add_human_to_owner_org(
+    tc: TestClient, owner_token: str, target_email: str
+) -> None:
+    add_human_to_org(
+        tc, owner_token, _personal_org(tc, owner_token), target_email
+    )
 
 
 def _create_public_channel(tc: TestClient, token: str, name: str) -> str:
@@ -77,6 +85,7 @@ def test_add_human_member_emits_added_event(test_client):
     """Adding another human emits ``member.added`` with subject set."""
     owner = _register(test_client, "owner@test.com", display_name="Owner")
     target = _register(test_client, "newbie@test.com", display_name="Newbie")
+    _add_human_to_owner_org(test_client, owner["access_token"], "newbie@test.com")
     ch_id = _create_public_channel(test_client, owner["access_token"], "team")
 
     test_client.post(
@@ -135,6 +144,7 @@ def test_remove_other_emits_removed_event_with_subject(test_client):
     """Owner removing someone else emits ``member.removed`` with subject set."""
     owner = _register(test_client, "owner@test.com", display_name="Owner")
     target = _register(test_client, "leaving@test.com", display_name="Leaving")
+    _add_human_to_owner_org(test_client, owner["access_token"], "leaving@test.com")
     ch_id = _create_public_channel(test_client, owner["access_token"], "team")
 
     test_client.post(
@@ -162,6 +172,7 @@ def test_self_leave_emits_with_null_subject(test_client):
     """Self-removal normalises to NULL subject so the renderer picks "left"."""
     owner = _register(test_client, "owner@test.com")
     leaver = _register(test_client, "leaver@test.com", display_name="Leaver")
+    _add_human_to_owner_org(test_client, owner["access_token"], "leaver@test.com")
     ch_id = _create_public_channel(test_client, owner["access_token"], "team")
     test_client.post(
         f"/api/human/mm/channels/{ch_id}/members",
@@ -279,6 +290,7 @@ def test_timeline_merges_posts_and_events_newest_first(test_client):
     /timeline in the right chronological order."""
     owner = _register(test_client, "owner@test.com", display_name="Owner")
     target = _register(test_client, "newbie@test.com", display_name="Newbie")
+    _add_human_to_owner_org(test_client, owner["access_token"], "newbie@test.com")
     ch_id = _create_public_channel(test_client, owner["access_token"], "team")
 
     test_client.post(

@@ -19,7 +19,11 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
-from tests.fastapi._auth_helpers import register_human
+from tests.fastapi._auth_helpers import (
+    add_human_to_org,
+    personal_org_id,
+    register_human,
+)
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -191,6 +195,12 @@ def test_presence_transition_fans_out_to_fellow_per_user_topics(
     # Two users in the same org, sharing one channel.
     alice = register_human(test_client, "fan-alice@example.com")
     bob = register_human(test_client, "fan-bob@example.com")
+    add_human_to_org(
+        test_client,
+        alice["access_token"],
+        personal_org_id(test_client, alice["access_token"]),
+        "fan-bob@example.com",
+    )
     ch = _create_channel(test_client, alice["access_token"], "shared-pres")
     # Add Bob as a member of Alice's channel.
     r = test_client.post(

@@ -24,6 +24,16 @@ def _get_personal_org_id(tc: TestClient, token: str) -> str:
     raise AssertionError("No personal org found")
 
 
+def _add_human_to_org(tc: TestClient, owner_token: str, email: str) -> None:
+    """Put an already-registered human into the owner's personal org.
+
+    Channel membership is org-scoped — ``add_member`` refuses a target who
+    isn't in the channel's org — and every login gets its *own* personal org,
+    so a second human has to join the channel owner's org first."""
+    from tests.fastapi._auth_helpers import add_human_to_org
+    add_human_to_org(tc, owner_token, _get_personal_org_id(tc, owner_token), email)
+
+
 def _create_channel(tc: TestClient, token: str, name: str, channel_type: str = "public") -> dict:
     """Create a channel in the user's personal org."""
     org_id = _get_personal_org_id(tc, token)
@@ -253,6 +263,7 @@ def test_human_adds_human_member(test_client):
     """Human can add another human as a member."""
     h1 = _register_human(test_client, "admin@test.com")
     h2 = _register_human(test_client, "user@test.com")
+    _add_human_to_org(test_client, h1["access_token"], "user@test.com")
 
     ch_id = _create_channel(test_client, h1["access_token"], "team-chat", "public")["channel_id"]
 
@@ -273,6 +284,7 @@ def test_human_remove_member(test_client):
     """A human member can remove another member."""
     h1 = _register_human(test_client, "rem1@test.com")
     h2 = _register_human(test_client, "rem2@test.com")
+    _add_human_to_org(test_client, h1["access_token"], "rem2@test.com")
 
     ch_id = _create_channel(test_client, h1["access_token"], "temp", "public")["channel_id"]
 
@@ -307,6 +319,7 @@ def test_unread_mention_count_tracks_handle_and_here(test_client):
     boundary (``@herring`` is not ``@here``), and clears on read."""
     h1 = _register_human(test_client, "stanmention@test.com", display_name="Stan Lee")
     h2 = _register_human(test_client, "peermention@test.com")
+    _add_human_to_org(test_client, h1["access_token"], "peermention@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "mentions", "public")["channel_id"]
 
     # Add h2 so they can post into the channel.
@@ -426,6 +439,7 @@ def test_human_post_and_list_messages(test_client):
     """Human can post messages and read them back."""
     h1 = _register_human(test_client, "poster1@test.com", display_name="Poster1")
     h2 = _register_human(test_client, "poster2@test.com", display_name="Poster2")
+    _add_human_to_org(test_client, h1["access_token"], "poster2@test.com")
 
     # Create channel & add h2
     ch_id = _create_channel(test_client, h1["access_token"], "chat", "public")["channel_id"]
@@ -698,6 +712,7 @@ def test_human_delete_preserves_read_pointer(test_client):
     instead."""
     author = _register_human(test_client, "del-unread-a@test.com", display_name="Ann")
     reader = _register_human(test_client, "del-unread-b@test.com", display_name="Bea")
+    _add_human_to_org(test_client, author["access_token"], "del-unread-b@test.com")
     ch_id = _create_channel(test_client, author["access_token"], "del-unread")["channel_id"]
     test_client.post(
         f"/api/human/mm/channels/{ch_id}/members",
@@ -762,6 +777,7 @@ def test_human_delete_only_post_clears_read_pointer(test_client):
     NULL — and the channel reads as empty rather than unread."""
     author = _register_human(test_client, "del-only-a@test.com", display_name="Cal")
     reader = _register_human(test_client, "del-only-b@test.com", display_name="Dee")
+    _add_human_to_org(test_client, author["access_token"], "del-only-b@test.com")
     ch_id = _create_channel(test_client, author["access_token"], "del-only")["channel_id"]
     test_client.post(
         f"/api/human/mm/channels/{ch_id}/members",
@@ -822,6 +838,7 @@ def test_human_delete_other_user_post_forbidden(test_client):
     """A non-author, non-creator member cannot delete someone else's post."""
     h1 = _register_human(test_client, "del-owner@test.com")
     h2 = _register_human(test_client, "del-intruder@test.com")
+    _add_human_to_org(test_client, h1["access_token"], "del-intruder@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "del-locked")["channel_id"]
     # h2 joins so they can see the post but isn't the creator.
     test_client.post(
@@ -837,6 +854,7 @@ def test_human_delete_other_user_post_forbidden(test_client):
 
     # Different non-creator member tries to delete h2's post.
     h3 = _register_human(test_client, "del-bystander@test.com")
+    _add_human_to_org(test_client, h1["access_token"], "del-bystander@test.com")
     test_client.post(
         f"/api/human/mm/channels/{ch_id}/members",
         json={"member_id": str(h3["user"]["id"]), "member_type": "human"},
@@ -853,6 +871,7 @@ def test_human_channel_creator_can_delete_anyone(test_client):
     """The channel creator may delete a member's post for moderation."""
     creator = _register_human(test_client, "del-creator@test.com")
     member = _register_human(test_client, "del-member@test.com")
+    _add_human_to_org(test_client, creator["access_token"], "del-member@test.com")
     ch_id = _create_channel(test_client, creator["access_token"], "del-mod")["channel_id"]
     test_client.post(
         f"/api/human/mm/channels/{ch_id}/members",
@@ -1294,6 +1313,7 @@ def test_leaving_channel_with_other_humans_keeps_it(test_client):
     """Leaving is non-destructive while another human remains a member."""
     h1 = _register_human(test_client, "keep1@test.com")
     h2 = _register_human(test_client, "keep2@test.com")
+    _add_human_to_org(test_client, h1["access_token"], "keep2@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "keepch", "public")["channel_id"]
     test_client.post(f"/api/human/mm/channels/{ch_id}/members",
         json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
@@ -1318,6 +1338,7 @@ def test_creator_deletes_channel_with_other_humans(test_client):
     """The creator can delete a channel outright even while other humans remain."""
     h1 = _register_human(test_client, "owner1@test.com")
     h2 = _register_human(test_client, "owner2@test.com")
+    _add_human_to_org(test_client, h1["access_token"], "owner2@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "ownerch", "public")["channel_id"]
     test_client.post(f"/api/human/mm/channels/{ch_id}/members",
         json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
@@ -1341,6 +1362,7 @@ def test_non_creator_cannot_delete_channel(test_client):
     """A member who didn't create the channel gets 403 from the delete endpoint."""
     h1 = _register_human(test_client, "ncreate1@test.com")
     h2 = _register_human(test_client, "ncreate2@test.com")
+    _add_human_to_org(test_client, h1["access_token"], "ncreate2@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "ncch", "public")["channel_id"]
     test_client.post(f"/api/human/mm/channels/{ch_id}/members",
         json={"member_id": str(h2["user"]["id"]), "member_type": "human"},

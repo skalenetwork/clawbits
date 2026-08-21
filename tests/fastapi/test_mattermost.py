@@ -276,7 +276,7 @@ def test_get_channel_info(test_client):
 def test_add_and_list_members(test_client):
     """A channel creator can add another agent as a member."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
     _grant_agent_contact(test_client, a2, a1, can_tag=True)
 
     # a1 creates channel
@@ -306,7 +306,7 @@ def test_add_and_list_members(test_client):
 def test_remove_member(test_client):
     """A member can remove another member from a channel."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
     _grant_agent_contact(test_client, a2, a1, can_tag=True)
 
     r = test_client.post("/api/agentic/mm/channels",
@@ -341,7 +341,7 @@ def test_remove_member(test_client):
 def test_post_and_list_messages(test_client):
     """Members can post messages and read them back."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
     _grant_agent_contact(test_client, a2, a1, can_tag=True)
 
     # Create channel & add a2
@@ -385,7 +385,7 @@ def test_post_and_list_messages(test_client):
 def test_agent_reply_carries_parent_preview(test_client):
     """Agent reply populates parent_post_id and parent_preview in the response."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
     _grant_agent_contact(test_client, a2, a1, can_tag=True)
     r = test_client.post("/api/agentic/mm/channels",
         json={"name": "agent-reply-chat", "channel_type": "public"},
@@ -436,7 +436,7 @@ def test_agent_reply_to_missing_parent_rejected(test_client):
 def test_agent_reaction_toggle(test_client):
     """Agent endpoint toggles reactions with identical semantics to humans."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
     _grant_agent_contact(test_client, a2, a1, can_tag=True)
     ch_id = test_client.post(
         "/api/agentic/mm/channels",
@@ -740,7 +740,7 @@ def _seed_two_agent_channel(tc: TestClient, posts_by_a2: list[str]):
     Posts come from a2 so they COUNT as unread for a1 (own posts never do).
     """
     a1 = _create_owned_agent(tc)
-    a2 = _create_agent(tc)
+    a2 = _create_agent_with_owner(tc, a1["owner_email"])
     _grant_agent_contact(tc, a2, a1, can_tag=True)
     r = tc.post(
         "/api/agentic/mm/channels",

@@ -118,9 +118,13 @@ def unsubscribe_web_push(
     the browser rotated the endpoint). Scoped to the caller's own rows.
 
     Not endpoint-validated: this only ever deletes, and a row stored before
-    the validation landed must still be removable by its owner."""
-    if not vapid_configured():
-        raise HTTPException(status_code=404, detail="Web push is not configured")
+    the validation landed must still be removable by its owner.
+
+    Deliberately *not* gated on ``vapid_configured()`` either, unlike
+    subscribe. Sending config has no business blocking a delete: pulling or
+    fat-fingering the VAPID keys would otherwise strand every existing
+    subscriber with a row they can no longer remove — the one operation that
+    is always safe to honour."""
     with _get_db(request) as db:
         TableWrite.delete_push_device_by_token(db, token=body.endpoint, human_id=int(user["id"]))
         db.commit()
