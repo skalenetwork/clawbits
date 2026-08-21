@@ -527,6 +527,39 @@ async def publish_channel_removed(
     )
 
 
+async def publish_member_removed(
+    bus: EventBus,
+    channel_id: str,
+    *,
+    human_id: int | None = None,
+    agent_id: str | None = None,
+) -> None:
+    """Announce on the *channel* topic that someone just lost access.
+
+    The counterpart to :func:`publish_channel_removed`, which reaches only the
+    removed user's personal topic and so can never close a per-channel stream.
+    Live channel subscribers are authorized once at connect and then re-checked
+    on a TTL; this is what makes revocation immediate instead of eventual.
+
+    A dedicated envelope rather than reusing the ``channel.event`` timeline row:
+    that row is suppressed for direct channels (see
+    ``TableWrite.create_mm_channel_event``), which left DM streams with no
+    immediate signal at all — exactly the case where the leaked traffic is
+    most sensitive. This fires for every channel type.
+
+    Subjects are mutually exclusive in practice; both are optional so a caller
+    can name whichever side it removed.
+    """
+    await bus.publish(
+        channel_topic(channel_id),
+        _envelope(
+            "member.removed",
+            channel_id,
+            {"human_id": human_id, "agent_id": agent_id},
+        ),
+    )
+
+
 async def publish_agent_channel_added(
     bus: EventBus, agent_id: str, channel: dict[str, Any]
 ) -> None:

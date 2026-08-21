@@ -86,6 +86,7 @@ from clawbits.fastapi.search_helpers import (
     parse_search_date,
 )
 from clawbits.fastapi.version_check import server_version
+from clawbits.fastapi.workos_auth import revalidate_stream_credential
 from clawbits.link_preview.extract import extract_urls
 from clawbits.link_preview.service import LinkPreview, get_link_preview
 from clawbits.lobstertalk.attention import (
@@ -108,6 +109,7 @@ from clawbits.realtime import (
     publish_channel_read,
     publish_channel_removed,
     publish_member_read,
+    publish_member_removed,
     publish_member_status,
     publish_post_created,
     publish_post_deleted,
@@ -753,6 +755,13 @@ async def admin_delete_channel(
 
     if result is not None:
         bus = get_bus()
+        # Deleting the channel revokes everyone at once. The per-channel topic
+        # outlives the row, so tell any still-open stream to close now instead
+        # of leaving it parked on a topic that has gone permanently quiet.
+        for member_id in result["human_member_ids"]:
+            fire_and_forget(publish_member_removed(bus, channel_id, human_id=member_id))
+        for agent_id in agent_ids_for_fanout:
+            fire_and_forget(publish_member_removed(bus, channel_id, agent_id=agent_id))
         for member_id in result["human_member_ids"]:
             fire_and_forget(
                 publish_channel_removed(bus, member_id, channel_id)
@@ -779,6 +788,11 @@ async def add_member(
         ch = TableRead.get_mm_channel(db, channel_id)
         if ch is None:
             raise HTTPException(status_code=404, detail="Channel not found")
+        if ch.get("channel_type") == "direct":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot add members to a direct message channel",
+            )
 
         added_human_id: int | None = None
         added_agent_id: str | None = None
@@ -787,6 +801,19 @@ async def add_member(
                 target = TableRead.get_agent_by_agentid(db, AgentId(body.member_id))
                 if target is None:
                     raise HTTPException(status_code=404, detail=f"Agent '{body.member_id}' not found")
+                # The agent must belong to the channel's org. ``can_tag`` below
+                # is a *contact* grant — it says the caller may address this
+                # agent, not that the agent belongs here — so without this an
+                # operator could pull their own agent out of org X into any
+                # org-Y channel they happen to be in, and it would then read
+                # everything posted there. Mirrors the check
+                # ``create_or_get_direct`` already applies to a DM's agent.
+                agent_org_id = TableRead.get_agent_org_id(db, body.member_id)
+                if ch["org_id"] and agent_org_id != ch["org_id"]:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Agent does not belong to this organization",
+                    )
                 # Bringing an agent into a channel is gated by the same
                 # ``can_tag`` grant as mentioning it — you can only add an
                 # agent you're allowed to tag (operator always may).
@@ -802,6 +829,21 @@ async def add_member(
                 target = TableRead.get_human_user_by_id(db, added_human_id)
                 if target is None:
                     raise HTTPException(status_code=404, detail=f"Human user '{body.member_id}' not found")
+                # Channel membership is org-scoped. Existence alone used to be
+                # the only gate here, so any member could add any user id —
+                # trivially enumerable, and from any org — into a private
+                # channel, handing them the entire backlog. Same rule and
+                # wording as ``join_channel`` and ``create_or_get_direct``.
+                # Guarded on truthiness like ``join_channel``: no user-reachable
+                # path creates an org-less channel (both create paths require
+                # one), so this only skips legacy rows.
+                if ch["org_id"] and not TableRead.is_org_member(
+                    db, ch["org_id"], added_human_id
+                ):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Target user is not a member of this organization",
+                    )
                 TableWrite.add_mm_channel_member_human(db, channel_id, added_human_id)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
@@ -925,6 +967,19 @@ async def remove_member(
             event_member_human_ids = remaining_human_ids
         db.commit()
 
+    # On the *channel* topic, so a live SSE subscriber for this channel is cut
+    # off immediately rather than at its next TTL re-check. Fires for every
+    # channel type — the ``channel.event`` timeline row below is suppressed on
+    # DMs, which is precisely where a lingering stream leaks the most.
+    if removed_human_id is not None or removed_agent_id is not None:
+        fire_and_forget(
+            publish_member_removed(
+                get_bus(),
+                channel_id,
+                human_id=removed_human_id,
+                agent_id=removed_agent_id,
+            )
+        )
     if removed_human_id is not None:
         fire_and_forget(
             publish_channel_removed(get_bus(), removed_human_id, channel_id)
@@ -932,6 +987,10 @@ async def remove_member(
     if removed_agent_id is not None:
         await publish_agent_channel_removed(get_bus(), removed_agent_id, channel_id)
     for agent_id in agent_ids_for_fanout:
+        # Channel torn down under them (last human left). The per-agent event
+        # above drives the plugin's WS; this closes any agent SSE stream still
+        # attached to the now-deleted channel.
+        fire_and_forget(publish_member_removed(get_bus(), channel_id, agent_id=agent_id))
         await publish_agent_channel_removed(get_bus(), agent_id, channel_id)
     if event_dict is not None:
         event_payload = MmChannelEventResponse(**event_dict).model_dump()
@@ -2543,11 +2602,12 @@ async def stream_events(
     Bearer <JWT>`` header carries through. The response is a standard
     ``text/event-stream``.
 
-    Membership is enforced for the stream's whole lifetime, not just at
-    connect: the event filter below closes the stream the moment it sees
-    the viewer's own removal cross the channel topic, and re-verifies
-    membership on a short TTL as the backstop for revocation paths that
-    publish nothing there (DM kick, channel deletion, ``can_dm``
+    Membership *and the credential itself* are enforced for the stream's
+    whole lifetime, not just at connect: the event filter below closes the
+    stream the moment it sees the viewer's own removal cross the channel
+    topic, and on a short TTL re-verifies both the credential (revoked PAT,
+    invalidated session) and membership — the backstop for revocation paths
+    that publish nothing on the topic (DM kick, channel deletion, ``can_dm``
     revocation).
     """
     with _get_db(request) as db:
@@ -2567,12 +2627,29 @@ async def stream_events(
             return
         last_check = now
         try:
+            # Credential first, membership second: a revoked PAT or an
+            # invalidated session must close the stream even while the
+            # membership row is intact — auth was otherwise resolved exactly
+            # once, in the Depends that opened the stream.
+            if not revalidate_stream_credential(request, viewer_id):
+                raise StreamClosed()
             with _get_db(request) as db:
                 _require_human_member(db, channel_id, viewer_id)
         except HTTPException:
             raise StreamClosed() from None
 
     def allow_event(event: dict) -> bool:
+        # Immediate revocation: the channel-topic control event names who lost
+        # access. Fires for every channel type, including DMs, where the
+        # timeline row below is suppressed.
+        if event.get("type") == "member.removed":
+            if (event.get("data") or {}).get("human_id") == viewer_id:
+                raise StreamClosed()
+            # Someone else's revocation: internal control traffic, not for
+            # this client. Still take the TTL check before dropping it, so a
+            # channel busy with these can't starve reauthorization.
+            reauthorize_if_stale()
+            return False
         if event.get("type") == "channel.event":
             data = event.get("data") or {}
             if data.get("event_type") == "member.removed":

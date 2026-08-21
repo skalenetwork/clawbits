@@ -32,6 +32,12 @@ RealtimeEventType = Literal[
     "post.deleted",
     "member.status",
     "member.read",
+    # Control event on the *channel* topic naming who just lost access, so a
+    # live subscriber can be cut off the moment it happens. Distinct from
+    # ``channel.removed`` (personal topic, drives the sidebar) and from the
+    # ``channel.event`` timeline row, which is suppressed on DMs and so
+    # cannot carry this. Clients other than the streams ignore it.
+    "member.removed",
     "presence.snapshot",
     "channel.read",
     "channel.muted",
