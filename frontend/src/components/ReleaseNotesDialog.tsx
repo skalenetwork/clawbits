@@ -66,11 +66,20 @@ export function ReleaseNotesDialog() {
           >
             {latest.image ? (
               <>
+                {/* `object-right`, not the default centre: a hero wider than
+                    2:1 gets trimmed on both sides, and these are screenshots
+                    of app or OS chrome, where the subject sits right of the
+                    empty background it was captured against - a centred crop
+                    cuts into it. Inert for a hero that is exactly 2:1 (nothing
+                    to trim). Kept global rather than per-release until a
+                    left-weighted hero actually turns up; mirrored in the
+                    marketing changelog's `.shot img` so both surfaces frame
+                    the same file identically. */}
                 <img
                   src={latest.image}
                   alt=""
                   draggable={false}
-                  className="aspect-[2/1] w-full select-none object-cover"
+                  className="aspect-[2/1] w-full select-none object-cover object-right"
                 />
                 {/* Bottom scrim the version sits on: a progressive blur ramp
                     plus a short gradient to black, so the white overlay text

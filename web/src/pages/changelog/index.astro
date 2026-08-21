@@ -410,6 +410,10 @@ const schema = [
     height: auto;
     aspect-ratio: 2 / 1;
     object-fit: cover;
+    /* Matches the app modal's `object-right` - see the note on the <img> in
+     * frontend/src/components/ReleaseNotesDialog.tsx. One file feeds both
+     * surfaces, so it has to be framed the same on both. */
+    object-position: right;
   }
 
   .body h2 {
