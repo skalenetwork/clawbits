@@ -107,6 +107,16 @@ cp "$PLUGIN_DIR/openclaw.plugin.json" \
    "$PLUGIN_DIR/package.json" \
    "$PUBLISH_DIR/"
 
+# Keep this pruning in lockstep with the "Stage publish directory" step in
+# .github/workflows/publish-clawhub-plugin.yaml. The tools entry belongs to the
+# clawbits-openclaw-tools package (it imports `typebox`, undeclared here) and
+# test-stubs/ are typecheck-only fakes for `openclaw/plugin-sdk/*`; the channel
+# manifest loads only ./src/index.ts + ./dist/index.js, so neither is reachable.
+rm -rf "$PUBLISH_DIR/src/test-stubs" "$PUBLISH_DIR/dist/test-stubs"
+rm -f "$PUBLISH_DIR/src/tools-entry.ts" \
+      "$PUBLISH_DIR/dist/tools-entry.js" \
+      "$PUBLISH_DIR/dist/tools-entry.d.ts"
+
 # Stamp the resolved version into the staged manifest + package.json (the
 # working-tree copies are intentionally left as placeholders). This mirrors
 # the "Stamp auto version" step in the CI publish workflow.

@@ -43,11 +43,13 @@ export async function getSignupRequest(
 
 export async function getAgentInfo(
   client: ClawBitsClient,
-  agentId: string
+  agentId: string,
+  signal?: AbortSignal
 ): Promise<unknown> {
   return client.request<unknown>(
     "GET",
-    `/api/agentic/agents/${client.encodePath(agentId)}/info`
+    `/api/agentic/agents/${client.encodePath(agentId)}/info`,
+    { signal }
   );
 }
 

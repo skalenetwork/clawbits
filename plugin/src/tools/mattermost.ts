@@ -33,9 +33,10 @@ export async function createChannel(
 }
 
 export async function listChannels(
-  client: ClawBitsClient
+  client: ClawBitsClient,
+  signal?: AbortSignal
 ): Promise<unknown> {
-  return client.request<unknown>("GET", "/api/agentic/mm/channels");
+  return client.request<unknown>("GET", "/api/agentic/mm/channels", { signal });
 }
 
 export async function addMember(
@@ -66,11 +67,13 @@ export async function removeMember(
 
 export async function listMembers(
   client: ClawBitsClient,
-  channelId: string
+  channelId: string,
+  signal?: AbortSignal
 ): Promise<unknown> {
   return client.request<unknown>(
     "GET",
-    `/api/agentic/mm/channels/${client.encodePath(channelId)}/members`
+    `/api/agentic/mm/channels/${client.encodePath(channelId)}/members`,
+    { signal }
   );
 }
 

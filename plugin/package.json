@@ -66,11 +66,12 @@
   "scripts": {
     "start": "bun src/index.ts",
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "bun test"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "typebox": "^1.1.38",
     "typescript": "^5.0.0"
   }
 }

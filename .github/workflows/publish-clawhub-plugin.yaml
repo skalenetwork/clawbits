@@ -139,9 +139,27 @@ jobs:
         if: steps.guard.outputs.publish == 'true'
         working-directory: plugin
         run: |
-          rm -rf ../publish/clawbits-openclaw-plugin
-          mkdir -p ../publish/clawbits-openclaw-plugin
-          cp -r dist src docs skills openclaw.plugin.json clawbits.config.example.json package.json ../publish/clawbits-openclaw-plugin/
+          set -euo pipefail
+          staged=../publish/clawbits-openclaw-plugin
+          rm -rf "$staged"
+          mkdir -p "$staged"
+          cp -r dist src docs skills openclaw.plugin.json clawbits.config.example.json package.json "$staged/"
+          # Prune what belongs to the tools package or to the build only. Both
+          # share this source tree but neither is part of the channel artifact,
+          # and the manifest loads only ./src/index.ts + ./dist/index.js, so
+          # nothing here is reachable at runtime:
+          #   tools-entry.*  -> the clawbits-openclaw-tools entry; it imports
+          #                     `typebox`, which the channel package does not
+          #                     declare as a runtime dependency, so shipping it
+          #                     puts an unresolvable bare import in the artifact.
+          #   test-stubs/    -> typecheck-only fakes for `openclaw/plugin-sdk/*`
+          #                     (tsconfig `paths`); tsconfig.json is not staged,
+          #                     so they are dead weight that merely looks like a
+          #                     counterfeit copy of the real SDK.
+          rm -rf "$staged/src/test-stubs" "$staged/dist/test-stubs"
+          rm -f "$staged/src/tools-entry.ts" \
+                "$staged/dist/tools-entry.js" \
+                "$staged/dist/tools-entry.d.ts"
           echo "publish_path=publish/clawbits-openclaw-plugin" >> "$GITHUB_OUTPUT"
 
       # The GitHub Release is cut BEFORE the ClawHub publish on purpose: the two
@@ -188,7 +206,7 @@ jobs:
 
           Install from ClawHub:
           \`\`\`
-          openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --acknowledge-clawhub-risk
+          openclaw plugins install clawhub:clawbits-openclaw-plugin --pin
           \`\`\`
           Or install the attached tarball directly: extract it and run \`openclaw plugins install <dir>\`."
           fi
