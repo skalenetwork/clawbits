@@ -1,5 +1,8 @@
 import type { ChannelMessagingAdapter } from "openclaw/plugin-sdk/core";
 import { CHANNEL_ID, resolveClawBitsAccount } from "./accounts.js";
+import { CLAWBITS_CHANNEL_ID_RE } from "./channel-target.js";
+
+export { CLAWBITS_CHANNEL_ID_RE } from "./channel-target.js";
 
 // ---------------------------------------------------------------------------
 // messaging adapter - target validation + resolution for the shared message
@@ -7,10 +10,6 @@ import { CHANNEL_ID, resolveClawBitsAccount } from "./accounts.js";
 // channel UUIDs and the plugin's `default` route, so the agent's codex
 // `tools.message({action:"send"})` call never reaches outbound.sendText.
 // ---------------------------------------------------------------------------
-
-/** Mattermost channel ids are RFC-4122 v4 UUIDs (8-4-4-4-12 hex). */
-export const CLAWBITS_CHANNEL_ID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Treat as a routable Clawbits identifier: UUID-shaped channel id or the
  *  `default` sentinel that resolves to the configured channel for the

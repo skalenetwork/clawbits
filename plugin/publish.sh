@@ -99,13 +99,7 @@ cd "$REPO_ROOT"
 # 4. Stage a clean publish directory
 # ---------------------------------------------------------------------------
 step "Staging publish directory at $PUBLISH_DIR"
-rm -rf "$PUBLISH_DIR"
-mkdir -p "$PUBLISH_DIR"
-cp -r "$PLUGIN_DIR/dist" "$PLUGIN_DIR/src" "$PLUGIN_DIR/docs" "$PLUGIN_DIR/skills" "$PUBLISH_DIR/"
-cp "$PLUGIN_DIR/openclaw.plugin.json" \
-   "$PLUGIN_DIR/clawbits.config.example.json" \
-   "$PLUGIN_DIR/package.json" \
-   "$PUBLISH_DIR/"
+node "$PLUGIN_DIR/stage-channel.mjs" "$PUBLISH_DIR"
 
 # Stamp the resolved version into the staged manifest + package.json (the
 # working-tree copies are intentionally left as placeholders). This mirrors

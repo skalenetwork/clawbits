@@ -30,17 +30,11 @@ import {
   pluginDebug,
   writeTraceSpan,
 } from "./file-logger.js";
-import { dispatchInboundEmail } from "./email-adapter.js";
-import { runEmailPoller } from "./email-poller.js";
 import {
   runInboundPoller,
   type InboundMessage,
 } from "./inbound-poller.js";
 import { runLivenessPinger } from "./liveness.js";
-import { runAutomationsReconciler } from "./automations/reconcile.js";
-import { runUsageReporter } from "./usage/reporter.js";
-import { claimSkillsReporter, runSkillsReporter } from "./skills/sync.js";
-import { getWorkspaceDir } from "./skills/scan.js";
 import {
   resolveInboundDispatchGuardTarget,
   withInboundDispatchGuard,
@@ -936,69 +930,6 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
       log: ctx.log,
     });
 
-    // Automations reconciler: converges the local gateway cron to the operator's
-    // desired set in Clawbits and self-reports actual state. Fire-and-forget like
-    // the liveness pinger (shares the abort signal, never throws). It manages cron
-    // via the in-process getCron handle captured in the gateway_start hook, so it
-    // idles harmlessly until that handle is available.
-    void runAutomationsReconciler({
-      client,
-      abortSignal: ctx.abortSignal,
-      accountId: ctx.accountId,
-      ownerChannelId: account.channelId,
-      log: ctx.log,
-    });
-
-    // AI-usage reporter: drains the in-process usage collector (fed by the
-    // reply-dispatch / llm_output hooks registered in index.ts) and
-    // self-reports token usage. Fire-and-forget like the pinger; telemetry-
-    // class and billing-exempt server-side. On a multi-account gateway only
-    // the first account's loop drains the shared queue.
-    void runUsageReporter({
-      client,
-      abortSignal: ctx.abortSignal,
-      accountId: ctx.accountId,
-      log: ctx.log,
-    });
-
-    // Skills sync: converges the agent's skill directories to the desired set
-    // and reports what is actually there. Single owner per gateway, since the
-    // roots are shared across accounts.
-    if (claimSkillsReporter(ctx.accountId)) {
-      void runSkillsReporter({
-        client,
-        abortSignal: ctx.abortSignal,
-        accountId: ctx.accountId,
-        workspaceDir: getWorkspaceDir(),
-        log: ctx.log,
-      });
-    }
-
-    // Email ingestion runs alongside the chat poller. Fire-and-forget like the
-    // liveness pinger: it shares the poller's abort signal, self-disables if the
-    // server reports email is not configured (503), and never throws, so it
-    // can't disturb the inbound poller below. Gated on the per-account flag
-    // (default on; harmless on upgrade thanks to the 503 self-disable).
-    //
-    // Email and chat both dispatch into the owner's DM/main session. Concurrent
-    // turns into the same session are serialized by core's session write-lock
-    // (`acquireSessionWriteLock` in the embedded agent runner), so the two
-    // pollers can't corrupt shared session state by running at once.
-    if (account.emailEnabled) {
-      void runEmailPoller({
-        client,
-        account,
-        abortSignal: ctx.abortSignal,
-        log: ctx.log,
-        watermarkStore: channelWatermarkStore,
-        onEmailMessage: (msg) =>
-          dispatchInboundEmail(ctx, msg, {
-            client,
-            answers,
-            setStatus: ctx.setStatus,
-          }),
-      });
-    }
 
     // Inbound gating moved server-side: the agentic GET only returns
     // posts that have already been approved (or were authored by the

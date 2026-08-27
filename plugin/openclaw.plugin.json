@@ -1,12 +1,9 @@
 {
   "id": "clawbits",
   "name": "Clawbits Human Channel",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "channels": [
     "clawbits"
-  ],
-  "skills": [
-    "./skills"
   ],
   "configSchema": {
     "type": "object",
@@ -27,6 +24,15 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "serviceOwner": {
+            "type": "string",
+            "enum": [
+              "channel",
+              "tools"
+            ],
+            "default": "channel",
+            "description": "Owner of Clawbits cron, email, usage, and skills services. Set to tools only after installing a compatible clawbits-tools plugin."
           },
           "endpoint": {
             "type": "string",
@@ -226,6 +232,9 @@
         },
         "agentId": {
           "label": "Agent ID"
+        },
+        "serviceOwner": {
+          "label": "Background service owner"
         },
         "emailEnabled": {
           "label": "Email integration enabled"

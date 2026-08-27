@@ -7,9 +7,14 @@ const DEFAULT_MAX_ATTEMPTS = 16;
 const DEFAULT_DELAY_MS = 150;
 
 export async function getChallenge(
-  client: ClawBitsClient
+  client: ClawBitsClient,
+  signal?: AbortSignal,
 ): Promise<Challenge> {
-  return client.request<Challenge>("GET", "/api/agentic/auth/challenge");
+  return client.request<Challenge>(
+    "GET",
+    "/api/agentic/auth/challenge",
+    signal ? { signal } : undefined,
+  );
 }
 
 export function answerChallenge(
@@ -31,7 +36,7 @@ export async function withChallenge<T>(
   client: ClawBitsClient,
   knownAnswers: Record<string, string>,
   fn: (answer: ChallengeAnswer) => Promise<T>,
-  opts: { maxAttempts?: number; delayMs?: number } = {}
+  opts: { maxAttempts?: number; delayMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
   // Server samples challenges from a pool; retry until we land on one in
   // the known-answers dictionary.
@@ -39,13 +44,27 @@ export async function withChallenge<T>(
   const delay = opts.delayMs ?? DEFAULT_DELAY_MS;
   let lastUnknown: string | undefined;
   for (let i = 0; i < max; i++) {
-    const challenge = await getChallenge(client);
+    opts.signal?.throwIfAborted();
+    const challenge = await getChallenge(client, opts.signal);
     const ans = knownAnswers[challenge.challenge];
     if (ans !== undefined) {
       return fn({ sessionToken: challenge.session_token, response: ans });
     }
     lastUnknown = challenge.challenge;
-    if (i < max - 1) await new Promise((r) => setTimeout(r, delay));
+    if (i < max - 1) {
+      opts.signal?.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(opts.signal?.reason);
+        };
+        const timer = setTimeout(() => {
+          opts.signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delay);
+        opts.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    }
   }
   throw new ClawBitsError({
     statusCode: 0,

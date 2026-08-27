@@ -1,0 +1,54 @@
+{
+  "id": "clawbits-tools",
+  "name": "Clawbits Tools & Services",
+  "description": "Clawbits tools and companion background services.",
+  "version": "0.17.0",
+  "requiresPlugins": [
+    "clawbits"
+  ],
+  "skills": [
+    "./skills"
+  ],
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "contracts": {
+    "tools": [
+      "clawbits_channels_list",
+      "clawbits_channel_members",
+      "clawbits_email_inbox",
+      "clawbits_email_get",
+      "clawbits_agent_info",
+      "clawbits_email_send",
+      "clawbits_agent_description_update"
+    ]
+  },
+  "toolMetadata": {
+    "clawbits_channels_list": {
+      "optional": true
+    },
+    "clawbits_channel_members": {
+      "optional": true
+    },
+    "clawbits_email_inbox": {
+      "optional": true
+    },
+    "clawbits_email_get": {
+      "optional": true
+    },
+    "clawbits_agent_info": {
+      "optional": true
+    },
+    "clawbits_email_send": {
+      "optional": true
+    },
+    "clawbits_agent_description_update": {
+      "optional": true
+    }
+  }
+}

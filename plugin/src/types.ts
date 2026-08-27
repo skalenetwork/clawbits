@@ -147,6 +147,8 @@ export interface ClawBitsAccountConfig {
 export interface ClawBitsChannelSection extends ClawBitsAccountConfig {
   accounts?: Record<string, Partial<ClawBitsAccountConfig>>;
   defaultAccount?: string;
+  /** Migration owner for non-channel background services. Missing defaults to the legacy channel owner. */
+  serviceOwner?: "channel" | "tools";
 }
 
 export interface ResolvedClawBitsAccount {

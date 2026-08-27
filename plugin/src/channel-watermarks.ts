@@ -52,6 +52,8 @@ export interface WatermarkStore {
 }
 
 const DEFAULT_STATE_FILENAME = "clawbits-channel-state.json";
+const EMAIL_STATE_FILENAME = "clawbits-email-state.json";
+const EMAIL_WATERMARK_KEY = "email:inbox";
 const FLUSH_DEBOUNCE_MS = 1000;
 const KEY_SEP = "\u0000";
 
@@ -62,10 +64,10 @@ function legacyStatePath(): string {
 }
 
 /** Durable default path — see the header note for the preference order. */
-function defaultStatePath(): string {
+function defaultStatePathFor(filename: string): string {
   const envDir = process.env["CLAWBITS_STATE_DIR"];
   if (envDir && envDir.trim().length > 0) {
-    return resolve(envDir.trim(), DEFAULT_STATE_FILENAME);
+    return resolve(envDir.trim(), filename);
   }
   try {
     const configDir = join(homedir(), ".config", "openclaw");
@@ -73,12 +75,16 @@ function defaultStatePath(): string {
     // signals "this install has a persistent config home" — reef's named
     // volume, or a self-hosted XDG setup. flush() creates the subdir.
     if (existsSync(configDir)) {
-      return join(configDir, "clawbits", DEFAULT_STATE_FILENAME);
+      return join(configDir, "clawbits", filename);
     }
   } catch {
     // homedir()/fs probing failed — fall through to the legacy location.
   }
-  return legacyStatePath();
+  return resolve(process.cwd(), filename);
+}
+
+function defaultStatePath(): string {
+  return defaultStatePathFor(DEFAULT_STATE_FILENAME);
 }
 
 /**
@@ -89,14 +95,21 @@ function defaultStatePath(): string {
 export class ChannelWatermarkStore implements WatermarkStore {
   private readonly map = new Map<string, number>();
   private readonly filePath: string | null;
-  private loaded = false;
+  private loadPromise: Promise<void> | undefined;
   private dirty = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushChain: Promise<void> = Promise.resolve();
+  private readonly migrationPath: string | undefined;
+  private readonly migrationChannelId: string | undefined;
   loadedExisting = false;
 
-  constructor(filePath?: string | null) {
+  constructor(
+    filePath?: string | null,
+    opts: { migrationPath?: string; migrationChannelId?: string } = {},
+  ) {
     this.filePath = filePath ?? null;
+    this.migrationPath = opts.migrationPath;
+    this.migrationChannelId = opts.migrationChannelId;
   }
 
   /** Resolved backing path, or null for a pure in-memory store. Logged at
@@ -112,6 +125,19 @@ export class ChannelWatermarkStore implements WatermarkStore {
     return new ChannelWatermarkStore(filePath ?? defaultStatePath());
   }
 
+  /** Separate companion-owned email state. On first load, migrate the email
+   *  UID from the legacy combined channel file, then write only this file so
+   *  independently installed channel/tools packages never race one snapshot. */
+  static emailFileBacked(filePath?: string): ChannelWatermarkStore {
+    return new ChannelWatermarkStore(
+      filePath ?? defaultStatePathFor(EMAIL_STATE_FILENAME),
+      {
+        migrationPath: defaultStatePath(),
+        migrationChannelId: EMAIL_WATERMARK_KEY,
+      },
+    );
+  }
+
   /** Pure in-memory store (no disk I/O). */
   static inMemory(): ChannelWatermarkStore {
     return new ChannelWatermarkStore(null);
@@ -121,44 +147,55 @@ export class ChannelWatermarkStore implements WatermarkStore {
     return `${accountId}${KEY_SEP}${channelId}`;
   }
 
-  private ingestSnapshot(raw: string): boolean {
+  private ingestSnapshot(raw: string, onlyChannelId?: string): boolean {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object") return false;
+    let ingested = false;
     for (const [accountId, channels] of Object.entries(parsed as Record<string, unknown>)) {
       if (!channels || typeof channels !== "object") continue;
       for (const [channelId, value] of Object.entries(channels as Record<string, unknown>)) {
+        if (onlyChannelId && channelId !== onlyChannelId) continue;
         if (typeof value === "number" && Number.isFinite(value)) {
           this.map.set(this.keyFor(accountId, channelId), value);
+          ingested = true;
         }
       }
     }
-    return true;
+    return ingested;
   }
 
-  async load(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+  load(): Promise<void> {
+    this.loadPromise ??= this.loadOnce();
+    return this.loadPromise;
+  }
+
+  private async loadOnce(): Promise<void> {
     if (!this.filePath) return;
     try {
       this.loadedExisting = this.ingestSnapshot(await readFile(this.filePath, "utf8"));
       return;
     } catch {
-      // Missing or corrupt durable file — try the legacy location below.
+      // Missing or corrupt durable file — try migration locations below.
     }
-    // One-time migration read: a pre-0.16 install kept the file in the
-    // gateway's cwd. Ingest it (the next flush writes the durable path;
-    // the old file is left behind, harmless). Skipped when the configured
-    // path IS the legacy path.
-    const legacy = legacyStatePath();
-    if (legacy === this.filePath) return;
-    try {
-      this.loadedExisting = this.ingestSnapshot(await readFile(legacy, "utf8"));
-      if (this.loadedExisting) this.dirty = true;
-    } catch {
-      // Neither file → a genuine first boot (or both corrupt). Start empty:
-      // the next backlog runs untrimmed (at worst a one-time re-read), which
-      // is strictly safer than crashing the poller.
+    const migrationPaths = [this.migrationPath, legacyStatePath()].filter(
+      (path): path is string => Boolean(path && path !== this.filePath),
+    );
+    for (const migrationPath of [...new Set(migrationPaths)]) {
+      try {
+        this.loadedExisting = this.ingestSnapshot(
+          await readFile(migrationPath, "utf8"),
+          this.migrationChannelId,
+        );
+        if (this.loadedExisting) {
+          this.dirty = true;
+          return;
+        }
+      } catch {
+        // Keep trying migration sources.
+      }
     }
+    // No source → a genuine first boot (or all corrupt). Start empty: the
+    // next catch-up is bounded and safer than crashing the poller.
   }
 
   get(accountId: string, channelId: string): number | undefined {

@@ -1,0 +1,350 @@
+name: Publish Clawbits OpenClaw Tools to ClawHub
+
+# First half of the coordinated release. This standalone companion is built,
+# validated, published, and registry-verified before its successful workflow
+# completion is allowed to trigger the slim channel publication.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'plugin/**'
+      - '.github/workflows/publish-clawhub-tools.yaml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-clawbits-tools-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-tools:
+    name: Publish tools plugin
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Bun runs the build and tests, but the stamping, staging, validation and
+      # registry-check steps all shell out to `node`/`npm`, so the runner's
+      # default Node would silently decide their behaviour. Pin it to match the
+      # `engines.node: ">=22"` this package publishes. It matters most at the
+      # validation step: `openclaw plugins build/validate` executes the compiled
+      # artifact, and dist/tools-entry.js calls `AbortSignal.any`, which does not
+      # exist before Node 20.3 — on an older runner that would fail as a bogus
+      # plugin error rather than an environment one.
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install plugin dependencies
+        working-directory: plugin
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: plugin
+        run: bun --bun run typecheck
+
+      - name: Run plugin tests
+        working-directory: plugin
+        run: bun run test
+
+      # Keep the tools and channel versions aligned. ClawBitsClient sends the
+      # package version in X-Clawbits-Plugin-Version, so both artifacts use the
+      # same major/minor and the same plugin/ commit-count patch.
+      - name: Stamp auto version (patch = plugin commit count)
+        id: version
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          base="$(node -p "JSON.parse(require('fs').readFileSync('package.tools.json','utf8')).version.split('.').slice(0,2).join('.')")"
+          patch="$(git rev-list --count HEAD -- .)"
+          version="${base}.${patch}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Tools plugin version: $version"
+          node - "$version" <<'NODE'
+          const fs = require('node:fs');
+          const version = process.argv[2];
+          for (const path of ['package.tools.json', 'openclaw.tools.plugin.json']) {
+            const json = JSON.parse(fs.readFileSync(path, 'utf8'));
+            json.version = version;
+            if (json.openclaw?.version) json.openclaw.version = version;
+            fs.writeFileSync(path, JSON.stringify(json, null, 2) + '\n');
+          }
+          NODE
+
+      - name: Decide whether to publish
+        id: guard
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_name }}" != "main" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Ref ${{ github.ref_name }} is not main; testing only."
+            exit 0
+          fi
+          versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-tools/versions" 2>/dev/null || true)"
+          already=false
+          if [ -n "$versions_json" ]; then
+            already="$(node -e '
+              const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
+              const versions = (data.items || []).map((item) => item.version);
+              console.log(versions.includes(process.argv[1]) ? "true" : "false");
+            ' "$VERSION" <<<"$versions_json")"
+          fi
+          if [ "$already" = "true" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::clawbits-openclaw-tools@$VERSION already exists; skipping."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build shared source tree
+        if: steps.guard.outputs.publish == 'true'
+        working-directory: plugin
+        run: bun --bun run build
+
+      - name: Stage standalone tools artifact
+        id: pack
+        if: steps.guard.outputs.publish == 'true'
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          target="../publish/clawbits-openclaw-tools"
+          node stage-tools.mjs "$target"
+          test ! -e "$target/src"
+          test ! -e "$target/dist/index.js"
+          test ! -e "$target/dist/gateway-adapter.js"
+          test -e "$target/skills"
+          node - "$target" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.argv[2];
+          const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+          const manifest = JSON.parse(fs.readFileSync(path.join(root, 'openclaw.plugin.json'), 'utf8'));
+          const expected = './dist/tools-entry.js';
+          if (pkg.name !== 'clawbits-openclaw-tools') throw new Error('wrong package name');
+          if (pkg.openclaw?.id !== 'clawbits-tools') throw new Error('wrong plugin id');
+          if (pkg.openclaw?.extensions?.length !== 1 || pkg.openclaw.extensions[0] !== expected) {
+            throw new Error('tools package must load only dist/tools-entry.js');
+          }
+          if (!fs.existsSync(path.join(root, expected))) throw new Error('compiled tools entry missing');
+          const tools = manifest.contracts?.tools || [];
+          if (tools.length === 0) throw new Error('manifest declares no tools');
+          for (const name of tools) {
+            if (manifest.toolMetadata?.[name]?.optional !== true) {
+              throw new Error(`tool ${name} must be optional`);
+            }
+          }
+          NODE
+          echo "publish_path=publish/clawbits-openclaw-tools" >> "$GITHUB_OUTPUT"
+          find "$target" -type f | sort
+
+      # Validate against every distinct OpenClaw version the package claims to
+      # support: the compat floor AND the SDK it was built against (2026.6.10
+      # and 2026.6.33 today, so this runs twice).
+      #
+      # The floor stays at 2026.6.10 to match the channel plugin and the
+      # OpenClaw tag Reef's runtime image pins (see
+      # reef/images/openclaw-runtime/Dockerfile) — both packages have to install
+      # into that same agent image. Because this step exercises the floor rather
+      # than trusting it, an artifact that can no longer load on the oldest
+      # supported host fails the release instead of shipping a false claim.
+      - name: Validate staged artifact against the floor and pinned OpenClaw SDKs
+        if: steps.guard.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          validation_root="$(mktemp -d)"
+          trap 'rm -rf "$validation_root"' EXIT
+          cp -R "${{ steps.pack.outputs.publish_path }}" "$validation_root/plugin"
+          cd "$validation_root/plugin"
+          # Newline-separated + `read`, not word-splitting on an unquoted
+          # expansion: the latter silently degrades to a single iteration
+          # carrying both versions under shells that don't split (zsh), which
+          # would look like a pass while validating nothing.
+          sdk_versions="$(node -p "const o=require('./package.json').openclaw; [...new Set([o.compat.minGatewayVersion, o.build.openclawVersion])].join('\n')")"
+          echo "Validating against:"
+          echo "$sdk_versions"
+          while read -r sdk_version; do
+            [ -n "$sdk_version" ] || continue
+            echo "::group::openclaw@${sdk_version}"
+            rm -rf node_modules
+            npm install --ignore-scripts --no-audit --no-fund --package-lock=false --no-save \
+              "openclaw@${sdk_version}"
+            # `plugins validate --entry` is defineToolPlugin-only. This is a
+            # mixed definePluginEntry, so load it against the real SDK and
+            # exercise tool discovery instead.
+            node --input-type=module - <<'NODE'
+            const entry = (await import('./dist/tools-entry.js')).default;
+            const names = [];
+            entry.register({
+              registrationMode: 'tool-discovery',
+              config: {},
+              logger: {},
+              runtime: {},
+              registerTool(tool, options) {
+                if (options?.optional !== true) throw new Error(`${tool.name} is not optional`);
+                names.push(tool.name);
+              },
+              on() {},
+            });
+            if (names.length !== 7) throw new Error(`expected 7 tools, got ${names.length}`);
+
+            // Prove companion-owned email dispatch through this SDK's public
+            // non-channel plugin runtime surface.
+            const { dispatchInboundEmail } = await import('./dist/email-adapter.js');
+            let dispatched;
+            const channelRuntime = {
+              routing: { resolveAgentRoute: () => ({
+                agentId: 'agent-1', accountId: 'default', sessionKey: 'agent:main:main',
+              }) },
+              session: {
+                resolveStorePath: () => '/tmp/clawbits-sdk-email-smoke.json',
+                readSessionUpdatedAt: () => undefined,
+                recordInboundSession: async () => {},
+              },
+              reply: {
+                resolveEnvelopeFormatOptions: () => ({}),
+                formatAgentEnvelope: ({ body }) => body,
+                finalizeInboundContext: (input) => input,
+                dispatchReplyWithBufferedBlockDispatcher: async ({ ctx }) => { dispatched = ctx; },
+              },
+            };
+            await dispatchInboundEmail({
+              cfg: { channels: { clawbits: {} } },
+              accountId: 'default',
+              account: {
+                accountId: 'default', enabled: true, configured: true,
+                endpoint: 'https://example.invalid', agentId: 'agent-1', apiKey: 'key',
+                channelId: 'channel-1', knownAnswers: {}, interAgentMode: false,
+                interAgentMessageLimit: 10, groupChannelShimmer: true,
+                channelContextBacklog: 100, alivePingMs: 0, emailEnabled: true,
+                emailPollIntervalMs: 60000, config: {},
+              },
+              channelRuntime,
+              log: {},
+            }, {
+              accountId: 'default', uid: 1, fromAddr: 'owner@example.test',
+              toAddr: 'agent@example.test', subject: 'SDK smoke', date: '',
+              bodyText: 'hello', attachments: [], headers: {},
+            });
+            if (dispatched?.EmailUid !== 1) {
+              throw new Error('email did not dispatch through public runtime');
+            }
+            NODE
+            echo "::endgroup::"
+          done <<< "$sdk_versions"
+
+      - name: Package GitHub release tarball
+        id: tarball
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset="clawbits-openclaw-tools-${VERSION}.tgz"
+          tar -czf "$asset" -C publish clawbits-openclaw-tools
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ASSET: ${{ steps.tarball.outputs.asset }}
+        run: |
+          set -euo pipefail
+          tag="openclaw-tools-v${VERSION}"
+          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --repo "${{ github.repository }}" \
+              --latest=false \
+              --target "${{ github.sha }}" \
+              --title "Clawbits OpenClaw tools v$VERSION" \
+              --notes "Optional tools plus Clawbits cron, email, usage, and skills services.
+
+          Install before upgrading the channel plugin:
+          \`\`\`
+          openclaw plugins install clawhub:clawbits-openclaw-tools --pin
+          \`\`\`"
+          fi
+          gh release upload "$tag" "$ASSET" --repo "${{ github.repository }}" --clobber
+
+      - name: Authenticate ClawHub CLI
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          CLAWHUB_API_TOKEN: ${{ secrets.CLAWHUB_API_TOKEN }}
+        run: |
+          if [ -z "$CLAWHUB_API_TOKEN" ]; then
+            echo "::error::Missing required secret CLAWHUB_API_TOKEN"
+            exit 1
+          fi
+          bunx --bun clawhub@latest login --token "$CLAWHUB_API_TOKEN" --no-browser
+
+      - name: Verify ClawHub authentication
+        if: steps.guard.outputs.publish == 'true'
+        run: bunx --bun clawhub@latest whoami
+
+      - name: Publish package to ClawHub
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -uo pipefail
+          if bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
+              --family code-plugin \
+              --source-repo "${{ github.repository }}" \
+              --source-commit "${{ github.sha }}" \
+              --source-ref "${{ github.ref }}"; then
+            echo "Published clawbits-openclaw-tools@$VERSION"
+            exit 0
+          fi
+
+          echo "::warning::publish exited non-zero; checking whether $VERSION landed"
+          versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-tools/versions" || true)"
+          if [ -z "$versions_json" ]; then
+            echo "::error::publish failed and registry verification was unavailable"
+            exit 1
+          fi
+          landed="$(node -e '
+            const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const versions = (data.items || []).map((item) => item.version);
+            console.log(versions.includes(process.argv[1]) ? "true" : "false");
+          ' "$VERSION" <<<"$versions_json")"
+          if [ "$landed" = "true" ]; then
+            echo "::notice::$VERSION exists despite the non-zero publish exit; treating as success."
+            exit 0
+          fi
+          echo "::error::publish failed and $VERSION is not on ClawHub"
+          exit 1
+
+      - name: Verify companion release on ClawHub
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-tools/versions" || true)"
+            if [ -n "$versions_json" ] && node -e '
+              const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
+              if (!(data.items || []).some((item) => item.version === process.argv[1])) process.exit(1);
+            ' "$VERSION" <<<"$versions_json"; then
+              echo "Verified clawbits-openclaw-tools@$VERSION"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Companion $VERSION was not visible on ClawHub after publish"
+          exit 1
