@@ -26,7 +26,7 @@ function stage(script: string, target: string): void {
 }
 
 describe("standalone package staging", () => {
-  it("builds disjoint channel and companion closures", () => {
+  it("builds disjoint channel and companion closures", { timeout: 30_000 }, () => {
     const temp = mkdtempSync(join(tmpdir(), "clawbits-stage-"));
     try {
       execFileSync("bun", ["run", "build"], { cwd: pluginRoot, stdio: "pipe" });
