@@ -106,7 +106,7 @@ class BubbleRenderer extends Renderer implements RendererInterface {
     // links rendered on their own line next to a mention/word.
     return (
       <Text
-        key={`link-${href}-${Math.random()}`}
+        key={`link-${href}`}
         onPress={() => {
           void openBrowserAsync(href).catch(() => {});
         }}
@@ -140,7 +140,7 @@ class BubbleRenderer extends Renderer implements RendererInterface {
       segments.push(text.slice(lastIndex));
     }
     return (
-      <Text key={`text-${String(Math.random())}`} style={styles}>
+      <Text key={`text-${String(Math.max(lastIndex, 1))}`} style={styles}>
         {segments}
       </Text>
     );

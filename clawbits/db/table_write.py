@@ -522,18 +522,21 @@ class TableWrite:
     # ---------------- push devices ----------------
 
     @staticmethod
-    def upsert_webpush_device(
+    def upsert_push_device(
         session: Session,
         human_id: int,
         token: str,
-        p256dh: str,
-        auth: str,
+        transport: str,
+        p256dh: str | None = None,
+        auth: str | None = None,
         user_agent: str | None = None,
         app: str = "web",
     ) -> int:
-        """Insert or refresh a web-push subscription, keyed on ``token``.
+        """Insert or refresh a push subscription, keyed on ``token``.
 
-        Re-subscribing the same browser yields the same endpoint, so we
+        ``transport`` is "webpush" (browser subscription endpoint; the
+        p256dh/auth keys are required) or "apns" (iOS device token; key
+        columns stay NULL). Re-subscribing yields the same token, so we
         update the existing row in place — re-enabling it, refreshing the
         keys + last_seen — rather than accumulating duplicates. Caller owns
         the commit.
@@ -561,7 +564,7 @@ class TableWrite:
             session.flush()
             existing = None
         if existing is not None:
-            existing.transport = "webpush"
+            existing.transport = transport
             existing.p256dh = p256dh
             existing.auth = auth
             existing.app = app
@@ -573,7 +576,7 @@ class TableWrite:
             return existing.id
         device = PushDevice(
             human_id=human_id,
-            transport="webpush",
+            transport=transport,
             token=token,
             p256dh=p256dh,
             auth=auth,

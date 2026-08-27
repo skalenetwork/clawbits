@@ -13,6 +13,7 @@ import {
   type SocialProvider,
 } from '@/lib/api';
 import { queryClient } from '@/lib/query-client';
+import { registerPush, unregisterPush } from '@/lib/push';
 
 /** Deep-link target the backend HTML bridge fires after a successful
  *  OAuth callback. Mirrors the ``clawbits`` scheme registered in
@@ -132,6 +133,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (status !== 'authenticated' || !token) return;
+    void registerPush(token).catch(() => {});
+  }, [status, token]);
+
   // Hydrates a fresh session token end-to-end: dump any stale cache,
   // persist the token + cache-owner key, fetch the user, flip state to
   // authenticated. Shared by the in-app browser flow and the cold-start
@@ -180,6 +186,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     },
     signOut: async () => {
+      if (token) await unregisterPush(token).catch(() => {});
       try {
         await apiLogout(token);
       } catch {

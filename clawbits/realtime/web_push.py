@@ -308,11 +308,13 @@ _main_loop: asyncio.AbstractEventLoop | None = None
 
 def start_push_dispatcher() -> None:
     """Start the background push worker. Call once from the app lifespan while
-    the event loop is running. No-op when VAPID isn't configured (the whole
-    web-push surface is inert then) or when already started."""
+    the event loop is running. No-op when no transport is configured (the
+    whole push surface is inert then) or when already started."""
     global _queue, _worker_task, _main_loop
-    if not vapid_configured():
-        log.info("web push: VAPID unconfigured — dispatcher not started")
+    from clawbits.realtime.apns_push import apns_configured
+
+    if not vapid_configured() and not apns_configured():
+        log.info("push: no transport configured — dispatcher not started")
         return
     if _worker_task is not None:
         return
@@ -403,21 +405,26 @@ async def dispatch_post_web_push(
     member_human_ids: list[int],
     author_human_id: int | None = None,
 ) -> None:
-    """Fan a published post out to members' browsers as a Web Push.
+    """Fan a published post out to members' devices (web push + APNs).
 
     Called from the post-created fan-out (alongside the SSE publish). This
-    is the "reach a member whose tab is closed" layer — the service worker
-    suppresses the OS notification when one of the member's tabs is focused,
-    mirroring the desktop ``document.hasFocus()`` gate, so an actively-
-    watching user never gets a redundant ping.
+    is the "reach a member whose app isn't open" layer. Web pushes carry a
+    service-worker payload that suppresses the OS notification when one of
+    the member's tabs is focused, mirroring the desktop
+    ``document.hasFocus()`` gate, so an actively-watching user never gets a
+    redundant ping.
 
-    No-op when VAPID isn't configured. The author is excluded (derived from
-    the post when not passed); muted members are skipped (they still get the
-    in-app unread badge over SSE). All blocking work — the DB reads and the
-    pywebpush sends — runs in worker threads so the event loop stays free.
-    Dead subscriptions (push service returns 404/410) are pruned.
+    No-op when no transport is configured. The author is excluded (derived
+    from the post when not passed); muted members are skipped (they still
+    get the in-app unread badge over SSE). All blocking work — DB reads and
+    the sends — runs in worker threads so the event loop stays free. Dead
+    subscriptions (push service reports the token gone) are pruned.
     """
-    if not vapid_configured() or not member_human_ids:
+    from clawbits.realtime.apns_push import apns_configured
+
+    if not member_human_ids:
+        return
+    if not vapid_configured() and not apns_configured():
         return
     if author_human_id is None and isinstance(post, dict):
         author_human_id = post.get("human_id")
@@ -431,19 +438,31 @@ async def dispatch_post_web_push(
         return
     if prepared is None:
         return
-    channel_meta, targets = prepared
-    if not targets:
-        return
+    channel_meta, targets, apns_targets = prepared
+    title, body = notification_copy(channel_meta, post)
 
-    data = json.dumps(_build_payload(channel_meta, post))
-    sem = asyncio.Semaphore(_MAX_CONCURRENCY)
+    dead_ids: list[int] = []
+    if targets and vapid_configured():
+        data = json.dumps(_build_payload(channel_meta, post))
+        sem = asyncio.Semaphore(_MAX_CONCURRENCY)
 
-    async def _one(target: dict) -> str:
-        async with sem:
-            return await asyncio.to_thread(_send_one, target, data)
+        async def _one(target: dict) -> str:
+            async with sem:
+                return await asyncio.to_thread(_send_one, target, data)
 
-    results = await asyncio.gather(*[_one(t) for t in targets])
-    dead_ids = [t["id"] for t, r in zip(targets, results, strict=True) if r == "dead"]
+        results = await asyncio.gather(*[_one(t) for t in targets])
+        dead_ids.extend(
+            t["id"] for t, r in zip(targets, results, strict=True) if r == "dead"
+        )
+
+    if apns_targets and apns_configured():
+        from clawbits.realtime.apns_push import fan_out as apns_fan_out
+
+        try:
+            dead_ids.extend(await apns_fan_out(apns_targets, title, body, channel_id))
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("apns: fan-out failed for %s: %s", channel_id, exc)
+
     if dead_ids:
         try:
             await asyncio.to_thread(_prune_devices, dead_ids)
@@ -453,11 +472,11 @@ async def dispatch_post_web_push(
 
 def _collect_targets(
     channel_id: str, member_human_ids: list[int], author_human_id: int | None
-) -> tuple[dict | None, list[dict]] | None:
+) -> tuple[dict | None, list[dict], list[dict]] | None:
     """Resolve who to push to (off the event loop). Opens its own session.
 
-    Returns ``(channel_meta, devices)`` or ``None`` when there's nobody to
-    notify before any DB work."""
+    Returns ``(channel_meta, web_devices, apns_devices)`` or ``None`` when
+    there's nobody to notify before any DB work."""
     from clawbits.db.engine import new_session
     from clawbits.db.table_read import TableRead
 
@@ -468,10 +487,11 @@ def _collect_targets(
         muted = TableRead.get_muted_human_ids(session, channel_id, candidates)
         recipients = [h for h in candidates if h not in muted]
         if not recipients:
-            return (None, [])
-        devices = TableRead.get_webpush_devices_for_humans(session, recipients)
+            return (None, [], [])
+        web_devices = TableRead.get_webpush_devices_for_humans(session, recipients)
+        apns_devices = TableRead.get_apns_devices_for_humans(session, recipients)
         channel_meta = TableRead.get_channel_notification_meta(session, channel_id)
-    return (channel_meta, devices)
+    return (channel_meta, web_devices, apns_devices)
 
 
 def _send_one(target: dict, data: str) -> str:
@@ -536,23 +556,29 @@ def _prune_devices(device_ids: list[int]) -> None:
         log.info("web push: pruned %d dead subscription(s)", removed)
 
 
-def _build_payload(channel_meta: dict | None, post: dict) -> dict:
-    """Notification content. DM → title is the other person, body is the
-    message; channel → title is ``#name``, body is ``Author: message``
-    (mirrors the desktop notification's author folding)."""
-    channel_id = (channel_meta or {}).get("channel_id") or post.get("channel_id") or ""
+def notification_copy(
+    channel_meta: dict | None, post: dict
+) -> tuple[str, str]:
+    """Notification title + body, shared by the web and APNs payloads.
+
+    DM → title is the other person, body is the message; channel → title is
+    ``#name``, body is ``Author: message`` (mirrors the desktop
+    notification's author folding)."""
     is_direct = bool(channel_meta and channel_meta.get("channel_type") == "direct")
     display = None
     if channel_meta:
         display = channel_meta.get("display_name") or channel_meta.get("name")
     author = post.get("poster_display_name") or "Someone"
-
     if is_direct:
-        title = display or author
-        body = _preview(post)
-    else:
-        title = f"#{display}" if display else author
-        body = f"{author}: {_preview(post)}"
+        return (display or author), _preview(post)
+    return (f"#{display}" if display else author), f"{author}: {_preview(post)}"
+
+
+def _build_payload(channel_meta: dict | None, post: dict) -> dict:
+    """Service-worker payload for web pushes."""
+    channel_id = (channel_meta or {}).get("channel_id") or post.get("channel_id") or ""
+    author = post.get("poster_display_name") or "Someone"
+    title, body = notification_copy(channel_meta, post)
 
     return {
         "title": title,

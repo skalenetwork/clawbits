@@ -20,6 +20,7 @@ from sqlmodel import Session
 
 from clawbits.db.table_write import TableWrite
 from clawbits.fastapi.workos_auth import get_current_human_user
+from clawbits.realtime import apns_push
 from clawbits.realtime.web_push import (
     MAX_ENDPOINT_LEN,
     validate_push_endpoint,
@@ -95,10 +96,11 @@ def subscribe_web_push(
         raise HTTPException(status_code=422, detail=f"Invalid push endpoint: {exc}") from exc
     user_agent = request.headers.get("user-agent")
     with _get_db(request) as db:
-        TableWrite.upsert_webpush_device(
+        TableWrite.upsert_push_device(
             db,
             human_id=int(user["id"]),
             token=body.endpoint,
+            transport="webpush",
             p256dh=body.keys.p256dh,
             auth=body.keys.auth,
             user_agent=user_agent,
@@ -127,5 +129,53 @@ def unsubscribe_web_push(
     is always safe to honour."""
     with _get_db(request) as db:
         TableWrite.delete_push_device_by_token(db, token=body.endpoint, human_id=int(user["id"]))
+        db.commit()
+    return {"ok": True}
+
+
+class MobilePushSubscribeRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=apns_push.MAX_DEVICE_TOKEN_LEN)
+
+
+class MobilePushUnsubscribeRequest(BaseModel):
+    token: str = Field(max_length=apns_push.MAX_DEVICE_TOKEN_LEN)
+
+
+@push_router.post("/api/push/mobile/subscribe")
+def subscribe_mobile_push(
+    body: MobilePushSubscribeRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> dict:
+    """Register (or refresh) this iPhone's APNs device token."""
+    if not apns_push.apns_configured():
+        raise HTTPException(status_code=404, detail="Mobile push is not configured")
+    try:
+        apns_push.validate_device_token(body.token)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid device token: {exc}") from exc
+    with _get_db(request) as db:
+        TableWrite.upsert_push_device(
+            db,
+            human_id=int(user["id"]),
+            token=body.token,
+            transport="apns",
+            user_agent=request.headers.get("user-agent"),
+            app="ios",
+        )
+        db.commit()
+    return {"ok": True}
+
+
+@push_router.post("/api/push/mobile/unsubscribe")
+def unsubscribe_mobile_push(
+    body: MobilePushUnsubscribeRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> dict:
+    """Drop this device's token on sign-out. Delete-only — no configured
+    gate, so a row stored before the key was removed stays removable."""
+    with _get_db(request) as db:
+        TableWrite.delete_push_device_by_token(db, token=body.token, human_id=int(user["id"]))
         db.commit()
     return {"ok": True}
