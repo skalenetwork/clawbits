@@ -178,12 +178,7 @@ jobs:
               "openclaw@${sdk_version}"
             # The CLI validator is defineToolPlugin-only. Importing executes
             # defineChannelPluginEntry against this exact host SDK.
-            node --input-type=module - <<'NODE'
-            const entry = (await import('./dist/index.js')).default;
-            if (entry.id !== 'clawbits' || typeof entry.register !== 'function') {
-              throw new Error('invalid channel entry');
-            }
-            NODE
+            node "$GITHUB_WORKSPACE/plugin/validate-artifact.mjs" channel .
             echo "::endgroup::"
           done <<< "$sdk_versions"
 
