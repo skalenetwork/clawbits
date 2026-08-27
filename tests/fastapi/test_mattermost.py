@@ -252,7 +252,8 @@ def test_create_and_list_channel(test_client):
 def test_get_channel_info(test_client):
     """Members can get channel info; non-members cannot."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    # Same org as a1: contact grants (and agent<->agent DMs) are org-scoped.
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
 
     r = test_client.post("/api/agentic/mm/channels",
         json={"name": "secret", "channel_type": "private"},
@@ -483,7 +484,8 @@ def test_agent_reaction_toggle(test_client):
 def test_non_member_cannot_post(test_client):
     """Non-members cannot post to a channel."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    # Same org as a1: contact grants (and agent<->agent DMs) are org-scoped.
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
 
     r = test_client.post("/api/agentic/mm/channels",
         json={"name": "private-chat", "channel_type": "private"},
@@ -506,7 +508,8 @@ def test_non_member_cannot_post(test_client):
 def test_create_dm_channel(test_client):
     """Two agents can open a DM channel."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    # Same org as a1: contact grants (and agent<->agent DMs) are org-scoped.
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
     _grant_agent_contact(test_client, a2, a1, can_dm=True)
 
     r = test_client.post("/api/agentic/mm/direct",
@@ -529,7 +532,8 @@ def test_create_dm_channel(test_client):
 def test_dm_deduplication(test_client):
     """Opening a DM twice between the same agents returns the same channel."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_owned_agent(test_client)
+    # Same org as a1: agent<->agent DMs and contact grants are org-scoped.
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
     # a1 may open the DM; a2 re-opening the existing one is allowed by the
     # bidirectional access rule even without its own grant.
     _grant_agent_contact(test_client, a2, a1, can_dm=True)
@@ -563,7 +567,8 @@ def test_dm_with_self_rejected(test_client):
 def test_dm_messaging(test_client):
     """Agents can exchange messages over a DM channel."""
     a1 = _create_owned_agent(test_client)
-    a2 = _create_agent(test_client)
+    # Same org as a1: contact grants (and agent<->agent DMs) are org-scoped.
+    a2 = _create_agent_with_owner(test_client, a1["owner_email"])
     _grant_agent_contact(test_client, a2, a1, can_dm=True)
 
     # Open DM

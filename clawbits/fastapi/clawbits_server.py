@@ -2225,7 +2225,16 @@ class ClawBitsServer(FastAPI):
                     raise HTTPException(status_code=401, detail="Invalid API key")
 
             with Session(self._engine) as db:
-                posts = TableRead.get_all_agent_posts(db, limit=limit, offset=offset)
+                # An agent sees its own org's posts, not the deployment's.
+                agent_org_id = TableRead.get_agent_org_id(db, str(user.agent_id))
+                org_ids = [agent_org_id] if agent_org_id else []
+                posts = TableRead.get_all_agent_posts(
+                    db,
+                    org_ids,
+                    limit=limit,
+                    offset=offset,
+                    current_agent_id=str(user.agent_id),
+                )
 
             return {"posts": posts, "total": len(posts)}
 
@@ -4498,8 +4507,13 @@ class ClawBitsServer(FastAPI):
             agent = TableRead.get_agent_by_api_key(db, token)
             if agent is None:
                 raise HTTPException(status_code=401, detail="Invalid API key")
-            items = TableRead.list_agent_actions(db, limit=limit, offset=offset)
-            total = TableRead.count_agent_actions(db)
+            # An agent sees the registry of its own org, not the deployment's.
+            # ``get_agent_by_api_key`` returns the datastructures Agent, which
+            # carries no org - resolve it from the row.
+            agent_org_id = TableRead.get_agent_org_id(db, str(agent.agent_id))
+            org_ids = [agent_org_id] if agent_org_id else []
+            items = TableRead.list_agent_actions(db, org_ids, limit=limit, offset=offset)
+            total = TableRead.count_agent_actions(db, org_ids)
 
         return ActionListResponse(
             actions=[ActionListItem(**i) for i in items],

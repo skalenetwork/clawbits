@@ -898,6 +898,29 @@ async def add_member(
 # DELETE /api/human/mm/channels/{channel_id}/members/{member_id}
 # ---------------------------------------------------------------------------
 
+def _require_channel_admin(db, channel: dict, user: dict) -> None:
+    """Assert the caller may act on other people's membership in ``channel``.
+
+    The channel's **creator** (so you can administer a channel you started)
+    or an **organization owner** (so owners can moderate from Settings).
+    Same predicate ``admin_delete_channel`` uses - removing someone else and
+    deleting the channel outright are the same authority, and this used to be
+    enforced on delete only.
+    """
+    org_id = channel.get("org_id")
+    if org_id is None:
+        raise HTTPException(
+            status_code=400, detail="Channel is not scoped to an organization"
+        )
+    if channel.get("created_by_human") == user["id"]:
+        return
+    if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
+        raise HTTPException(
+            status_code=403,
+            detail="Only the channel creator or an organization admin can remove other members",
+        )
+
+
 @human_mm_router.delete("/api/human/mm/channels/{channel_id}/members/{member_id}", response_model=MmChannelMembersListResponse)
 async def remove_member(
     channel_id: str,
@@ -906,7 +929,22 @@ async def remove_member(
     member_type: str = "agent",
     user: dict = Depends(get_current_human_user),
 ):
-    """Remove a member from a channel. Use ?member_type=human for human members. Caller must be a member.
+    """Remove a member from a channel. Use ?member_type=human for human members.
+
+    Two distinct authorities, which used to be one:
+
+    * **Leaving** - removing *yourself* - needs only membership.
+    * **Removing somebody else** needs the channel creator or an org owner,
+      the same predicate that gates deleting the channel. Without it any
+      member could evict every other human one at a time (each removal leaves
+      them the sole human, so the teardown below never fires early), then
+      leave - destroying the channel and its whole history for everyone, and
+      bypassing the creator/owner gate on DELETE /channels/{id}.
+
+    A ``direct`` channel is a two-party conversation, not a group: you may
+    close your own (which tears it down once no humans remain) but you may
+    never remove the other party. Mirrors ``add_member``, which refuses to
+    widen a DM.
 
     When the removal leaves the channel with no human members — i.e. the
     last human leaves a human↔agent DM or a group channel — the channel
@@ -915,6 +953,19 @@ async def remove_member(
     """
     with _get_db(request) as db:
         _require_human_member(db, channel_id, user["id"])
+        channel = TableRead.get_mm_channel(db, channel_id)
+        if channel is None:
+            raise HTTPException(status_code=404, detail="Channel not found")
+
+        removing_self = member_type == "human" and int(member_id) == user["id"]
+        if not removing_self:
+            if channel.get("channel_type") == "direct":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot remove the other party from a direct message channel",
+                )
+            _require_channel_admin(db, channel, user)
+
         removed_human_id: int | None = None
         removed_agent_id: str | None = None
         if member_type == "human":
@@ -2468,6 +2519,33 @@ async def list_pinned_posts(
 # POST /api/human/mm/direct
 # ---------------------------------------------------------------------------
 
+def _reopen_orphaned_dm(
+    db, org_id: str, dm_name: str, human_ids: list[int], agent_ids: list[str]
+) -> dict | None:
+    """Re-attach the missing parties to a DM row that dropped below two members.
+
+    DM channel names are deterministic per (org, pair) and ``mm_channels`` has
+    a unique ``(org_id, name)``. A DM that lost a member is therefore invisible
+    to the find-by-members lookup (which requires both, and a member count of
+    two) *and* impossible to recreate - the insert collides on the name and
+    500s. That stranded the conversation permanently.
+
+    Healing the existing row is preferred over deleting and recreating it: both
+    parties were always privy to this history, so nothing is disclosed that was
+    not already, and no messages are destroyed. Returns the channel, or None
+    when there is no such row and the caller should create one.
+    """
+    existing = TableRead.get_mm_channel_by_org_and_name(db, org_id, dm_name)
+    if existing is None:
+        return None
+    for hid in human_ids:
+        TableWrite.add_mm_channel_member_human(db, existing["channel_id"], hid)
+    for aid in agent_ids:
+        TableWrite.add_mm_channel_member(db, existing["channel_id"], aid)
+    db.commit()
+    return existing
+
+
 @human_mm_router.post("/api/human/mm/direct", response_model=MmChannelResponse)
 async def create_or_get_direct(
     body: MmDirectUnifiedRequest,
@@ -2507,19 +2585,28 @@ async def create_or_get_direct(
                 TableRead.apply_dm_peer_display(db, [existing], human_id)
                 return MmChannelResponse(**existing)
 
-            channel_id = str(uuid.uuid4())
             sorted_ids = sorted([human_id, target_human_id])
             dm_name = f"dm-human-{sorted_ids[0]}-human-{sorted_ids[1]}"
-            display_a = user.get("display_name") or user.get("email", str(human_id))
-            display_b = target.get("display_name") or target.get("email", str(target_human_id))
-            TableWrite.create_mm_channel(
-                db, channel_id,
-                dm_name, "direct", display_name=f"DM: {display_a} ↔ {display_b}",
-                org_id=org_id,
+            # A prior removal can leave this row with one member: found by name
+            # but not by membership. Re-attach both rather than colliding on
+            # the unique (org_id, name).
+            healed = _reopen_orphaned_dm(
+                db, org_id, dm_name, [human_id, target_human_id], []
             )
-            TableWrite.add_mm_channel_member_human(db, channel_id, human_id)
-            TableWrite.add_mm_channel_member_human(db, channel_id, target_human_id)
-            db.commit()
+            if healed is not None:
+                channel_id = healed["channel_id"]
+            else:
+                channel_id = str(uuid.uuid4())
+                display_a = user.get("display_name") or user.get("email", str(human_id))
+                display_b = target.get("display_name") or target.get("email", str(target_human_id))
+                TableWrite.create_mm_channel(
+                    db, channel_id,
+                    dm_name, "direct", display_name=f"DM: {display_a} ↔ {display_b}",
+                    org_id=org_id,
+                )
+                TableWrite.add_mm_channel_member_human(db, channel_id, human_id)
+                TableWrite.add_mm_channel_member_human(db, channel_id, target_human_id)
+                db.commit()
             notify_human_ids = [human_id, target_human_id]
 
         else:  # target_type == "agent"
@@ -2547,17 +2634,24 @@ async def create_or_get_direct(
                 TableRead.apply_dm_peer_display(db, [existing], human_id)
                 return MmChannelResponse(**existing)
 
-            channel_id = str(uuid.uuid4())
             dm_name = agent_dm_channel_name(human_id, target_agent_id)
-            display_h = user.get("display_name") or user.get("email", str(human_id))
-            TableWrite.create_mm_channel(
-                db, channel_id,
-                dm_name, "direct", display_name=f"DM: {display_h} ↔ {target_agent_id}",
-                org_id=org_id,
+            # Same orphaned-DM heal as the human<->human branch above.
+            healed = _reopen_orphaned_dm(
+                db, org_id, dm_name, [human_id], [target_agent_id]
             )
-            TableWrite.add_mm_channel_member_human(db, channel_id, human_id)
-            TableWrite.add_mm_channel_member(db, channel_id, target_agent_id)
-            db.commit()
+            if healed is not None:
+                channel_id = healed["channel_id"]
+            else:
+                channel_id = str(uuid.uuid4())
+                display_h = user.get("display_name") or user.get("email", str(human_id))
+                TableWrite.create_mm_channel(
+                    db, channel_id,
+                    dm_name, "direct", display_name=f"DM: {display_h} ↔ {target_agent_id}",
+                    org_id=org_id,
+                )
+                TableWrite.add_mm_channel_member_human(db, channel_id, human_id)
+                TableWrite.add_mm_channel_member(db, channel_id, target_agent_id)
+                db.commit()
             notify_human_ids = [human_id]
 
         ch = TableRead.get_mm_channel(db, channel_id)

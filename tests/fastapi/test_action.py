@@ -316,8 +316,14 @@ def test_human_get_action(test_client):
 
 
 def test_human_list_actions(test_client):
-    """Human can list all action documents."""
-    human = _register_human(test_client, "lister@test.com")
+    """Human lists the action documents of agents in their own org.
+
+    The human must be the agent's operator: ``/api/human/actions`` is
+    org-scoped, and ``_create_agent`` binds the agent to stan's personal org.
+    Listing as an unrelated human used to work only because the route
+    returned every agent in the deployment.
+    """
+    human = _register_human(test_client, "stan@clawbits.ai")
     agent = _create_agent(test_client)
 
     test_client.put(

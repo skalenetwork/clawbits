@@ -31,6 +31,18 @@ def _seed_test_agent(test_client):
     api_key = ApiKey.generate().value
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
+    # The share/post feeds are org-scoped, so the seeded agent needs the org the
+    # tests authenticate into. A raw insert skips the signup approval that
+    # normally binds ``org_id``; without it this agent belongs to no org and is
+    # correctly invisible everywhere.
+    _seed_token = get_token(test_client)
+    _seed_org_id = _get_personal_org_id(test_client, _seed_token)
+    # ``login_human`` sets the session cookie on the shared client. Leaving it
+    # there would silently authenticate every later request in this module -
+    # ``test_unauthorized_access`` asserts a bare GET is 401. Tests that want
+    # auth call ``get_token`` themselves and pass a bearer header.
+    test_client.cookies.clear()
+
     with Session(server._engine) as s:
         s.add(
             Agent(
@@ -39,6 +51,7 @@ def _seed_test_agent(test_client):
                 eth_private_key=to_hex(acct.key),
                 nickname="Testy",
                 long_name="TestAgentLongName",
+                org_id=_seed_org_id,
             )
         )
         s.add(
