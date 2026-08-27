@@ -726,3 +726,58 @@ def test_deleted_agent_tombstone_does_not_shadow_dm_peer(test_client, _test_engi
         headers=_human_auth(owner_token),
     )
     assert r.status_code == 200, r.text
+
+
+# ---------------------------------------------------------------------------
+# Cross-org contact grants (audit finding T0-07)
+# ---------------------------------------------------------------------------
+#
+# The human branch of ``set_contact_permission`` required the principal to be a
+# member of the agent's org; the agent branch checked only that the principal
+# *existed*. A grant says "you may address this agent" - it must not also be
+# able to say "...from outside the organization", or two operators can open a
+# permanent agent-to-agent channel across the tenant boundary.
+
+
+def test_cannot_grant_contact_to_an_agent_in_another_org(test_client, _test_engine):
+    """The agent branch had no org check at all, unlike its human twin."""
+    owner_a = _register_human(test_client, "xorg-a@test.com")
+    agent_a = _create_agent(test_client, "xorg-a@test.com")
+
+    # A wholly separate tenant: its own owner, its own personal org, own agent.
+    _register_human(test_client, "xorg-b@test.com")
+    agent_b = _create_agent(test_client, "xorg-b@test.com")
+
+    r = _grant(
+        test_client, owner_a["access_token"], agent_a["agent_id"],
+        "agent", agent_b["agent_id"], can_dm=True, can_tag=True,
+    )
+    assert r.status_code == 400, r.text
+    assert "organization" in r.json()["detail"].lower()
+
+
+def test_can_still_grant_contact_within_the_org(test_client, _test_engine):
+    """Guard against the lazy fix: same-org agent grants must keep working."""
+    owner = _register_human(test_client, "sameorg-owner@test.com")
+    agent_a = _create_agent(test_client, "sameorg-owner@test.com")
+    agent_b = _create_agent(test_client, "sameorg-owner@test.com")
+
+    r = _grant(
+        test_client, owner["access_token"], agent_a["agent_id"],
+        "agent", agent_b["agent_id"], can_dm=True,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["can_dm"] is True
+
+
+def test_cross_org_human_grant_is_still_refused(test_client, _test_engine):
+    """The human branch's existing check, pinned so the two stay symmetric."""
+    owner_a = _register_human(test_client, "xorgh-a@test.com")
+    agent_a = _create_agent(test_client, "xorgh-a@test.com")
+    stranger = _register_human(test_client, "xorgh-stranger@test.com")
+
+    r = _grant(
+        test_client, owner_a["access_token"], agent_a["agent_id"],
+        "human", stranger["user"]["id"], can_dm=True,
+    )
+    assert r.status_code == 400, r.text

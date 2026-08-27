@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 
 from tests.fastapi.test_mattermost import (
     _auth,
+    _create_agent_with_owner,
     _create_owned_agent,
     _grant_agent_contact,
     _write_headers,
@@ -124,7 +125,8 @@ def test_private_context_is_context_plus_public(test_client):
 
 def test_agent_agent_dm_context_is_middle_tier(test_client):
     s = _seed(test_client)
-    other = _create_owned_agent(test_client)
+    # Same org as the seeded agent: contact grants are org-scoped.
+    other = _create_agent_with_owner(test_client, s["agent"]["owner_email"])
     _grant_agent_contact(test_client, other, s["agent"], can_dm=True)
     r = test_client.post(
         "/api/agentic/mm/direct",

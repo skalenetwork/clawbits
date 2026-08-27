@@ -96,6 +96,8 @@ from clawbits.realtime import (
     get_bus,
     publish_automation_sync,
     publish_channel_event,
+    publish_channel_removed,
+    publish_member_removed,
     publish_org_added,
     publish_org_updated,
 )
@@ -353,6 +355,26 @@ def _verify_agent_in_org(db, org_id: str, agent_id: str) -> None:
     """Verify the agent is associated with the given organization."""
     if not TableRead.is_agent_in_org(db, agent_id, org_id):
         raise HTTPException(status_code=404, detail="Agent not found in this organization")
+
+
+def _require_visible_post(db, post_id: int, user: dict) -> None:
+    """404 unless ``post_id`` belongs to an agent in one of the caller's orgs.
+
+    ``agent_posts.post_id`` is a bare serial, so these routes were trivially
+    enumerable across tenants. 404 rather than 403 is deliberate: a 403 would
+    confirm that a given id exists in somebody else's organization.
+
+    An agent with no org (unapproved, or the shared ``deleted-agent``
+    placeholder) is visible to nobody, matching ``is_agent_in_org``.
+    """
+    from clawbits.db.models import AgentPost
+
+    post = db.get(AgentPost, post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    org_id = TableRead.get_agent_org_id(db, post.agent_id)
+    if org_id is None or not TableRead.is_org_member(db, org_id, user["id"]):
+        raise HTTPException(status_code=404, detail="Post not found")
 
 
 def _require_agent_operator(db, agent_id: str, user: dict) -> None:
@@ -1611,9 +1633,12 @@ async def list_shared_content(
     offset: int = 0,
     user: dict = Depends(get_current_human_user),
 ):
-    """List recent shared files for the dashboard feed."""
+    """List recent shared files across the caller's organizations."""
     with _get_db(request) as db:
-        files = TableRead.get_recent_shared_content(db, limit=limit, offset=offset)
+        org_ids = TableRead.get_org_ids_for_human(db, user["id"])
+        files = TableRead.get_recent_shared_content(
+            db, org_ids, limit=limit, offset=offset
+        )
         return {"files": files, "total": len(files), "limit": limit, "offset": offset}
 
 
@@ -1624,9 +1649,12 @@ async def list_all_agent_posts(
     offset: int = 0,
     user: dict = Depends(get_current_human_user),
 ):
-    """List recent posts from all agents for the dashboard feed."""
+    """List recent agent posts across the caller's organizations."""
     with _get_db(request) as db:
-        posts = TableRead.get_all_agent_posts(db, limit=limit, offset=offset, current_human_id=user["id"])
+        org_ids = TableRead.get_org_ids_for_human(db, user["id"])
+        posts = TableRead.get_all_agent_posts(
+            db, org_ids, limit=limit, offset=offset, current_human_id=user["id"]
+        )
         return {"posts": posts, "total": len(posts), "limit": limit, "offset": offset}
 
 
@@ -1658,12 +1686,9 @@ async def like_post(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Like a post."""
-    from clawbits.db.models import AgentPost
-
+    """Like a post in one of the caller's organizations."""
     with _get_db(request) as db:
-        if db.get(AgentPost, post_id) is None:
-            raise HTTPException(status_code=404, detail="Post not found")
+        _require_visible_post(db, post_id, user)
         TableWrite.create_post_like(db, post_id, human_id=user["id"])
         db.commit()
     return {"status": "ok"}
@@ -1674,8 +1699,9 @@ async def unlike_post(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Remove like from a post."""
+    """Remove like from a post in one of the caller's organizations."""
     with _get_db(request) as db:
+        _require_visible_post(db, post_id, user)
         TableWrite.delete_post_like(db, post_id, human_id=user["id"])
         db.commit()
     return {"status": "ok"}
@@ -1688,12 +1714,13 @@ async def get_post_comments(
     offset: int = 0,
     user: dict = Depends(get_current_human_user),
 ):
-    """Get comments for a post."""
-    from clawbits.db.models import AgentPost
+    """Get comments for a post in one of the caller's organizations.
 
+    The rows carry each commenter's display name and email, so an unscoped
+    read here leaked personal data, not just post content.
+    """
     with _get_db(request) as db:
-        if db.get(AgentPost, post_id) is None:
-            raise HTTPException(status_code=404, detail="Post not found")
+        _require_visible_post(db, post_id, user)
         comments = TableRead.get_post_comments(db, post_id, limit, offset)
     return {"comments": comments}
 
@@ -1704,12 +1731,9 @@ async def add_post_comment(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Add a comment to a post."""
-    from clawbits.db.models import AgentPost
-
+    """Add a comment to a post in one of the caller's organizations."""
     with _get_db(request) as db:
-        if db.get(AgentPost, post_id) is None:
-            raise HTTPException(status_code=404, detail="Post not found")
+        _require_visible_post(db, post_id, user)
         comment_id = TableWrite.create_post_comment(
             db, post_id, message=payload.message, human_id=user["id"]
         )
@@ -2396,10 +2420,20 @@ async def remove_org_member(
             if owner_count <= 1:
                 raise HTTPException(status_code=400, detail="Cannot remove the last admin of an organization")
         target = TableRead.get_human_user_by_id(db, member_id)
-        TableWrite.remove_org_member(db, org_id, member_id)
+        # Also drops their membership of this org's channels - that, not the
+        # OrgMember row, is what the per-channel gates actually check.
+        revoked_channel_ids = TableWrite.remove_org_member(db, org_id, member_id)
         org = TableRead.get_organization(db, org_id)
         members = TableRead.get_org_members(db, org_id)
         db.commit()
+
+    bus = get_bus()
+    for channel_id in revoked_channel_ids:
+        # On the channel topic: closes any stream they still have open, rather
+        # than leaving it live until its next periodic re-check.
+        fire_and_forget(publish_member_removed(bus, channel_id, human_id=member_id))
+        # On their personal topic: drops the channel from their sidebar.
+        fire_and_forget(publish_channel_removed(bus, member_id, channel_id))
 
     if org is not None and target is not None:
         from clawbits.fastapi.workos_auth import unregister_membership
@@ -2473,10 +2507,11 @@ async def list_agent_actions(
     offset: int = 0,
     user: dict = Depends(get_current_human_user),
 ):
-    """List all action documents across all agents (metadata only)."""
+    """List action documents for agents in the caller's organizations (metadata only)."""
     with _get_db(request) as db:
-        items = TableRead.list_agent_actions(db, limit=limit, offset=offset)
-        total = TableRead.count_agent_actions(db)
+        org_ids = TableRead.get_org_ids_for_human(db, user["id"])
+        items = TableRead.list_agent_actions(db, org_ids, limit=limit, offset=offset)
+        total = TableRead.count_agent_actions(db, org_ids)
         return ActionListResponse(
             actions=[ActionListItem(**i) for i in items],
             total=total,

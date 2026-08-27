@@ -221,10 +221,34 @@ def test_same_org_agent_add_still_works(test_client):
 # ---------------------------------------------------------------------------
 
 
+def _seed_cross_org_grant(tc, target_agent: dict, principal_agent: dict) -> None:
+    """Write a cross-org contact grant straight to the DB.
+
+    The management API refuses to create one (audit finding T0-07 added that
+    gate), but rows granted before that fix still exist in deployed databases.
+    Seeding directly is what keeps this test exercising the layer it is about:
+    enforcement at *use*, which must refuse a grant regardless of how it got
+    there. The two guards are deliberately independent.
+    """
+    from sqlmodel import Session
+
+    from clawbits.db.table_write import TableWrite
+
+    with Session(tc.app._engine) as db:
+        TableWrite.upsert_agent_contact_permission(
+            db,
+            target_agent["agent_id"],
+            principal_agent_id=principal_agent["agent_id"],
+            can_dm=False,
+            can_tag=True,
+        )
+        db.commit()
+
+
 def test_agent_endpoint_refuses_cross_org_agent(test_client):
     a1 = _create_agent_with_owner(test_client, "ae-one@test.com")
     a2 = _create_agent_with_owner(test_client, "ae-two@test.com")   # different org
-    _grant_agent_contact(test_client, a2, a1, can_tag=True)
+    _seed_cross_org_grant(test_client, a2, a1)
 
     r = test_client.post(
         "/api/agentic/mm/channels",

@@ -1815,13 +1815,54 @@ class TableWrite:
         session.flush()
 
     @staticmethod
-    def remove_org_member(session: Session, org_id: str, human_id: int) -> None:
+    def remove_org_member(session: Session, org_id: str, human_id: int) -> list[str]:
+        """Remove a human from an org, and from that org's channels.
+
+        Dropping only the ``OrgMember`` row left every ``mm_channel_members``
+        row intact, so an ex-member kept full access: channel reads and writes
+        still passed ``_require_human_member`` (which asks about *channel*
+        membership, not org membership), and open SSE streams passed their
+        periodic re-check forever. Deleting the channel rows is what actually
+        revokes access, and it makes every existing gate answer correctly
+        rather than requiring a new org check on every route.
+
+        Channels are deliberately **not** torn down when this empties them of
+        humans: the org still owns them, and an owner can delete them from
+        Settings. A now-human-less DM is likewise left in place - if the
+        person rejoins, ``_reopen_orphaned_dm`` heals it rather than colliding.
+
+        Returns the channel ids the human was removed from, so the caller can
+        close their live streams and drop the channels from their sidebar.
+        """
+        channel_ids = list(
+            session.exec(
+                select(MmChannelMember.channel_id)
+                .join(MmChannel, MmChannel.channel_id == MmChannelMember.channel_id)
+                .where(MmChannelMember.human_id == human_id)
+                .where(MmChannel.org_id == org_id)
+            ).all()
+        )
+        if channel_ids:
+            session.exec(
+                delete(MmChannelMember)
+                .where(MmChannelMember.human_id == human_id)
+                .where(MmChannelMember.channel_id.in_(channel_ids))
+            )
+            # Their own per-channel UI state (read pointer, mute, pin) goes with
+            # it. Scoped to this human: other members' pointers must not be
+            # touched.
+            session.exec(
+                delete(HumanChannelState)
+                .where(HumanChannelState.human_id == human_id)
+                .where(HumanChannelState.channel_id.in_(channel_ids))
+            )
         session.exec(
             delete(OrgMember)
             .where(OrgMember.org_id == org_id)
             .where(OrgMember.human_id == human_id)
         )
         session.flush()
+        return channel_ids
 
     @staticmethod
     def update_org_member_role(

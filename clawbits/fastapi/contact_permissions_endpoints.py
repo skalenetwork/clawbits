@@ -164,6 +164,19 @@ def set_contact_permission(
                     status_code=404,
                     detail=f"Agent '{body.principal_id}' not found",
                 )
+            # Same org boundary the human branch above enforces. Without it
+            # an operator could grant an agent from any org DM/tag rights on
+            # their own, opening a cross-tenant agent-to-agent channel.
+            # ``is_agent_in_org`` rather than comparing org ids by hand, so the
+            # cross-org ``deleted-agent`` placeholder can never satisfy it.
+            agent_org_id = TableRead.get_agent_org_id(db, agent_id)
+            if agent_org_id is None or not TableRead.is_agent_in_org(
+                db, body.principal_id, agent_org_id
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Principal must belong to the agent's organization",
+                )
             TableWrite.upsert_agent_contact_permission(
                 db,
                 agent_id,
