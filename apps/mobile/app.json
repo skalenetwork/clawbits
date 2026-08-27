@@ -4,6 +4,12 @@
     "slug": "clawbits-mobile",
     "version": "1.0.1",
     "orientation": "portrait",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/00f8b67f-3b76-4a73-99b2-98bee13415dc"
+    },
     "icon": "./assets/images/icon.png",
     "scheme": "clawbits",
     "userInterfaceStyle": "automatic",
@@ -86,7 +92,10 @@
           "isAccessMediaLocationEnabled": false
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-status-bar",
+      "expo-notifications",
+      "expo-updates"
     ],
     "experiments": {
       "typedRoutes": true,

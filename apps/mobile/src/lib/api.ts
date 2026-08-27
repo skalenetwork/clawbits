@@ -179,6 +179,22 @@ export async function logout(token: string | null): Promise<void> {
   await requestJson<void>('/api/auth/logout', { method: 'POST', token });
 }
 
+export async function subscribeMobilePush(token: string, deviceToken: string): Promise<void> {
+  await requestJson<void>('/api/push/mobile/subscribe', {
+    method: 'POST',
+    token,
+    body: { token: deviceToken },
+  });
+}
+
+export async function unsubscribeMobilePush(token: string, deviceToken: string): Promise<void> {
+  await requestJson<void>('/api/push/mobile/unsubscribe', {
+    method: 'POST',
+    token,
+    body: { token: deviceToken },
+  });
+}
+
 export async function updateMe(
   token: string | null,
   display_name: string | null,

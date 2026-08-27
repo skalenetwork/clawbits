@@ -1,8 +1,10 @@
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import { DynamicColorIOS, PlatformColor, StyleSheet, View } from 'react-native';
 
+import { useTotalUnread } from '@/hooks/use-channels';
 import { NavigationRail } from '@/components/navigation-rail';
 import { useIsLargeWindow } from '@/hooks/use-window-size-class';
+import { useSelectedOrg } from '@/hooks/use-selected-org';
 import { useTabBarVisibility } from '@/providers/tab-bar-visibility';
 
 const tintColor =
@@ -13,6 +15,8 @@ const tintColor =
 export default function TabsLayout() {
   const { hidden } = useTabBarVisibility();
   const isLarge = useIsLargeWindow();
+  const { selectedOrg } = useSelectedOrg();
+  const totalUnread = useTotalUnread(selectedOrg?.org_id ?? null);
 
   // At ≥600dp swap the bottom tab bar for an M3 navigation rail on the
   // left. NativeTabs still owns route state and per-tab screen
@@ -38,6 +42,9 @@ export default function TabsLayout() {
           md={{ default: 'chat', selected: 'chat' }}
         />
         <NativeTabs.Trigger.Label>Chats</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Badge hidden={totalUnread === 0}>
+          {totalUnread > 99 ? '99+' : String(totalUnread)}
+        </NativeTabs.Trigger.Badge>
       </NativeTabs.Trigger>
 
       <NativeTabs.Trigger name="search">

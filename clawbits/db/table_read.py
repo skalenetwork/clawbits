@@ -3258,6 +3258,27 @@ class TableRead:
         ]
 
     @staticmethod
+    def get_apns_devices_for_humans(
+        session: Session, human_ids: list[int]
+    ) -> list[dict]:
+        """Registered iOS (APNs) device tokens for the given humans.
+
+        Same contract as :meth:`get_webpush_devices_for_humans` minus the
+        web-push key columns (APNs rows leave them NULL)."""
+        if not human_ids:
+            return []
+        rows = session.exec(
+            select(PushDevice)
+            .where(PushDevice.human_id.in_(human_ids))
+            .where(PushDevice.transport == "apns")
+            .where(PushDevice.enabled.is_(True))
+        ).all()
+        return [
+            {"id": r.id, "human_id": r.human_id, "token": r.token}
+            for r in rows
+        ]
+
+    @staticmethod
     def get_muted_human_ids(
         session: Session, channel_id: str, human_ids: list[int]
     ) -> set[int]:

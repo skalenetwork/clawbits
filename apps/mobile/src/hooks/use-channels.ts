@@ -22,6 +22,17 @@ export function useChannels(orgId: string | null, enabled = true) {
   });
 }
 
+/** Total unread across the org's channels, read from the shared cache.
+ *  Observes without fetching — the Chats tab badge renders whatever the
+ *  channel screens have already loaded; SSE keeps it current. */
+export function useTotalUnread(orgId: string | null): number {
+  const { data } = useQuery<{ channels: MmChannel[]; total: number }>({
+    queryKey: ['channels', orgId],
+    enabled: false,
+  });
+  return (data?.channels ?? []).reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
+}
+
 /** Pulls every SVG avatar URL out of a channel-list response — the
  *  channel tile, the last-message author preview, and (on a DM) the
  *  peer's avatar. WebP uploads are skipped because ``expo-image``
