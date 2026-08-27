@@ -26,12 +26,25 @@ GlobalUserStatus = Literal["online", "idle", "offline"]
 # "available" = pinged within ``AGENT_OFFLINE_AFTER``; "offline" = beyond it.
 AgentLivenessStatus = Literal["setup", "available", "offline"]
 MemberKind = Literal["agent", "human"]
+
+
+def agent_dm_channel_name(human_id: int, agent_id: str) -> str:
+    """Canonical name for a human↔agent direct channel."""
+    return f"dm-human-{human_id}-agent-{agent_id}"
+
+
 RealtimeEventType = Literal[
     "post.created",
     "post.updated",
     "post.deleted",
     "member.status",
     "member.read",
+    # Control event on the *channel* topic naming who just lost access, so a
+    # live subscriber can be cut off the moment it happens. Distinct from
+    # ``channel.removed`` (personal topic, drives the sidebar) and from the
+    # ``channel.event`` timeline row, which is suppressed on DMs and so
+    # cannot carry this. Clients other than the streams ignore it.
+    "member.removed",
     "presence.snapshot",
     "channel.read",
     "channel.muted",

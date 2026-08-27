@@ -25,6 +25,7 @@ from clawbits.avatars.config import CURRENT_AVATAR_VERSION
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.api_key import ApiKey
 from clawbits.datastructures.long_name import LongName
+from clawbits.datastructures.mm_models import agent_dm_channel_name
 from clawbits.datastructures.nickname import NickName
 from clawbits.db.models import (
     UNKNOWN_PROVIDER,
@@ -3506,7 +3507,7 @@ class TableWrite:
         if existing is not None:
             return existing, False
 
-        dm_name = f"dm-human-{human_id}-agent-{agent_id}"
+        dm_name = agent_dm_channel_name(int(human_id), agent_id)
         display_name = f"DM: {agent_id}"
 
         # Fallback: a row with the canonical name already exists but

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from starlette.testclient import TestClient
 
-from tests.fastapi._auth_helpers import auth_headers, register_human
+from tests.fastapi._auth_helpers import (
+    add_human_to_org,
+    auth_headers,
+    register_human,
+)
 
 # ---------------------------------------------------------------------------
 # Local helpers
@@ -379,6 +383,12 @@ def test_post_create_rejects_unowned_files(test_client):
     alice = register_human(test_client, "alice15@test.com")
     bob = register_human(test_client, "bob15@test.com")
     cid = _make_channel(test_client, alice["access_token"], "files-post-4")
+    add_human_to_org(
+        test_client,
+        alice["access_token"],
+        _personal_org_id(test_client, alice["access_token"]),
+        "bob15@test.com",
+    )
     # Add bob to alice's channel so he can post there.
     test_client.post(
         f"/api/human/mm/channels/{cid}/members",
