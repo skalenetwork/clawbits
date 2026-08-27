@@ -1,10 +1,20 @@
-export function defineChannelPluginEntry<T extends { plugin?: unknown } & Record<string, unknown>>(entry: T) {
+export function defineChannelPluginEntry<
+  T extends {
+    plugin?: unknown;
+    registerCliMetadata?: (api: Record<string, unknown>) => void;
+    registerFull?: (api: Record<string, any>) => void;
+  } & Record<string, unknown>,
+>(entry: T) {
   return {
     ...entry,
     channelPlugin: entry.plugin,
-    register(api: { registrationMode?: string; registerChannel?: (opts: { plugin: unknown }) => void }) {
+    register(api: Record<string, any>) {
+      entry.registerCliMetadata?.(api);
       if (api.registrationMode === "cli-metadata") return;
       if (entry.plugin) api.registerChannel?.({ plugin: entry.plugin });
+      if (api.registrationMode === undefined || api.registrationMode === "full") {
+        entry.registerFull?.(api);
+      }
     },
   };
 }

@@ -2,7 +2,7 @@ import type { ChannelGatewayContext } from "openclaw/plugin-sdk/core";
 import { formatBytes, type SavedInboundMedia } from "./agent-body.js";
 import { ClawBitsClient } from "./client.js";
 import { logWarn } from "./file-logger.js";
-import type { InboundFile, InboundMessage } from "./inbound-poller.js";
+import type { InboundAttachmentMessage, InboundFile } from "./inbound-types.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
 
 /** Shared cap for media we decode + persist from a channel (chat + email).
@@ -117,7 +117,7 @@ async function fetchAttachmentForFile(
 
 export async function saveInboundAttachmentsForAgent(
   ctx: ChannelGatewayContext<ResolvedClawBitsAccount>,
-  msg: InboundMessage,
+  msg: InboundAttachmentMessage,
   client: ClawBitsClient | undefined,
 ): Promise<{ mediaContext: AgentMediaContext; savedByFileId: Map<string, SavedInboundMedia> }> {
   const files = msg.files ?? [];

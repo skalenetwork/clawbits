@@ -1,8 +1,8 @@
 name: Publish ClawBits Plugin to ClawHub
 
-# Plugin releases are automatic and message-agnostic, the same way the IronClaw
-# channel works (see publish-ironclaw-channel.yaml). On a push to main that
-# touches plugin/**, this workflow:
+# Ordered second half of the coordinated Clawbits release. The companion
+# workflow builds, validates, and publishes first. Only its successful
+# completion starts this channel release for the exact same commit.
 #
 #   1. tests + typechecks plugin/.
 #   2. stamps a version: major.minor is hand-controlled in plugin/package.json,
@@ -18,33 +18,33 @@ name: Publish ClawBits Plugin to ClawHub
 # Bump major/minor by hand in plugin/package.json + plugin/openclaw.plugin.json
 # only for a deliberate semantic jump; the patch takes care of itself.
 #
-# ClawHub is the registry of record for the plugin — no git tag or GitHub
-# Release is cut here, and the published package carries the real commit SHA as
-# its provenance, so any version is traceable back to a commit.
+# Both the GitHub release artifact and ClawHub package carry the source commit
+# provenance. No files are stamped or committed back to the branch.
 #
-# A push that doesn't touch plugin/** never starts this workflow. Manual
-# dispatch from any ref runs the same flow, but only main publishes.
-#
-# Plugin tests run inline here so this stays the only thing that exercises the
-# plugin on main (workflow.yaml skips its plugin job on push-to-main).
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'plugin/**'
+  workflow_run:
+    workflows:
+      - Publish Clawbits OpenClaw Tools to ClawHub
+    types:
+      - completed
 
 permissions:
   contents: write # "Publish GitHub Release" creates the openclaw-plugin-v* tag + release on this repo
 
 concurrency:
-  group: publish-clawbits-${{ github.ref_name }}
+  group: publish-clawbits-channel-main
   cancel-in-progress: false
 
 jobs:
   publish-plugin:
     name: Publish plugin
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      SOURCE_REF: refs/heads/${{ github.event.workflow_run.head_branch }}
     steps:
       - name: Checkout monorepo
         uses: actions/checkout@v7
@@ -52,11 +52,17 @@ jobs:
           # Full history so "Stamp auto version" can count commits touching plugin/.
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
 
       - name: Install plugin dependencies
         working-directory: plugin
@@ -107,10 +113,18 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          if [ "${{ github.ref_name }}" != "main" ]; then
+          if [ "${{ github.event.workflow_run.head_branch }}" != "main" ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Ref ${{ github.ref_name }} is not main; testing and staging only, nothing will be published."
+            echo "::notice::Source branch is not main; testing and staging only, nothing will be published."
             exit 0
+          fi
+          tools_versions="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-tools/versions" 2>/dev/null || true)"
+          if [ -z "$tools_versions" ] || ! node -e '
+            const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            if (!(data.items || []).some((item) => item.version === process.argv[1])) process.exit(1);
+          ' "$VERSION" <<<"$tools_versions"; then
+            echo "::error::Matching companion version $VERSION is not verified on ClawHub; refusing channel publish."
+            exit 1
           fi
           versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-plugin/versions" 2>/dev/null || true)"
           already=false
@@ -139,10 +153,39 @@ jobs:
         if: steps.guard.outputs.publish == 'true'
         working-directory: plugin
         run: |
-          rm -rf ../publish/clawbits-openclaw-plugin
-          mkdir -p ../publish/clawbits-openclaw-plugin
-          cp -r dist src docs skills openclaw.plugin.json clawbits.config.example.json package.json ../publish/clawbits-openclaw-plugin/
+          set -euo pipefail
+          staged=../publish/clawbits-openclaw-plugin
+          node stage-channel.mjs "$staged"
+          test ! -e "$staged/src"
+          test ! -e "$staged/skills"
+          test ! -e "$staged/dist/tools-entry.js"
           echo "publish_path=publish/clawbits-openclaw-plugin" >> "$GITHUB_OUTPUT"
+
+      - name: Validate staged artifact against the floor and pinned OpenClaw SDKs
+        if: steps.guard.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          validation_root="$(mktemp -d)"
+          trap 'rm -rf "$validation_root"' EXIT
+          cp -R "${{ steps.pack.outputs.publish_path }}" "$validation_root/plugin"
+          cd "$validation_root/plugin"
+          sdk_versions="$(node -p "const o=require('./package.json').openclaw; [...new Set([o.compat.minGatewayVersion, o.build.openclawVersion])].join('\\n')")"
+          while read -r sdk_version; do
+            [ -n "$sdk_version" ] || continue
+            echo "::group::openclaw@${sdk_version}"
+            rm -rf node_modules
+            npm install --ignore-scripts --no-audit --no-fund --package-lock=false --no-save \
+              "openclaw@${sdk_version}"
+            # The CLI validator is defineToolPlugin-only. Importing executes
+            # defineChannelPluginEntry against this exact host SDK.
+            node --input-type=module - <<'NODE'
+            const entry = (await import('./dist/index.js')).default;
+            if (entry.id !== 'clawbits' || typeof entry.register !== 'function') {
+              throw new Error('invalid channel entry');
+            }
+            NODE
+            echo "::endgroup::"
+          done <<< "$sdk_versions"
 
       # The GitHub Release is cut BEFORE the ClawHub publish on purpose: the two
       # are independent distribution channels, so a registry-side failure (auth,
@@ -182,13 +225,13 @@ jobs:
             gh release create "$TAG" \
               --repo "${{ github.repository }}" \
               --latest=false \
-              --target "${{ github.sha }}" \
+              --target "$SOURCE_SHA" \
               --title "Clawbits OpenClaw plugin v$VERSION" \
               --notes "OpenClaw channel plugin bridging an agent to its Clawbits organization.
 
           Install from ClawHub:
           \`\`\`
-          openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --acknowledge-clawhub-risk
+          openclaw plugins install clawhub:clawbits-openclaw-plugin --pin
           \`\`\`
           Or install the attached tarball directly: extract it and run \`openclaw plugins install <dir>\`."
           fi
@@ -237,8 +280,8 @@ jobs:
           if bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
               --family code-plugin \
               --source-repo "${{ github.repository }}" \
-              --source-commit "${{ github.sha }}" \
-              --source-ref "${{ github.ref }}"; then
+              --source-commit "$SOURCE_SHA" \
+              --source-ref "$SOURCE_REF"; then
             echo "Published $VERSION"
             exit 0
           fi

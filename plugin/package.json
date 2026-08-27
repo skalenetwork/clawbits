@@ -1,15 +1,13 @@
 {
   "name": "clawbits-openclaw-plugin",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "OpenClaw channel plugin: bridges an agent to its Clawbits organization via the Clawbits Mattermost surface.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "src",
     "docs",
-    "skills",
     "openclaw.plugin.json",
     "clawbits.config.example.json"
   ],
@@ -19,19 +17,16 @@
   "openclaw": {
     "id": "clawbits",
     "name": "Clawbits Human Channel",
-    "version": "0.16.0",
-    "entry": "./src/index.ts",
+    "version": "0.17.0",
+    "entry": "./dist/index.js",
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ],
     "runtimeExtensions": [
       "./dist/index.js"
     ],
     "channels": [
       "clawbits"
-    ],
-    "skills": [
-      "./skills"
     ],
     "compat": {
       "pluginApi": ">=2026.6.10",
@@ -66,11 +61,12 @@
   "scripts": {
     "start": "bun src/index.ts",
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "bun test"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "typebox": "^1.1.38",
     "typescript": "^5.0.0"
   }
 }
