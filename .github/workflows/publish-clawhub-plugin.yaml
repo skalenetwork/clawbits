@@ -2,9 +2,8 @@ name: Publish ClawBits Plugin to ClawHub
 
 # Ordered second half of the coordinated Clawbits release. The companion
 # workflow builds, validates, and publishes first. Normally its successful
-# completion starts this channel release for the exact same commit. A manual
-# dispatch or a change to this workflow is a recovery path and still requires
-# the matching companion.
+# completion starts this channel release for the exact same commit. Manual
+# dispatch is a recovery path and still requires the matching companion.
 #
 #   1. tests + typechecks plugin/.
 #   2. stamps a version: major.minor is hand-controlled in plugin/package.json,
@@ -27,10 +26,6 @@ on:
   # Recovery paths: publish only the channel when the matching companion
   # version already exists but the automatic handoff was cancelled/failed.
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/publish-clawhub-plugin.yaml'
   workflow_run:
     workflows:
       - Publish Clawbits OpenClaw Tools to ClawHub
@@ -49,7 +44,6 @@ jobs:
     name: Publish plugin
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
