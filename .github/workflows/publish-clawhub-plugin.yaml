@@ -1,8 +1,10 @@
 name: Publish ClawBits Plugin to ClawHub
 
 # Ordered second half of the coordinated Clawbits release. The companion
-# workflow builds, validates, and publishes first. Only its successful
-# completion starts this channel release for the exact same commit.
+# workflow builds, validates, and publishes first. Normally its successful
+# completion starts this channel release for the exact same commit. A manual
+# dispatch or a change to this workflow is a recovery path and still requires
+# the matching companion.
 #
 #   1. tests + typechecks plugin/.
 #   2. stamps a version: major.minor is hand-controlled in plugin/package.json,
@@ -22,6 +24,13 @@ name: Publish ClawBits Plugin to ClawHub
 # provenance. No files are stamped or committed back to the branch.
 #
 on:
+  # Recovery paths: publish only the channel when the matching companion
+  # version already exists but the automatic handoff was cancelled/failed.
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-clawhub-plugin.yaml'
   workflow_run:
     workflows:
       - Publish Clawbits OpenClaw Tools to ClawHub
@@ -39,12 +48,15 @@ jobs:
   publish-plugin:
     name: Publish plugin
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
     env:
-      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
-      SOURCE_REF: refs/heads/${{ github.event.workflow_run.head_branch }}
+      SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      SOURCE_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
+      SOURCE_REF: ${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref }}
     steps:
       - name: Checkout monorepo
         uses: actions/checkout@v7
@@ -52,7 +64,7 @@ jobs:
           # Full history so "Stamp auto version" can count commits touching plugin/.
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -105,7 +117,7 @@ jobs:
       #   1. not on main — a workflow_dispatch from a feature branch would
       #      otherwise compute a version off that branch's commit count and ship
       #      it to ClawHub as a real release. Dispatch elsewhere tests + stages
-      #      only. (The push trigger is already main-only.)
+      #      only.
       #   2. the version is already on the registry — makes re-runs idempotent.
       - name: Decide whether to publish
         id: guard
@@ -113,9 +125,9 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event.workflow_run.head_branch }}" != "main" ]; then
+          if [ "$SOURCE_BRANCH" != "main" ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Source branch is not main; testing and staging only, nothing will be published."
+            echo "::notice::Source branch $SOURCE_BRANCH is not main; testing and staging only, nothing will be published."
             exit 0
           fi
           tools_versions="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-tools/versions" 2>/dev/null || true)"
