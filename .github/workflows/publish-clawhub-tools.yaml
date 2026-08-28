@@ -278,8 +278,10 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          for attempt in 1 2 3 4 5 6; do
-            versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-tools/versions" || true)"
+          # New packages can take more than 30 seconds to become visible on the
+          # public versions endpoint even after `package publish` succeeds.
+          for attempt in $(seq 1 30); do
+            versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/clawbits-openclaw-tools/versions" 2>/dev/null || true)"
             if [ -n "$versions_json" ] && node -e '
               const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
               if (!(data.items || []).some((item) => item.version === process.argv[1])) process.exit(1);
@@ -287,7 +289,8 @@ jobs:
               echo "Verified clawbits-openclaw-tools@$VERSION"
               exit 0
             fi
-            sleep 5
+            echo "Waiting for clawbits-openclaw-tools@$VERSION to propagate ($attempt/30)"
+            sleep 10
           done
-          echo "::error::Companion $VERSION was not visible on ClawHub after publish"
+          echo "::error::Companion $VERSION was not visible on ClawHub after 5 minutes"
           exit 1
