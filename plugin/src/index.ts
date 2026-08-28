@@ -1,8 +1,12 @@
 import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { registerClawBitsCli } from "./cli.js";
 import { clawbitsChannelPlugin } from "./plugin.js";
 import { registerActivitySubscription } from "./activity/subscription.js";
-import { registerSlimChannelHandoff } from "./service-handoff.js";
+import {
+  registerSlimChannelHandoff,
+  resolveClawBitsServiceOwner,
+} from "./service-handoff.js";
 import { PLUGIN_VERSION } from "./version.js";
 
 export default defineChannelPluginEntry({
@@ -18,6 +22,23 @@ export default defineChannelPluginEntry({
   },
   registerCliMetadata: registerClawBitsCli,
   registerFull: (api) => {
+    const hostApi = api as typeof api & {
+      config?: OpenClawConfig;
+      logger?: { warn?: (message: string) => void };
+    };
+    if (hostApi.config) {
+      const owner = resolveClawBitsServiceOwner(hostApi.config);
+      if (!owner.valid) {
+        hostApi.logger?.warn?.(
+          "[clawbits] invalid serviceOwner; background services remain disabled until it is 'tools'",
+        );
+      } else if (owner.owner !== "tools") {
+        hostApi.logger?.warn?.(
+          "[clawbits] slim channel active with serviceOwner=channel; install clawbits-openclaw-tools and set channels.clawbits.serviceOwner=tools to restore cron, email, usage, and skills services",
+        );
+      }
+    }
+
     // Public runtime-context marker consumed by the companion plugin. An old
     // channel has no marker, so a newly installed companion remains idle and
     // cannot duplicate the old channel-owned background services.
