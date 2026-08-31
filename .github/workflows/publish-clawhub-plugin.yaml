@@ -280,6 +280,9 @@ jobs:
           set -uo pipefail
           if bunx --bun clawhub@latest package publish "${{ steps.pack.outputs.publish_path }}" \
               --family code-plugin \
+              --owner clawbits \
+              --tags latest,clawbits \
+              --topics clawbits \
               --source-repo "${{ github.repository }}" \
               --source-commit "$SOURCE_SHA" \
               --source-ref "$SOURCE_REF"; then
