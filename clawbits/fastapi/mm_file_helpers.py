@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as _dt
 import io
 import logging
+import mimetypes
 import os
 import re
 import time as _time
@@ -233,16 +234,54 @@ class MmFileConfig:
     media_download_url_ttl: int
 
 
+# Media, plain text and source, plus the document, data and archive families
+# the UI already presents as first-class file cards. What stays out is
+# anything the server can't name — ``application/octet-stream`` and friends —
+# so the bucket can't be used to hand out arbitrary binaries.
+DEFAULT_MIME_ALLOWLIST: tuple[str, ...] = (
+    "image/*", "video/*", "audio/*", "text/*",
+    "application/pdf", "application/rtf",
+    "application/json", "application/xml", "application/yaml",
+    "application/zip", "application/gzip", "application/x-tar",
+    "application/x-7z-compressed", "application/x-rar-compressed",
+    "application/vnd.rar", "application/x-bzip2", "application/x-xz",
+    "application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.*",
+    "application/vnd.oasis.opendocument.*",
+    "application/vnd.apple.*",
+)
+
+# Source and config extensions the platform MIME map either doesn't know
+# (``.tsx``, ``.toml``) or types as something else entirely (``.ts`` is
+# TypeScript here, not an MPEG transport stream). They all resolve to
+# ``text/plain``: the UI picks its icon and syntax highlighting from the
+# filename, never from the MIME.
+_PLAIN_TEXT_EXTS = frozenset({
+    "bash", "cjs", "cs", "env", "go", "hpp", "ini", "jsonc", "jsx", "kt",
+    "php", "rb", "rs", "scss", "sh", "sql", "swift", "toml", "ts", "tsx", "zsh",
+})
+
+# Non-text extensions with the same problem.
+_EXT_TYPES = {
+    "bz2": "application/x-bzip2",
+    "gz": "application/gzip",
+    "key": "application/vnd.apple.keynote",
+    "numbers": "application/vnd.apple.numbers",
+    "pages": "application/vnd.apple.pages",
+    "tgz": "application/gzip",
+    "xz": "application/x-xz",
+}
+
+
 def load_file_config() -> MmFileConfig:
-    raw_allowlist = os.getenv(
-        "MM_FILES_MIME_ALLOWLIST",
-        "image/*,video/*,audio/*,application/pdf,text/*,application/zip",
-    )
+    raw_allowlist = os.getenv("MM_FILES_MIME_ALLOWLIST")
     return MmFileConfig(
         max_bytes=int(os.getenv("MM_FILES_MAX_BYTES", str(15 * 1024 * 1024))),
         max_per_post=int(os.getenv("MM_FILES_MAX_PER_POST", "5")),
-        mime_allowlist=tuple(
-            p.strip() for p in raw_allowlist.split(",") if p.strip()
+        mime_allowlist=(
+            tuple(p.strip() for p in raw_allowlist.split(",") if p.strip())
+            if raw_allowlist
+            else DEFAULT_MIME_ALLOWLIST
         ),
         download_url_ttl=int(os.getenv("MM_FILES_DOWNLOAD_URL_TTL", "3600")),
         media_download_url_ttl=int(
@@ -251,17 +290,42 @@ def load_file_config() -> MmFileConfig:
     )
 
 
+def _file_extension(filename: str) -> str:
+    """Lowercased extension without the dot, or ``""`` when there is none."""
+    _, dot, ext = filename.rpartition(".")
+    return ext.lower() if dot else ""
+
+
+def resolve_content_type(filename: str, declared: str) -> str:
+    """The MIME type the file is stored, signed and served as.
+
+    The extension decides, because the clients disagree — a browser types
+    from the OS map (``.doc`` yes, ``.tsx`` no), a mobile picker from its
+    own, an agent CLI usually not at all — and they all fall back to
+    ``application/octet-stream``, which no allowlist can admit. The
+    caller's own value is the last resort, for extensions nobody knows.
+    """
+    ext = _file_extension(filename)
+    if ext in _PLAIN_TEXT_EXTS:
+        return "text/plain"
+    if ext in _EXT_TYPES:
+        return _EXT_TYPES[ext]
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or declared.strip().lower() or "application/octet-stream"
+
+
 def is_mime_allowed(content_type: str, allowlist: tuple[str, ...]) -> bool:
     """Match ``content_type`` against the allowlist.
 
-    Entries ending in ``/*`` match by prefix (e.g. ``image/*`` matches
-    ``image/png``). Other entries match exactly.
+    Entries ending in ``*`` match by prefix (``image/*`` matches
+    ``image/png``; ``application/vnd.apple.*`` matches every iWork type).
+    Other entries match exactly.
     """
     ct = content_type.lower().strip()
     for pattern in allowlist:
         p = pattern.lower().strip()
-        if p.endswith("/*"):
-            if ct.startswith(p[:-1]):  # keep the trailing slash
+        if p.endswith("*"):
+            if ct.startswith(p[:-1]):
                 return True
         elif ct == p:
             return True

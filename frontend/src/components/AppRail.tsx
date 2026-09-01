@@ -1,6 +1,6 @@
 import {Fragment} from "react";
 import {useNavigate} from "react-router-dom";
-import {useStore} from "@tanstack/react-store";
+import {useSelector} from "@tanstack/react-store";
 import {Search01Icon} from "@hugeicons/core-free-icons";
 import type {IconSvgElement} from "@hugeicons/react";
 import {Icon} from "@/components/Icon";
@@ -88,7 +88,7 @@ function RailButton({
 
 export function AppRail({activeSection}: {activeSection: SectionId}) {
     const navigate = useNavigate();
-    const searchActive = useStore(commandPaletteOpenAtom, (v) => v);
+    const searchActive = useSelector(commandPaletteOpenAtom);
 
     return (
         <nav

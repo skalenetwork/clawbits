@@ -430,6 +430,7 @@ declare module "openclaw/plugin-sdk/core" {
     registrationMode?: "full" | "setup-only" | "setup-runtime" | "cli-metadata" | "discovery";
     registerTool?: (opts: unknown) => void;
     registerHook?: (event: string, handler: unknown) => void;
+    on?: (event: string, handler: (...args: unknown[]) => unknown) => void;
     registerChannel?: (opts: { plugin: ChannelPlugin<unknown> }) => void;
     registerCli?: (
       registrar: (ctx: OpenClawPluginCliContext) => void | Promise<void>,
@@ -438,7 +439,20 @@ declare module "openclaw/plugin-sdk/core" {
         descriptors?: OpenClawPluginCliCommandDescriptor[];
       },
     ) => void;
-    runtime?: unknown;
+    runtime?: {
+      version?: string;
+      channel?: {
+        runtimeContexts?: {
+          register(params: {
+            channelId: string;
+            capability: string;
+            context: unknown;
+          }): { dispose(): void };
+          get<T>(params: { channelId: string; capability: string }): T | undefined;
+        };
+        [key: string]: unknown;
+      };
+    };
     [key: string]: unknown;
   }
 

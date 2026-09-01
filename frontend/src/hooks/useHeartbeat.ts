@@ -25,7 +25,7 @@ const IDLE_AFTER_MS = 5 * 60_000;
  * conversation history).
  */
 export function useHeartbeat(enabled: boolean): void {
-  const lastActivityRef = useRef<number>(Date.now());
+  const lastActivityRef = useRef<number>(0);
   const lastStatusRef = useRef<GlobalUserStatus | null>(null);
   const lastSentRef = useRef<number>(0);
 
@@ -35,6 +35,8 @@ export function useHeartbeat(enabled: boolean): void {
     const bumpActivity = () => {
       lastActivityRef.current = Date.now();
     };
+    // Mounting counts as activity — the first tick must not read a zero.
+    bumpActivity();
     window.addEventListener("pointermove", bumpActivity, { passive: true });
     window.addEventListener("keydown", bumpActivity, { passive: true });
     window.addEventListener("touchstart", bumpActivity, { passive: true });

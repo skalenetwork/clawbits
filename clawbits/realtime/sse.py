@@ -59,6 +59,10 @@ log = logging.getLogger(__name__)
 # 60–120s; a comment frame every 20s is a common default.
 _KEEPALIVE_SECONDS = 20
 
+# How long a stream may trust its last authorization check, so a revocation
+# that publishes nothing on the topic still cuts the stream within a window.
+MEMBERSHIP_RECHECK_TTL_SECONDS = 30.0
+
 
 def sse_pack(event: dict[str, Any]) -> bytes:
     """Encode an event dict as a single SSE frame."""
@@ -69,7 +73,24 @@ def sse_comment(text: str = "ka") -> bytes:
     return f": {text}\n\n".encode()
 
 
+class StreamClosed(Exception):
+    """Raised by an :data:`EventFilter` to end the stream server-side.
+
+    Streams are authorized at connect time; a filter raises this when that
+    authorization no longer holds mid-stream (e.g. the subscriber lost
+    channel membership). The response ends cleanly, so a well-behaved
+    client reconnects and hits the connect-time check — a 403 once revoked.
+    """
+
+
+# Per-event gate. Return False to skip the event; raise StreamClosed to end
+# the response entirely.
 EventFilter = Callable[[dict[str, Any]], bool | Awaitable[bool]]
+
+# Runs on every keepalive tick, so a quiet channel still tears down on
+# revocation (the event filter only fires while traffic flows). Raise
+# StreamClosed to end the response.
+Reauthorize = Callable[[], None | Awaitable[None]]
 
 
 async def _event_allowed(
@@ -90,16 +111,24 @@ async def _stream_topic(
     initial_snapshot: list[dict[str, Any]] | None = None,
     log_label: str = "",
     event_filter: EventFilter | None = None,
+    reauthorize: Reauthorize | None = None,
 ) -> StreamingResponse:
     """Generic SSE pump for a single Redis pub/sub topic.
 
     Used by both per-channel and per-human streams; differs only in topic
     string and the snapshot prepended at connect time.
+
+    ``reauthorize`` (optional) runs on each keepalive tick — the idle-path
+    counterpart to ``event_filter``, which only runs while events flow. Either
+    may raise :class:`StreamClosed` to end the response.
     """
     bus = get_bus()
 
     async def generator() -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=256)
+        # ``None`` is the close sentinel: the pump enqueues it when the
+        # event filter revokes the stream, so the generator ends the
+        # response immediately instead of on the next keepalive tick.
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=256)
         disconnected = asyncio.Event()
 
         async def pump() -> None:
@@ -107,7 +136,21 @@ async def _stream_topic(
                 async for event in bus.subscribe(topic):
                     if disconnected.is_set():
                         break
-                    if not await _event_allowed(event_filter, event):
+                    try:
+                        allowed = await _event_allowed(event_filter, event)
+                    except StreamClosed:
+                        log.info(
+                            "SSE stream closed by filter for %s",
+                            log_label or topic,
+                        )
+                        try:
+                            queue.put_nowait(None)
+                        except asyncio.QueueFull:
+                            # Generator still ends via its pump_task.done()
+                            # check, at worst one keepalive tick later.
+                            pass
+                        break
+                    if not allowed:
                         continue
                     try:
                         queue.put_nowait(sse_pack(event))
@@ -131,18 +174,31 @@ async def _stream_topic(
                 if await request.is_disconnected():
                     disconnected.set()
                     break
-                if pump_task.done():
-                    # Defence in depth: the pump now self-heals (see
-                    # EventBus.subscribe), so it should only finish when we
-                    # cancel it on disconnect. If it ever ends on its own, stop
-                    # the response so the client reconnects with a fresh pump
-                    # instead of holding a live-looking stream that silently
-                    # delivers nothing.
+                if pump_task.done() and queue.empty():
+                    # The pump self-heals, so this only fires if it ends on
+                    # its own: drain what it accepted (close sentinel included)
+                    # and stop, so the client reconnects instead of holding a
+                    # live-looking stream that delivers nothing.
                     break
                 try:
                     frame = await asyncio.wait_for(queue.get(), timeout=_KEEPALIVE_SECONDS)
+                    if frame is None:
+                        break  # filter revoked the stream (StreamClosed)
                     yield frame
                 except TimeoutError:
+                    # Idle window elapsed: re-check before the keepalive so a
+                    # quiet revoked stream still ends.
+                    if reauthorize is not None:
+                        try:
+                            result = reauthorize()
+                            if inspect.isawaitable(result):
+                                await result
+                        except StreamClosed:
+                            log.info(
+                                "SSE stream closed by reauthorize for %s",
+                                log_label or topic,
+                            )
+                            break
                     yield sse_comment()
         finally:
             disconnected.set()
@@ -188,12 +244,16 @@ async def stream_channel_events(
     channel_id: str,
     initial_snapshot: list[dict[str, Any]] | None = None,
     event_filter: EventFilter | None = None,
+    reauthorize: Reauthorize | None = None,
 ) -> StreamingResponse:
     """Open an SSE stream for `channel_id`.
 
     `initial_snapshot` is a list of event dicts sent before the live
     subscription starts — typically the current presence snapshot so the
     client doesn't start with an empty member-status map.
+
+    `reauthorize` (optional) re-checks the subscriber's access on each
+    keepalive tick so revocation closes even an idle stream.
     """
     return await _stream_topic(
         request,
@@ -201,6 +261,7 @@ async def stream_channel_events(
         initial_snapshot=initial_snapshot,
         log_label=f"channel {channel_id}",
         event_filter=event_filter,
+        reauthorize=reauthorize,
     )
 
 
@@ -227,16 +288,10 @@ async def publish_post_created(
     if member_human_ids:
         for hid in member_human_ids:
             await bus.publish(human_topic(hid), envelope)
-        # Browser push for members whose tab is closed/backgrounded — the
-        # "reach them when SSE can't" layer. Hand the fan-out off to the
-        # background dispatcher rather than awaiting it here: this coroutine is
-        # run to completion by ``fire_and_forget`` (on a threadpool thread for
-        # sync endpoints like an agent posting), and the fan-out is slow
-        # external HTTP, so doing it inline would block that thread / stretch
-        # the fire-and-forget task. ``schedule_post_web_push`` enqueues and
-        # returns instantly; the lifespan-owned worker does the sending, skips
-        # the author + muted members, and prunes dead subscriptions. No-op
-        # unless VAPID is configured. Lazy import avoids an import cycle.
+        # Push for tabs SSE can't reach. Handed to the background dispatcher,
+        # never awaited here: the fan-out is slow external HTTP and this runs
+        # inside ``fire_and_forget`` (on a threadpool thread for sync
+        # endpoints). No-op unless VAPID is configured.
         try:
             from clawbits.realtime.web_push import schedule_post_web_push
 
@@ -249,21 +304,11 @@ async def publish_post_updated(bus: EventBus, channel_id: str, post: dict[str, A
     await bus.publish(channel_topic(channel_id), _envelope("post.updated", channel_id, post))
 
 
-# ---------------------------------------------------------------------------
-# Streaming-append coalescing (LIVE_AGENT_ACTIVITY_PLAN §4.2)
-# ---------------------------------------------------------------------------
-#
-# Token-streamed replies PATCH the draft every ~180ms and each PATCH re-fans
-# the FULL post payload. Bound the outbound event rate with a per-post
-# throttle: while the post is still ``streaming``, at most one publish per
-# window; superseded intermediates are DROPPED, which is safe because every
-# payload carries the full cumulative text (the next publish or the finalize
-# supersedes it). Terminal payloads (``published`` etc.) always publish
-# immediately, so the final state is never lost or delayed.
-#
-# A throttle (drop) rather than a debounce (delay) on purpose: it needs no
-# cross-call asyncio state, so it behaves identically under all three
-# ``fire_and_forget`` contexts, including the ephemeral-loop test fallback.
+# Streamed replies PATCH every ~180ms and each PATCH re-fans the full payload,
+# so while a post is ``streaming`` at most one publish lands per window and
+# intermediates are dropped — safe, since every payload carries the cumulative
+# text. Terminal payloads always publish immediately. A throttle, not a
+# debounce, so it needs no cross-call asyncio state.
 STREAMING_POST_UPDATE_MIN_INTERVAL_SECONDS = 0.05
 _STREAM_THROTTLE_MAX_ENTRIES = 2048
 _last_streaming_publish: dict[int, float] = {}
@@ -452,6 +497,39 @@ async def publish_channel_removed(
     await bus.publish(
         human_topic(human_id),
         _envelope("channel.removed", channel_id, {"channel_id": channel_id}),
+    )
+
+
+async def publish_member_removed(
+    bus: EventBus,
+    channel_id: str,
+    *,
+    human_id: int | None = None,
+    agent_id: str | None = None,
+) -> None:
+    """Announce on the *channel* topic that someone just lost access.
+
+    The counterpart to :func:`publish_channel_removed`, which reaches only the
+    removed user's personal topic and so can never close a per-channel stream.
+    Live channel subscribers are authorized once at connect and then re-checked
+    on a TTL; this is what makes revocation immediate instead of eventual.
+
+    A dedicated envelope rather than reusing the ``channel.event`` timeline row:
+    that row is suppressed for direct channels (see
+    ``TableWrite.create_mm_channel_event``), which left DM streams with no
+    immediate signal at all — exactly the case where the leaked traffic is
+    most sensitive. This fires for every channel type.
+
+    Subjects are mutually exclusive in practice; both are optional so a caller
+    can name whichever side it removed.
+    """
+    await bus.publish(
+        channel_topic(channel_id),
+        _envelope(
+            "member.removed",
+            channel_id,
+            {"human_id": human_id, "agent_id": agent_id},
+        ),
     )
 
 

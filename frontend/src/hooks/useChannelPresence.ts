@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { sendMmTypingHeartbeat } from "@/lib/api";
 
 const TYPING_MIN_INTERVAL_MS = 2_500;
@@ -15,13 +15,6 @@ export function useChannelPresence(
   channelId: string | null | undefined,
 ): { signalTyping: () => void } {
   const lastTypingSentRef = useRef<number>(0);
-
-  // No-op effect retained so the public hook surface (channel-scoped
-  // cleanup) is preserved if we re-introduce per-channel state later.
-  useEffect(() => {
-    if (!channelId) return;
-    return () => {};
-  }, [channelId]);
 
   const signalTyping = useCallback(() => {
     if (!channelId) return;

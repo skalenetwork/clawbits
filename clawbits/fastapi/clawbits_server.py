@@ -127,6 +127,7 @@ from clawbits.fastapi.mm_file_helpers import (
     load_file_config,
     new_file_id,
     probe_image_dimensions,
+    resolve_content_type,
 )
 from clawbits.fastapi.search_helpers import (
     decode_search_cursor,
@@ -2225,7 +2226,16 @@ class ClawBitsServer(FastAPI):
                     raise HTTPException(status_code=401, detail="Invalid API key")
 
             with Session(self._engine) as db:
-                posts = TableRead.get_all_agent_posts(db, limit=limit, offset=offset)
+                # An agent sees its own org's posts, not the deployment's.
+                agent_org_id = TableRead.get_agent_org_id(db, str(user.agent_id))
+                org_ids = [agent_org_id] if agent_org_id else []
+                posts = TableRead.get_all_agent_posts(
+                    db,
+                    org_ids,
+                    limit=limit,
+                    offset=offset,
+                    current_agent_id=str(user.agent_id),
+                )
 
             return {"posts": posts, "total": len(posts)}
 
@@ -2530,10 +2540,25 @@ class ClawBitsServer(FastAPI):
                 ch = TableRead.get_mm_channel(db, channel_id)
                 if ch is None:
                     raise HTTPException(status_code=404, detail="Channel not found")
+                if ch.get("channel_type") == "direct":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot add members to a direct message channel",
+                    )
                 target = TableRead.get_agent_by_agentid(db, AgentId(body.agent_id))
                 if target is None:
                     raise HTTPException(
                         status_code=404, detail=f"Agent '{body.agent_id}' not found"
+                    )
+                # The agent must belong to the channel's org. ``can_tag`` below
+                # is a contact grant, not an org boundary: without this an
+                # agent could pull a peer from another org into this channel,
+                # which would then read everything posted in it.
+                target_org_id = TableRead.get_agent_org_id(db, body.agent_id)
+                if ch.get("org_id") and target_org_id != ch["org_id"]:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Agent does not belong to this organization",
                     )
                 # Bringing an agent into a channel is gated by the same
                 # ``can_tag`` grant as mentioning it (contact is closed by
@@ -2580,7 +2605,17 @@ class ClawBitsServer(FastAPI):
                 TableWrite.remove_mm_channel_member(db, channel_id, member_agent_id)
                 members = TableRead.get_mm_channel_members(db, channel_id)
                 db.commit()
-            from clawbits.realtime import fire_and_forget, get_bus, publish_agent_channel_removed
+            from clawbits.realtime import (
+                fire_and_forget,
+                get_bus,
+                publish_agent_channel_removed,
+                publish_member_removed,
+            )
+            # Channel topic too, so a live SSE subscriber is cut off now rather
+            # than at its next TTL re-check.
+            fire_and_forget(
+                publish_member_removed(get_bus(), channel_id, agent_id=member_agent_id)
+            )
             fire_and_forget(publish_agent_channel_removed(get_bus(), member_agent_id, channel_id))
             return MmChannelMembersListResponse(
                 members=[MmChannelMemberResponse(**m) for m in members],
@@ -3151,9 +3186,21 @@ class ClawBitsServer(FastAPI):
         request: Request,
         api_key: str = Security(api_key_header),
     ):
-        """Open an SSE stream of channel events for an agent subscriber."""
+        """Open an SSE stream of channel events for an agent subscriber.
+
+        Membership *and the API key itself* are enforced for the stream's
+        whole lifetime, not just at connect: the filter closes the stream
+        when it sees this agent's own removal on the channel topic, and on a
+        short TTL re-verifies both the key (rotation, deletion) and
+        membership — the backstop for revocation paths that publish nothing
+        there (contact-grant revocation).
+        """
+        import time
+
         from clawbits.db.models import Agent as _AgentRow
         from clawbits.realtime import (
+            MEMBERSHIP_RECHECK_TTL_SECONDS,
+            StreamClosed,
             build_presence_snapshot_event,
             get_bus,
             publish_member_status,
@@ -3165,7 +3212,46 @@ class ClawBitsServer(FastAPI):
         with Session(self._engine) as db:
             self._require_mm_member(db, channel_id, agent_id)
 
+        last_check = time.monotonic()
+
+        def reauthorize_if_stale() -> None:
+            """Re-verify membership at most once per TTL; raise StreamClosed
+            when access is gone. Shared by the event filter and the keepalive
+            hook so a revoked stream closes whether or not events flow."""
+            nonlocal last_check
+            now = time.monotonic()
+            if now - last_check < MEMBERSHIP_RECHECK_TTL_SECONDS:
+                return
+            last_check = now
+            try:
+                # Credential first, membership second: a rotated (or deleted)
+                # API key must close the stream even while the membership row
+                # is intact — auth was otherwise resolved exactly once, at
+                # connect. Rotation changes ``agents.api_key_hash``, so the
+                # old key simply stops resolving.
+                if self._mm_extract_agent(api_key).agent_id.value != agent_id:
+                    raise StreamClosed()
+                with Session(self._engine) as db:
+                    self._require_mm_member(db, channel_id, agent_id)
+            except HTTPException:
+                raise StreamClosed() from None
+
         def allow_agent_event(event: dict) -> bool:
+            # Immediate revocation on the channel topic — fires for every
+            # channel type, unlike the timeline row below (suppressed on DMs).
+            if event.get("type") == "member.removed":
+                if (event.get("data") or {}).get("agent_id") == agent_id:
+                    raise StreamClosed()
+                reauthorize_if_stale()
+                return False  # someone else's revocation is not ours to relay
+            if event.get("type") == "channel.event":
+                data = event.get("data") or {}
+                if (
+                    data.get("event_type") == "member.removed"
+                    and data.get("subject_agent_id") == agent_id
+                ):
+                    raise StreamClosed()
+            reauthorize_if_stale()
             if event.get("type") != "post.created":
                 return True
             with Session(self._engine) as db:
@@ -3181,6 +3267,7 @@ class ClawBitsServer(FastAPI):
             channel_id,
             initial_snapshot=snapshot,
             event_filter=allow_agent_event,
+            reauthorize=reauthorize_if_stale,
         )
 
     async def mm_agent_events_ws(self, websocket: WebSocket):
@@ -3645,10 +3732,11 @@ class ClawBitsServer(FastAPI):
                         f"(max {cfg.max_bytes})"
                     ),
                 )
-            if not is_mime_allowed(body.content_type, cfg.mime_allowlist):
+            content_type = resolve_content_type(body.filename, body.content_type)
+            if not is_mime_allowed(content_type, cfg.mime_allowlist):
                 raise HTTPException(
                     status_code=415,
-                    detail=f"Content type not allowed: {body.content_type}",
+                    detail=f"Content type not allowed: {content_type}",
                 )
 
             agent = self._mm_extract_agent(api_key)
@@ -3670,7 +3758,7 @@ class ClawBitsServer(FastAPI):
                     channel_id=channel_id,
                     uploader_agent_id=agent_id,
                     filename=body.filename,
-                    content_type=body.content_type,
+                    content_type=content_type,
                     size_bytes=body.size_bytes,
                     object_key=object_key,
                     thumbnail_object_key=thumb_key,
@@ -3680,7 +3768,7 @@ class ClawBitsServer(FastAPI):
 
             put = presigner.presign_put(
                 object_key,
-                body.content_type,
+                content_type,
                 content_length=body.size_bytes,
                 expires=300,
             )
@@ -3739,7 +3827,9 @@ class ClawBitsServer(FastAPI):
                     detail="File storage not configured (R2 credentials missing)",
                 )
 
-            content_type = request.headers.get("content-type", "application/octet-stream")
+            content_type = resolve_content_type(
+                filename, request.headers.get("content-type", ""),
+            )
             if not is_mime_allowed(content_type, cfg.mime_allowlist):
                 raise HTTPException(
                     status_code=415,
@@ -4421,8 +4511,13 @@ class ClawBitsServer(FastAPI):
             agent = TableRead.get_agent_by_api_key(db, token)
             if agent is None:
                 raise HTTPException(status_code=401, detail="Invalid API key")
-            items = TableRead.list_agent_actions(db, limit=limit, offset=offset)
-            total = TableRead.count_agent_actions(db)
+            # An agent sees the registry of its own org, not the deployment's.
+            # ``get_agent_by_api_key`` returns the datastructures Agent, which
+            # carries no org - resolve it from the row.
+            agent_org_id = TableRead.get_agent_org_id(db, str(agent.agent_id))
+            org_ids = [agent_org_id] if agent_org_id else []
+            items = TableRead.list_agent_actions(db, org_ids, limit=limit, offset=offset)
+            total = TableRead.count_agent_actions(db, org_ids)
 
         return ActionListResponse(
             actions=[ActionListItem(**i) for i in items],

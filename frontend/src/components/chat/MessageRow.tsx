@@ -12,6 +12,7 @@ import {
   Attachment01Icon as Paperclip,
   Clock01Icon,
   Copy01Icon,
+  Link01Icon,
   Delete02Icon,
   Edit02Icon,
   PinIcon,
@@ -69,7 +70,7 @@ import { burstEmojiAt, burstEmojiFrom } from "@/lib/emojiBurst";
 import { MENU_SURFACE } from "@/lib/menuSurface";
 import { extractUrls } from "@/lib/extractUrls";
 import { formatRelativeAgo, formatTimeOnly } from "@/lib/formatting";
-import { mentionHandle, posterName, quotedBodyText } from "@/lib/messageHelpers";
+import { mentionHandle, messageLink, posterName, quotedBodyText } from "@/lib/messageHelpers";
 import { formatReactors } from "@/lib/reactionTooltip";
 import { toast } from "@/lib/toast";
 
@@ -122,12 +123,12 @@ function PostAvatar({
 }
 
 
-type MessageAction = {
+interface MessageAction {
   key: string;
   icon: typeof Copy01Icon;
   label: string;
   onClick: () => void;
-};
+}
 
 // Slack-canonical quick reactions. Six tap-to-react options that cover the
 // most common sentiments. Custom emoji come later via the full picker.
@@ -883,6 +884,13 @@ function computeReceiptState(
   return "delivered";
 }
 
+function copyToClipboard(text: string, ok: string): void {
+  navigator.clipboard.writeText(text).then(
+    () => { toast.success(ok); },
+    () => { toast.error("Copy failed"); },
+  );
+}
+
 export interface MessageRowProps {
   post: MmChannelPost;
   currentUser: HumanUser | null;
@@ -992,9 +1000,7 @@ export function MessageRow({
   const useBubble = bubbleMode && !isEditing && !isDraft;
   const canAct = !isStreaming && !isDraft;
   const canReply = canAct && !isRejected;
-  const isOwnHumanPost = Boolean(
-    currentUser && post.human_id === currentUser.id && post.agent_id == null,
-  );
+  const isOwnHumanPost = post.human_id === currentUser?.id && post.agent_id == null;
   const canEdit = isOwnHumanPost && post.status === "published";
   // Author can delete their own published post; channel creator can
   // delete anyone's post for moderation. Streaming and draft rows are
@@ -1199,11 +1205,14 @@ export function MessageRow({
           key: "copy",
           icon: Copy01Icon,
           label: "Copy",
+          onClick: () => { copyToClipboard(post.message, "Copied"); },
+        },
+        {
+          key: "copy-link",
+          icon: Link01Icon,
+          label: "Copy link",
           onClick: () => {
-            navigator.clipboard.writeText(post.message).then(
-              () => { toast.success("Copied"); },
-              () => { toast.error("Copy failed"); },
-            );
+            copyToClipboard(messageLink(post.channel_id, post.post_id), "Link copied");
           },
         },
         ...(canDelete
@@ -1276,7 +1285,7 @@ export function MessageRow({
                 key={e}
                 aria-label={`React with ${e}`}
                 onClick={(ev) => {
-                  burstEmojiFrom(e, ev.currentTarget as HTMLElement);
+                  burstEmojiFrom(e, ev.currentTarget);
                   onToggleReaction(post.post_id, e);
                 }}
                 className="size-9 justify-center p-0 text-[20px] leading-none transition-transform hover:scale-110"
@@ -1286,7 +1295,7 @@ export function MessageRow({
             ))}
             <ContextMenuItem
               aria-label="More emoji"
-              onClick={(ev) => { setEmojiPicker(centerOf(ev.currentTarget as HTMLElement)); }}
+              onClick={(ev) => { setEmojiPicker(centerOf(ev.currentTarget)); }}
               className="size-9 justify-center p-0 text-muted-foreground"
             >
               <Icon icon={SmilePlusIcon} className="size-[18px]"/>

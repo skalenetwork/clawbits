@@ -34,7 +34,7 @@ vi.mock("@/lib/api", () => ({
 const toastSuccess = vi.fn();
 vi.mock("@/lib/toast", () => ({
     toast: {
-        success: (...args: unknown[]) => toastSuccess(...args),
+        success: (...args: unknown[]) => { toastSuccess(...args); },
         error: vi.fn(),
     },
     errMsg: (err: unknown) => (err instanceof Error ? err.message : String(err)),
@@ -148,7 +148,7 @@ describe("SettingsLobstertalkPage", () => {
     it("notes a stored key in the checking line", async () => {
         // Resolve the probe only on demand so the pending state is stable
         // while we assert on it.
-        let release: (v: unknown) => void = () => {};
+        let release: (v: unknown) => void = () => { /* replaced by the mock below */ };
         checkOrgLobstertalkEndpoint.mockImplementation(
             () => new Promise((resolve) => { release = resolve; }),
         );
@@ -340,7 +340,7 @@ describe("SettingsLobstertalkPage", () => {
         // settles would spend the *newly* selected org's metered LLM call and
         // invalidate the wrong cache key.
         getOrgLobstertalk.mockResolvedValue(settings(true));
-        let release: (v: unknown) => void = () => {};
+        let release: (v: unknown) => void = () => { /* replaced by the mock below */ };
         setOrgLobstertalk.mockImplementation(
             () => new Promise((resolve) => { release = resolve; }),
         );

@@ -10,12 +10,14 @@ import {
 
 import { Icon } from "@/components/Icon";
 import { CodeBlock } from "@/components/CodeBlock";
+import { MessageMarkdown } from "@/components/MessageMarkdown";
 import { Video } from "@/components/video/Video";
 import { getMmFileDownloadUrl, type MmFile } from "@/lib/api";
 import { stableDownloadUrl, stableThumbnailUrl } from "@/lib/attachmentUrlCache";
 import { MEDIA_VT_NAME } from "@/lib/viewTransition";
 import {
   fileDescriptor,
+  isMarkdown,
   languageForFile,
   previewKind,
   TEXT_PREVIEW_MAX_BYTES,
@@ -45,6 +47,8 @@ const CHROME_H = "3.5rem";
 const NAV_GUTTER = "[--nav-w:0px] sm:[--nav-w:7rem]";
 /** Idle delay before the chrome fades down to a quiet state. */
 const IDLE_MS = 2500;
+/** The chrome capsule every control group sits in. */
+const PILL = "flex items-center gap-0.5 rounded-full bg-black/50 p-1 backdrop-blur-md";
 
 /**
  * Full-screen, type-aware attachment viewer. Supersedes the image-only
@@ -52,7 +56,8 @@ const IDLE_MS = 2500;
  * closes on click. Per file it renders the right surface — raster image,
  * `<video>`/`<audio>`, a PDF (from a typed blob we control), or
  * syntax-highlighted source for text/code (incl. html/svg shown as source,
- * never executed). Anything else falls back to a download card.
+ * never executed; markdown reads rendered by default, with a switcher back to
+ * source). Anything else falls back to a download card.
  *
  * Chrome (filename + counter pill, action pill, chevrons, portal-to-body,
  * ``data-state="open"`` so page-level Esc handlers defer to it) lives in a
@@ -63,6 +68,8 @@ const IDLE_MS = 2500;
  */
 export function AttachmentViewer({ files, initialIndex, onClose }: AttachmentViewerProps) {
   const [index, setIndex] = useState(initialIndex);
+  // Sticky across navigation: a reader who asked for source keeps getting it.
+  const [raw, setRaw] = useState(false);
   const current = files[index];
   const dialogRef = useRef<HTMLDivElement>(null);
   const idle = useIdle(IDLE_MS);
@@ -178,6 +185,8 @@ export function AttachmentViewer({ files, initialIndex, onClose }: AttachmentVie
         idle={idle}
         onClose={onClose}
         onDownload={() => { void download(); }}
+        raw={isMarkdown(current.filename, current.content_type) ? raw : null}
+        onRawChange={setRaw}
       />
 
       {isImageKind ? (
@@ -192,7 +201,7 @@ export function AttachmentViewer({ files, initialIndex, onClose }: AttachmentVie
             multiple ? NAV_GUTTER : ""
           }`}
         >
-          <ViewerContent key={current.file_id} file={current} onDownload={download} />
+          <ViewerContent key={current.file_id} file={current} onDownload={download} raw={raw} />
           {nav}
         </div>
       ) : (
@@ -205,7 +214,7 @@ export function AttachmentViewer({ files, initialIndex, onClose }: AttachmentVie
         >
           {/* Per-file content. ``key`` resets the inner fetch/blob state when
               the user navigates to a different attachment. */}
-          <ViewerContent key={current.file_id} file={current} onDownload={download} />
+          <ViewerContent key={current.file_id} file={current} onDownload={download} raw={raw} />
           {nav}
         </div>
       )}
@@ -266,6 +275,8 @@ function ViewerTopBar({
   idle,
   onClose,
   onDownload,
+  raw,
+  onRawChange,
 }: {
   filename: string;
   index: number;
@@ -273,6 +284,10 @@ function ViewerTopBar({
   idle: boolean;
   onClose: () => void;
   onDownload: () => void;
+  /** Current source/rendered choice, or null when the file has no rendered
+   *  form and the switcher shouldn't appear at all. */
+  raw: boolean | null;
+  onRawChange: (raw: boolean) => void;
 }) {
   const multiple = count > 1;
   return (
@@ -288,24 +303,49 @@ function ViewerTopBar({
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-0.5 rounded-full bg-black/50 p-1 backdrop-blur-md">
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onDownload(); }}
-          aria-label="Download"
-          className="flex size-8 items-center justify-center rounded-full text-white/85 transition-colors hover:bg-white/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-        >
-          <Icon icon={Download01Icon} className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onClose(); }}
-          aria-label="Close"
-          className="flex size-8 items-center justify-center rounded-full text-white/85 transition-colors hover:bg-white/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-        >
-          <Icon icon={Cancel01Icon} className="size-4" />
-        </button>
+      <div className="flex shrink-0 items-center gap-2">
+        {raw !== null && <RawSwitch raw={raw} onChange={onRawChange} />}
+        <div className={PILL}>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDownload(); }}
+            aria-label="Download"
+            className="flex size-8 items-center justify-center rounded-full text-white/85 transition-colors hover:bg-white/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+          >
+            <Icon icon={Download01Icon} className="size-4" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+            aria-label="Close"
+            className="flex size-8 items-center justify-center rounded-full text-white/85 transition-colors hover:bg-white/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+          >
+            <Icon icon={Cancel01Icon} className="size-4" />
+          </button>
+        </div>
       </div>
+    </div>
+  );
+}
+
+/** Rendered/source switcher for markdown. Two segments in the same pill
+ *  language as the action buttons beside it. */
+function RawSwitch({ raw, onChange }: { raw: boolean; onChange: (raw: boolean) => void }) {
+  return (
+    <div className={`${PILL} text-xs font-medium`}>
+      {([["Rendered", false], ["Raw", true]] as const).map(([label, value]) => (
+        <button
+          key={label}
+          type="button"
+          aria-pressed={raw === value}
+          onClick={(e) => { e.stopPropagation(); onChange(value); }}
+          className={`rounded-full px-2.5 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
+            raw === value ? "bg-white/15 text-white" : "text-white/60 hover:text-white/90"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -348,7 +388,15 @@ function ViewerNav({
 
 // ---------------------------------------------------------------------------
 
-function ViewerContent({ file, onDownload }: { file: MmFile; onDownload: () => void }) {
+function ViewerContent({
+  file,
+  onDownload,
+  raw,
+}: {
+  file: MmFile;
+  onDownload: () => void;
+  raw: boolean;
+}) {
   const kind = previewKind(file.filename, file.content_type);
   switch (kind) {
     case "image":
@@ -360,7 +408,7 @@ function ViewerContent({ file, onDownload }: { file: MmFile; onDownload: () => v
     case "pdf":
       return <PdfContent file={file} onDownload={onDownload} />;
     case "text":
-      return <TextContent file={file} onDownload={onDownload} />;
+      return <TextContent file={file} onDownload={onDownload} raw={raw} />;
     default:
       return <FallbackContent file={file} onDownload={onDownload} />;
   }
@@ -593,7 +641,15 @@ function PdfContent({ file, onDownload }: { file: MmFile; onDownload: () => void
   return <iframe src={blobUrl} title={file.filename} className="size-full bg-white" />;
 }
 
-function TextContent({ file, onDownload }: { file: MmFile; onDownload: () => void }) {
+function TextContent({
+  file,
+  onDownload,
+  raw,
+}: {
+  file: MmFile;
+  onDownload: () => void;
+  raw: boolean;
+}) {
   const tooLarge = file.size_bytes > TEXT_PREVIEW_MAX_BYTES;
   const { text, error } = useFileBytes(file, tooLarge ? "blob" : "text");
   if (tooLarge) {
@@ -607,14 +663,19 @@ function TextContent({ file, onDownload }: { file: MmFile; onDownload: () => voi
   }
   if (error) return <FallbackContent file={file} onDownload={onDownload} message={error} />;
   if (text === null) return <Spinner />;
-  const lang = languageForFile(file.filename);
-  // One immersive, full-bleed reading surface — the code fills the viewer
+  // One immersive, full-bleed reading surface — the content fills the viewer
   // (no nested card/border). ``bg-card`` keeps Shiki tokens readable in both
-  // themes (they follow the page's .dark class).
+  // themes (they follow the page's .dark class). Markdown reads as a document
+  // unless the switcher asked for source.
+  const rendered = !raw && isMarkdown(file.filename, file.content_type);
   return (
     <div className="size-full overflow-auto bg-card text-card-foreground">
       <div className="min-h-full px-5 pb-10 pt-6 sm:px-8">
-        <CodeBlock code={text.replace(/\n$/, "")} lang={lang} bare />
+        {rendered ? (
+          <MessageMarkdown content={text} variant="document" className="mx-auto max-w-3xl" />
+        ) : (
+          <CodeBlock code={text.replace(/\n$/, "")} lang={languageForFile(file.filename)} bare />
+        )}
       </div>
     </div>
   );

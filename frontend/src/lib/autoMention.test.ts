@@ -29,7 +29,7 @@ function post(overrides: Partial<MmChannelPost>): MmChannelPost {
     status: "published",
     parent_post_id: null,
     ...overrides,
-  } as MmChannelPost;
+  };
 }
 
 const handleFor = (m: MmChannelMember) =>

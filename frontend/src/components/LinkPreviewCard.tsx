@@ -24,7 +24,7 @@ interface TwitterMeta {
  *  render path identical regardless of source. ``image_url``/``title``
  *  etc. are tolerated as ``undefined`` on the embedded variant since the
  *  Pydantic model treats null + missing the same way. */
-type LinkPreviewLike = {
+interface LinkPreviewLike {
   url: string;
   canonical_url: string | null | undefined;
   title: string | null | undefined;
@@ -32,7 +32,7 @@ type LinkPreviewLike = {
   image_url: string | null | undefined;
   site_name: string | null | undefined;
   error: string | null | undefined;
-};
+}
 
 function toLinkPreviewLike(embedded: MmPostLinkPreviewEmbedded): LinkPreviewLike {
   return {
@@ -68,9 +68,7 @@ function parseTwitterMeta(preview: LinkPreviewLike): TwitterMeta | null {
   }
   if (!TWITTER_HOSTS.has(host)) return null;
   if (!preview.title) return null;
-  const match = preview.title.match(
-    /^(.+?)\s+\(@(\w+)\)(?:\s+on\s+(?:X|Twitter))?\s*$/,
-  );
+  const match = /^(.+?)\s+\(@(\w+)\)(?:\s+on\s+(?:X|Twitter))?\s*$/.exec(preview.title);
   if (!match) return null;
   const displayName = match[1];
   const username = match[2];
@@ -117,7 +115,7 @@ export const LinkPreviewCard = memo(function LinkPreviewCard({
   // already have the embedded result.
   const useClientFetch = embedded == null && Boolean(url);
   const { data: clientPreview, isLoading } = useLinkPreview(
-    useClientFetch ? (url as string) : "",
+    useClientFetch ? (url!) : "",
   );
   const preview: LinkPreviewLike | null = embedded
     ? toLinkPreviewLike(embedded)

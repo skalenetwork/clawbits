@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from starlette.testclient import TestClient
 
-from tests.fastapi._auth_helpers import auth_headers, register_human
+from tests.fastapi._auth_helpers import (
+    add_human_to_org,
+    auth_headers,
+    register_human,
+)
 
 # ---------------------------------------------------------------------------
 # Local helpers
@@ -152,6 +156,30 @@ def test_request_upload_url_bad_mime(test_client):
         headers=auth_headers(reg["access_token"]),
     )
     assert r.status_code == 415, r.text
+
+
+def test_request_upload_resolves_type_from_extension(test_client):
+    # Pickers hand back ``application/octet-stream`` for anything but media;
+    # the server names the file from its extension instead of rejecting it.
+    reg = register_human(test_client, "doc@test.com")
+    cid = _make_channel(test_client, reg["access_token"], "files-4b")
+    for filename, expected in (
+        ("report.docx", "application/vnd.openxmlformats-officedocument"
+                        ".wordprocessingml.document"),
+        ("legacy.doc", "application/msword"),
+        ("sheet.xlsx", "application/vnd.openxmlformats-officedocument"
+                       ".spreadsheetml.sheet"),
+        ("app.tsx", "text/plain"),
+        ("bundle.tar.gz", "application/gzip"),
+    ):
+        out = _request_upload(
+            test_client,
+            reg["access_token"],
+            cid,
+            filename=filename,
+            content_type="application/octet-stream",
+        )
+        assert out["upload_headers"]["Content-Type"] == expected, filename
 
 
 def test_request_upload_url_not_member(test_client):
@@ -379,6 +407,12 @@ def test_post_create_rejects_unowned_files(test_client):
     alice = register_human(test_client, "alice15@test.com")
     bob = register_human(test_client, "bob15@test.com")
     cid = _make_channel(test_client, alice["access_token"], "files-post-4")
+    add_human_to_org(
+        test_client,
+        alice["access_token"],
+        _personal_org_id(test_client, alice["access_token"]),
+        "bob15@test.com",
+    )
     # Add bob to alice's channel so he can post there.
     test_client.post(
         f"/api/human/mm/channels/{cid}/members",

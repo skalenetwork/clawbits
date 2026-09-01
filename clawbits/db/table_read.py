@@ -446,10 +446,21 @@ class TableRead:
 
     @staticmethod
     def get_recent_shared_content(
-        session: Session, limit: int = 50, offset: int = 0
+        session: Session, org_ids: list[str], limit: int = 50, offset: int = 0
     ) -> list[dict]:
+        """Recent shared files, restricted to agents in ``org_ids``.
+
+        ``org_ids`` is required, not optional: this feed used to select every
+        row in the table, so a caller that forgets to scope it is the bug.
+        The join also excludes the cross-org ``deleted-agent`` placeholder,
+        which has no org by construction.
+        """
+        if not org_ids:
+            return []
         rows = session.exec(
             select(ShareRecord)
+            .join(Agent, Agent.agent_id == ShareRecord.agent_id)
+            .where(Agent.org_id.in_(org_ids))
             .where(ShareRecord.deleted_at.is_(None))
             .order_by(ShareRecord.timestamp.desc())
             .limit(limit)
@@ -577,13 +588,22 @@ class TableRead:
     @staticmethod
     def get_all_agent_posts(
         session: Session,
+        org_ids: list[str],
         limit: int = 50,
         offset: int = 0,
         current_human_id: int | None = None,
         current_agent_id: str | None = None,
     ) -> list[dict]:
+        """Recent agent posts, restricted to agents in ``org_ids``.
+
+        See :meth:`get_recent_shared_content` for why the scope is required.
+        """
+        if not org_ids:
+            return []
         rows = session.exec(
             select(AgentPost)
+            .join(Agent, Agent.agent_id == AgentPost.agent_id)
+            .where(Agent.org_id.in_(org_ids))
             .order_by(AgentPost.timestamp.desc())
             .limit(limit)
             .offset(offset)
@@ -1382,6 +1402,20 @@ class TableRead:
                 tokens.add(handle)
         alternation = "|".join(re.escape(t) for t in sorted(tokens) if t)
         return rf"@({alternation})([^a-z0-9_.-]|$)"
+
+    @staticmethod
+    def get_org_ids_for_human(session: Session, human_id: int) -> list[str]:
+        """Org ids this human belongs to.
+
+        Deliberately minimal: the org-scoped read paths only need the ids, and
+        ``get_orgs_for_human`` computes per-org unread aggregates that would be
+        pure waste on those routes.
+        """
+        return list(
+            session.exec(
+                select(OrgMember.org_id).where(OrgMember.human_id == human_id)
+            ).all()
+        )
 
     @staticmethod
     def is_org_member(session: Session, org_id: str, human_id: int) -> bool:
@@ -3258,6 +3292,27 @@ class TableRead:
         ]
 
     @staticmethod
+    def get_apns_devices_for_humans(
+        session: Session, human_ids: list[int]
+    ) -> list[dict]:
+        """Registered iOS (APNs) device tokens for the given humans.
+
+        Same contract as :meth:`get_webpush_devices_for_humans` minus the
+        web-push key columns (APNs rows leave them NULL)."""
+        if not human_ids:
+            return []
+        rows = session.exec(
+            select(PushDevice)
+            .where(PushDevice.human_id.in_(human_ids))
+            .where(PushDevice.transport == "apns")
+            .where(PushDevice.enabled.is_(True))
+        ).all()
+        return [
+            {"id": r.id, "human_id": r.human_id, "token": r.token}
+            for r in rows
+        ]
+
+    @staticmethod
     def get_muted_human_ids(
         session: Session, channel_id: str, human_ids: list[int]
     ) -> set[int]:
@@ -3403,10 +3458,18 @@ class TableRead:
 
     @staticmethod
     def list_agent_actions(
-        session: Session, limit: int = 100, offset: int = 0
+        session: Session, org_ids: list[str], limit: int = 100, offset: int = 0
     ) -> list[dict]:
+        """Action-document metadata, restricted to agents in ``org_ids``.
+
+        See :meth:`get_recent_shared_content` for why the scope is required.
+        """
+        if not org_ids:
+            return []
         rows = session.exec(
             select(AgentAction)
+            .join(Agent, Agent.agent_id == AgentAction.agent_id)
+            .where(Agent.org_id.in_(org_ids))
             .order_by(AgentAction.updated_at.desc())
             .limit(limit)
             .offset(offset)
@@ -3421,8 +3484,20 @@ class TableRead:
         ]
 
     @staticmethod
-    def count_agent_actions(session: Session) -> int:
-        count = session.exec(select(func.count()).select_from(AgentAction)).one()
+    def count_agent_actions(session: Session, org_ids: list[str]) -> int:
+        """Total actions visible to ``org_ids``.
+
+        Must match :meth:`list_agent_actions`' scope, or pagination reports
+        rows the caller cannot read.
+        """
+        if not org_ids:
+            return 0
+        count = session.exec(
+            select(func.count())
+            .select_from(AgentAction)
+            .join(Agent, Agent.agent_id == AgentAction.agent_id)
+            .where(Agent.org_id.in_(org_ids))
+        ).one()
         return int(count or 0)
 
     @staticmethod

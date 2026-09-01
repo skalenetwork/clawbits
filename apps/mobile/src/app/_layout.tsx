@@ -18,6 +18,7 @@ import {
 } from '@/hooks/use-window-size-class';
 import { formatAvatarCacheStats } from '@/lib/avatar-cache';
 import { persistOptions, queryClient } from '@/lib/query-client';
+import { usePushNavigation } from '@/lib/push';
 import { AuthProvider, useAuth } from '@/providers/auth-provider';
 import { RealtimeProvider } from '@/providers/realtime-provider';
 import { TabBarVisibilityProvider } from '@/providers/tab-bar-visibility';
@@ -35,6 +36,7 @@ SplashScreen.setOptions({ duration: 250, fade: true });
 
 export default function RootLayout() {
   useAvatarCacheDiagnostics();
+  usePushNavigation();
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

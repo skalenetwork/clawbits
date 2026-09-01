@@ -109,13 +109,10 @@ export async function enablePush(): Promise<EnableResult> {
   const permission = await Notification.requestPermission();
   if (permission !== "granted") return "denied";
 
-  let sub = await reg.pushManager.getSubscription();
-  if (!sub) {
-    sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(key),
-    });
-  }
+  const sub = (await reg.pushManager.getSubscription()) ?? (await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(key),
+  }));
   await subscribeWebPush(sub.toJSON());
   return "enabled";
 }
@@ -175,7 +172,7 @@ export function pushTargetToPath(raw: string): string | null {
  *  cleanup fn. No-op on desktop / unsupported. */
 export function setupPushClickNavigation(navigate: (url: string) => void): () => void {
   if (isDesktop || typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
-    return () => {};
+    return () => { /* nothing was registered */ };
   }
   const handler = (event: MessageEvent) => {
     const data = event.data as { type?: string; url?: string } | null;

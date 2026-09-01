@@ -132,6 +132,30 @@ def test_subscribe_404s_without_vapid(test_client, _test_engine, public_dns, mon
     assert _devices(_test_engine, GOOD_ENDPOINT) == []
 
 
+def test_unsubscribe_works_without_vapid(test_client, _test_engine, vapid, public_dns, monkeypatch):
+    """Removing a subscription must not depend on the *sending* config.
+
+    Subscribe is gated on VAPID because a row that can never be sent to is
+    pure risk. Unsubscribe is the opposite: gating it means pulling or
+    fat-fingering the keys strands every existing subscriber with a row they
+    can no longer delete. The row is created while VAPID is configured, then
+    removed after it is taken away.
+    """
+    token, _ = login_human(test_client, "push-unsub-novapid@clawbits.ai")
+    assert _subscribe(test_client, token, GOOD_ENDPOINT).status_code == 200
+    assert len(_devices(_test_engine, GOOD_ENDPOINT)) == 1
+
+    monkeypatch.setattr(web_push, "VAPID_PUBLIC_KEY", "")
+    monkeypatch.setattr(web_push, "VAPID_PRIVATE_KEY", "")
+    resp = test_client.post(
+        "/api/push/web/unsubscribe",
+        headers=auth_headers(token),
+        json={"endpoint": GOOD_ENDPOINT},
+    )
+    assert resp.status_code == 200, resp.text
+    assert _devices(_test_engine, GOOD_ENDPOINT) == []
+
+
 def test_subscribe_requires_a_human(test_client, vapid, public_dns):
     test_client.cookies.clear()
     resp = test_client.post(

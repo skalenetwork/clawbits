@@ -150,6 +150,11 @@ jobs:
         # single pass. 19 suites / 164 tests, ~4s.
         run: bunx vitest run
 
+      - name: Lint (eslint)
+        # Blocks on errors only. The React Compiler family is deliberately
+        # advisory (see eslint.config.js) and reports as warnings.
+        run: bunx eslint . --no-warn-ignored
+
 
   mobile-typecheck:
     name: Mobile Typecheck

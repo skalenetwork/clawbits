@@ -207,8 +207,8 @@ export function setupApiClient(): void {
     if (isDesktop && response.ok) {
       if (AUTH_RESPONSE_PATHS.some((p) => inputUrl.includes(p))) {
         try {
-          const body = await response.clone().json();
-          if (body && typeof body.token === "string") setStoredAuthToken(body.token);
+          const body = (await response.clone().json()) as { token?: unknown };
+          if (typeof body.token === "string") setStoredAuthToken(body.token);
         } catch { /* non-JSON response */ }
       } else if (LOGOUT_PATHS.some((p) => inputUrl.includes(p))) {
         clearStoredAuthToken();
@@ -490,14 +490,15 @@ export async function setupFullscreenSync(): Promise<void> {
   if (!isDesktop || typeof document === "undefined") return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
-  const apply = (fs: boolean) => {
-    if (fs) document.documentElement.setAttribute("data-fullscreen", "true");
-    else document.documentElement.removeAttribute("data-fullscreen");
+  const sync = async () => {
+    if (await win.isFullscreen()) {
+      document.documentElement.setAttribute("data-fullscreen", "true");
+    } else {
+      document.documentElement.removeAttribute("data-fullscreen");
+    }
   };
-  apply(await win.isFullscreen());
-  await win.onResized(async () => {
-    apply(await win.isFullscreen());
-  });
+  await sync();
+  await win.onResized(() => { void sync(); });
 }
 
 // =========================================================================

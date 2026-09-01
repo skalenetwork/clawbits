@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface UseChannelDragDropOptions {
-  /** Whether the hook should attach listeners. False on routes without
-   *  a current channel so drags do nothing instead of silently dropping. */
-  enabled: boolean;
   /** Called with the dropped files. Wires straight into
    *  ``useChannelAttachments.addFiles`` — same pipeline as the picker. */
   onDrop: (files: File[]) => void;
@@ -36,7 +33,6 @@ interface UseChannelDragDropResult {
  * refuses to accept the drop and shows a "not allowed" cursor instead.
  */
 export function useChannelDragDrop({
-  enabled,
   onDrop,
 }: UseChannelDragDropOptions): UseChannelDragDropResult {
   const [isDragging, setIsDragging] = useState(false);
@@ -56,13 +52,6 @@ export function useChannelDragDrop({
   }, []);
 
   useEffect(() => {
-    if (!enabled) {
-      // If we lose the channel mid-drag, drop the overlay.
-      enterCountRef.current = 0;
-      setIsDragging(false);
-      return;
-    }
-
     const onDragEnter = (e: DragEvent) => {
       if (!hasFiles(e.dataTransfer)) return;
       enterCountRef.current += 1;
@@ -105,7 +94,7 @@ export function useChannelDragDrop({
       window.removeEventListener("dragleave", onDragLeave);
       window.removeEventListener("drop", onDropHandler);
     };
-  }, [enabled, hasFiles]);
+  }, [hasFiles]);
 
   return { isDragging };
 }

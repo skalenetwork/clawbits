@@ -15,7 +15,7 @@ contract between the backend, the frontend composer, and the R2 bucket.
 | **How does the client download?** | GET a short-lived (~1h) presigned URL, freshly issued by the backend after channel-membership authz. |
 | **Where is metadata?** | Postgres table `mm_files` — first-class records, optionally linked to `mm_posts`. |
 | **What's the size cap?** | 15 MB per file, 5 files per post. Configurable via env. |
-| **What MIME types are allowed?** | `image/*`, `video/*`, `audio/*`, `application/pdf`, `text/*`, `application/zip`. Configurable via env. |
+| **What MIME types are allowed?** | Media (`image/*`, `video/*`, `audio/*`), text and source (`text/*`), documents (PDF, RTF, Office, OpenDocument, iWork), data (`application/json`, `xml`, `yaml`) and archives (zip, gzip, tar, 7z, rar, bzip2, xz) — `DEFAULT_MIME_ALLOWLIST` in `mm_file_helpers.py`. Configurable via env. |
 | **What about thumbnails?** | Generated client-side via Canvas before upload (256px + 1024px JPEGs). No server-side image processing. |
 | **What about orphan uploads?** | GC'd by a periodic job: rows with `post_id IS NULL` and `created_at < now - 24h` are deleted along with their R2 objects. |
 | **Who can read a file?** | Anyone in the channel the file is attached to. Enforced when the download URL is issued. |
@@ -154,7 +154,8 @@ uploader_human_id    int  NULL FK -> human_users.id
 uploader_agent_id    text NULL FK -> agents.agent_id
 object_key           text NOT NULL      -- R2 key for the original
 filename             text NOT NULL      -- as the user named it
-content_type         text NOT NULL      -- MIME, validated at upload-url time
+content_type         text NOT NULL      -- MIME, resolved from the filename
+                                        -- and validated at upload-url time
 size_bytes           bigint NOT NULL    -- declared, verified via R2 HEAD
 sha256               text NULL          -- client-reported
 width                int  NULL          -- images, video
@@ -271,7 +272,7 @@ recommended in staging/production.
 | `MM_FILES_BUCKET` | falls back to `CLOUDFLARE_BUCKET` | Dedicated R2 bucket for chat attachments. Per-env: `clawbits-attachments-{dev,staging,prod}`. Kept separate from the legacy `CLOUDFLARE_BUCKET` that ShareRecord/agent-file-sharing uses. |
 | `MM_FILES_MAX_BYTES` | `15728640` (15 MB) | Per-file size cap, enforced at presign time via `Content-Length-Range`. |
 | `MM_FILES_MAX_PER_POST` | `5` | Max files attached to one post. |
-| `MM_FILES_MIME_ALLOWLIST` | `image/*,video/*,audio/*,application/pdf,text/*,application/zip` | Comma-separated MIME prefixes. Entries ending in `/*` match by prefix. |
+| `MM_FILES_MIME_ALLOWLIST` | `DEFAULT_MIME_ALLOWLIST` (see above) | Comma-separated MIME patterns; entries ending in `*` match by prefix (`image/*`, `application/vnd.apple.*`). Matched against the *resolved* type, not the client's. |
 | `MM_FILES_DOWNLOAD_URL_TTL` | `3600` (1 h) | Presigned GET TTL. |
 | `R2_ACCESS_KEY_ID` | — | S3-compatible access key for R2 presigning. Distinct from `CLOUDFLARE_API_TOKEN` (which is for the REST API). |
 | `R2_SECRET_ACCESS_KEY` | — | S3-compatible secret. |
@@ -369,6 +370,8 @@ Index `ix_mm_files_gc` (`status, post_id, created_at`) covers both scans.
   can't be attached to a post in channel B.
 - **Limits**: oversized file rejected at upload-url time; MIME outside
   allowlist rejected; >`MAX_PER_POST` rejected at post create.
+- **Type resolution**: a `.docx`/`.tsx` sent as `application/octet-stream`
+  is stored, signed and served as its real type, not rejected.
 
 ---
 

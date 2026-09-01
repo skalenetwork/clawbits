@@ -84,7 +84,7 @@ export default function OAuthButtons({ label }: { label: string }) {
           size="lg"
           className="h-12 w-full text-base"
           disabled={busy !== null}
-          onClick={() => { handle("google"); }}
+          onClick={() => { void handle("google"); }}
         >
           <GoogleIcon />
           <span>{busy === "google" ? "Redirecting\u2026" : `${label} with Google`}</span>
@@ -95,7 +95,7 @@ export default function OAuthButtons({ label }: { label: string }) {
           size="lg"
           className="h-12 w-full text-base"
           disabled={busy !== null}
-          onClick={() => { handle("github"); }}
+          onClick={() => { void handle("github"); }}
         >
           <GithubIcon />
           <span>{busy === "github" ? "Redirecting\u2026" : `${label} with GitHub`}</span>

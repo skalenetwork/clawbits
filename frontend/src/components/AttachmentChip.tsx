@@ -45,7 +45,7 @@ export function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
     if (!isImage) return;
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
+    return () => { URL.revokeObjectURL(url); };
   }, [file, isImage]);
 
   const showProgressBar = status === "uploading" && progress !== null;
@@ -91,7 +91,7 @@ export function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
       {/* Remove / cancel button — also serves as cancel for in-flight uploads. */}
       <button
         type="button"
-        onClick={() => onRemove(attachment.localId)}
+        onClick={() => { onRemove(attachment.localId); }}
         aria-label={`Remove ${file.name}`}
         className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-md bg-background/90 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-md:opacity-100"
       >

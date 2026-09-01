@@ -413,6 +413,48 @@ def get_current_human_user(
     return user
 
 
+def revalidate_stream_credential(request: Request, expected_human_id: int) -> bool:
+    """Re-check, mid-stream, that the credential a long-lived response was
+    opened with still authenticates the same human.
+
+    Long-lived streams (SSE) resolve auth once, in the ``Depends`` that opens
+    them; without this, a PAT deleted — or a session invalidated — after
+    connect keeps reading forever. Mirrors :func:`get_current_human_user`'s
+    resolution order but stays strictly **local**: no refresh. A streaming
+    response cannot stage a rotated cookie, and racing the browser's own
+    single-flight refresh could invalidate the session it is trying to keep.
+
+    The consequence for sealed WorkOS sessions is deliberate: once the access
+    token inside the sealed blob expires, this reports False and the stream
+    closes. That bounds a browser stream's lifetime to the AT lifetime — the
+    client reconnects, the reconnect refreshes through the normal path, and a
+    session revoked WorkOS-side fails *that* refresh with a 401. Local
+    validation alone can never see WorkOS-side revocation sooner, because the
+    AT is a self-contained JWT.
+    """
+    from clawbits.fastapi.dev_auth import resolve_dev_session_user
+    from clawbits.fastapi.human_token_endpoints import PAT_PREFIX, resolve_pat_user
+
+    dev_user = resolve_dev_session_user(request, request.cookies.get(DEV_SESSION_COOKIE))
+    if dev_user is not None:
+        return dev_user.get("id") == expected_human_id
+
+    sealed = _resolve_sealed(request, request.cookies.get(SESSION_COOKIE))
+    if not sealed:
+        return False
+
+    if sealed.startswith(PAT_PREFIX):
+        pat_user = resolve_pat_user(request, sealed)
+        return pat_user is not None and pat_user.get("id") == expected_human_id
+
+    claims, _fail_reason = _validate(sealed, _client(request))
+    if claims is None:
+        return False
+    with _db(request) as db:
+        user = TableRead.get_human_user_by_workos_id(db, claims.get("workos_user_id") or "")
+    return user is not None and user.get("id") == expected_human_id
+
+
 def _resolve_sealed(request: Request, cookie_value: str | None) -> str | None:
     """Pick the sealed session from ``Authorization: Bearer`` (tests) or
     cookie (browsers). Bearer wins so tests can override per-request."""

@@ -40,7 +40,7 @@ function loadImage(file: Blob): Promise<{ img: HTMLImageElement; url: string }> 
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => resolve({ img, url });
+    img.onload = () => { resolve({ img, url }); };
     img.onerror = () => {
       URL.revokeObjectURL(url);
       reject(new Error("Failed to decode image"));
@@ -74,8 +74,8 @@ export async function readImageDimensions(file: File): Promise<ImageMetadata> {
  */
 export async function generateThumbnail(
   file: File,
-  maxDimension: number = 1024,
-  quality: number = 0.82,
+  maxDimension = 1024,
+  quality = 0.82,
 ): Promise<ThumbnailResult | null> {
   if (!file.type.startsWith("image/")) return null;
 
@@ -102,7 +102,7 @@ export async function generateThumbnail(
     ctx.drawImage(img, 0, 0, tw, th);
 
     const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob((b) => resolve(b), "image/jpeg", quality);
+      canvas.toBlob((b) => { resolve(b); }, "image/jpeg", quality);
     });
     if (!blob) return null;
     return { blob, width: w, height: h };
@@ -140,8 +140,8 @@ const VIDEO_POSTER_TIMEOUT_MS = 12_000;
  */
 export async function generateVideoPoster(
   file: File,
-  maxDimension: number = 1024,
-  quality: number = 0.82,
+  maxDimension = 1024,
+  quality = 0.82,
 ): Promise<VideoPosterResult | null> {
   if (!file.type.startsWith("video/")) return null;
   if (typeof document === "undefined") return null;

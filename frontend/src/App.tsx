@@ -1,7 +1,9 @@
-import { useMemo } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
+import { Loading02Icon } from "@hugeicons/core-free-icons";
+import { Icon } from "./components/Icon";
 import { queryClient } from "./lib/queryClient";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { useGlobalEvents } from "./hooks/useGlobalEvents";
@@ -15,37 +17,8 @@ import { UserPresenceProvider } from "./components/UserPresenceProvider";
 import { AgentPresenceProvider } from "./components/AgentPresenceProvider";
 import AppLayout from "./layouts/AppShell";
 import GuestOnly from "./components/GuestOnly";
-import LoginPage from "./pages/LoginPage";
-import VerifyEmailPage from "./pages/VerifyEmailPage";
-import TermsPage from "./pages/TermsPage";
-import PrivacyPage from "./pages/PrivacyPage";
-import ChangelogPage from "./pages/ChangelogPage";
 import { ScrollToTop } from "./components/ScrollToTop";
 import { AgentShell } from "./components/agent/AgentShell";
-import AgentCardPage from "./pages/AgentCardPage";
-import AgentInboxPage from "./pages/AgentInboxPage";
-import AgentAutomationsPage from "./pages/AgentAutomationsPage";
-import AgentAutomationDetailPage from "./pages/AgentAutomationDetailPage";
-import AgentManagePage from "./pages/AgentManagePage";
-import AgentHomePage from "./pages/AgentHomePage";
-import ChannelPage from "./pages/ChannelPage";
-import OrgMembersPage from "./pages/OrgMembersPage";
-import OrgUsagePage from "./pages/OrgUsagePage";
-import SettingsMenuPage from "./pages/SettingsMenuPage";
-import SettingsProfilePage from "./pages/SettingsProfilePage";
-import SettingsConnectorsPage from "./pages/SettingsConnectorsPage";
-import SettingsAppearancePage from "./pages/SettingsAppearancePage";
-import SettingsPrivacyPage from "./pages/SettingsPrivacyPage";
-import SettingsNotificationsPage from "./pages/SettingsNotificationsPage";
-import SettingsAgentsPage from "./pages/SettingsAgentsPage";
-import SettingsChannelsPage from "./pages/SettingsChannelsPage";
-import SettingsLobstertalkPage from "./pages/SettingsLobstertalkPage";
-import SettingsReefPage from "./pages/SettingsReefPage";
-import AutomationsPage from "./pages/AutomationsPage";
-import AgentSkillsPage from "./pages/AgentSkillsPage";
-import SkillDetailPage from "./pages/SkillDetailPage";
-import SkillsPage from "./pages/SkillsPage";
-import AutomationDetailPage from "./pages/AutomationDetailPage";
 import { DesktopTitleBar } from "./components/DesktopTitleBar";
 import { useDesktopNav } from "./hooks/useDesktopNav";
 import { Analytics } from "./components/Analytics";
@@ -53,6 +26,40 @@ import { ShortcutProvider } from "./lib/shortcuts";
 import { CommandPalette } from "./components/command/CommandPalette";
 import { CreateDialogs } from "./components/command/CreateDialogs";
 import { UpdateProvider } from "./context/UpdateContext";
+
+// One chunk per route: the entry bundle carries the shell, the providers and
+// the shared libraries, and a page's code arrives when it is first visited.
+// Navigations run inside a transition, so the current screen stays put while
+// the next one loads and the fallback is only ever seen on a cold load.
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
+const TermsPage = lazy(() => import("./pages/TermsPage"));
+const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
+const ChangelogPage = lazy(() => import("./pages/ChangelogPage"));
+const AgentCardPage = lazy(() => import("./pages/AgentCardPage"));
+const AgentInboxPage = lazy(() => import("./pages/AgentInboxPage"));
+const AgentAutomationsPage = lazy(() => import("./pages/AgentAutomationsPage"));
+const AgentAutomationDetailPage = lazy(() => import("./pages/AgentAutomationDetailPage"));
+const AgentManagePage = lazy(() => import("./pages/AgentManagePage"));
+const AgentHomePage = lazy(() => import("./pages/AgentHomePage"));
+const ChannelPage = lazy(() => import("./pages/ChannelPage"));
+const OrgMembersPage = lazy(() => import("./pages/OrgMembersPage"));
+const OrgUsagePage = lazy(() => import("./pages/OrgUsagePage"));
+const SettingsMenuPage = lazy(() => import("./pages/SettingsMenuPage"));
+const SettingsProfilePage = lazy(() => import("./pages/SettingsProfilePage"));
+const SettingsConnectorsPage = lazy(() => import("./pages/SettingsConnectorsPage"));
+const SettingsAppearancePage = lazy(() => import("./pages/SettingsAppearancePage"));
+const SettingsPrivacyPage = lazy(() => import("./pages/SettingsPrivacyPage"));
+const SettingsNotificationsPage = lazy(() => import("./pages/SettingsNotificationsPage"));
+const SettingsAgentsPage = lazy(() => import("./pages/SettingsAgentsPage"));
+const SettingsChannelsPage = lazy(() => import("./pages/SettingsChannelsPage"));
+const SettingsLobstertalkPage = lazy(() => import("./pages/SettingsLobstertalkPage"));
+const SettingsReefPage = lazy(() => import("./pages/SettingsReefPage"));
+const AutomationsPage = lazy(() => import("./pages/AutomationsPage"));
+const AgentSkillsPage = lazy(() => import("./pages/AgentSkillsPage"));
+const SkillDetailPage = lazy(() => import("./pages/SkillDetailPage"));
+const SkillsPage = lazy(() => import("./pages/SkillsPage"));
+const AutomationDetailPage = lazy(() => import("./pages/AutomationDetailPage"));
 
 /**
  * App-level realtime subscription. Mounted once inside the router (above every
@@ -79,6 +86,14 @@ function GlobalRealtime() {
   return null;
 }
 
+function RouteFallback() {
+  return (
+    <div className="flex min-h-dvh items-center justify-center">
+      <Icon icon={Loading02Icon} className="size-5 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
 function AppShell() {
   useDesktopNav();
   return (
@@ -89,53 +104,55 @@ function AppShell() {
       <GlobalRealtime />
       <CommandPalette />
       <CreateDialogs />
-      <Routes>
-        <Route element={<GuestOnly />}>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/verify-email" element={<VerifyEmailPage />} />
-        </Route>
-        <Route path="/terms" element={<TermsPage />} />
-        <Route path="/privacy" element={<PrivacyPage />} />
-        <Route path="/changelog" element={<ChangelogPage />} />
-        <Route element={<AppLayout />}>
-          <Route path="/home" element={<AgentHomePage />} />
-          <Route path="/agents" element={<SettingsAgentsPage />} />
-          {/* One layout route fetches the agent profile once + shares it with
-              every subpage; the four pages keep their own URLs (deep links) but
-              shed the per-page sanitize/query/guard boilerplate. */}
-          <Route path="/agents/:agentId" element={<AgentShell />}>
-            <Route index element={<AgentCardPage />} />
-            {/* Optional :uid — the open message lives in the URL; one route
-                object means selection changes never remount the page. */}
-            <Route path="inbox/:uid?" element={<AgentInboxPage />} />
-            <Route path="automations" element={<AgentAutomationsPage />} />
-            <Route path="automations/:automationId" element={<AgentAutomationDetailPage />} />
-            <Route path="skills" element={<AgentSkillsPage />} />
-            <Route path="manage" element={<AgentManagePage />} />
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route element={<GuestOnly />}>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
           </Route>
-          <Route path="/skills" element={<SkillsPage />} />
-          <Route path="/skills/:skillId" element={<SkillDetailPage />} />
-          <Route path="/automations" element={<AutomationsPage />} />
-          <Route path="/automations/:automationId" element={<AutomationDetailPage />} />
-          <Route path="/channels/:channelId" element={<ChannelPage />} />
-          <Route path="/settings" element={<SettingsMenuPage />} />
-          <Route path="/settings/profile" element={<SettingsProfilePage />} />
-          <Route path="/settings/connectors" element={<SettingsConnectorsPage />} />
-          <Route path="/settings/privacy" element={<SettingsPrivacyPage />} />
-          <Route path="/settings/appearance" element={<SettingsAppearancePage />} />
-          <Route path="/settings/notifications" element={<SettingsNotificationsPage />} />
-          <Route path="/settings/members" element={<OrgMembersPage />} />
-          <Route path="/settings/usage" element={<OrgUsagePage />} />
-          <Route path="/settings/channels" element={<SettingsChannelsPage />} />
-          <Route path="/settings/lobstertalk" element={<SettingsLobstertalkPage />} />
-          <Route path="/settings/reef" element={<SettingsReefPage />} />
-          {/* NOT dead: agent_signup.py mints this exact path into every
-              approval_url. Remove only after the backend mints /agents
-              and no in-flight approval links remain. */}
-          <Route path="/settings/agents" element={<Navigate to="/agents" replace />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/home" replace />} />
-      </Routes>
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/changelog" element={<ChangelogPage />} />
+          <Route element={<AppLayout />}>
+            <Route path="/home" element={<AgentHomePage />} />
+            <Route path="/agents" element={<SettingsAgentsPage />} />
+            {/* One layout route fetches the agent profile once + shares it with
+                every subpage; the four pages keep their own URLs (deep links) but
+                shed the per-page sanitize/query/guard boilerplate. */}
+            <Route path="/agents/:agentId" element={<AgentShell />}>
+              <Route index element={<AgentCardPage />} />
+              {/* Optional :uid — the open message lives in the URL; one route
+                  object means selection changes never remount the page. */}
+              <Route path="inbox/:uid?" element={<AgentInboxPage />} />
+              <Route path="automations" element={<AgentAutomationsPage />} />
+              <Route path="automations/:automationId" element={<AgentAutomationDetailPage />} />
+              <Route path="skills" element={<AgentSkillsPage />} />
+              <Route path="manage" element={<AgentManagePage />} />
+            </Route>
+            <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/skills/:skillId" element={<SkillDetailPage />} />
+            <Route path="/automations" element={<AutomationsPage />} />
+            <Route path="/automations/:automationId" element={<AutomationDetailPage />} />
+            <Route path="/channels/:channelId" element={<ChannelPage />} />
+            <Route path="/settings" element={<SettingsMenuPage />} />
+            <Route path="/settings/profile" element={<SettingsProfilePage />} />
+            <Route path="/settings/connectors" element={<SettingsConnectorsPage />} />
+            <Route path="/settings/privacy" element={<SettingsPrivacyPage />} />
+            <Route path="/settings/appearance" element={<SettingsAppearancePage />} />
+            <Route path="/settings/notifications" element={<SettingsNotificationsPage />} />
+            <Route path="/settings/members" element={<OrgMembersPage />} />
+            <Route path="/settings/usage" element={<OrgUsagePage />} />
+            <Route path="/settings/channels" element={<SettingsChannelsPage />} />
+            <Route path="/settings/lobstertalk" element={<SettingsLobstertalkPage />} />
+            <Route path="/settings/reef" element={<SettingsReefPage />} />
+            {/* NOT dead: agent_signup.py mints this exact path into every
+                approval_url. Remove only after the backend mints /agents
+                and no in-flight approval links remain. */}
+            <Route path="/settings/agents" element={<Navigate to="/agents" replace />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/home" replace />} />
+        </Routes>
+      </Suspense>
     </>
   );
 }

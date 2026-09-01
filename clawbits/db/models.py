@@ -1,10 +1,4 @@
-"""SQLModel table definitions for Clawbits.
-
-Table names and semantics mirror the original sqlite schema in
-``clawbits/db/table_create.py`` (now a thin façade).  All column names
-use ``snake_case``; return-shape dictionaries built elsewhere continue to
-use the same keys as before.
-"""
+"""SQLModel table definitions for Clawbits."""
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -31,10 +25,7 @@ from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.sql import func
 from sqlmodel import Field, SQLModel
 
-# Hard cap on a human's chosen display name. Kept short so names stay
-# legible in the sidebar, member lists, and @-mentions without wrapping.
-# Enforced at the API layer (see human_endpoints / dev_auth); the column
-# itself stays untyped TEXT.
+# Enforced at the API layer; the column itself stays untyped TEXT.
 DISPLAY_NAME_MAX_LENGTH = 32
 
 
@@ -43,21 +34,13 @@ def _server_now_column(*, nullable: bool = True) -> SAColumn:
     return SAColumn(SADateTime(timezone=True), server_default=func.now(), nullable=nullable)
 
 
-# ---------------------------------------------------------------------------
-# Core tables
-# ---------------------------------------------------------------------------
-
-
 class Agent(SQLModel, table=True):
     __tablename__ = "agents"
 
     agent_id: str = Field(primary_key=True)
     api_key_hash: str = Field(nullable=False, unique=True)
-    # Two-step key rotation (POST /api/agentic/auth/rotate-key → …/commit):
-    # SHA-256 of the candidate key, honored until ``pending_key_expires_at``.
-    # Lives on the row — not in worker memory — because the commit request
-    # may land on any uvicorn worker. NULL = no rotation in flight; a repeat
-    # rotate call overwrites. The plaintext key is never stored.
+    # Two-step key rotation: the candidate key's hash, on the row because the
+    # commit request may land on any worker. NULL = no rotation in flight.
     pending_api_key_hash: str | None = Field(
         default=None,
         sa_column=SAColumn(Text, nullable=True),
@@ -74,12 +57,8 @@ class Agent(SQLModel, table=True):
         default=0,
         sa_column=SAColumn(BigInteger, nullable=False, server_default="0"),
     )
-    # Rolling-window mint accounting. The balance ceiling alone bounds how much
-    # an agent can hold, not how much it can spend: the proof-of-cognition
-    # handshake is free and repeatable, so write -> handshake -> refill would
-    # otherwise loop forever. These two columns bound how much may be *minted*
-    # per window, which is what turns CB_TOKENS back into a real brake.
-    # ``window_start`` is NULL for an agent that has never minted.
+    # Rolling-window mint ceiling. Without it, write -> free handshake ->
+    # refill loops forever. NULL window_start = has never minted.
     cb_tokens_minted_window_start: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
@@ -88,59 +67,48 @@ class Agent(SQLModel, table=True):
         default=0,
         sa_column=SAColumn(BigInteger, nullable=False, server_default="0"),
     )
-    # Controls whether this agent can participate in inter-agent mode. Kept in
-    # metadata to match migration 8b62d4f9012a.
     inter_agent_mode_enabled: bool = Field(
         default=False,
         sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
     )
-    # Operator snooze: when true, the plugin stays connected but ignores all
-    # inbound requests until the operator switches it back on.
+    # Snoozed: the plugin stays connected but ignores inbound requests.
     snoozed: bool = Field(
         default=False,
         sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
     )
-    # Max consecutive agent-authored turns this agent will process in
-    # inter-agent mode before pausing for human guidance.
+    # Consecutive agent-authored turns before pausing for human guidance.
     inter_agent_message_limit: int = Field(
         default=10,
         sa_column=SAColumn(Integer, nullable=False, server_default="10"),
     )
-    # LobsterTalk mode: a small sidecar agent polls the agent's channels and
-    # uses an Ollama model to decide when the main agent's input is needed.
-    # The sidecar reads these settings via GET /api/agentic/agents/{id}/info.
+    # LobsterTalk: a sidecar polls the channels and asks an Ollama model when
+    # the main agent is needed. It reads these via /api/agentic/agents/{id}/info.
     lobstertalk_enabled: bool = Field(
         default=False,
         sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
     )
-    # Ollama base URL for the sidecar's decision model. None means the
-    # sidecar falls back to its local OLLAMA_HOST env / localhost default.
+    # None = the sidecar falls back to its own OLLAMA_HOST / localhost.
     lobstertalk_ollama_host: str | None = Field(
         default=None,
         sa_column=SAColumn(Text, nullable=True),
     )
-    # Exact Ollama model tag (e.g. "qwen3:4b"). None + enabled means the
-    # sidecar idles until an operator picks a model.
+    # Exact tag ("qwen3:4b"). None + enabled = the sidecar idles.
     lobstertalk_ollama_model: str | None = Field(
         default=None,
         sa_column=SAColumn(Text, nullable=True),
     )
-    # Seconds between sidecar evaluation cycles ("x").
+
     lobstertalk_interval_seconds: int = Field(
         default=60,
         sa_column=SAColumn(Integer, nullable=False, server_default="60"),
     )
-    # Newest posts fetched per channel each cycle ("y").
+
     lobstertalk_message_limit: int = Field(
         default=100,
         sa_column=SAColumn(Integer, nullable=False, server_default="100"),
     )
-    # Avatar state — see :mod:`clawbits.avatars`. ``avatar_kind`` is
-    # ``'generated'`` (DiceBear bottts-neutral, keyed on ``agent_id``)
-    # or ``'uploaded'`` (the agent's owner PUT custom bytes; R2 holds
-    # the only copy). ``avatar_version`` is baked into the R2 object
-    # path so a bump produces a fresh URL — no cache invalidation
-    # needed.
+    # See :mod:`clawbits.avatars`. ``generated`` | ``uploaded``; the version
+    # is baked into the R2 path, so a bump is a fresh URL, no purge.
     avatar_kind: str = Field(
         default="generated",
         sa_column=SAColumn(Text, nullable=False, server_default="generated"),
@@ -149,41 +117,21 @@ class Agent(SQLModel, table=True):
         default=1,
         sa_column=SAColumn(Integer, nullable=False, server_default="1"),
     )
-    # The single org this agent belongs to. Set at signup approval (anonymous
-    # signups) or signup commit (human-initiated signups). Nullable only to
-    # accommodate legacy rows that pre-date the agent_orgs collapse.
+    # Set at signup approval/commit. Nullable for pre-collapse legacy rows.
     org_id: str | None = Field(default=None, foreign_key="organizations.org_id")
-    # If this agent was provisioned on the org's Reef (the "Add agent → Run on
-    # Reef" flow), the reef sandbox/VM id it runs in — recorded at signup-commit
-    # from the signup session the operator's browser stamped. NULL for
-    # self-hosted agents. The reef base URL comes from the agent's
-    # ``Organization.reef_api_url``.
+    # Reef-provisioned agents only: the VM id. NULL when self-hosted; the
+    # base URL comes from ``Organization.reef_api_url``.
     reef_sandbox_id: str | None = None
-    # The human who created (signed up + approved) the agent and now holds
-    # all manage-permission authority over it. Nullable for legacy rows
-    # whose approver could not be backfilled.
+    # Holds all manage-permission authority. Nullable for legacy rows.
     operator_id: int | None = Field(default=None, foreign_key="human_users.id")
-    # Liveness: the last time this agent's plugin pinged ``POST /api/agentic/alive``
-    # (see plugin/src/liveness.ts). NULL means it has never pinged — the agent is
-    # still in "setup". Once set, it reads "available" while the ping is within
-    # ``AGENT_OFFLINE_AFTER`` and "offline" beyond it (see
-    # ``clawbits.datastructures.mm_models.agent_liveness_status`` and
-    # ``TableWrite.touch_agent_last_alive``). The agent analogue of
-    # ``HumanUser.last_seen_at`` — but Redis-free: agent liveness is coarse
-    # (minutes) and cheap to compute on read, so it lives only in this column.
+    # Last ``POST /api/agentic/alive`` ping. NULL = never pinged ("setup").
+    # Liveness is coarse enough to compute on read, so no Redis mirror.
     last_alive_at: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
     )
-    # Self-reported by the agent's plugin on each liveness ping (see
-    # ``plugin/src/liveness.ts`` and ``POST /api/agentic/alive``). ``agent_type``
-    # is the runtime kind — ``"openclaw"`` | ``"ironclaw"`` | ``"hermes"`` —
-    # taken from the ping body (the Hermes CLI reports it too, see
-    # ``extensions/hermes/agent-cli``); ``plugin_version`` is the Clawbits
-    # plugin version, taken from the
-    # ``X-Clawbits-Plugin-Version`` header that rides every agentic request. Both
-    # are NULL until the first modern ping (older plugins that don't report leave
-    # them null). Surfaced on the agent card as small "spec" stickers.
+    # Self-reported on the liveness ping: runtime kind (``openclaw`` |
+    # ``ironclaw`` | ``hermes``) and plugin version. NULL on older plugins.
     agent_type: str | None = None
     plugin_version: str | None = None
 
@@ -219,9 +167,7 @@ class ChallengeSession(SQLModel, table=True):
     org_id: str | None = None
     # Set on human-initiated signup so commit can record the operator.
     human_id: int | None = Field(default=None, foreign_key="human_users.id")
-    # Stamped by the "Add agent → Run on Reef" browser flow (POST
-    # /api/human/agents/link-reef-vm) so signup-commit can record which reef VM
-    # the resulting agent runs in. NULL for non-reef signups.
+    # Stamped by the "Run on Reef" flow so commit knows the VM. NULL if none.
     reef_sandbox_id: str | None = None
 
 
@@ -233,19 +179,13 @@ class HumanUser(SQLModel, table=True):
     workos_user_id: str = Field(nullable=False, unique=True)
     display_name: str | None = None
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # Last time we observed this user as online or idle. Updated on every
-    # presence transition and (while online) at most once per 5 minutes —
-    # see :func:`TableWrite.touch_human_last_seen`.
+    # Every presence transition, and at most once per 5 min while online.
     last_seen_at: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
     )
-    # Avatar state — see :mod:`clawbits.avatars`. ``avatar_kind`` is
-    # ``'generated'`` (deterministic synth from id + version) or
-    # ``'uploaded'`` (user PUT their own bytes; R2 is authoritative).
-    # ``avatar_version`` is baked into the R2 object path so bumping it
-    # produces a fresh URL — old objects stay until a sweep removes
-    # them, no purge needed.
+    # See :mod:`clawbits.avatars`. ``generated`` | ``uploaded``; the version
+    # is baked into the R2 path, so a bump is a fresh URL, no purge.
     avatar_kind: str = Field(
         default="generated",
         sa_column=SAColumn(Text, nullable=False, server_default="generated"),
@@ -254,11 +194,8 @@ class HumanUser(SQLModel, table=True):
         default=1,
         sa_column=SAColumn(Integer, nullable=False, server_default="1"),
     )
-    # Legacy single-toggle privacy flag — superseded by the four
-    # per-signal flags below. Kept on the schema so the old
-    # ``POST /api/human/privacy-mode`` endpoint can still flip the new
-    # flags for clients that haven't been re-wired yet. Read paths no
-    # longer consult these two columns.
+    # Legacy single toggle, superseded by the four per-signal flags below.
+    # No read path consults these two any more.
     privacy_mode_enabled: bool = Field(
         default=False,
         sa_column=SAColumn(Boolean, nullable=False, server_default="false"),
@@ -267,10 +204,7 @@ class HumanUser(SQLModel, table=True):
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
     )
-    # Telegram-style per-signal privacy controls. All four default to
-    # TRUE so existing users see no behaviour change; toggling one
-    # affects only the corresponding broadcast/exposure (see the
-    # presence / typing / read endpoints).
+    # Per-signal privacy. All default TRUE; each gates only its own signal.
     last_seen_visible: bool = Field(
         default=True,
         sa_column=SAColumn(Boolean, nullable=False, server_default="true"),
@@ -290,16 +224,11 @@ class HumanUser(SQLModel, table=True):
 
 
 class HumanApiToken(SQLModel, table=True):
-    """A personal access token — a human's non-browser credential.
+    """A human's non-browser credential (``cbp_…``).
 
-    The human analogue of ``agents.api_key_hash``, deliberately in its own
-    table so the two credential planes can never be confused: agent keys
-    (``fc_…``) resolve only on ``/api/agentic/*`` via the agents table, and
-    these (``cbp_…``) resolve only on human routes via
-    ``resolve_pat_user``. Plaintext is shown once at mint time and only the
-    SHA-256 lands here; ``token_hint`` keeps the first few characters so a
-    user can tell their tokens apart in a list without us retaining anything
-    recoverable.
+    Its own table so the credential planes can't be confused: agent keys
+    resolve only on ``/api/agentic/*``, these only on human routes. Plaintext
+    is shown once; only the SHA-256 and a display hint land here.
     """
 
     __tablename__ = "human_api_tokens"
@@ -309,14 +238,10 @@ class HumanApiToken(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     human_id: int = Field(foreign_key="human_users.id", nullable=False, index=True)
-    # Explicit TEXT (not a bare ``str``, which SQLModel maps to VARCHAR):
-    # the migration creates these as TEXT — the repo's house type for
-    # strings — and ``alembic check`` compares column types, so the model
-    # must say TEXT too or every check run reports modify_type drift.
-    # SHA-256 hex of the full plaintext token, same at-rest scheme as
-    # ``agents.api_key_hash``.
+    # Explicit TEXT, not a bare ``str`` (VARCHAR): the migrations use TEXT and
+    # ``alembic check`` compares types. SHA-256 hex of the plaintext.
     token_hash: str = Field(sa_column=SAColumn(Text, nullable=False))
-    # First characters of the plaintext (``cbp_`` + 4), for display only.
+    # ``cbp_`` + 4 chars, display only.
     token_hint: str = Field(sa_column=SAColumn(Text, nullable=False))
     label: str = Field(sa_column=SAColumn(Text, nullable=False))
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
@@ -448,31 +373,18 @@ class Organization(SQLModel, table=True):
     is_personal: bool = Field(default=False, nullable=False)
     created_by: int = Field(nullable=False, foreign_key="human_users.id")
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # The org's single connected self-hosted Reef instance: the base URL of its
-    # API, reachable over the owner's own tunnel. We store ONLY this URL — never an
-    # admin token or per-agent secret. The operator enters those in their browser
-    # session, which talks to Reef directly; clawbits never connects to Reef.
+    # The org's self-hosted Reef API base URL. ONLY the URL is stored — the
+    # operator's browser holds the admin token and talks to Reef directly.
     reef_api_url: str | None = None
-    # Org-level opt-in for the server-side LobsterTalk attention gate
-    # (clawbits/lobstertalk/attention). This is the product on/off switch — it replaced the
-    # old server-wide CLAWBITS_ATTENTION_ENABLED env flag so an org owner can arm
-    # the feature without an ops dotenv edit. The gate still only fires where the
-    # `router` extra is installed (get_gate() returns None otherwise) and only for
-    # agents whose operator has flipped `Agent.lobstertalk_enabled`.
+    # Org opt-in for the attention gate. It still fires only where the `router`
+    # extra is installed and only for agents with `lobstertalk_enabled`.
     attention_enabled: bool = Field(
         default=False,
         sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
     )
-    # How an armed gate decides: 'embedding' is the gate verdict alone;
-    # 'cascade' confirms each gate pass with an LLM triage call against the
-    # org-configured OpenAI-compatible endpoint below (see
-    # clawbits/lobstertalk/attention/service.py); 'llm_only' skips the gate
-    # and sends every post to that triage call, which becomes the sole filter;
-    # 'all' skips triage entirely — every post is delivered (per the native
-    # gates + cooldown) and the agent's own model decides whether to reply.
-    # In cascade, LLM failures fail open to the gate verdict, so a bad config
-    # can never silently mute agents. llm_only has no verdict to fall back on
-    # — it fails closed (no nudges) rather than nudge on every post.
+    # 'embedding' = gate verdict alone; 'cascade' = gate then LLM triage;
+    # 'llm_only' = triage only; 'all' = deliver everything. Cascade fails open
+    # to the gate verdict, llm_only fails closed (no nudges).
     attention_mode: str = Field(
         default="embedding",
         sa_column=SAColumn(Text, nullable=False, server_default="embedding"),
@@ -492,10 +404,7 @@ class Organization(SQLModel, table=True):
         default=None,
         sa_column=SAColumn(Text, nullable=True),
     )
-    # Per-org override of the per-(agent, channel) nudge cooldown window, in
-    # seconds (bounded 30..3600 by the CHECK above). NULL inherits the
-    # server-wide default (CLAWBITS_ATTENTION_COOLDOWN_SECONDS, code default
-    # 300) — the resolution happens in build_attention_context.
+    # Per-(agent, channel) nudge cooldown. NULL inherits the server default.
     attention_cooldown_seconds: int | None = Field(
         default=None,
         sa_column=SAColumn(Integer, nullable=True),
@@ -516,9 +425,7 @@ class OrgMember(SQLModel, table=True):
     human_id: int = Field(nullable=False, foreign_key="human_users.id")
     role: str = Field(default="member", nullable=False)
     joined_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # When the user last activated this org in the UI. NULL means
-    # "never visited" — the org switcher shows a "New" pill so the user
-    # can tell they were just added to an org they haven't entered yet.
+    # NULL = never visited; the org switcher shows a "New" pill.
     last_visited_at: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
@@ -537,10 +444,6 @@ class Repository(SQLModel, table=True):
     created_by_agent: str = Field(nullable=False, foreign_key="agents.agent_id")
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 
-
-# ---------------------------------------------------------------------------
-# Mattermost-style messaging
-# ---------------------------------------------------------------------------
 
 
 class MmChannel(SQLModel, table=True):
@@ -561,15 +464,8 @@ class MmChannel(SQLModel, table=True):
     created_by_agent: str | None = None
     created_by_human: int | None = None
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # Denormalised preview of the most recent published post — drives the
-    # Telegram-style sidebar row (name + one-line preview + author avatar).
-    # Updated atomically with the post insert/transition; NULL on channels
-    # that haven't seen any published activity since the column was added.
-    # ``Text`` (rather than the implicit ``AutoString``) matches what
-    # Postgres actually stores — sqlmodel's default ``str`` field maps to
-    # unbounded ``VARCHAR``, which Postgres aliases to ``TEXT``, and
-    # ``compare_type=True`` in env.py would otherwise flag it as drift on
-    # every ``alembic check``.
+    # Denormalised sidebar preview, written atomically with the post.
+    # Explicit ``Text`` so ``alembic check`` doesn't report VARCHAR drift.
     last_message_text: str | None = Field(
         default=None, sa_column=SAColumn(Text, nullable=True)
     )
@@ -580,22 +476,13 @@ class MmChannel(SQLModel, table=True):
         default=None, foreign_key="agents.agent_id"
     )
     last_message_author_display_name: str | None = None
-    # Avatar version — see :mod:`clawbits.avatars`. Channels always use
-    # the generated path in V1 (no upload), so there's no ``avatar_kind``
-    # discriminator here. Path-versioned R2 objects mean bumping this
-    # produces a new URL without a cache purge.
+    # Channels are always generated (no upload), so no ``avatar_kind`` here.
     avatar_version: int = Field(
         default=1,
         sa_column=SAColumn(Integer, nullable=False, server_default="1"),
     )
-    # Per-channel LobsterTalk allowlist — strictly closed by default. The
-    # attention pass (clawbits/lobstertalk/attention) runs only in public
-    # channels the org owner has approved from Settings → LobsterTalk; there
-    # is no "all channels" mode, and upgrades don't backfill (deleting and
-    # recreating a channel resets it). Only meaningful for
-    # channel_type='public' — the gate requires public first, and the
-    # approval endpoint refuses the rest — so it stays false on
-    # private/direct rows.
+    # Closed by default: the attention pass runs only in public channels an
+    # owner approved. No "all channels" mode, no backfill on upgrade.
     lobstertalk_approved: bool = Field(
         default=False,
         sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
@@ -615,10 +502,8 @@ class MmChannelMember(SQLModel, table=True):
             "agent_id IS NOT NULL OR human_id IS NOT NULL",
             name="mm_channel_members_participant_check",
         ),
-        # "Which channels am I in?" — the first join of every sidebar load.
-        # Both uniques above lead with ``channel_id``, so neither can seek on
-        # a bare participant predicate; without these the lookup degrades to a
-        # scan of the whole membership table.
+        # "Which channels am I in?" — the uniques above lead with
+        # ``channel_id``, so neither can seek on a bare participant.
         Index("ix_mm_channel_members_human_id", "human_id"),
         Index("ix_mm_channel_members_agent_id", "agent_id"),
     )
@@ -709,9 +594,8 @@ class MmPostReaction(SQLModel, table=True):
             "agent_id IS NOT NULL OR human_id IS NOT NULL",
             name="mm_post_reactions_member_check",
         ),
-        # One row per (post, emoji, member) — toggling is delete-or-insert.
-        # We use two partial uniques (one per member type) so a NULL on the
-        # unused column doesn't collide.
+        # One row per (post, emoji, member); two partial uniques so the NULL
+        # member column can't collide.
         UniqueConstraint(
             "post_id", "emoji", "human_id",
             name="uq_mm_post_reactions_post_emoji_human",
@@ -723,9 +607,8 @@ class MmPostReaction(SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    # ondelete=CASCADE keeps the reaction table in sync if a post is ever
-    # hard-deleted — the post-delete path isn't wired up today, but the
-    # constraint is in the migration so the model has to match.
+    # CASCADE for a future hard-delete path; the migration has it, so the
+    # model must too.
     post_id: int = Field(
         sa_column=SAColumn(
             Integer,
@@ -769,12 +652,8 @@ class MmFile(SQLModel, table=True):
         # Composite index for the orphan-GC scan:
         #   WHERE post_id IS NULL AND status = 'pending' AND created_at < ...
         Index("ix_mm_files_gc", "status", "post_id", "created_at"),
-        # Composite index for the chat-details listing endpoint
-        # (``GET /channels/{id}/attachments``). Lets Postgres do an
-        # index seek on ``(channel_id, status)`` and read the rows in
-        # already-sorted order so pagination cost stays O(limit) even
-        # on channels with tens of thousands of attachments. The DESC
-        # on the trailing columns matches the listing's ORDER BY
+        # Seek on ``(channel_id, status)`` and read in sorted order, so the
+        # attachments listing stays O(limit). DESC matches its ORDER BY
         # exactly. See migration ``b1a3bf9c8dea`` for the rationale.
         Index(
             "ix_mm_files_channel_listing",
@@ -906,20 +785,13 @@ class MmPost(SQLModel, table=True):
     #   ``rejected``  — owner rejected the draft. Retained for audit.
     status: str = Field(default="published", nullable=False)
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # Set to ``now()`` on every human edit. NULL means "never edited" —
-    # this is the signal the UI uses to show the "(edited)" marker.
-    # We track edits separately from ``updated_at`` because the streaming
-    # PATCH path and approval transitions also stamp ``updated_at`` for
-    # reasons unrelated to user-visible content changes.
+    # Drives the "(edited)" marker. Separate from ``updated_at``, which
+    # streaming and approval transitions also stamp.
     edited_at: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
     )
-    # NULL means "not pinned". A timestamp means the post is currently
-    # pinned to the channel; the value is the moment it was pinned and
-    # drives newest-first ordering in the pinned-messages popover. A
-    # partial index on this column (created by the migration) keeps
-    # per-channel pin lookups cheap.
+    # NULL = not pinned; the value orders the pinned popover newest-first.
     pinned_at: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
@@ -927,36 +799,20 @@ class MmPost(SQLModel, table=True):
     pinned_by_human_id: int | None = Field(
         default=None, foreign_key="human_users.id"
     )
-    # Server-resolved OG card for the first shareable URL in the message
-    # (capped at one). NULL means "no preview embedded" — either the
-    # message has no URL, or the row predates this column. Frontend
-    # renders the card from this value with no async fetch + no skeleton
-    # swap; absent → falls back to the client-side preview hook.
-    # Shape mirrors :class:`clawbits.link_preview.service.LinkPreview`
-    # plus a ``cap`` marker when extra URLs were intentionally skipped.
+    # Server-resolved OG card for the first URL, so the client renders it
+    # with no fetch. NULL falls back to the client-side preview hook.
     link_preview: dict | None = Field(
         default=None,
         sa_column=SAColumn(JSONB, nullable=True),
     )
-    # Distributed-trace correlation id (``tr_<uuid>``) minted by the
-    # originating client and threaded through every hop of a message
-    # round-trip (human send → agent reply). Unlike ``client_msg_uuid``
-    # (response-only, never stored), this is persisted so the agent-side
-    # GET can read it off the inbound post and stamp the same id on its
-    # reply — letting the end-to-end latency tracer stitch spans across the
-    # frontend, server, plugin, and OpenClaw. NULL on legacy rows and any
-    # post created without tracing.
+    # Trace id minted by the client and persisted so the agent can stamp its
+    # reply with the same one, stitching spans across every hop.
     trace_id: str | None = Field(
         default=None,
         sa_column=SAColumn(Text, nullable=True),
     )
-    # Full-text search vector over ``message`` — see
-    # ``docs/protocol/SEARCH_SPEC.md`` and the search-index migration. A
-    # STORED GENERATED column kept in sync by Postgres on every insert/edit;
-    # never written from Python. Declared here so ``alembic check`` sees no
-    # drift and so the column is queryable via the ORM in
-    # :meth:`TableRead.search_mm_posts_for_human`. Always excluded from the
-    # API response shapes (``MmPostResponse`` has no such field).
+    # STORED GENERATED by Postgres, never written from Python. Declared so
+    # ``alembic check`` sees no drift and the ORM can query it.
     message_tsv: Any | None = Field(
         default=None,
         sa_column=SAColumn(
@@ -1022,10 +878,6 @@ class MmChannelEvent(SQLModel, table=True):
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 
 
-# ---------------------------------------------------------------------------
-# Agent actions / profile / signup
-# ---------------------------------------------------------------------------
-
 
 class AgentAction(SQLModel, table=True):
     __tablename__ = "agent_actions"
@@ -1046,10 +898,7 @@ class AgentProfile(SQLModel, table=True):
     website: str | None = None
     avatar_url: str | None = None
     header_url: str | None = None
-    # Auto-evolving "what people use this agent for" summary, shown on the
-    # agent card. Generated agent-side and pushed via the dedicated
-    # description endpoint; the server only stores it, seeds a default at
-    # creation, and relays the owner's regen request.
+    # Generated agent-side and pushed; the server only stores and relays.
     description: str | None = None
     # When the agent last (re)generated ``description``. NULL while the value
     # is still the creation placeholder (``description_source == "default"``).
@@ -1058,9 +907,7 @@ class AgentProfile(SQLModel, table=True):
     )
     # "default" (creation placeholder) | "auto" (agent-generated) | "manual".
     description_source: str | None = None
-    # Set by an owner's "regenerate" request; cleared when the agent next
-    # pushes a fresh description. A non-NULL value drives the card/profile
-    # "Refreshing…" pending state.
+    # Set by a regen request, cleared on the next push. Drives "Refreshing…".
     description_regen_requested_at: datetime | None = Field(
         default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
     )
@@ -1105,10 +952,6 @@ class AgentClaim(SQLModel, table=True):
     agent_id: str = Field(nullable=False, foreign_key="agents.agent_id")
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 
-
-# ---------------------------------------------------------------------------
-# Push notifications
-# ---------------------------------------------------------------------------
 
 
 class PushDevice(SQLModel, table=True):
@@ -1227,14 +1070,8 @@ class AgentContactPermission(SQLModel, table=True):
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 
 
-# ---------------------------------------------------------------------------
-# Automations (OpenClaw cron control plane)
-# ---------------------------------------------------------------------------
-
-# Clawbits automation schema version. Bumped when the normalized ``desired_spec``
-# shape changes in a way the plugin must understand; reported back by the agent
-# so we can detect a plugin too old to apply the current spec. See
-# ``docs/protocol/OPENCLAW_AUTOMATIONS_INTEGRATION_STRATEGY.md``.
+# Bumped when ``desired_spec`` changes shape; echoed by the agent so we can
+# spot a plugin too old to apply it.
 AUTOMATION_SCHEMA_VERSION = "1"
 
 
@@ -1264,9 +1101,8 @@ class Automation(SQLModel, table=True):
             "sync_status IN ('requested', 'applied', 'failed', 'removing')",
             name="automations_sync_status_check",
         ),
-        # One Clawbits row per (agent, gateway job). NULLs are distinct in
-        # Postgres, so many not-yet-applied rows (NULL ``gateway_job_id``) for
-        # the same agent coexist freely.
+        # One row per (agent, gateway job); NULLs are distinct in Postgres, so
+        # not-yet-applied rows coexist freely.
         UniqueConstraint(
             "agent_id", "gateway_job_id", name="uq_automations_agent_job"
         ),
@@ -1284,9 +1120,8 @@ class Automation(SQLModel, table=True):
         sa_column=SAColumn(Text, nullable=False, server_default="clawbits"),
     )
 
-    # Normalized OpenClaw cron create/update payload — NOT a raw ``CronJob``
-    # (runtime-owned fields live in ``reported_spec``/``reported_state``). NULL
-    # for external/mirror-only rows.
+    # Normalized cron payload, not a raw ``CronJob`` (runtime-owned fields
+    # live in the reported_* columns). NULL for mirror-only rows.
     desired_spec: dict[str, Any] | None = Field(
         default=None, sa_column=SAColumn(JSONB, nullable=True)
     )
@@ -1309,18 +1144,13 @@ class Automation(SQLModel, table=True):
     reported_state: dict[str, Any] | None = Field(
         default=None, sa_column=SAColumn(JSONB, nullable=True)
     )
-    # Newest ``desired_generation`` the plugin had observed when it last
-    # reported; an apply/fail report only advances ``sync_status`` if it is for
-    # the current generation.
+    # A report only advances ``sync_status`` if it is for this generation.
     observed_generation: int | None = Field(
         default=None, sa_column=SAColumn(BigInteger, nullable=True)
     )
 
-    # Run-now: an imperative "run this job once, now" signal, separate from the
-    # desired-state generation. The operator bumps ``run_requested_generation``;
-    # the plugin runs the gateway job (``cron.run`` force) when it exceeds
-    # ``run_observed_generation``, then reports the observed value back. Monotonic
-    # so rapid repeat clicks collapse to a single pending run.
+    # Run-now, separate from desired state: the plugin runs once when this
+    # exceeds ``run_observed_generation``. Monotonic, so repeat clicks collapse.
     run_requested_generation: int = Field(
         default=0,
         sa_column=SAColumn(BigInteger, nullable=False, server_default="0"),
@@ -1412,20 +1242,11 @@ class AutomationRun(SQLModel, table=True):
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 
 
-# ---------------------------------------------------------------------------
-# Agent AI-usage tracking (plugin self-report)
-# ---------------------------------------------------------------------------
-
-# Clawbits usage-report schema version. Bumped when the normalized report
-# contract changes in a way the plugin must understand; echoed in responses
-# for forward-compat. See ``docs/protocol/AGENT_USAGE_TRACKING_PLAN.md``.
+# Bumped when the report contract changes; echoed back for forward-compat.
 AGENT_USAGE_SCHEMA_VERSION = "1"
 
-# Sentinel provider for events whose provider can be derived neither from the
-# report nor from the model-name prefix. NOT NULL matters: ``provider`` is part
-# of the ``agent_usage_daily`` primary key, and with a nullable member NULLs
-# would be pairwise distinct, so the ON-CONFLICT fold would insert a fresh row
-# per event instead of accumulating.
+# Sentinel, not NULL: ``provider`` is part of the daily primary key, and NULLs
+# are pairwise distinct, so the ON-CONFLICT fold would never accumulate.
 UNKNOWN_PROVIDER = "unknown"
 
 
@@ -1481,18 +1302,16 @@ class AgentUsageEvent(SQLModel, table=True):
     cache_write_tokens: int = Field(
         default=0, sa_column=SAColumn(BigInteger, nullable=False, server_default="0")
     )
-    # USD passthrough from the source — present only for API-key sessions with
-    # pricing configured; NULL for OAuth/subscription agents. Clawbits owns no
-    # pricing table (tokens-first).
+    # Passthrough from the source; NULL for OAuth/subscription agents.
+    # Clawbits owns no pricing table.
     cost_usd: Decimal | None = Field(
         default=None, sa_column=SAColumn(Numeric(18, 6), nullable=True)
     )
     currency: str = Field(
         default="USD", sa_column=SAColumn(Text, nullable=False, server_default="USD")
     )
-    # Which collector produced this event. One source per agent at a time —
-    # the two derive different event_ids for the same call, so dedup cannot
-    # bridge them.
+    # One source per agent: the two derive different event_ids for the same
+    # call, so dedup can't bridge them.
     source: str = Field(sa_column=SAColumn(Text, nullable=False))
     reported_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 
@@ -1539,10 +1358,6 @@ class AgentUsageDaily(SQLModel, table=True):
     )
 
 
-# ---------------------------------------------------------------------------
-# Skills library (org catalog)
-# ---------------------------------------------------------------------------
-
 # Bumped when the normalized manifest shape changes in a way the plugin must
 # understand.
 SKILL_SCHEMA_VERSION = "1"
@@ -1566,14 +1381,8 @@ class Skill(SQLModel, table=True):
             "origin IN ('authored', 'forked', 'imported')",
             name="skills_origin_check",
         ),
-        # One slug per org among LIVE skills. The slug is also the on-disk
-        # directory name, and OpenClaw requires frontmatter ``name`` == that
-        # directory name. Partial on ``deleted_at IS NULL`` because deletes are
-        # soft: a plain unique constraint would let a deleted skill burn its
-        # name in the org forever. (Contrast the install plane, where a plain
-        # unique is the right call — there a tombstone is awaiting agent
-        # confirmation and letting a live row coexist with it would make
-        # reconcile ordering load-bearing.)
+        # One slug per org among LIVE skills; partial on ``deleted_at IS NULL``
+        # so a soft-deleted skill doesn't burn its name forever.
         Index(
             "uq_skills_org_slug",
             "org_id",

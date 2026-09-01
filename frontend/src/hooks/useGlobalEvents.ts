@@ -4,6 +4,7 @@ import { openSseStream } from "@/lib/sse";
 import { queryKeys } from "@/lib/queryKeys";
 import { useAgentPresence } from "@/hooks/useAgentPresence";
 import { useUserPresence } from "@/hooks/useUserPresence";
+import { useLatestRef } from "@/hooks/useLatestRef";
 import type { AgentLivenessStatus, GlobalUserStatus, MmChannel, MmChannelPost, Org } from "@/lib/api";
 import { isDesktop, notifyForPost } from "@/lib/desktop";
 import { formatChannelTitle } from "@/lib/formatting";
@@ -143,30 +144,24 @@ export function useGlobalEvents({
   // below depends on (enabled, currentUserId, activeChannelId, qc) only —
   // reading through the ref keeps `onChannelRemoved` identity changes
   // from re-opening the SSE connection on every render.
-  const onChannelRemovedRef = useRef(onChannelRemoved);
-  onChannelRemovedRef.current = onChannelRemoved;
+  const onChannelRemovedRef = useLatestRef(onChannelRemoved);
   // Distinguishes the initial connect from a reconnect — see ``onOpen``.
   // Lives outside the effect so a re-subscribe (org switch, auth change)
   // does not reset it back to "first".
   const firstOpenRef = useRef(true);
   // Same trick for the presence updater so context churn doesn't
   // reconnect the SSE pump.
-  const presenceRef = useRef(presence);
-  presenceRef.current = presence;
-  const agentPresenceRef = useRef(agentPresence);
-  agentPresenceRef.current = agentPresence;
+  const presenceRef = useLatestRef(presence);
+  const agentPresenceRef = useLatestRef(agentPresence);
   // Read these through refs too, so the handler always sees the latest
   // values without the effect re-subscribing. Previously `activeChannelId`
   // was an effect dependency, which tore down and reopened the global
   // stream on every channel switch — and any post.created fanned out to
   // this user during that reconnect gap was lost (the per-user stream has
   // no replay), leaving the sidebar silently stale.
-  const currentUserIdRef = useRef(currentUserId);
-  currentUserIdRef.current = currentUserId;
-  const selfMentionTokensRef = useRef(selfMentionTokens ?? EMPTY_TOKENS);
-  selfMentionTokensRef.current = selfMentionTokens ?? EMPTY_TOKENS;
-  const activeChannelIdRef = useRef(activeChannelId);
-  activeChannelIdRef.current = activeChannelId;
+  const currentUserIdRef = useLatestRef(currentUserId);
+  const selfMentionTokensRef = useLatestRef(selfMentionTokens ?? EMPTY_TOKENS);
+  const activeChannelIdRef = useLatestRef(activeChannelId);
   // The server version we've already surfaced the update toast for. The
   // server re-announces its version on every reconnect (including the
   // routine keepalive-driven ones), so without this guard a stale tab

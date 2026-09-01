@@ -68,3 +68,21 @@ def register_human(tc: TestClient, email: str, display_name: str | None = None) 
         )
         user["display_name"] = display_name
     return {"access_token": token, "user": user}
+
+
+def add_human_to_org(
+    tc: TestClient, owner_token: str, org_id: str, email: str, role: str = "member"
+) -> None:
+    """Put an existing human into ``org_id``. Caller must be an org owner.
+
+    Channel membership is org-scoped (``add_member`` refuses a target who is
+    not in the channel's org), and every ``login_human`` gets its *own*
+    personal org — so a test that adds user B to user A's channel has to put B
+    in A's org first, exactly as the product's invite flow would.
+    """
+    resp = tc.post(
+        f"/api/human/orgs/{org_id}/members",
+        json={"email": email, "role": role},
+        headers=auth_headers(owner_token),
+    )
+    assert resp.status_code == 200, resp.text

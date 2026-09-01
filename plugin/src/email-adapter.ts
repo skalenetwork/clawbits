@@ -9,11 +9,11 @@
 // Per the user's design, email lands in the owner's main DM session (a
 // `direct` peer collapses to the agent's DM/main session per session.dmScope),
 // so the agent sees email and chat in one conversation. The explicit
-// `send_email` action (channel-actions.ts) is the guaranteed email path; the
-// auto reply-as-email here is best-effort for replies that flow through the
+// `clawbits_email_send` companion tool is the explicit email path; the auto
+// reply-as-email here is best-effort for replies that flow through the
 // buffered-block dispatcher's `deliver` callback.
 
-import type { ChannelGatewayContext } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { CHANNEL_ID } from "./accounts.js";
 import { buildAgentBody, clawbitsSessionId, formatBytes, type SavedInboundMedia } from "./agent-body.js";
@@ -35,13 +35,21 @@ import type { ResolvedClawBitsAccount } from "./types.js";
 // readable while the value lives in one place (`attachments.ts`).
 const EMAIL_ATTACHMENT_MAX_BYTES = CLAWBITS_ATTACHMENT_MAX_BYTES;
 
+export interface EmailDispatchContext {
+  cfg: OpenClawConfig;
+  accountId: string;
+  account: ResolvedClawBitsAccount;
+  channelRuntime?: unknown;
+  log?: { info?: (message: string) => void; warn?: (message: string) => void };
+}
+
 export interface DispatchInboundEmailDeps {
   /** Authenticated Clawbits client used for the send-back deliver callback. */
   client?: ClawBitsClient;
   /** Known challenge answers to satisfy the paid /email/send POST. */
   answers?: Record<string, string>;
-  /** Status sink so email activity shows up in channels.status. */
-  setStatus?: ChannelGatewayContext<ResolvedClawBitsAccount>["setStatus"];
+  /** Optional status sink retained for host integrations. */
+  setStatus?: (status: Record<string, unknown>) => void;
 }
 
 interface AgentMediaContext {
@@ -70,7 +78,7 @@ function buildMediaContext(saved: readonly SavedInboundMedia[]): AgentMediaConte
 /** Decode each inline base64 attachment and persist it to the host media store
  *  via the same `runtime.media.saveMediaBuffer` seam `attachments.ts` uses. */
 async function saveEmailAttachments(
-  ctx: ChannelGatewayContext<ResolvedClawBitsAccount>,
+  ctx: EmailDispatchContext,
   email: EmailInboundMessage,
 ): Promise<{ mediaContext: AgentMediaContext; saved: SavedInboundMedia[]; lines: string[] }> {
   const atts = email.attachments ?? [];
@@ -232,10 +240,9 @@ function collapseWhitespace(s: string): string {
 export function buildEmailTurnText(email: EmailInboundMessage, attachmentLines: string[]): string {
   const header = [
     "[Email received]",
-    "You just received a new email in your Clawbits mailbox. To respond reliably,",
-    "use the message tool's `send_email` action (it always goes to your owner).",
-    "Simply replying to this message also emails your owner, but that path is",
-    "best-effort.",
+    "You just received a new email in your Clawbits mailbox. Replying to this",
+    "message emails your owner. For a separate outbound email, use the optional",
+    "`clawbits_email_send` tool.",
     `From: ${email.fromAddr || "(unknown)"}`,
     `To: ${email.toAddr || "(you)"}`,
     `Subject: ${email.subject || "(no subject)"}`,
@@ -258,7 +265,7 @@ export function buildEmailTurnText(email: EmailInboundMessage, attachmentLines: 
  * so a non-gateway load (tests) short-circuits cleanly.
  */
 export async function dispatchInboundEmail(
-  ctx: ChannelGatewayContext<ResolvedClawBitsAccount>,
+  ctx: EmailDispatchContext,
   email: EmailInboundMessage,
   deps: DispatchInboundEmailDeps = {},
 ): Promise<void> {

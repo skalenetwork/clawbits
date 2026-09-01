@@ -145,7 +145,7 @@ export function OrgSwitcher({compact = false}: {compact?: boolean} = {}) {
         );
         // Fire-and-forget — failure is non-fatal; the next ``getOrgs``
         // refetch will surface stale state if this didn't land.
-        void markOrgVisited(orgId).catch(() => {});
+        void markOrgVisited(orgId).catch(() => { /* best-effort */ });
         const path = location.pathname;
         if (path.startsWith("/agents/") || path.startsWith("/channels/")) {
             void navigate("/home");
@@ -189,7 +189,7 @@ export function OrgSwitcher({compact = false}: {compact?: boolean} = {}) {
     };
 
     const handleSignOut = () => {
-        logout();
+        void logout();
         void navigate("/login");
     };
 

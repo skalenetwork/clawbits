@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { attachmentOnlyLabel, quotedBodyText } from "./messageHelpers";
+import { attachmentOnlyLabel, messageLink, quotedBodyText } from "./messageHelpers";
 
 describe("attachmentOnlyLabel", () => {
   it("returns null when there are no attachments", () => {
@@ -26,5 +26,11 @@ describe("quotedBodyText", () => {
 
   it("falls back to the placeholder only when there is truly nothing", () => {
     expect(quotedBodyText("", 0)).toBe("(empty message)");
+  });
+});
+
+describe("messageLink", () => {
+  it("points at the channel with the post as the ?msg anchor", () => {
+    expect(messageLink("c-1", 42)).toBe(`${window.location.origin}/channels/c-1?msg=42`);
   });
 });
