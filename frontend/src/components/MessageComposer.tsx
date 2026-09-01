@@ -1,7 +1,5 @@
 import {
-  Fragment,
   useCallback,
-  useEffect,
   useId,
   useMemo,
   useRef,
@@ -14,35 +12,36 @@ import {
   AttachmentIcon,
   ArrowDown02Icon,
   ArrowUp02Icon,
-  BotIcon,
   Cancel01Icon,
-  Robot02Icon,
-  UserIcon,
-  UserMultipleIcon,
 } from "@hugeicons/core-free-icons";
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 
-import { AdminCommandGlyph } from "@/components/AdminCommandGlyph";
-import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
+import { AgentTargetChip } from "@/components/composer/AgentTargetChip";
+import {
+  AdminCommandPopover,
+  ChannelPopover,
+  EmojiShortcodePopover,
+  MentionPopover,
+  type ChannelItem,
+  type EmojiShortcodeItem,
+  type MentionItem,
+} from "@/components/composer/popovers";
 import { AttachmentChip } from "@/components/AttachmentChip";
-import { ChannelGlyph } from "@/components/ChannelGlyph";
 import { EmojiPickerButton } from "@/components/EmojiPicker";
 import { Icon } from "@/components/Icon";
 import type { MessageMentions } from "@/components/MessageMarkdown";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { UserAvatar } from "@/components/UserAvatar";
 import {
   extractAdminCommandQuery,
   getAdminCommandOptions,
-  type AdminCommandCategory,
   type AdminCommandDefinition,
 } from "@/lib/adminCommands";
 import { extractClipboardFiles } from "@/lib/clipboardFiles";
 import { isDesktop } from "@/lib/desktop";
+import { modGlyph } from "@/lib/shortcuts/platform";
 import { isHereToken } from "@/lib/mentions";
 import { quotedBodyText } from "@/lib/messageHelpers";
-import { cn } from "@/lib/utils";
-import type { MmChannel, MmChannelMember, MmChannelPost } from "@/lib/api";
+import type { MmChannelMember, MmChannelPost } from "@/lib/api";
 import type { PendingAutoMention } from "@/lib/autoMention";
 import type { PendingAttachment } from "@/hooks/useChannelAttachments";
 
@@ -67,9 +66,7 @@ function ComposerHighlightedText({
   const parts: ReactNode[] = [];
   let lastIdx = 0;
   let key = 0;
-  let match: RegExpExecArray | null;
-  COMPOSER_MENTION_RE.lastIndex = 0;
-  while ((match = COMPOSER_MENTION_RE.exec(text)) !== null) {
+  for (const match of text.matchAll(COMPOSER_MENTION_RE)) {
     if (match.index > lastIdx) parts.push(text.slice(lastIdx, match.index));
     const raw = match[0];
     const token = raw.slice(1).toLowerCase();
@@ -78,10 +75,10 @@ function ComposerHighlightedText({
       resolved = mentions.channelsByToken?.has(token) ?? false;
     } else {
       const isPrimaryAgent =
-        mentions.primaryAgentToken && token === mentions.primaryAgentToken.toLowerCase();
+        token === mentions.primaryAgentToken?.toLowerCase();
       const isAgent = mentions.agentTokens.has(token);
       const isHuman = mentions.humanTokens.has(token);
-      resolved = isHereToken(token) || Boolean(isPrimaryAgent || isAgent || isHuman);
+      resolved = isHereToken(token) || isPrimaryAgent || isAgent || isHuman;
     }
     const className = resolved ? "text-mention" : "text-muted-foreground/90";
     parts.push(
@@ -95,544 +92,6 @@ function ComposerHighlightedText({
   return <>{parts}</>;
 }
 
-// ----------------------------------------------------------------------------
-// Mention + emoji-shortcode popovers. Pulled out so the keyboard handler in
-// the main component stays compact.
-// ----------------------------------------------------------------------------
-
-// Shared chrome for the four composer autocomplete popovers (slash / mention /
-// channel / emoji): one frosted panel anchored above the composer that scales
-// up on open (matching the app's other popovers). Header + footer are slots so
-// each popover keeps its own contents. React keeps this element mounted while a
-// popover stays open, so the entrance animation plays once, not per keystroke.
-function ComposerPopoverFrame({
-  header,
-  footer,
-  children,
-}: {
-  header?: ReactNode;
-  footer?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="absolute bottom-full left-10 right-12 mb-2 origin-bottom overflow-hidden rounded-xl border border-border/60 bg-background/95 shadow-md backdrop-blur-xl duration-150 ease-out animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-1 supports-[backdrop-filter]:bg-background/80 motion-reduce:animate-none">
-      {header}
-      <div className="max-h-64 overflow-y-auto p-1">{children}</div>
-      {footer}
-    </div>
-  );
-}
-
-function ComposerPopoverHeader({
-  children,
-  accessory,
-}: {
-  children: ReactNode;
-  accessory?: ReactNode;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-2 border-b border-border/50 px-3 py-2 text-[11px] font-medium text-muted-foreground">
-      <span>{children}</span>
-      {accessory}
-    </div>
-  );
-}
-
-// The ↑↓ / ↵ / esc keycap hints shared by the slash, mention, and channel menus.
-function ComposerPopoverHint() {
-  const kbd = "rounded border border-border/60 bg-muted/50 px-1 py-px font-mono text-[9px]";
-  return (
-    <div className="flex items-center justify-end gap-2 border-t border-border/40 px-2.5 py-1.5 text-[10px] text-muted-foreground/80">
-      <span className="inline-flex items-center gap-1">
-        <kbd className={kbd}>↑</kbd>
-        <kbd className={kbd}>↓</kbd>
-        navigate
-      </span>
-      <span className="inline-flex items-center gap-1">
-        <kbd className={kbd}>↵</kbd>
-        select
-      </span>
-      <span className="inline-flex items-center gap-1">
-        <kbd className={kbd}>esc</kbd>
-        close
-      </span>
-    </div>
-  );
-}
-
-const ADMIN_CATEGORY_LABEL: Record<AdminCommandCategory, string> = {
-  session: "Session control",
-  "usage-help": "Usage & help",
-};
-
-// Faintly box the part of the command that matches what's typed so the match is
-// scannable. Monochrome on purpose — hue is reserved for the semantic tile.
-function highlightCommand(command: string, query: string): ReactNode {
-  if (!query) return command;
-  const idx = command.toLowerCase().indexOf(query.toLowerCase());
-  if (idx < 0) return command;
-  return (
-    <>
-      {command.slice(0, idx)}
-      <span className="rounded-[3px] bg-foreground/10">
-        {command.slice(idx, idx + query.length)}
-      </span>
-      {command.slice(idx + query.length)}
-    </>
-  );
-}
-
-function AdminCommandPopover({
-  options,
-  activeIndex,
-  query,
-  onSelect,
-}: {
-  options: readonly AdminCommandDefinition[];
-  activeIndex: number;
-  query: string;
-  onSelect: (command: AdminCommandDefinition) => void;
-}) {
-  return (
-    <ComposerPopoverFrame
-      header={<ComposerPopoverHeader>Agent commands</ComposerPopoverHeader>}
-      footer={<ComposerPopoverHint />}
-    >
-      {options.map((item, idx) => {
-        const selected = idx === activeIndex;
-        // First row of each category gets a section header. Derived from the
-        // previous row (no mutable accumulator) so it's render-pure.
-        const prev = idx > 0 ? options[idx - 1] : undefined;
-        const showHeader = prev?.category !== item.category;
-        return (
-          <Fragment key={item.kind}>
-            {showHeader && (
-              <div className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 first:pt-1">
-                {ADMIN_CATEGORY_LABEL[item.category]}
-              </div>
-            )}
-            <button
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onSelect(item);
-              }}
-              className={cn(
-                "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors",
-                selected
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
-              )}
-            >
-              <AdminCommandGlyph kind={item.kind} />
-              <span className="flex min-w-0 flex-1 items-baseline gap-2">
-                <code className="shrink-0 font-mono text-[13px] font-semibold text-foreground">
-                  {highlightCommand(item.command, query)}
-                </code>
-                <span className="truncate text-xs text-muted-foreground">
-                  {item.description}
-                </span>
-              </span>
-              {selected && (
-                <kbd className="ml-1 shrink-0 rounded border border-border/60 bg-muted/50 px-1 py-px font-mono text-[9px] text-muted-foreground">
-                  ↵
-                </kbd>
-              )}
-            </button>
-          </Fragment>
-        );
-      })}
-    </ComposerPopoverFrame>
-  );
-}
-
-export interface MentionItem {
-  key: string;
-  label: string;
-  handle: string;
-  /** The channel member this row mentions. Absent for the special
-   *  ``@here`` broadcast row, which addresses everyone rather than a
-   *  specific member. */
-  member?: MmChannelMember;
-  /** Marks a non-member broadcast token. Currently only ``"here"``. */
-  special?: "here";
-}
-
-function MentionPopover({
-  options,
-  activeIndex,
-  onSelect,
-}: {
-  options: MentionItem[];
-  activeIndex: number;
-  onSelect: (handle: string) => void;
-}) {
-  return (
-    <ComposerPopoverFrame footer={<ComposerPopoverHint />}>
-      {options.map((item, idx) => {
-          const selected = idx === activeIndex;
-          const rowClass = `flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
-            selected
-              ? "bg-muted text-foreground"
-              : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-          }`;
-          // ``@here`` broadcast row — no member, its own glyph + helper text.
-          if (item.special === "here" || !item.member) {
-            return (
-              <button
-                key={item.key}
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onSelect(item.handle);
-                }}
-                className={rowClass}
-              >
-                <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-mention/15 text-mention">
-                  <Icon icon={UserMultipleIcon} className="size-3.5"/>
-                </span>
-                <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                  <span className="truncate text-sm font-medium text-foreground">{item.label}</span>
-                  <span className="truncate text-xs text-muted-foreground">Notify everyone in the channel</span>
-                </span>
-              </button>
-            );
-          }
-          const isAgent = Boolean(item.member.agent_id);
-          const avatarSeed = isAgent
-            ? (item.member.display_name ?? item.member.agent_id ?? item.handle)
-            : (item.member.human_id != null
-                ? String(item.member.human_id)
-                : item.handle);
-          return (
-            <button
-              key={item.key}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onSelect(item.handle);
-              }}
-              className={rowClass}
-            >
-              <span className="shrink-0">
-                {isAgent
-                  ? <AgentFaceAvatar size={24} name={avatarSeed} src={item.member.avatar?.url} framed={false}/>
-                  : <UserAvatar size={24} name={avatarSeed} src={item.member.avatar?.url}/>}
-              </span>
-              <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                <span className="truncate text-sm font-medium text-foreground">{item.label}</span>
-                <span className="truncate text-xs text-muted-foreground">@{item.handle}</span>
-              </span>
-              <Icon
-                icon={isAgent ? BotIcon : UserIcon}
-                className="ml-2 size-3.5 shrink-0 text-muted-foreground/70"
-                aria-label={isAgent ? "Agent" : "Human"}
-              />
-            </button>
-          );
-        })}
-    </ComposerPopoverFrame>
-  );
-}
-
-export interface EmojiShortcodeItem {
-  name: string;
-  emoji: string;
-}
-
-function EmojiShortcodePopover({
-  options,
-  activeIndex,
-  onSelect,
-}: {
-  options: EmojiShortcodeItem[];
-  activeIndex: number;
-  onSelect: (emoji: string) => void;
-}) {
-  return (
-    <ComposerPopoverFrame header={<ComposerPopoverHeader>Emoji</ComposerPopoverHeader>}>
-      {options.map((item, idx) => {
-          const selected = idx === activeIndex;
-          return (
-            <button
-              key={item.name}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onSelect(item.emoji);
-              }}
-              className={`flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left transition-colors ${
-                selected
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-              }`}
-            >
-              <span className="text-xl leading-none">{item.emoji}</span>
-              <span className="text-sm text-foreground/85">:{item.name}:</span>
-            </button>
-          );
-        })}
-    </ComposerPopoverFrame>
-  );
-}
-
-// ----------------------------------------------------------------------------
-// ``#channel`` autocomplete — twin of MentionPopover. Each row shows the
-// channel glyph + name + (display name when set) + a "Member" / "Join to
-// view" hint. Selection inserts ``#channel-name `` at the caret.
-// ----------------------------------------------------------------------------
-
-export interface ChannelItem {
-  key: string;
-  /** Lowercased channel name — what the tokenizer matches against. */
-  token: string;
-  channel: MmChannel;
-  /** True when the viewer is already a member. Drives the side-hint
-   *  and (later) the click-fork on the rendered chip. */
-  isMember: boolean;
-}
-
-function ChannelPopover({
-  options,
-  activeIndex,
-  onSelect,
-}: {
-  options: ChannelItem[];
-  activeIndex: number;
-  onSelect: (token: string) => void;
-}) {
-  return (
-    <ComposerPopoverFrame footer={<ComposerPopoverHint />}>
-      {options.map((item, idx) => {
-          const selected = idx === activeIndex;
-          const display = item.channel.display_name ?? item.channel.name;
-          const isPrivate = item.channel.channel_type === "private";
-          return (
-            <button
-              key={item.key}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onSelect(item.token);
-              }}
-              className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
-                selected
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-              }`}
-            >
-              <span className="shrink-0">
-                <ChannelGlyph channel={item.channel} size={20} showPresenceDot={false}/>
-              </span>
-              <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                <span className="truncate text-sm font-medium text-foreground">
-                  {display}
-                </span>
-                {display !== item.channel.name && (
-                  <span className="truncate text-xs text-muted-foreground">
-                    #{item.channel.name}
-                  </span>
-                )}
-              </span>
-              <span className="ml-2 shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground/70">
-                {!item.isMember
-                  ? "Join to view"
-                  : isPrivate
-                    ? "Private"
-                    : "Member"}
-              </span>
-            </button>
-          );
-        })}
-    </ComposerPopoverFrame>
-  );
-}
-
-// ----------------------------------------------------------------------------
-// Agent target chip — the "who am I addressing" surface. When the channel has
-// agents, the chip lives in the action row. It reflects either the user's
-// manual pick or the auto-mention (in that order). Dismissing the chip either
-// clears the manual pick OR dismisses the auto-mention, depending on which is
-// driving the current target.
-// ----------------------------------------------------------------------------
-
-function agentLabel(m: MmChannelMember): string {
-  return m.display_name?.trim() || m.agent_id || "Agent";
-}
-
-function AgentTargetChip({
-  agents,
-  manualHandle,
-  autoMentionHandle,
-  pulseKey,
-  onPick,
-  onClear,
-}: {
-  agents: (MmChannelMember & { agent_id: string })[];
-  manualHandle: string | null;
-  autoMentionHandle: string | null;
-  pulseKey: string | null;
-  onPick: (handle: string) => void;
-  onClear: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [pulsing, setPulsing] = useState(false);
-  const lastPulseKeyRef = useRef<string | null>(null);
-
-  // Brief background flash when an auto-mention trigger first appears so the
-  // user notices that the next send is now addressed to an agent.
-  useEffect(() => {
-    if (!pulseKey) return;
-    if (pulseKey === lastPulseKeyRef.current) return;
-    lastPulseKeyRef.current = pulseKey;
-    setPulsing(true);
-    const t = window.setTimeout(() => { setPulsing(false); }, 1400);
-    return () => { window.clearTimeout(t); };
-  }, [pulseKey]);
-
-  const targetHandle = manualHandle ?? autoMentionHandle ?? null;
-  const targetAgent = useMemo(
-    () => (targetHandle ? agents.find((a) => a.agent_id === targetHandle) ?? null : null),
-    [agents, targetHandle],
-  );
-
-  if (agents.length === 0) return null;
-
-  const idle = targetAgent == null;
-  const baseClass =
-    "group flex h-7 max-w-[12rem] shrink-0 items-center gap-1.5 rounded-full pl-1.5 pr-2 text-xs leading-none transition-colors";
-  const stateClass = idle
-    ? "border border-dashed border-border/60 px-2 text-muted-foreground hover:border-border hover:text-foreground"
-    : "bg-mention/12 text-mention ring-1 ring-mention/25 hover:bg-mention/20";
-  const pulseClass = pulsing && !idle ? "animate-target-pulse" : "";
-
-  const seed = targetAgent
-    ? (targetAgent.display_name ?? targetAgent.agent_id)
-    : null;
-
-  return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
-      <PopoverPrimitive.Trigger
-        render={
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label={
-              idle
-                ? "Target an agent"
-                : `Targeting @${targetAgent?.agent_id ?? ""} - click to change or clear`
-            }
-            className={`${baseClass} ${stateClass} ${pulseClass}`}
-          >
-            {targetAgent ? (
-              <AgentFaceAvatar size={18} name={seed ?? ""} src={targetAgent.avatar?.url} framed={false}/>
-            ) : (
-              <Icon icon={Robot02Icon} className="size-4 shrink-0"/>
-            )}
-            <span className="truncate font-medium">
-              {targetAgent ? `@${targetAgent.agent_id}` : "Agent"}
-            </span>
-            {!idle && (
-              <span
-                role="button"
-                tabIndex={-1}
-                aria-label="Clear target"
-                onMouseDown={(e) => {
-                  // mousedown so the parent popover doesn't toggle.
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onClear();
-                }}
-                className="-mr-1 flex size-4 items-center justify-center rounded-full text-mention/70 transition-colors hover:bg-mention/20 hover:text-mention"
-              >
-                <Icon icon={Cancel01Icon} className="size-2.5"/>
-              </span>
-            )}
-          </button>
-        }
-      />
-      <PopoverPrimitive.Portal>
-        <PopoverPrimitive.Positioner
-          align="start"
-          side="top"
-          sideOffset={8}
-          className="isolate z-50"
-        >
-          <PopoverPrimitive.Popup className="z-50 w-64 origin-(--transform-origin) overflow-hidden rounded-xl border border-border/60 bg-background/95 shadow-lg ring-1 ring-foreground/5 backdrop-blur-xl data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
-            <div className="flex items-center justify-between border-b border-border/40 px-3 py-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Target agent
-              </span>
-              <span className="text-[10px] tabular-nums text-muted-foreground/70">
-                ⌘J
-              </span>
-            </div>
-            <div className="max-h-64 overflow-y-auto p-1">
-              {agents.map((a) => {
-                const active = a.agent_id === targetHandle;
-                return (
-                  <button
-                    key={a.agent_id}
-                    type="button"
-                    onClick={() => {
-                      onPick(a.agent_id);
-                      setOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
-                      active
-                        ? "bg-mention/10 text-foreground"
-                        : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                    }`}
-                  >
-                    <AgentFaceAvatar
-                      size={24}
-                      name={a.display_name ?? a.agent_id}
-                      src={a.avatar?.url}
-                      framed={false}
-                    />
-                    <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                      <span className="truncate text-sm font-medium text-foreground">
-                        {agentLabel(a)}
-                      </span>
-                      <span className="truncate text-xs text-muted-foreground">
-                        @{a.agent_id}
-                      </span>
-                    </span>
-                    {active && (
-                      <span className="ml-2 size-1.5 shrink-0 rounded-full bg-mention"/>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-            {!idle && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClear();
-                  setOpen(false);
-                }}
-                className="flex w-full items-center justify-center gap-1.5 border-t border-border/40 px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
-              >
-                <Icon icon={Cancel01Icon} className="size-3"/>
-                Clear target
-              </button>
-            )}
-          </PopoverPrimitive.Popup>
-        </PopoverPrimitive.Positioner>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
-  );
-}
-
-// ----------------------------------------------------------------------------
-// Keyboard cheatsheet — no longer a visible button on the action row (that
-// row is kept to its load-bearing controls). Opened only via ⌘/, and anchored
-// to the composer wrapper so it still positions correctly without a trigger.
-// Markdown bold/italic stay on ⌘B / ⌘I (see ``handleKeyDown``); the other GFM
-// formats are typed as literal markdown, which the renderer supports.
-// ----------------------------------------------------------------------------
-
 function ShortcutsCheatsheet({
   open,
   onOpenChange,
@@ -642,22 +101,19 @@ function ShortcutsCheatsheet({
   onOpenChange: (v: boolean) => void;
   anchor: RefObject<HTMLElement | null>;
 }) {
-  const isMac =
-    typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
-  const mod = isMac ? "⌘" : "Ctrl";
   const items: { keys: string[]; label: string }[] = [
     { keys: ["↵"], label: "Send message" },
     { keys: ["⇧", "↵"], label: "New line" },
-    { keys: [mod, "B"], label: "Bold" },
-    { keys: [mod, "I"], label: "Italic" },
-    { keys: [mod, "J"], label: "Target agent" },
-    { keys: [mod, "⇧", "J"], label: "Cycle agent" },
-    { keys: [mod, ";"], label: "Emoji picker" },
+    { keys: [modGlyph, "B"], label: "Bold" },
+    { keys: [modGlyph, "I"], label: "Italic" },
+    { keys: [modGlyph, "J"], label: "Target agent" },
+    { keys: [modGlyph, "⇧", "J"], label: "Cycle agent" },
+    { keys: [modGlyph, ";"], label: "Emoji picker" },
     { keys: ["/"], label: "Agent commands" },
     { keys: ["@"], label: "Mention someone" },
     { keys: [":"], label: "Emoji shortcode" },
     { keys: ["Esc"], label: "Close · cancel reply · clear target" },
-    { keys: [mod, "/"], label: "This cheatsheet" },
+    { keys: [modGlyph, "/"], label: "This cheatsheet" },
   ];
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -836,11 +292,11 @@ export interface MessageComposerProps {
   // ``activityPeople`` is the live list of peers currently typing or
   // generating (excluding self).
   activityLabel?: string | null;
-  activityPeople?: ReadonlyArray<{
+  activityPeople?: readonly {
     key: string;
     displayName: string;
     status: "typing" | "generating";
-  }>;
+  }[];
 
   // Misc
   adminCommandsEnabled?: boolean;
@@ -1520,11 +976,11 @@ function TypingRow({
   people,
   label,
 }: {
-  people: ReadonlyArray<{
+  people: readonly {
     key: string;
     displayName: string;
     status: "typing" | "generating";
-  }>;
+  }[];
   label?: string | null;
 }) {
   // Reserve the slot unconditionally so the message viewport doesn't

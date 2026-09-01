@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import {useNavigate} from "react-router-dom";
 import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
-import {useStore} from "@tanstack/react-store";
+import {useSelector} from "@tanstack/react-store";
 import {
     ArrowDown01Icon,
     BookOpen01Icon,
@@ -210,7 +210,7 @@ function Highlight({text}: {text: string}) {
  * docs/protocol/SEARCH_SPEC.md.
  */
 function CommandPaletteInner() {
-    const open = useStore(commandPaletteOpenAtom, (v) => v);
+    const open = useSelector(commandPaletteOpenAtom);
     const {user, activeOrgId} = useAuth();
     const navigate = useNavigate();
     const queryClient = useQueryClient();

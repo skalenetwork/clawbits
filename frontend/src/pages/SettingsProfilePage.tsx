@@ -65,7 +65,7 @@ export default function SettingsProfilePage() {
         },
     });
 
-    const handleSave = async (e: React.FormEvent) => {
+    const handleSave = async (e: React.SubmitEvent) => {
         e.preventDefault();
         if (!dirty) return;
         setSaving(true);
@@ -84,7 +84,7 @@ export default function SettingsProfilePage() {
     const handleSignOut = async () => {
         try {
             await logout();
-            navigate("/login");
+            void navigate("/login");
         } catch (err) {
             toast.error(errMsg(err, "Sign-out failed"));
         }

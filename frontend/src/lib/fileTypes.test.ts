@@ -62,6 +62,10 @@ describe("previewKind", () => {
     expect(previewKind("a.ts", "application/octet-stream")).toBe("text");
   });
 
+  it("lets a source extension outrank a media MIME the OS guessed", () => {
+    expect(previewKind("a.ts", "video/mp2t")).toBe("text");
+  });
+
   it("has no preview for opaque binaries / archives", () => {
     expect(previewKind("a.zip", "application/zip")).toBe("none");
     expect(previewKind("a.bin", "application/octet-stream")).toBe("none");

@@ -13,7 +13,7 @@ function member(over: Partial<MmChannelMember>): MmChannelMember {
     status: null,
     last_seen_at: null,
     ...over,
-  } as MmChannelMember;
+  };
 }
 
 function reaction(over: Partial<MmPostReaction>): MmPostReaction {

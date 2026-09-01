@@ -26,10 +26,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   github_oauth_access_denied: "GitHub authorization was cancelled.",
 };
 
-type ConnectorBrand = {
+interface ConnectorBrand {
   tile: string;
   icon: ReactNode;
-};
+}
 
 /** Primer Octicons mark-github-24 — GitHub 2026 Invertocat */
 function GithubGlyph() {

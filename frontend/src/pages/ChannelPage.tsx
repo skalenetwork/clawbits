@@ -22,7 +22,6 @@ import {
   listDiscoverableMmChannels,
   listMmChannelEvents,
   listMmChannelPosts,
-  listMmPostsAround,
   listMmChannelMembers,
   listMmChannels,
   listPinnedMmPosts,
@@ -33,13 +32,12 @@ import {
   toggleMmPostReaction,
   unpinMmPost,
   type MmChannel,
-  type MmChannelEvent,
   type MmChannelMember,
   type MmChannelPost,
   type MmFile,
 } from "../lib/api";
 import { queryKeys } from "../lib/queryKeys";
-import { formatChannelTitle, parseUtcTimestamp } from "../lib/formatting";
+import { formatChannelTitle } from "../lib/formatting";
 import { draftStore } from "@/lib/messageDrafts";
 import { isDesktop, trackRecentChannel } from "@/lib/desktop";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -60,8 +58,10 @@ import { ChannelGlyph } from "@/components/ChannelGlyph";
 import { type MessageMentions } from "@/components/MessageMarkdown";
 import { UnreadDivider } from "@/components/UnreadDivider";
 import { useChannelAttachments } from "@/hooks/useChannelAttachments";
+import { useChannelHistory } from "@/hooks/useChannelHistory";
 import { useChannelDragDrop } from "@/hooks/useChannelDragDrop";
-import { MessageComposer, type ChannelItem, type MentionItem } from "@/components/MessageComposer";
+import { MessageComposer } from "@/components/MessageComposer";
+import type { ChannelItem, MentionItem } from "@/components/composer/popovers";
 import { PageHeader } from "@/components/PageHeader";
 import { ProfileMenuProvider } from "@/components/ProfileMenu";
 import { useChannelEvents } from "@/hooks/useChannelEvents";
@@ -75,15 +75,19 @@ import { extractShortcodeQuery } from "@/lib/emoji";
 import { search as searchEmojis } from "node-emoji";
 
 import {
-  GROUP_WINDOW_MS,
   extractChannelQuery,
   extractMentionQuery,
-  isSameDay,
   mentionHandle,
   mentionLabel,
   posterName,
-  samePoster,
 } from "@/lib/messageHelpers";
+import {
+  buildTimeline,
+  decorateRows,
+  generatingAgentsOf,
+  postsOf,
+  queuedOwnPostIdsOf,
+} from "@/lib/channelTimeline";
 import { DaySeparator, MessageSkeletons } from "@/components/chat/dividers";
 import { DmPillStatus, PinnedPill } from "@/components/chat/ChannelHeaderPills";
 import { MessageRow } from "@/components/chat/MessageRow";
@@ -108,11 +112,18 @@ const POSTS_POLL_RECENT_SEND_MS = 60_000;
 
 // How long an empty ``streaming`` post (an agent's reply placeholder) may sit
 // before the timeline stops rendering it. Covers agents that died mid-reply
-// and never finalized — without this the generating shimmer is stuck forever.
-const STALE_STREAMING_MS = 60 * 60 * 1000;
 
+/** Route entry. Everything below the guard needs a channel id, so the view is
+ *  a separate component rather than a page threading an optional one. */
 export default function ChannelPage() {
   const { channelId } = useParams<{ channelId: string }>();
+  if (!channelId) {
+    return <p className="py-12 text-center text-sm text-muted-foreground">No channel selected</p>;
+  }
+  return <ChannelView channelId={channelId} />;
+}
+
+function ChannelView({ channelId }: { channelId: string }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
@@ -182,17 +193,14 @@ export default function ChannelPage() {
   // Composer attachments — owns the per-file upload pipeline (request URL,
   // PUT to R2, confirm). The chip list above the textarea is driven by
   // ``attachments``; ``uploadedFileIds`` is what gets sent with the post.
-  const composerAttachments = useChannelAttachments({
-    channelId: channelId ?? "",
-  });
+  const composerAttachments = useChannelAttachments({ channelId });
 
   // Drag-and-drop into the channel viewport. Window-level listeners pick
   // up file drags anywhere on the page (matches Discord's behaviour);
   // ``ChannelDropOverlay`` provides the visual affordance while a drag
-  // is in flight. Disabled when there's no current channel. After files
-  // land, pull focus back to the textarea so the user can keep typing.
+  // is in flight. After files land, pull focus back to the textarea so the
+  // user can keep typing.
   const { isDragging } = useChannelDragDrop({
-    enabled: Boolean(channelId),
     onDrop: (files) => {
       composerAttachments.addFiles(files);
       requestAnimationFrame(() => { inputRef.current?.focus(); });
@@ -242,45 +250,21 @@ export default function ChannelPage() {
     // zeroes the home-indicator inset under the keyboard), and a padding-only
     // change doesn't move the content box — so a content-box observer would
     // miss it and the message list's bottom padding would go stale.
-    const obs = new ResizeObserver(() => remeasureComposer());
+    const obs = new ResizeObserver(() => { remeasureComposer(); });
     obs.observe(el, { box: "border-box" });
-    return () => obs.disconnect();
+    return () => { obs.disconnect(); };
   }, [remeasureComposer, channelId]);
 
-  // History pagination (older messages loaded on scroll-up)
-  const [olderPosts, setOlderPosts] = useState<MmChannelPost[]>([]);
-  const [hasMoreHistory, setHasMoreHistory] = useState(true);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const loadingMoreRef = useRef(false);
-  // Anchored history window. Non-null when the viewer has jumped to a message
-  // outside the live tail (a pinned message, a search hit, a reply quote): the
-  // timeline then renders this self-managed, contiguous oldest-first segment —
-  // seeded by ``/posts/around`` and extended both ways by the directional
-  // loaders — instead of the live tail. Live polling and stick-to-bottom are
-  // suspended until the viewer returns to present. ``hasOlder`` / ``hasNewer``
-  // gate the two scroll triggers; a short page flips one off at that end.
-  const [anchor, setAnchor] = useState<{
-    posts: MmChannelPost[];
-    hasOlder: boolean;
-    hasNewer: boolean;
-  } | null>(null);
-  const loadingNewerRef = useRef(false);
-
-  const PAGE_SIZE = 50;
-  // Half-width of the window fetched when jumping to an off-screen message.
-  const AROUND_RADIUS = 25;
-
   const channelQuery = useQuery({
-    queryKey: queryKeys.mm.channel(channelId ?? ""),
-    queryFn: () => getMmChannel(channelId ?? ""),
-    enabled: Boolean(channelId),
+    queryKey: queryKeys.mm.channel(channelId),
+    queryFn: () => getMmChannel(channelId),
   });
 
   // Push the channel onto the Window → Recent submenu on every load.
   // No-op on web; the helper itself dedupes and caps the list.
   useEffect(() => {
     const data = channelQuery.data;
-    if (!channelId || !data) return;
+    if (!data) return;
     trackRecentChannel({
       id: channelId,
       name: formatChannelTitle(
@@ -292,9 +276,8 @@ export default function ChannelPage() {
   }, [channelId, channelQuery.data]);
 
   const postsQuery = useQuery({
-    queryKey: queryKeys.mm.channelPosts(channelId ?? "", 50, 0),
-    queryFn: () => listMmChannelPosts(channelId ?? "", 50, 0),
-    enabled: Boolean(channelId),
+    queryKey: queryKeys.mm.channelPosts(channelId, 50, 0),
+    queryFn: () => listMmChannelPosts(channelId, 50, 0),
     // SSE is the fast path; this poll is the safety net for missed events
     // (dropped finalize, draft approvals, reconnect gaps). The cadence is
     // adaptive: fast while any reply is streaming so a lost finalize event
@@ -321,16 +304,25 @@ export default function ChannelPage() {
   // it live via the ``channel.event`` handler in ``useChannelEvents``;
   // no polling because event volume is low and a missed event only
   // delays a roster-change announcement, not message visibility.
+  const latestPosts = postsQuery.data?.posts ?? [];
+  const scrollToBottom = useCallback(() => {
+    messageListRef.current?.scrollToBottom("auto");
+  }, []);
+  const history = useChannelHistory({
+    channelId,
+    latestPosts,
+    refetchPosts: () => { void postsQuery.refetch(); },
+    scrollToBottom,
+  });
+
   const eventsQuery = useQuery({
-    queryKey: queryKeys.mm.channelEvents(channelId ?? "", 100),
-    queryFn: () => listMmChannelEvents(channelId ?? "", 100),
-    enabled: Boolean(channelId),
+    queryKey: queryKeys.mm.channelEvents(channelId, 100),
+    queryFn: () => listMmChannelEvents(channelId, 100),
   });
 
   const membersQuery = useQuery({
-    queryKey: queryKeys.mm.channelMembers(channelId ?? ""),
-    queryFn: () => listMmChannelMembers(channelId ?? ""),
-    enabled: Boolean(channelId),
+    queryKey: queryKeys.mm.channelMembers(channelId),
+    queryFn: () => listMmChannelMembers(channelId),
   });
 
   // Channel org id — drives the ``#channel`` autocomplete pools below.
@@ -359,9 +351,8 @@ export default function ChannelPage() {
   // and the popover contents. Cached for a short window so toggling the
   // popover stays snappy without a fresh request each time.
   const pinnedQuery = useQuery({
-    queryKey: queryKeys.mm.channelPinnedPosts(channelId ?? ""),
-    queryFn: () => listPinnedMmPosts(channelId ?? ""),
-    enabled: Boolean(channelId),
+    queryKey: queryKeys.mm.channelPinnedPosts(channelId),
+    queryFn: () => listPinnedMmPosts(channelId),
     staleTime: 30_000,
   });
 
@@ -438,7 +429,7 @@ export default function ChannelPage() {
     // uniform downstream handling; the missing fields are not read.
     for (const c of discoverableChannels) {
       if (c.channel_type === "direct") continue;
-      referenceable.push(c as MmChannel);
+      referenceable.push(c);
     }
     const seen = new Set<string>();
     const q = channelMatch?.query.trim().toLowerCase() ?? "";
@@ -503,11 +494,6 @@ export default function ChannelPage() {
   // as "new" — see backend ``unread_count`` filter).
   const [firstUnreadPostId, setFirstUnreadPostId] = useState<number | null>(null);
   useLayoutEffect(() => {
-    if (!channelId) {
-      setEnteredAtUnread(0);
-      setFirstUnreadPostId(null);
-      return;
-    }
     setFirstUnreadPostId(null);
     const all = queryClient.getQueriesData<{ channels: MmChannel[]; total: number }>({
       queryKey: queryKeys.mm.channelsAll,
@@ -539,7 +525,6 @@ export default function ChannelPage() {
 
   const lastMarkedRef = useRef<number>(0);
   useEffect(() => {
-    if (!channelId) return;
     if (latestPostId <= 0) return;
     if (latestPostId <= lastMarkedRef.current) return;
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
@@ -568,7 +553,6 @@ export default function ChannelPage() {
 
   // Re-mark when the tab regains visibility, in case posts arrived while hidden.
   useEffect(() => {
-    if (!channelId) return;
     const handler = () => {
       if (document.visibilityState !== "visible") return;
       if (latestPostId <= 0) return;
@@ -605,7 +589,7 @@ export default function ChannelPage() {
       targetAgentId: string | null;
     }) =>
       createMmChannelPost(
-        channelId ?? "",
+        channelId,
         vars.message,
         vars.parentPostId,
         vars.fileIds.length ? vars.fileIds : undefined,
@@ -623,7 +607,7 @@ export default function ChannelPage() {
       setManualTargetedAgent(null);
       composerAttachments.clear();
 
-      const key = queryKeys.mm.channelPosts(channelId ?? "", 50, 0);
+      const key = queryKeys.mm.channelPosts(channelId, 50, 0);
       // Fire-and-forget cancel of any in-flight refetch for this
       // channel's posts. We deliberately do NOT ``await`` this — our
       // ``listMmChannelPosts`` queryFn doesn't honor an abort signal,
@@ -645,7 +629,7 @@ export default function ChannelPage() {
       // looks identical to the eventual real one.
       const optimistic: MmChannelPost = {
         post_id: -Date.now(),
-        channel_id: channelId ?? "",
+        channel_id: channelId,
         agent_id: null,
         human_id: user?.id ?? null,
         poster_display_name: user?.display_name ?? null,
@@ -739,7 +723,7 @@ export default function ChannelPage() {
       // opened channel — initialize with the canonical row in that
       // case so the user's message remains visible regardless of which
       // path arrived first.
-      const key = queryKeys.mm.channelPosts(channelId ?? "", 50, 0);
+      const key = queryKeys.mm.channelPosts(channelId, 50, 0);
       queryClient.setQueryData<{
         posts: MmChannelPost[];
         total: number;
@@ -765,7 +749,7 @@ export default function ChannelPage() {
       // the user doesn't lose their text. The "agent is replying" shimmer
       // (if any) self-expires via its presence TTL.
       if (ctx) {
-        const key = queryKeys.mm.channelPosts(channelId ?? "", 50, 0);
+        const key = queryKeys.mm.channelPosts(channelId, 50, 0);
         queryClient.setQueryData<{
           posts: MmChannelPost[];
           total: number;
@@ -797,7 +781,7 @@ export default function ChannelPage() {
     mutationFn: (vars: { postId: number; message: string }) =>
       editMmChannelPost(vars.postId, vars.message),
     onMutate: async (vars) => {
-      const key = queryKeys.mm.channelPosts(channelId ?? "", 50, 0);
+      const key = queryKeys.mm.channelPosts(channelId, 50, 0);
       await queryClient.cancelQueries({ queryKey: key });
       const prev = queryClient.getQueryData<{
         posts: MmChannelPost[];
@@ -820,7 +804,7 @@ export default function ChannelPage() {
     onError: (err, _vars, ctx) => {
       if (ctx?.prev) {
         queryClient.setQueryData(
-          queryKeys.mm.channelPosts(channelId ?? "", 50, 0),
+          queryKeys.mm.channelPosts(channelId, 50, 0),
           ctx.prev,
         );
       }
@@ -834,7 +818,7 @@ export default function ChannelPage() {
         limit: number;
         offset: number;
       }>(
-        queryKeys.mm.channelPosts(channelId ?? "", 50, 0),
+        queryKeys.mm.channelPosts(channelId, 50, 0),
         (cache) => cache ? {
           ...cache,
           posts: cache.posts.map((p) => p.post_id === updated.post_id ? updated : p),
@@ -849,7 +833,7 @@ export default function ChannelPage() {
   const deleteMutation = useMutation({
     mutationFn: (postId: number) => deleteMmChannelPost(postId),
     onMutate: async (postId) => {
-      const key = queryKeys.mm.channelPosts(channelId ?? "", 50, 0);
+      const key = queryKeys.mm.channelPosts(channelId, 50, 0);
       await queryClient.cancelQueries({ queryKey: key });
       const prev = queryClient.getQueryData<{
         posts: MmChannelPost[];
@@ -868,7 +852,7 @@ export default function ChannelPage() {
     onError: (err, _postId, ctx) => {
       if (ctx?.prev) {
         queryClient.setQueryData(
-          queryKeys.mm.channelPosts(channelId ?? "", 50, 0),
+          queryKeys.mm.channelPosts(channelId, 50, 0),
           ctx.prev,
         );
       }
@@ -884,7 +868,7 @@ export default function ChannelPage() {
     mutationFn: (vars: { postId: number; emoji: string }) =>
       toggleMmPostReaction(vars.postId, vars.emoji),
     onMutate: async (vars) => {
-      const key = queryKeys.mm.channelPosts(channelId ?? "", 50, 0);
+      const key = queryKeys.mm.channelPosts(channelId, 50, 0);
       await queryClient.cancelQueries({ queryKey: key });
       const prev = queryClient.getQueryData<{
         posts: MmChannelPost[];
@@ -900,7 +884,7 @@ export default function ChannelPage() {
           if (p.post_id !== vars.postId) return p;
           const reactions = p.reactions ?? [];
           const existing = reactions.find((r) => r.emoji === vars.emoji);
-          if (existing && existing.human_ids.includes(userId)) {
+          if (existing?.human_ids.includes(userId)) {
             // Remove our reaction (and the whole bucket if we were alone).
             const nextHumans = existing.human_ids.filter((id) => id !== userId);
             const nextCount = existing.count - 1;
@@ -941,7 +925,7 @@ export default function ChannelPage() {
     onError: (err, _vars, ctx) => {
       if (ctx?.prev) {
         queryClient.setQueryData(
-          queryKeys.mm.channelPosts(channelId ?? "", 50, 0),
+          queryKeys.mm.channelPosts(channelId, 50, 0),
           ctx.prev,
         );
       }
@@ -957,7 +941,7 @@ export default function ChannelPage() {
         limit: number;
         offset: number;
       }>(
-        queryKeys.mm.channelPosts(channelId ?? "", 50, 0),
+        queryKeys.mm.channelPosts(channelId, 50, 0),
         (prev) => prev ? {
           ...prev,
           posts: prev.posts.map((p) => p.post_id === updated.post_id ? updated : p),
@@ -976,7 +960,7 @@ export default function ChannelPage() {
         ? unpinMmPost(post.post_id)
         : pinMmPost(post.post_id),
     onMutate: async (post) => {
-      const key = queryKeys.mm.channelPosts(channelId ?? "", 50, 0);
+      const key = queryKeys.mm.channelPosts(channelId, 50, 0);
       await queryClient.cancelQueries({ queryKey: key });
       const prev = queryClient.getQueryData<{
         posts: MmChannelPost[];
@@ -1004,7 +988,7 @@ export default function ChannelPage() {
     onError: (err, _post, ctx) => {
       if (ctx?.prev) {
         queryClient.setQueryData(
-          queryKeys.mm.channelPosts(channelId ?? "", 50, 0),
+          queryKeys.mm.channelPosts(channelId, 50, 0),
           ctx.prev,
         );
       }
@@ -1022,14 +1006,14 @@ export default function ChannelPage() {
         limit: number;
         offset: number;
       }>(
-        queryKeys.mm.channelPosts(channelId ?? "", 50, 0),
+        queryKeys.mm.channelPosts(channelId, 50, 0),
         (prev) => prev ? {
           ...prev,
           posts: prev.posts.map((p) => p.post_id === updated.post_id ? updated : p),
         } : prev,
       );
       void queryClient.invalidateQueries({
-        queryKey: queryKeys.mm.channelPinnedPosts(channelId ?? ""),
+        queryKey: queryKeys.mm.channelPinnedPosts(channelId),
       });
       toast.success(updated.pinned_at != null ? "Pinned to channel" : "Unpinned");
     },
@@ -1139,27 +1123,22 @@ export default function ChannelPage() {
     });
   }, [user?.id, draftChannelId, draft, replyingTo, manualTargetedAgent]);
 
-  // Reset history pagination + per-channel transient UI when switching
-  // channels, then hydrate the composer from the new channel's stored
-  // draft (text + caret + reply strip + agent target). The library's
-  // pin-to-bottom state is reset by the initial scroll effect below
-  // (forced instant scroll to the new channel's bottom), so we don't
-  // need to touch it here.
+  // Hydrate the composer from the new channel's stored draft (text + caret +
+  // reply strip + agent target) on every switch. History pagination resets
+  // itself inside ``useChannelHistory``, and the library's pin-to-bottom state
+  // is reset by the initial scroll effect below (forced instant scroll to the
+  // new channel's bottom).
   useEffect(() => {
-    setOlderPosts([]);
-    setHasMoreHistory(true);
-    setIsLoadingMore(false);
-    loadingMoreRef.current = false;
     // Force the previous channel's pending draft write out before reading
     // the next channel's — cheap, and makes switches durable checkpoints.
     draftStore.flush();
     const stored =
-      user?.id != null && channelId ? draftStore.get(user.id, channelId) : null;
+      user?.id != null ? draftStore.get(user.id, channelId) : null;
     setDraft(stored?.text ?? "");
     setCaretPos(stored?.text.length ?? 0);
     setReplyingTo(stored?.reply ?? null);
     setManualTargetedAgent(stored?.targetAgentId ?? null);
-    setDraftChannelId(channelId ?? null);
+    setDraftChannelId(channelId);
     setEditingPostId(null);
     setHighlightedPostId(null);
     // Drop any in-flight composer attachments — switching channels
@@ -1190,7 +1169,6 @@ export default function ChannelPage() {
   // composition.
   // ------------------------------------------------------------------
   useEffect(() => {
-    if (!channelId) return;
     const handler = (e: KeyboardEvent) => {
       // Already in a text field — let the native event run.
       const t = e.target as HTMLElement | null;
@@ -1207,7 +1185,7 @@ export default function ChannelPage() {
       // to pass through to the textarea — let it fall through.
       if (e.key.length !== 1 && e.key !== "Dead") return;
       // IME composition is mid-flight — never steal.
-      if (e.isComposing || e.keyCode === 229) return;
+      if (e.isComposing) return;
       // User is selecting text somewhere — preserve their selection.
       const sel = window.getSelection();
       if (sel && sel.toString().length > 0) return;
@@ -1234,7 +1212,6 @@ export default function ChannelPage() {
   // calls preventDefault), while editing a message (Esc cancels the edit),
   // or while a modal dialog is open (its own focus trap owns Esc).
   useEffect(() => {
-    if (!channelId) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       if (editingPostId != null) return;
@@ -1251,120 +1228,6 @@ export default function ChannelPage() {
   // the component doesn't unmount between channels, so we drive
   // channel-switch resets manually here. `ignoreEscapes` overrides any
   // prior "user scrolled up" state from the previous channel.
-  // Latch set for the render that commits older history at the start
-  // of the ``rows`` array. Read by ``MessageList`` via the ``shift``
-  // prop on every render — virtua then offsets its internal scroll
-  // math so the visible top message stays anchored. A ref (not state)
-  // matches virtua's canonical chat pattern: write the latch
-  // *synchronously* before ``setOlderPosts`` so the render produced
-  // by that update reads ``shift=true``. A ``useLayoutEffect`` clears
-  // it after commit so the next render reads ``shift=false`` and
-  // subsequent appends (new messages, optimistic sends) don't anchor
-  // by mistake.
-  const prependShiftRef = useRef(false);
-  useLayoutEffect(() => {
-    prependShiftRef.current = false;
-  });
-
-  // Dedupe a post list by id, preserving order — a cheap guard against the
-  // seam where two contiguous fetches share a boundary post.
-  const dedupePostsById = (posts: MmChannelPost[]): MmChannelPost[] => {
-    const seen = new Set<number>();
-    const out: MmChannelPost[] = [];
-    for (const p of posts) {
-      if (!seen.has(p.post_id)) { seen.add(p.post_id); out.push(p); }
-    }
-    return out;
-  };
-
-  const loadMoreHistory = async (): Promise<boolean> => {
-    if (loadingMoreRef.current || !channelId) return false;
-    // Anchored window: extend the segment upward instead of the live stack.
-    if (anchor) {
-      if (!anchor.hasOlder) return false;
-      const segmentOldestId = anchor.posts[0]?.post_id;
-      if (segmentOldestId == null) return false;
-      loadingMoreRef.current = true;
-      setIsLoadingMore(true);
-      try {
-        const resp = await listMmChannelPosts(channelId, PAGE_SIZE, 0, segmentOldestId);
-        const chunk = [...resp.posts].reverse(); // oldest-first
-        prependShiftRef.current = true;
-        setAnchor((prev) =>
-          prev
-            ? {
-                ...prev,
-                posts: dedupePostsById([...chunk, ...prev.posts]),
-                hasOlder: resp.posts.length >= PAGE_SIZE,
-              }
-            : prev,
-        );
-        return resp.posts.length > 0;
-      } finally {
-        loadingMoreRef.current = false;
-        setIsLoadingMore(false);
-      }
-    }
-    // Live tail (default): grow the ``olderPosts`` stack.
-    if (!hasMoreHistory) return false;
-    const currentOldest = olderPosts[0] ?? [...(postsQuery.data?.posts ?? [])].pop();
-    const oldestKnownId = currentOldest?.post_id;
-    if (oldestKnownId == null) return false;
-    loadingMoreRef.current = true;
-    setIsLoadingMore(true);
-    try {
-      const resp = await listMmChannelPosts(channelId, PAGE_SIZE, 0, oldestKnownId);
-      if (resp.posts.length === 0) {
-        setHasMoreHistory(false);
-        return false;
-      }
-      // Backend returns newest-first; store older posts as oldest-first.
-      const chunk = [...resp.posts].reverse();
-      // Flip the latch *before* setOlderPosts so the render produced
-      // by setOlderPosts reads ``shift=true``. Without this, virtua
-      // sees ``shift=false`` on the growth render and the scroll
-      // position drifts up by the height of the new chunk.
-      prependShiftRef.current = true;
-      setOlderPosts(prev => [...chunk, ...prev]);
-      if (resp.posts.length < PAGE_SIZE) setHasMoreHistory(false);
-      return true;
-    } finally {
-      loadingMoreRef.current = false;
-      setIsLoadingMore(false);
-    }
-  };
-
-  // Scroll-down loader — only meaningful while anchored. Appends the posts
-  // immediately newer than the segment's newest (the ``after_post_id`` cursor).
-  // Appending below the viewport shifts no existing rows, so there's no prepend
-  // latch; a short page means we've caught up to the live tail.
-  const loadMoreNewer = async (): Promise<boolean> => {
-    if (!anchor || loadingNewerRef.current || !anchor.hasNewer || !channelId) {
-      return false;
-    }
-    const segmentNewestId = anchor.posts[anchor.posts.length - 1]?.post_id;
-    if (segmentNewestId == null) return false;
-    loadingNewerRef.current = true;
-    try {
-      const resp = await listMmChannelPosts(
-        channelId, PAGE_SIZE, 0, undefined, segmentNewestId,
-      );
-      const chunk = [...resp.posts].reverse(); // API newest-first → oldest-first
-      setAnchor((prev) =>
-        prev
-          ? {
-              ...prev,
-              posts: dedupePostsById([...prev.posts, ...chunk]),
-              hasNewer: resp.posts.length >= PAGE_SIZE,
-            }
-          : prev,
-      );
-      return resp.posts.length > 0;
-    } finally {
-      loadingNewerRef.current = false;
-    }
-  };
-
   // ArrowUp on an empty composer → edit your most recent message (the
   // Slack/Discord quick-edit gesture). Picks the newest published post
   // authored by the current user.
@@ -1426,8 +1289,8 @@ export default function ChannelPage() {
     const filesSnapshot: MmFile[] = composerAttachments.attachments
       .filter((a) => a.status === "uploaded" && a.fileId)
       .map((a) => ({
-        file_id: a.fileId as string,
-        channel_id: channelId ?? "",
+        file_id: a.fileId!,
+        channel_id: channelId,
         filename: a.file.name,
         content_type: a.file.type || "application/octet-stream",
         size_bytes: a.file.size,
@@ -1443,7 +1306,7 @@ export default function ChannelPage() {
     // Sending from an anchored history window snaps back to the live tail so
     // the new message is actually visible — it lands in the live cache, which
     // the anchored view doesn't render.
-    if (anchor != null) returnToPresent();
+    if (history.isAnchored) history.returnToPresent();
     sendMutation.mutate({
       message: messageOut,
       parentPostId: replyingTo?.post_id ?? null,
@@ -1494,216 +1357,33 @@ export default function ChannelPage() {
     return true;
   };
 
-  // Unified "jump to a message" — used by pinned messages, reply quotes, and
-  // search deep-links. If the target is already rendered (live tail or an
-  // anchored window) just centre it. Otherwise fetch a window centred on the
-  // target via ``/posts/around`` and *re-anchor* the timeline on it: a single
-  // bounded fetch regardless of how far back the message is, instead of walking
-  // every page from the live tail (which couldn't reach old pins at all). The
-  // reactive scroll effect centres + flashes the target once the rows render.
+  // Unified "jump to a message" — used by pinned messages, reply quotes and
+  // search deep links. A rendered target (live tail or an open window) is just
+  // centred; anything else re-anchors the timeline around it, and the reactive
+  // scroll effect centres + flashes it once those rows render.
   const jumpToPost = async (postId: number): Promise<void> => {
     if (scrollToPost(postId)) return;
-    if (!channelId) return;
-    let windowPosts: MmChannelPost[];
-    try {
-      const resp = await listMmPostsAround(channelId, postId, AROUND_RADIUS);
-      windowPosts = [...resp.posts].reverse(); // oldest-first
-    } catch {
-      toast.error("Couldn't load that message.");
-      return;
-    }
-    if (!windowPosts.some((p) => p.post_id === postId)) {
-      toast.info("Couldn't find that message - it may have been deleted.");
-      return;
-    }
-    // The endpoint over-scans then trims to ``radius`` per side, so a full
-    // radius on a side means "maybe more" (the directional loader confirms with
-    // a short page) and fewer means "that's the end".
-    const olderCount = windowPosts.filter((p) => p.post_id < postId).length;
-    const newerCount = windowPosts.filter((p) => p.post_id > postId).length;
     pendingJumpRef.current = postId;
-    prependShiftRef.current = false; // full replace, not a prepend
-    setAnchor({
-      posts: windowPosts,
-      hasOlder: olderCount >= AROUND_RADIUS,
-      hasNewer: newerCount >= AROUND_RADIUS,
-    });
+    await history.anchorAround(postId);
   };
-
-  // Leave the anchored window and snap back to the live tail: drop the stale
-  // history, refetch the newest page, stick to the bottom. Drives the composer's
-  // "jump to present" affordance (shown whenever a window is anchored).
-  const returnToPresent = () => {
-    if (anchor == null) return;
-    pendingJumpRef.current = null;
-    setAnchor(null);
-    setOlderPosts([]);
-    setHasMoreHistory(true);
-    void postsQuery.refetch();
-    requestAnimationFrame(() => {
-      messageListRef.current?.scrollToBottom("auto");
-    });
-  };
-
-  if (!channelId)
-    return <p className="py-12 text-center text-sm text-muted-foreground">No channel selected</p>;
 
   const channel = channelQuery.data;
-  const latestPosts = postsQuery.data?.posts ?? [];
   const channelEvents = eventsQuery.data?.events ?? [];
-  // Combine older-history pages (oldest-first) with the live latest page
-  // (newest-first from the server), then dedupe by post_id. Memoised so
-  // the virtualizer's row identity stays stable across renders that
-  // don't actually change the post list.
-  const orderedPosts = useMemo<MmChannelPost[]>(() => {
-    const seen = new Set<number>();
-    const out: MmChannelPost[] = [];
-    // Anchored window: the self-managed segment is the sole source of truth
-    // (live polling is suspended), already contiguous and oldest-first.
-    if (anchor) {
-      for (const p of anchor.posts) {
-        if (!seen.has(p.post_id)) { seen.add(p.post_id); out.push(p); }
-      }
-      return out;
-    }
-    for (const p of olderPosts) {
-      if (!seen.has(p.post_id)) { seen.add(p.post_id); out.push(p); }
-    }
-    for (const p of [...latestPosts].reverse()) {
-      if (!seen.has(p.post_id)) { seen.add(p.post_id); out.push(p); }
-    }
-    return out;
-  }, [anchor, olderPosts, latestPosts]);
+  // The render pipeline: the history hook's posts become a timeline, the
+  // timeline becomes decorated rows (see lib/channelTimeline).
+  const posts = history.posts;
+  const ordered = useMemo(() => buildTimeline(posts, channelEvents), [posts, channelEvents]);
+  const orderedForUnread = useMemo(() => postsOf(ordered), [ordered]);
 
-  // Anchored = viewing a history window away from the live tail. Drives the
-  // suspension of stick-to-bottom + the "jump to present" affordance.
-  const isAnchored = anchor != null;
-  // While anchored, "more older history" is the segment's own flag.
-  const hasMoreHistoryEffective = anchor ? anchor.hasOlder : hasMoreHistory;
-
-  // Merge posts and channel events into a single chronologically-ordered
-  // stream (oldest → newest). Events live in a parallel query
-  // (``eventsQuery``); posts have their own pagination + ETag pipeline
-  // (``postsQuery`` + ``olderPosts``). Merging at render time keeps the
-  // two pipelines decoupled — a future regression in either source
-  // can't accidentally hide the other. Stable sort by created_at, then
-  // by id within kind so ties resolve deterministically.
-  type TimelineItem =
-    | { kind: "post"; post: MmChannelPost; ts: number }
-    | { kind: "event"; event: MmChannelEvent; ts: number };
-  const ordered = useMemo<TimelineItem[]>(() => {
-    const items: TimelineItem[] = [];
-    const staleStreamingCutoff = Date.now() - STALE_STREAMING_MS;
-    // Newest published post id per agent — drives the obsolete-draft skip
-    // below. post_id is a server-side sequence, so a higher id means
-    // "created later".
-    const latestPublishedByAgent = new Map<string, number>();
-    for (const p of orderedPosts) {
-      if (p.agent_id && p.status === "published" && p.post_id > 0) {
-        const prev = latestPublishedByAgent.get(p.agent_id) ?? 0;
-        if (p.post_id > prev) latestPublishedByAgent.set(p.agent_id, p.post_id);
-      }
-    }
-    for (const p of orderedPosts) {
-      const ts = parseUtcTimestamp(p.created_at).getTime();
-      // An empty ``streaming`` post is an agent's in-flight reply placeholder
-      // (renders as the generating shimmer).
-      const isEmptyStreaming =
-        p.status === "streaming"
-        && p.message.trim() === ""
-        && (p.files?.length ?? 0) === 0;
-      // If the agent died mid-reply the post never fills in or finalizes,
-      // leaving a shimmer stuck forever — drop it from the timeline once
-      // it's been empty for over an hour.
-      if (isEmptyStreaming && ts < staleStreamingCutoff) {
-        continue;
-      }
-      // A reply draft is obsolete the moment the same agent's reply lands as
-      // a *separate* published post: older plugin builds deliver message-tool
-      // replies via a fresh post and only cancel the shimmer draft when the
-      // turn settles, 1-2s later. Skip the draft as soon as a newer published
-      // post from that agent exists instead of showing "Generating…" above
-      // the already-delivered reply.
-      if (
-        isEmptyStreaming
-        && p.post_id > 0
-        && p.agent_id != null
-        && (latestPublishedByAgent.get(p.agent_id) ?? 0) > p.post_id
-      ) {
-        continue;
-      }
-      items.push({ kind: "post", post: p, ts });
-    }
-    for (const e of channelEvents) {
-      items.push({ kind: "event", event: e, ts: parseUtcTimestamp(e.created_at).getTime() });
-    }
-    items.sort((a, b) => {
-      if (a.ts !== b.ts) return a.ts - b.ts;
-      // Tiebreaker: same-second post and event use their numeric id
-      // (post_id and event_id are from independent sequences but the
-      // sort is stable and within a single kind preserves emit order).
-      const aId = a.kind === "post" ? a.post.post_id : a.event.event_id;
-      const bId = b.kind === "post" ? b.post.post_id : b.event.event_id;
-      return aId - bId;
-    });
-    return items;
-  }, [orderedPosts, channelEvents]);
-
-  /** Post-only projection of ``ordered`` for the unread-anchor math —
-   *  unread tracking is post-id-based on the server, so events neither
-   *  count toward the unread cursor nor host the divider. */
-  const orderedForUnread = useMemo<MmChannelPost[]>(
-    () => ordered.filter((r): r is TimelineItem & { kind: "post" } => r.kind === "post").map((r) => r.post),
-    [ordered],
+  const memberList = membersQuery.data?.members;
+  const generatingAgents = useMemo(
+    () => generatingAgentsOf(presence, posts, memberList ?? []),
+    [presence, posts, memberList],
   );
-
-  // Agents currently "generating", surfaced as an ephemeral indicator row
-  // pinned to the bottom of the timeline. Derived purely from presence
-  // (which self-expires via its TTL and is cleared the instant a finished
-  // post lands), so it can never get stranded the way the old fabricated
-  // placeholder post could. An agent already showing a live streaming post
-  // is skipped — that post renders its own shimmer, no need to double up.
-  const generatingAgents = useMemo<{ agentId: string; member: MmChannelMember | null }[]>(() => {
-    const memberList = membersQuery.data?.members ?? [];
-    const out: { agentId: string; member: MmChannelMember | null }[] = [];
-    for (const [key, status] of Object.entries(presence)) {
-      if (status !== "generating") continue;
-      const [kind, id] = key.split(":", 2) as ["agent" | "human", string];
-      if (kind !== "agent" || !id) continue;
-      const hasStreaming = orderedPosts.some(
-        (p) => p.agent_id === id && p.status === "streaming",
-      );
-      if (hasStreaming) continue;
-      out.push({ agentId: id, member: memberList.find((m) => m.agent_id === id) ?? null });
-    }
-    return out;
-  }, [presence, orderedPosts, membersQuery.data?.members]);
-
-  // Multi-message acknowledgement: the current user's own messages that were
-  // fired while an agent is mid-reply and haven't been answered yet. We mark
-  // every such trailing own-message EXCEPT the earliest in the run — the
-  // earliest is what the agent is presumably already working on (covered by the
-  // generating row, so a marker there is noise); the *extra* ones are the gap
-  // (no acknowledgement they were even received). Pure derivation from
-  // positions + presence, so it survives the optimistic→canonical swap and
-  // clears the instant the agent posts anything newer (or its generating
-  // presence expires). A "caught N" pill is intentionally omitted.
-  const queuedOwnPostIds = useMemo<Set<number>>(() => {
-    const set = new Set<number>();
-    if (generatingAgents.length === 0 || !user) return set;
-    let lastAgentIdx = -1;
-    for (let i = orderedPosts.length - 1; i >= 0; i--) {
-      if (orderedPosts[i]?.agent_id) { lastAgentIdx = i; break; }
-    }
-    const ownAfter: number[] = [];
-    for (let i = lastAgentIdx + 1; i < orderedPosts.length; i++) {
-      const p = orderedPosts[i];
-      if (p && p.agent_id == null && p.human_id === user.id) ownAfter.push(p.post_id);
-    }
-    // Skip the earliest unanswered own message; mark the rest.
-    for (let i = 1; i < ownAfter.length; i++) set.add(ownAfter[i]!);
-    return set;
-  }, [generatingAgents.length, orderedPosts, user]);
+  const queuedOwnPostIds = useMemo(
+    () => queuedOwnPostIdsOf(posts, generatingAgents.length > 0, user?.id),
+    [posts, generatingAgents.length, user],
+  );
 
   // Lock the unread anchor on the first render after posts load (only
   // once per channel). After this, the divider stays before the same
@@ -1721,112 +1401,16 @@ export default function ChannelPage() {
     if (anchor) setFirstUnreadPostId(anchor.post_id);
   }, [enteredAtUnread, orderedForUnread, firstUnreadPostId]);
 
-  // Pre-compute per-row decoration flags (grouping, new day, unread
-  // boundary) once so the virtualizer can render each item in
-  // isolation. Without this we'd need to peek at the previous row
-  // from inside the per-item render — but virtualizer items don't
-  // render in sequence.
-  type DecoratedRow =
-    | {
-        kind: "post";
-        post: MmChannelPost;
-        isGroupStart: boolean;
-        /** Last post of a consecutive same-author run — the row that carries the
-         *  avatar in bubble mode (Telegram anchors it to the bottom of a group). */
-        isGroupEnd: boolean;
-        isLatest: boolean;
-        newDay: boolean;
-        showUnreadDivider: boolean;
-        queued: boolean;
-      }
-    | {
-        kind: "event";
-        event: MmChannelEvent;
-        isLatest: boolean;
-        newDay: boolean;
-      }
-    | {
-        kind: "generating";
-        agentId: string;
-        member: MmChannelMember | null;
-      };
-  const rows = useMemo<DecoratedRow[]>(() => {
-    // Unread divider attaches to the first unread *post* — events
-    // never anchor it. Locate that post inside the merged ``ordered``
-    // array (which may have events between posts).
-    const unreadDividerIndex = (() => {
-      if (enteredAtUnread <= 0 || ordered.length === 0) return -1;
-      const targetPostId =
-        firstUnreadPostId ??
-        orderedForUnread[
-          Math.max(0, orderedForUnread.length - enteredAtUnread)
-        ]?.post_id;
-      if (targetPostId == null) return -1;
-      return ordered.findIndex(
-        (r) => r.kind === "post" && r.post.post_id === targetPostId,
-      );
-    })();
-    const tsOf = (item: TimelineItem | null | undefined) =>
-      item == null
-        ? null
-        : item.kind === "post"
-          ? item.post.created_at
-          : item.event.created_at;
-    const decorated = ordered.map((row, i): DecoratedRow => {
-      const prev = i > 0 ? ordered[i - 1] ?? null : null;
-      const prevTs = tsOf(prev);
-      const currTs =
-        row.kind === "post" ? row.post.created_at : row.event.created_at;
-      const newDay = !prev || prevTs == null || !isSameDay(prevTs, currTs);
-      const isLatest = i === ordered.length - 1;
-      if (row.kind === "event") {
-        return { kind: "event", event: row.event, isLatest, newDay };
-      }
-      const post = row.post;
-      // Events break post grouping — sameAuthor only fires when the
-      // previous row is also a post.
-      const sameAuthor =
-        prev?.kind === "post" && samePoster(prev.post, post);
-      const withinWindow =
-        prev != null &&
-        prevTs != null &&
-        parseUtcTimestamp(currTs).getTime() -
-          parseUtcTimestamp(prevTs).getTime() <
-          GROUP_WINDOW_MS;
-      const isReply = post.parent_post_id != null;
-      const isGroupStart =
-        !prev || newDay || !sameAuthor || !withinWindow || isReply;
-      const showUnreadDivider = i === unreadDividerIndex;
-      return {
-        kind: "post",
-        post,
-        isGroupStart,
-        isGroupEnd: true, // provisional; resolved in the look-ahead pass below
-        isLatest,
-        newDay,
-        showUnreadDivider,
-        queued: queuedOwnPostIds.has(post.post_id),
-      };
-    });
-    // Second pass: a post is a group-end unless the row right after it is a
-    // same-author continuation (a post with isGroupStart === false). Events and
-    // the generating indicator break a run, so they leave the current post as an
-    // end. Cheap look-ahead over the already-decorated array.
-    for (let i = 0; i < decorated.length; i++) {
-      const r = decorated[i];
-      if (!r || r.kind !== "post") continue;
-      const next = decorated[i + 1];
-      r.isGroupEnd = !(next?.kind === "post" && !next.isGroupStart);
-    }
-    // Append any "agent is replying" indicators after the last post/event —
-    // they always sit at the very bottom regardless of timestamp.
-    const generatingRows: DecoratedRow[] = generatingAgents.map((g) => ({
-      kind: "generating" as const,
-      agentId: g.agentId,
-      member: g.member,
-    }));
-    return [...decorated, ...generatingRows];
-  }, [ordered, orderedForUnread, enteredAtUnread, firstUnreadPostId, generatingAgents, queuedOwnPostIds]);
+  const rows = useMemo(
+    () => decorateRows({
+      timeline: ordered,
+      enteredAtUnread,
+      firstUnreadPostId,
+      generatingAgents,
+      queuedOwnPostIds,
+    }),
+    [ordered, enteredAtUnread, firstUnreadPostId, generatingAgents, queuedOwnPostIds],
+  );
 
   // Jump target (pinned message, search deep-link, reply quote): once the
   // pending post is present in the rendered rows — which for an off-screen
@@ -1857,7 +1441,7 @@ export default function ChannelPage() {
     };
     settle();
     return () => { cancelAnimationFrame(raf); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [rows]);
 
   // Read ``?msg=<post_id>`` and jump to that message once this channel's
@@ -1866,7 +1450,7 @@ export default function ChannelPage() {
   const handledMsgRef = useRef<string | null>(null);
   useEffect(() => {
     const raw = searchParams.get("msg");
-    if (!raw || !channelId || !postsQuery.data) return;
+    if (!raw || !postsQuery.data) return;
     const token = `${channelId}:${raw}`;
     if (handledMsgRef.current === token) return;
     const postId = Number(raw);
@@ -1955,7 +1539,7 @@ export default function ChannelPage() {
       if (c.channel_type === "direct") continue;
       const key = c.name.toLowerCase();
       if (channelsByToken.has(key)) continue;
-      channelsByToken.set(key, c as MmChannel);
+      channelsByToken.set(key, c);
     }
 
     return {
@@ -2011,7 +1595,7 @@ export default function ChannelPage() {
   // any other state changes). Cheap — empty channels short-circuit.
   const [autoMentionNow, setAutoMentionNow] = useState<number>(() => Date.now());
   useEffect(() => {
-    const handle = window.setInterval(() => setAutoMentionNow(Date.now()), 30_000);
+    const handle = window.setInterval(() => { setAutoMentionNow(Date.now()); }, 30_000);
     return () => { window.clearInterval(handle); };
   }, []);
 
@@ -2074,11 +1658,11 @@ export default function ChannelPage() {
   // screen-reader fallback label is composed below from the same list.
   const activityPeople = useMemo(() => {
     const members = membersQuery.data?.members ?? [];
-    type Entry = {
+    interface Entry {
       key: string;
       displayName: string;
       status: "typing" | "generating";
-    };
+    }
     const out: Entry[] = [];
     for (const [key, status] of Object.entries(presence)) {
       const [kind, id] = key.split(":", 2) as ["agent" | "human", string];
@@ -2102,10 +1686,11 @@ export default function ChannelPage() {
     const typing = activityPeople.filter(p => p.status === "typing").map(p => p.displayName);
     const generating = activityPeople.filter(p => p.status === "generating").map(p => p.displayName);
     const fmt = (names: string[], suffix: string) => {
+      const [first = "", second = ""] = names;
       if (names.length === 0) return null;
-      if (names.length === 1) return `${names[0]} is ${suffix}`;
-      if (names.length === 2) return `${names[0]} and ${names[1]} are ${suffix}`;
-      return `${names[0]}, ${names[1]} and ${names.length - 2} others are ${suffix}`;
+      if (names.length === 1) return `${first} is ${suffix}`;
+      if (names.length === 2) return `${first} and ${second} are ${suffix}`;
+      return `${first}, ${second} and ${names.length - 2} others are ${suffix}`;
     };
     const parts: string[] = [];
     const t = fmt(typing, "typing…");
@@ -2189,7 +1774,7 @@ export default function ChannelPage() {
         }
         actions={
           <>
-            {channelId && (pinnedQuery.data?.posts.length ?? 0) > 0 && (
+            {(pinnedQuery.data?.posts.length ?? 0) > 0 && (
               <PinnedPill
                 pins={pinnedQuery.data?.posts ?? []}
                 loading={pinnedQuery.isLoading}
@@ -2322,12 +1907,12 @@ export default function ChannelPage() {
                   : `generating-${row.agentId}`
             }
             composerHeightPx={composerHeight}
-            prependShift={prependShiftRef.current}
-            hasMoreHistory={hasMoreHistoryEffective}
-            onLoadOlder={() => { void loadMoreHistory(); }}
-            hasMoreNewer={anchor?.hasNewer ?? false}
-            onLoadNewer={() => { void loadMoreNewer(); }}
-            autoStickToBottom={!isAnchored}
+            prependShift={history.prependShift.current}
+            hasMoreHistory={history.hasMoreOlder}
+            onLoadOlder={() => { void history.loadMoreOlder(); }}
+            hasMoreNewer={history.hasMoreNewer}
+            onLoadNewer={() => { void history.loadMoreNewer(); }}
+            autoStickToBottom={!history.isAnchored}
             onAtBottomChange={setIsAtBottom}
             renderRow={(row) => {
               if (row.kind === "generating") {
@@ -2355,12 +1940,12 @@ export default function ChannelPage() {
                       }
                     />
                   )}
-                  {isLoadingMore && isFirstRow && (
+                  {history.isLoadingMore && isFirstRow && (
                     <div role="status" aria-label="Loading earlier messages" className="pb-2">
                       <MessageSkeletons count={3} />
                     </div>
                   )}
-                  {!hasMoreHistoryEffective && isFirstRow && (
+                  {!history.hasMoreOlder && isFirstRow && (
                     <p className="py-2 text-center text-[11px] text-muted-foreground/60">
                       That's the beginning of the conversation.
                     </p>
@@ -2481,10 +2066,10 @@ export default function ChannelPage() {
         onSubmit={handleSend}
         onEditLast={editLastOwnMessage}
         isSending={sendMutation.isPending}
-        isChatAtBottom={isAnchored ? false : isAtBottom}
+        isChatAtBottom={history.isAnchored ? false : isAtBottom}
         onScrollChatToBottom={
-          isAnchored
-            ? returnToPresent
+          history.isAnchored
+            ? history.returnToPresent
             : () => { messageListRef.current?.scrollToBottom("smooth"); }
         }
         activityLabel={activityLabel}

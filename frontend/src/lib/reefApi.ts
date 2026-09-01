@@ -702,7 +702,7 @@ export const reefBuildJob = (baseUrl: string, id: string) =>
 /** Re-point the floating active tag at an existing image (rollback / promote).
  *  Affects every newly-created VM fleet-wide — gate behind a confirm. (204) */
 export const reefActivateImage = (baseUrl: string, tag: string) =>
-  reefReq<void>(baseUrl, "/images/activate", { auth: true, method: "POST", body: { tag } })
+  reefReq<undefined>(baseUrl, "/images/activate", { auth: true, method: "POST", body: { tag } })
 
 /** Recreate one agent VM on the active image. The named volumes survive, the
  *  container rootfs does not. */

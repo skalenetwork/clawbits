@@ -7,6 +7,7 @@ import {
   channelLinksQueryKey,
 } from "@/hooks/useChannelFileList";
 import { parseUtcTimestamp } from "@/lib/formatting";
+import { useLatestRef } from "@/hooks/useLatestRef";
 import { stitchThinkingTail } from "@/lib/thinkingStitch";
 import { useAgentPresence } from "@/hooks/useAgentPresence";
 import { useUserPresence } from "@/hooks/useUserPresence";
@@ -211,11 +212,9 @@ export function useChannelEvents(
 } {
   const qc = useQueryClient();
   const userPresence = useUserPresence();
-  const userPresenceRef = useRef(userPresence);
-  userPresenceRef.current = userPresence;
+  const userPresenceRef = useLatestRef(userPresence);
   const agentPresence = useAgentPresence();
-  const agentPresenceRef = useRef(agentPresence);
-  agentPresenceRef.current = agentPresence;
+  const agentPresenceRef = useLatestRef(agentPresence);
   const [presence, setPresence] = useState<PresenceMap>({});
   const [activity, setActivity] = useState<ActivityMap>({});
   const [toolTimelines, setToolTimelines] = useState<ToolTimelineMap>({});
@@ -278,28 +277,24 @@ export function useChannelEvents(
         // Only drop if the visible status is still the one we armed — a
         // fresh broadcast may have replaced it with something sticky.
         if (prev[key] !== status) return prev;
-        const next = { ...prev };
-        delete next[key];
+        const { [key]: _dropped, ...next } = prev;
         return next;
       });
       // The activity detail + accumulated tool timeline ride the same TTL as
       // their status entry.
       setActivity((prev) => {
         if (!(key in prev)) return prev;
-        const next = { ...prev };
-        delete next[key];
+        const { [key]: _dropped, ...next } = prev;
         return next;
       });
       setToolTimelines((prev) => {
         if (!(key in prev)) return prev;
-        const next = { ...prev };
-        delete next[key];
+        const { [key]: _dropped, ...next } = prev;
         return next;
       });
       setThinkingTimelines((prev) => {
         if (!(key in prev)) return prev;
-        const next = { ...prev };
-        delete next[key];
+        const { [key]: _dropped, ...next } = prev;
         return next;
       });
     }, ms);
@@ -314,21 +309,20 @@ export function useChannelEvents(
       setActivity((prev) => {
         if (act) return { ...prev, [key]: act };
         if (!(key in prev)) return prev;
-        const next = { ...prev };
-        delete next[key];
+        const { [key]: _dropped, ...next } = prev;
         return next;
       });
       // Accumulate the ordered reasoning timeline. A ``thinking`` update carries
       // the newest tail of the CURRENT burst (rolling, latest-wins) — so we keep
       // updating the open segment in place, and only start a new segment once a
       // tool call has closed the previous one (handled in the tool block below).
-      if (act && act.kind === "thinking") {
+      if (act?.kind === "thinking") {
         const text = act.label?.trim();
         if (text) {
           setThinkingTimelines((prev) => {
             const cur = prev[key] ?? [];
             const last = cur[cur.length - 1];
-            if (last && last.status === "running") {
+            if (last?.status === "running") {
               // Same burst still streaming → weld the new tail onto the text
               // reconstructed so far (recovers the earlier reasoning a plain
               // latest-wins would drop). The live status line keeps using the
@@ -356,7 +350,7 @@ export function useChannelEvents(
           const cur = prev[key];
           if (!cur || cur.length === 0) return prev;
           const last = cur[cur.length - 1];
-          if (!last || last.status !== "running") return prev;
+          if (last?.status !== "running") return prev;
           const next = cur.slice();
           next[next.length - 1] = { ...last, status: "done" };
           return { ...prev, [key]: next };
@@ -368,7 +362,7 @@ export function useChannelEvents(
             const toolName = act.tool ?? "";
             // Continuation of the still-running step (label/command tick) →
             // update in place; otherwise it's a new step.
-            if (last && last.status === "running" && last.tool === toolName) {
+            if (last?.status === "running" && last.tool === toolName) {
               if (!act.label || act.label === last.label) return prev;
               const next = cur.slice();
               next[next.length - 1] = { ...last, label: act.label };
@@ -422,16 +416,14 @@ export function useChannelEvents(
   const clearToolTimeline = useCallback((key: string) => {
     setToolTimelines((prev) => {
       if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
+      const { [key]: _dropped, ...next } = prev;
       return next;
     });
   }, []);
   const clearThinkingTimeline = useCallback((key: string) => {
     setThinkingTimelines((prev) => {
       if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
+      const { [key]: _dropped, ...next } = prev;
       return next;
     });
   }, []);
@@ -439,14 +431,12 @@ export function useChannelEvents(
     clearTtl(key);
     setPresence((prev) => {
       if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
+      const { [key]: _dropped, ...next } = prev;
       return next;
     });
     setActivity((prev) => {
       if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
+      const { [key]: _dropped, ...next } = prev;
       return next;
     });
     clearToolTimeline(key);

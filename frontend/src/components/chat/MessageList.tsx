@@ -85,11 +85,11 @@ export interface MessageListProps<T> {
   /** Extract a stable React key. Should be the post id (or a synthetic
    *  one for optimistic rows). Used both as the React key and indirectly
    *  via the order of ``rows`` for virtua's internal item cache. */
-  getRowKey(row: T, index: number): string | number;
+  getRowKey: (row: T, index: number) => string | number;
   /** Render one row. The MessageList wraps the result in the virtualizer-
    *  managed positioning element — the parent shouldn't add absolute
    *  positioning or fixed heights itself. */
-  renderRow(row: T, index: number): ReactNode;
+  renderRow: (row: T, index: number) => ReactNode;
   /** Identifier for the conversation being shown. When this changes the
    *  list resets its stick-to-bottom + prepend state and jumps to the
    *  bottom on first paint. Keep stable across renders of the same
@@ -129,7 +129,7 @@ export interface MessageListProps<T> {
    *  the top. The parent's implementation should be single-flight —
    *  this list debounces internally via an in-flight ref but the parent
    *  must also tolerate being called twice (state-after-cleanup race). */
-  onLoadOlder(): void;
+  onLoadOlder: () => void;
   /** Whether newer history is loadable. True only while the viewer is reading
    *  an *anchored* window below the live tail (after a jump to an off-screen
    *  message). On the live tail there is nothing newer, so the bottom-edge
@@ -138,7 +138,7 @@ export interface MessageListProps<T> {
   /** Called when the user scrolls within ``loadNewerThresholdPx`` of the
    *  bottom while ``hasMoreNewer`` is true — scroll-down through an anchored
    *  window. Single-flight mirror of ``onLoadOlder``. */
-  onLoadNewer?(): void;
+  onLoadNewer?: () => void;
   /** Distance (px) from the bottom edge that triggers a newer-history load.
    *  Mirror of ``loadOlderThresholdPx``. */
   loadNewerThresholdPx?: number;
@@ -528,7 +528,7 @@ export const MessageList = forwardRef(function MessageList<T>(
             the virtualizer drives the layout. */}
         <div className="flex-grow" />
         <Virtualizer
-          ref={virtRef as React.Ref<VirtualizerHandle>}
+          ref={virtRef}
           shift={prependShift}
           startMargin={startMarginPx}
           scrollRef={scrollRef}

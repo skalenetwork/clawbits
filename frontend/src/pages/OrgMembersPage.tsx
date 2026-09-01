@@ -132,7 +132,7 @@ export default function OrgMembersPage() {
         },
     });
 
-    const handleAdd = (e: React.FormEvent) => {
+    const handleAdd = (e: React.SubmitEvent) => {
         e.preventDefault();
         const trimmed = email.trim();
         if (!trimmed) return;

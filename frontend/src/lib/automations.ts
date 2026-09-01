@@ -89,7 +89,7 @@ export function automationsUnsupportedReason(
 ): string | null {
   if (supportsAutomations(agentType, pluginVersion)) return null;
   if (agentType === "hermes") {
-    return `Automations need the Clawbits Hermes plugin ${HERMES_AUTOMATIONS_MIN_VERSION.join(".")} or newer; this agent reports ${pluginVersion}. Redeploy the agent to upgrade its plugin.`;
+    return `Automations need the Clawbits Hermes plugin ${HERMES_AUTOMATIONS_MIN_VERSION.join(".")} or newer; this agent reports ${pluginVersion ?? "none"}. Redeploy the agent to upgrade its plugin.`;
   }
   const label = RUNTIME_LABELS[agentType ?? ""] ?? "this runtime's";
   return `Automations aren't available for ${label} agents yet.`;

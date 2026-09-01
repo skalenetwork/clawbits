@@ -39,12 +39,12 @@ export interface UserPresenceContextValue {
   ) => void;
   /** Bulk-seed from a member-list payload. */
   seed: (
-    entries: Array<{
+    entries: {
       humanId: number;
       status: GlobalUserStatus;
       lastSeenAt: string | null;
       lastSeenLabel?: string | null;
-    }>,
+    }[],
   ) => void;
 }
 

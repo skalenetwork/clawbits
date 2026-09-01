@@ -56,7 +56,7 @@ export function DesktopTitleBar() {
         >
           <button
             type="button"
-            onClick={() => { navigate(-1); }}
+            onClick={() => { void navigate(-1); }}
             title="Back (⌘[)"
             aria-label="Go back"
             className={`ml-2 ${NAV_BUTTON_CLASS}`}
@@ -65,7 +65,7 @@ export function DesktopTitleBar() {
           </button>
           <button
             type="button"
-            onClick={() => { navigate(1); }}
+            onClick={() => { void navigate(1); }}
             title="Forward (⌘])"
             aria-label="Go forward"
             className={NAV_BUTTON_CLASS}

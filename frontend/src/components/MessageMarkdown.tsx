@@ -58,7 +58,7 @@ function preserveBlankLines(src: string): string {
           inFence = true;
           fenceChar = run.charAt(0);
           fenceLen = run.length;
-        } else if (run.charAt(0) === fenceChar && run.length >= fenceLen) {
+        } else if (run.startsWith(fenceChar) && run.length >= fenceLen) {
           inFence = false;
         }
         inTable = false;
@@ -208,7 +208,7 @@ function tokenizeMentions(text: string, mentions: MessageMentions): ReactNode[] 
       continue;
     }
     const isPrimaryAgent =
-      mentions.primaryAgentToken && token === mentions.primaryAgentToken.toLowerCase();
+      token === mentions.primaryAgentToken?.toLowerCase();
     const isAgent = mentions.agentTokens.has(token);
     const isHuman = mentions.humanTokens.has(token);
     let className: string;
@@ -229,7 +229,7 @@ function tokenizeMentions(text: string, mentions: MessageMentions): ReactNode[] 
       className = unresolvedClass;
       title = undefined;
     }
-    const isResolved = Boolean(isPrimaryAgent || isAgent || isHuman);
+    const isResolved = isPrimaryAgent || isAgent || isHuman;
     const member = isResolved ? mentions.memberByToken?.get(token) : undefined;
     // Canonicalise the displayed handle when we can resolve the writer
     // to a known member, so a body that contains ``@stanlee`` renders as
@@ -310,7 +310,7 @@ function buildComponents(mentions: MessageMentions | undefined): Components {
       </a>
     ),
     code: ({ className, children }) => {
-      const isBlock = /language-/.test(className ?? "");
+      const isBlock = (className ?? "").includes('language-');
       // Block-level <code> is wrapped in <pre> below — return as-is so
       // <pre> can extract the raw text and language for shiki.
       if (isBlock) return <code className={className}>{children}</code>;
@@ -381,14 +381,21 @@ function buildComponents(mentions: MessageMentions | undefined): Components {
   };
 }
 
+// Chat bodies keep the author's line breaks verbatim; a standalone markdown
+// document follows CommonMark, so hard-wrapped paragraphs reflow.
+const CHAT_PLUGINS = [remarkGfm, remarkBreaks];
+const DOCUMENT_PLUGINS = [remarkGfm];
+
 export const MessageMarkdown = memo(function MessageMarkdown({
   content,
   className,
   mentions,
+  variant = "message",
 }: {
   content: string;
   className?: string;
   mentions?: MessageMentions;
+  variant?: "message" | "document";
 }) {
   // Telegram-style jumbo render when the body is *only* emojis. Skips the
   // markdown pipeline entirely — there's nothing for remark to parse, and
@@ -399,9 +406,13 @@ export const MessageMarkdown = memo(function MessageMarkdown({
   // it (and thus react-markdown's internals) on every render.
   const components = useMemo(() => buildComponents(mentions), [mentions]);
 
-  // Keep the blank lines the user typed (CommonMark would otherwise collapse
-  // every run of them into one paragraph break). See `preserveBlankLines`.
-  const prepared = useMemo(() => preserveBlankLines(content), [content]);
+  // Chat keeps the blank lines the author typed (CommonMark would otherwise
+  // collapse every run of them into one paragraph break); a document is read
+  // as written. See `preserveBlankLines`.
+  const prepared = useMemo(
+    () => (variant === "document" ? content : preserveBlankLines(content)),
+    [content, variant],
+  );
 
   if (emojiCount > 0) {
     return (
@@ -420,7 +431,7 @@ export const MessageMarkdown = memo(function MessageMarkdown({
   return (
     <div className={cn("text-[15px] leading-relaxed text-foreground break-words", className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={variant === "document" ? DOCUMENT_PLUGINS : CHAT_PLUGINS}
         components={components}
         skipHtml
       >

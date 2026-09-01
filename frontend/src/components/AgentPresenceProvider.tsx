@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   AgentPresenceContext,
   type AgentPresenceContextValue,
@@ -22,15 +15,14 @@ const TICK_MS = 30_000;
 /**
  * Provider for the in-memory map of agent global liveness.
  *
- * Mirrors ``UserPresenceProvider`` (map held in a ref, swapped on each update
- * so subscribers re-render), with one addition: a ticking ``now`` so
+ * Mirrors ``UserPresenceProvider``, with one addition: a ticking ``now`` so
  * ``useAgentStatus`` flips ``available -> offline`` when the window elapses
  * without any new event.
  */
 export function AgentPresenceProvider({ children }: { children: ReactNode }) {
-  const byAgentIdRef = useRef(new Map<string, string | null>());
-  const [, setTick] = useState(0);
-  const bump = useCallback(() => { setTick((n) => n + 1); }, []);
+  // The map is replaced (never mutated) on every real change and returned
+  // as-is otherwise, so subscribers re-render exactly when something moved.
+  const [byAgentId, setByAgentId] = useState<Map<string, string | null>>(() => new Map());
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -38,22 +30,17 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
     return () => { clearInterval(id); };
   }, []);
 
-  const set = useCallback(
-    (agentId: string, lastAliveAt: string | null) => {
-      const prev = byAgentIdRef.current;
-      if (prev.has(agentId) && prev.get(agentId) === lastAliveAt) return;
-      const next = new Map(prev);
-      next.set(agentId, lastAliveAt);
-      byAgentIdRef.current = next;
-      bump();
-    },
-    [bump],
-  );
+  const set = useCallback((agentId: string, lastAliveAt: string | null) => {
+    setByAgentId((prev) => {
+      if (prev.has(agentId) && prev.get(agentId) === lastAliveAt) return prev;
+      return new Map(prev).set(agentId, lastAliveAt);
+    });
+  }, []);
 
-  const seed = useCallback(
-    (entries: { agentId: string; lastAliveAt: string | null }[]) => {
-      if (entries.length === 0) return;
-      const next = new Map(byAgentIdRef.current);
+  const seed = useCallback((entries: { agentId: string; lastAliveAt: string | null }[]) => {
+    if (entries.length === 0) return;
+    setByAgentId((prev) => {
+      const next = new Map(prev);
       let changed = false;
       for (const e of entries) {
         if (!next.has(e.agentId) || next.get(e.agentId) !== e.lastAliveAt) {
@@ -61,19 +48,14 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
           changed = true;
         }
       }
-      if (!changed) return;
-      byAgentIdRef.current = next;
-      bump();
-    },
-    [bump],
-  );
+      return changed ? next : prev;
+    });
+  }, []);
 
   const value = useMemo<AgentPresenceContextValue>(() => {
-    const state: AgentPresenceState = { byAgentId: byAgentIdRef.current, now };
+    const state: AgentPresenceState = { byAgentId, now };
     return { state, set, seed };
-    // Depends on the Map identity (swapped on each update) + the clock tick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [byAgentIdRef.current, now, set, seed]);
+  }, [byAgentId, now, set, seed]);
 
   return (
     <AgentPresenceContext.Provider value={value}>

@@ -14,7 +14,12 @@ import {Breadcrumbs, type Crumb} from "@/components/Breadcrumbs";
  * header) PageHeader renders nothing.
  */
 const PageHeaderSlotContext = createContext<HTMLElement | null>(null);
-export const PageHeaderSlotProvider = PageHeaderSlotContext.Provider;
+
+export function PageHeaderSlotProvider(
+    {value, children}: {value: HTMLElement | null; children: ReactNode},
+) {
+    return <PageHeaderSlotContext.Provider value={value}>{children}</PageHeaderSlotContext.Provider>;
+}
 
 interface PageHeaderProps {
     /** Hugeicons glyph before the title. Ignored when ``leading`` is set. */

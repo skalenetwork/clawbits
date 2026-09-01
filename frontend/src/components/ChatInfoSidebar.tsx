@@ -17,7 +17,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { errMsg } from "@/lib/toast";
 import { ChannelMemberRow, type MemberKind } from "./ChannelMemberRow";
 import ManageMembersDialog from "./AddMemberDialog";
-import { ProfileMenuProvider, useProfileMenuTrigger } from "@/components/ProfileMenu";
+import { ProfileMenuProvider } from "@/components/ProfileMenu";
+import { useProfileMenuTrigger } from "@/components/profileMenuContext";
 import { mentionHandle } from "@/lib/messageHelpers";
 
 interface ChatInfoSidebarProps {

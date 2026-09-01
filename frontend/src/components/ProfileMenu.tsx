@@ -16,10 +16,8 @@
 // count.
 
 import {
-  createContext,
   memo,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
@@ -54,23 +52,15 @@ import {
 } from "@/lib/api";
 import { generateAgentDescription } from "@/lib/agentDescription";
 import { queryKeys } from "@/lib/queryKeys";
+import {
+  ProfileMenuContext,
+  useProfileMenuTrigger,
+  type ProfileMenuContextValue,
+  type ProfileMenuTarget,
+} from "@/components/profileMenuContext";
 import { useActiveOrg } from "@/hooks/useActiveOrg";
 import { formatRelativeShort, resolveLastSeen } from "@/lib/formatting";
 import { toast } from "@/lib/toast";
-
-interface ProfileMenuTarget {
-  member: MmChannelMember;
-  /** Literal "@handle" used as the secondary line and copy/mention payload. */
-  handleText: string;
-  /** Anchor element the popover should align to. */
-  anchor: HTMLElement;
-}
-
-interface ProfileMenuContextValue {
-  open: (target: ProfileMenuTarget) => void;
-}
-
-const ProfileMenuContext = createContext<ProfileMenuContextValue | null>(null);
 
 interface ProfileMenuProviderProps {
   orgId?: string | null;
@@ -117,25 +107,6 @@ export function ProfileMenuProvider({
         />
       )}
     </ProfileMenuContext.Provider>
-  );
-}
-
-/** Hook the trigger components use. Returns a click handler that opens
- *  the shared popover anchored at the clicked element. Safe to call
- *  outside the provider — without a provider the handler is a no-op. */
-export function useProfileMenuTrigger(
-  member: MmChannelMember | null,
-  handleText: string,
-): (e: React.MouseEvent<HTMLElement>) => void {
-  const ctx = useContext(ProfileMenuContext);
-  return useCallback(
-    (e: React.MouseEvent<HTMLElement>) => {
-      if (!ctx || !member) return;
-      e.preventDefault();
-      e.stopPropagation();
-      ctx.open({ member, handleText, anchor: e.currentTarget });
-    },
-    [ctx, member, handleText],
   );
 }
 
@@ -248,7 +219,7 @@ function SharedProfileMenuPopover({
     },
     onSuccess: (channel) => {
       onClose();
-      navigate(`/channels/${channel.channel_id}`);
+      void navigate(`/channels/${channel.channel_id}`);
     },
     onError: (err: unknown) => {
       toast.error(err instanceof Error ? err.message : "Could not open DM");
@@ -305,13 +276,13 @@ function SharedProfileMenuPopover({
   const goToAgentProfile = () => {
     onClose();
     if (isAgent && member.agent_id) {
-      navigate(`/agents/${encodeURIComponent(member.agent_id)}`);
+      void navigate(`/agents/${encodeURIComponent(member.agent_id)}`);
     }
   };
 
   const goToEditProfile = () => {
     onClose();
-    navigate("/settings/profile");
+    void navigate("/settings/profile");
   };
 
   const hasDetailRow =
@@ -487,7 +458,7 @@ function SharedProfileMenuPopover({
                     <ActionButton
                       icon={BubbleChatIcon}
                       label={openDmMutation.isPending ? "Opening…" : "Send message"}
-                      onClick={() => openDmMutation.mutate()}
+                      onClick={() => { openDmMutation.mutate(); }}
                       disabled={openDmMutation.isPending}
                     />
                   )}
@@ -518,7 +489,7 @@ function SharedProfileMenuPopover({
                           ? "Refreshing description…"
                           : "Refresh description"
                       }
-                      onClick={() => regenDescMutation.mutate()}
+                      onClick={() => { regenDescMutation.mutate(); }}
                       disabled={regenDescMutation.isPending || descriptionRegenPending}
                     />
                   )}

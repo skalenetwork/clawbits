@@ -28,7 +28,7 @@ const URL_RE = new RegExp(String.raw`https?://${URL_BODY}`, "gi");
 // when it sits at the very end (``check this out: https://example.com.``
 // — the trailing period is the sentence terminator). Stripped after
 // extraction.
-const TRAILING_JUNK_RE = /[.,;:!?\)\]\}'"]+$/;
+const TRAILING_JUNK_RE = /[.,;:!?)\]}'"]+$/;
 
 export const MAX_URLS_PER_MESSAGE = 3;
 

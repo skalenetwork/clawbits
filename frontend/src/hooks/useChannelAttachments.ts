@@ -247,7 +247,7 @@ export function useChannelAttachments(
         for (const a of next) {
           // Defer to a microtask so we don't pile uploads onto the same
           // tick as the state set.
-          queueMicrotask(() => runUpload(a.localId, a.file));
+          queueMicrotask(() => { void runUpload(a.localId, a.file); });
         }
         return [...prev, ...next];
       });
@@ -273,7 +273,7 @@ export function useChannelAttachments(
     if (fileIdToCleanup) {
       // Fire-and-forget — the UI doesn't wait. Orphan GC catches anything
       // that slips through.
-      void deleteMmFile(fileIdToCleanup).catch(() => {});
+      void deleteMmFile(fileIdToCleanup).catch(() => { /* best-effort */ });
     }
   }, []);
 
@@ -290,7 +290,7 @@ export function useChannelAttachments(
   );
   const uploadedFileIds = attachments
     .filter((a) => a.status === "uploaded" && a.fileId)
-    .map((a) => a.fileId as string);
+    .map((a) => a.fileId!);
   const isReadyToSend =
     attachments.length === 0 || (!isUploading && uploadedFileIds.length === attachments.length);
 

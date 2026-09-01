@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useState, useSyncExternalStore } from "react";
 import { randomGeneratingWord } from "@/lib/generatingWords";
 
 /**
@@ -91,8 +91,6 @@ function subscribeAgentWord(key: string, onChange: () => void): () => void {
   };
 }
 
-let fallbackWordSeq = 0;
-
 /**
  * Rotating gerund shared across every indicator for a given agent. Pass the
  * agent id so the presence row and the streaming draft stay in lockstep; when
@@ -100,12 +98,8 @@ let fallbackWordSeq = 0;
  * still behaves like a private {@link useGeneratingWord}.
  */
 export function useAgentGeneratingWord(agentId: string | undefined): string {
-  const fallbackId = useRef<string | null>(null);
-  if (fallbackId.current === null) {
-    fallbackWordSeq += 1;
-    fallbackId.current = `__fallback:${String(fallbackWordSeq)}`;
-  }
-  const key = agentId ?? fallbackId.current;
+  const fallbackId = useId();
+  const key = agentId ?? `__fallback:${fallbackId}`;
   const subscribe = useCallback((onChange: () => void) => subscribeAgentWord(key, onChange), [key]);
   const getSnapshot = useCallback(() => getOrCreateWordEntry(key).word, [key]);
   return useSyncExternalStore(subscribe, getSnapshot);

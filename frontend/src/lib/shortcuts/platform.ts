@@ -8,7 +8,7 @@
 
 export const isMac =
     typeof navigator !== "undefined" &&
-    /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+    /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
 
 export const modGlyph = isMac ? "⌘" : "Ctrl";
 

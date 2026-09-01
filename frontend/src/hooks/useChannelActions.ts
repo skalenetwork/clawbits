@@ -146,7 +146,7 @@ export function useChannelActions(): ChannelActions {
     const confirmAndLeave = useCallback(
         async (channel: MmChannel) => {
             if (!user) return;
-            let lastHuman = false;
+            let lastHuman: boolean;
             let hasAgent = false;
             try {
                 const {members} = await listMmChannelMembers(channel.channel_id);

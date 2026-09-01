@@ -158,6 +158,30 @@ def test_request_upload_url_bad_mime(test_client):
     assert r.status_code == 415, r.text
 
 
+def test_request_upload_resolves_type_from_extension(test_client):
+    # Pickers hand back ``application/octet-stream`` for anything but media;
+    # the server names the file from its extension instead of rejecting it.
+    reg = register_human(test_client, "doc@test.com")
+    cid = _make_channel(test_client, reg["access_token"], "files-4b")
+    for filename, expected in (
+        ("report.docx", "application/vnd.openxmlformats-officedocument"
+                        ".wordprocessingml.document"),
+        ("legacy.doc", "application/msword"),
+        ("sheet.xlsx", "application/vnd.openxmlformats-officedocument"
+                       ".spreadsheetml.sheet"),
+        ("app.tsx", "text/plain"),
+        ("bundle.tar.gz", "application/gzip"),
+    ):
+        out = _request_upload(
+            test_client,
+            reg["access_token"],
+            cid,
+            filename=filename,
+            content_type="application/octet-stream",
+        )
+        assert out["upload_headers"]["Content-Type"] == expected, filename
+
+
 def test_request_upload_url_not_member(test_client):
     # Alice creates the channel; Eve (not a member) tries to upload.
     alice = register_human(test_client, "alice2@test.com")
