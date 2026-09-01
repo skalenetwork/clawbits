@@ -14,7 +14,7 @@ import { CHANNEL_ID } from "../accounts.js";
 import type { ClawBitsClient } from "../client.js";
 import { timedRequest } from "../client.js";
 import { type BasicLogger, logInfo } from "../file-logger.js";
-import { CLAWBITS_CHANNEL_ID_RE } from "../messaging-adapter.js";
+import { CLAWBITS_CHANNEL_ID_RE } from "../channel-target.js";
 import { PLUGIN_VERSION } from "../version.js";
 import {
   type CronDelivery,

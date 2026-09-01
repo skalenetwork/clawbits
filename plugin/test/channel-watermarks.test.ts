@@ -74,6 +74,19 @@ describe("ChannelWatermarkStore", () => {
     });
   });
 
+  it("shares one in-flight load across concurrent account pollers", async () => {
+    await withTempFile(async (path) => {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(path, JSON.stringify({ acct: { "email:inbox": 42 } }), "utf8");
+      const store = new ChannelWatermarkStore(path);
+      const first = store.load();
+      const second = store.load();
+      assert.equal(first, second);
+      await Promise.all([first, second]);
+      assert.equal(store.get("acct", "email:inbox"), 42);
+    });
+  });
+
   it("load is idempotent (only the first call reads)", async () => {
     await withTempFile(async (path) => {
       const { writeFile } = await import("node:fs/promises");
@@ -86,5 +99,51 @@ describe("ChannelWatermarkStore", () => {
       await store.load();
       assert.equal(store.get("acct", "chan"), 42);
     });
+  });
+
+  it("migrates only email progress into a separately owned state file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clawbits-email-wm-"));
+    try {
+      const legacyPath = join(dir, "clawbits-channel-state.json");
+      const emailPath = join(dir, "clawbits-email-state.json");
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(
+        legacyPath,
+        JSON.stringify({ acct: { room: 100, "cursor:room": 90, "email:inbox": 77 } }),
+        "utf8",
+      );
+      const email = new ChannelWatermarkStore(emailPath, {
+        migrationPath: legacyPath,
+        migrationChannelId: "email:inbox",
+      });
+      await email.load();
+      assert.equal(email.get("acct", "email:inbox"), 77);
+      assert.equal(email.get("acct", "room"), undefined);
+      await email.flush();
+      assert.deepEqual(JSON.parse(await readFile(emailPath, "utf8")), {
+        acct: { "email:inbox": 77 },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers existing companion email state over legacy state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clawbits-email-wm-"));
+    try {
+      const legacyPath = join(dir, "legacy.json");
+      const emailPath = join(dir, "email.json");
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(legacyPath, JSON.stringify({ acct: { "email:inbox": 77 } }), "utf8");
+      await writeFile(emailPath, JSON.stringify({ acct: { "email:inbox": 99 } }), "utf8");
+      const email = new ChannelWatermarkStore(emailPath, {
+        migrationPath: legacyPath,
+        migrationChannelId: "email:inbox",
+      });
+      await email.load();
+      assert.equal(email.get("acct", "email:inbox"), 99);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -99,7 +99,7 @@ export async function emailCount(
 export async function emailInbox(
   client: ClawBitsClient,
   agentId: string,
-  opts: { limit?: number; offset?: number } = {},
+  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {},
 ): Promise<EmailListResponse> {
   const params = new URLSearchParams();
   if (typeof opts.limit === "number" && Number.isFinite(opts.limit) && opts.limit > 0) {
@@ -112,6 +112,7 @@ export async function emailInbox(
   return client.request<EmailListResponse>(
     "GET",
     `${emailBase(client, agentId)}/inbox${query ? `?${query}` : ""}`,
+    { signal: opts.signal },
   );
 }
 
@@ -120,10 +121,12 @@ export async function emailGet(
   client: ClawBitsClient,
   agentId: string,
   messageUid: number | string,
+  signal?: AbortSignal,
 ): Promise<EmailDetail> {
   return client.request<EmailDetail>(
     "GET",
     `${emailBase(client, agentId)}/${client.encodePath(String(messageUid))}`,
+    { signal },
   );
 }
 
@@ -133,10 +136,11 @@ export async function emailSend(
   agentId: string,
   body: EmailSendRequest,
   answer: ChallengeAnswer,
+  signal?: AbortSignal,
 ): Promise<EmailSendResponse> {
   return client.request<EmailSendResponse>(
     "POST",
     `${emailBase(client, agentId)}/send`,
-    { json: body, challenge: answer },
+    { json: body, challenge: answer, ...(signal ? { signal } : {}) },
   );
 }

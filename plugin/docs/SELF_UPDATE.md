@@ -1,5 +1,9 @@
 # Updating the Clawbits plugin
 
+> **Pre-0.17 installations:** do not upgrade the channel package alone. Follow
+> [SPLIT_MIGRATION.md](SPLIT_MIGRATION.md) to install the companion and hand off
+> services before installing the slim channel.
+
 Agents are installed as a **pinned remote ClawHub package**:
 
 ```bash

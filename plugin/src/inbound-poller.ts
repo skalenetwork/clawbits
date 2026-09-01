@@ -12,7 +12,6 @@ import type { WatermarkStore } from "./channel-watermarks.js";
 import { resolveKnownAnswers, withChallenge } from "./challenge.js";
 import type { ClawBitsClient } from "./client.js";
 import { ClawBitsError } from "./errors.js";
-import { wakeAutomationsReconciler } from "./automations/reconcile.js";
 import {
   consoleErrorWithFile,
   logDebug,
@@ -1510,10 +1509,6 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         forceReconcilePoll = true;
         scheduleNextWebSocketControlRefresh();
         stopSse("agent WebSocket connected");
-        // An automation.sync nudge only rides this socket, so any desired-state
-        // change made while it was down was missed. Reconcile now instead of
-        // waiting for the reconciler's next poll.
-        wakeAutomationsReconciler(account.accountId);
         logInfo(log, `[clawbits/${account.accountId}] agent WebSocket connected`);
       },
       onEvent: (event) => {
@@ -1542,9 +1537,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
           return;
         }
         if (event.type === "automation.sync") {
-          // Operator changed this agent's desired automations — wake the
-          // reconciler so it converges near-instantly instead of on the timer.
-          wakeAutomationsReconciler(account.accountId);
+          // Reconciled by the companion service on its bounded poll interval.
           return;
         }
         // `mutualist.consider` is the pre-rename name for the same event; kept

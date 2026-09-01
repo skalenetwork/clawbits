@@ -8,7 +8,7 @@
 // markdown-it, so bold + blockquote (and its vertical bar) are honoured.
 //
 // TEMPORARY: this whole email->DM mirror is a stopgap; see callers in
-// `email-adapter.ts` and `channel-actions.ts`.
+// `email-adapter.ts` and `companion-tools.ts`.
 
 export type EmailDmKind = "received" | "reply_sent" | "sent";
 

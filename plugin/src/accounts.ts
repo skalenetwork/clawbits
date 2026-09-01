@@ -72,7 +72,7 @@ export function resolveDefaultClawBitsAccountId(cfg: OpenClawConfig): string {
  *  2. `channels.clawbits.accounts.<accountId>.*` (explicit override).
  *
  * Keys that do not belong on a per-account slice (`accounts`,
- * `defaultAccount`) are dropped from the merge base.
+ * `defaultAccount`, `serviceOwner`) are dropped from the merge base.
  */
 function mergeAccountConfig(
   section: ClawBitsChannelSection | undefined,
@@ -81,7 +81,7 @@ function mergeAccountConfig(
   const base: ClawBitsAccountConfig = {};
   if (section) {
     for (const [k, v] of Object.entries(section)) {
-      if (k === "accounts" || k === "defaultAccount") continue;
+      if (k === "accounts" || k === "defaultAccount" || k === "serviceOwner") continue;
       (base as Record<string, unknown>)[k] = v;
     }
   }

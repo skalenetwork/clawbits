@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { InboundContextPost, InboundFile } from "./inbound-poller.js";
+import type { InboundContextPost, InboundFile } from "./inbound-types.js";
 
 /**
  * Per-message preamble prepended to inbound text before it reaches the

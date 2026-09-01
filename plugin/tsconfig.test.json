@@ -1,0 +1,12 @@
+{
+  // Typecheck-only superset of tsconfig.json that also covers the tools
+  // entry's contract test. `bun test` strips types without checking and the
+  // build config's include is src-only, so without this the one file pinning
+  // the SDK contract shape would never be typechecked anywhere.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*", "test/tools-entry.test.ts"]
+}

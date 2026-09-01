@@ -36,6 +36,18 @@ describe("plugin entry", () => {
     assert.equal(registerToolCalls, 0, "new entry must not register legacy per-operation tools");
   });
 
+  it("warns when the slim channel is active without companion ownership", () => {
+    const warnings: string[] = [];
+    pluginEntry.register({
+      config: { channels: { clawbits: { serviceOwner: "channel" } } },
+      logger: { warn: (message: string) => warnings.push(message) },
+      registerChannel() {},
+    } as never);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] ?? "", /serviceOwner=channel/);
+    assert.match(warnings[0] ?? "", /clawbits-openclaw-tools/);
+  });
+
   it('register(api) in "cli-metadata" mode does not call registerChannel', () => {
     let channelCalls = 0;
     const fakeApi = {
