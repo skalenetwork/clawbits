@@ -82,14 +82,6 @@ export function buildManifest(input: {
     return manifest;
 }
 
-/** Short, human label for where a skill came from. */
-export function originLabel(skill: Skill): string | null {
-    if (skill.origin === "forked") return "Forked";
-    if (skill.origin === "imported") return "Imported";
-    return null;
-}
-
-
 export function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${String(bytes)} B`;
     return `${(bytes / 1024).toFixed(1)} KB`;

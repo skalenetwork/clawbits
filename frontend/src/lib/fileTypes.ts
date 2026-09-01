@@ -144,9 +144,12 @@ const TEXT_EXTS = new Set([
  */
 export function previewKind(filename: string, contentType: string): PreviewKind {
   const ext = extensionOf(filename);
-  // SVG + HTML: show source, don't execute.
-  if (contentType === "image/svg+xml" || ext === "svg") return "text";
-  if (contentType === "text/html" || ext === "html" || ext === "htm") return "text";
+  // SVG + HTML: show source, don't execute. (Their extensions are in
+  // TEXT_EXTS below; this catches a file that carries only the MIME.)
+  if (contentType === "image/svg+xml" || contentType === "text/html") return "text";
+  // A known source extension outranks the MIME the uploader's OS guessed:
+  // ``.ts`` is TypeScript, not the MPEG transport stream ``video/mp2t``.
+  if (TEXT_EXTS.has(ext)) return "text";
   if (contentType.startsWith("image/")) return "image";
   if (contentType.startsWith("video/")) return "video";
   if (contentType.startsWith("audio/")) return "audio";
@@ -162,6 +165,13 @@ export function previewKind(filename: string, contentType: string): PreviewKind 
     return "text";
   }
   return "none";
+}
+
+/** Markdown source. Previews as ``"text"`` like any other source file, but
+ *  the viewer additionally offers a rendered reading mode for it. */
+export function isMarkdown(filename: string, contentType: string): boolean {
+  const ext = extensionOf(filename);
+  return ext === "md" || ext === "markdown" || contentType === "text/markdown";
 }
 
 /** Does this file have an in-browser preview at all (vs download-only)? */

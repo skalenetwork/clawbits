@@ -43,16 +43,11 @@ function clearName(el: HTMLElement | null | undefined): void {
  * Blur the app content (#root: sidebar, rail, chat) behind the viewer *for the
  * duration of the morph only*.
  *
- * The viewer dims/blurs its backdrop with `backdrop-filter`, which works fine
- * once it's live — but a `backdrop-filter` is NOT painted into View-Transition
- * snapshots. During the 360ms open/close morph the whole page is frozen as flat
- * bitmaps, so the backdrop blur only "snaps in" when the transition ends — the
- * lag users saw on the sidebar/rail. A plain `filter: blur()` on #root *is*
- * captured, so we toggle it on BEFORE `startViewTransition` (putting the blur in
- * the old snapshot, present from the first frame) and drop it once the morph
- * finishes, handing the steady-state blur back to the viewer's backdrop-filter.
- * The radius matches the viewer's `backdrop-blur-md` (12px) so the hand-off is
- * seamless. See the `html[data-media-viewer]` rule in index.css.
+ * A `backdrop-filter` is not painted into View-Transition snapshots, so the
+ * viewer's blur only snaps in when the morph ends. A plain `filter: blur()` on
+ * #root IS captured: toggle it on before `startViewTransition` and drop it when
+ * the morph finishes. Radius matches `backdrop-blur-md` so the hand-off is
+ * seamless. See `html[data-media-viewer]` in index.css.
  */
 function setMorphBlur(on: boolean): void {
   if (typeof document === "undefined") return;
@@ -109,12 +104,8 @@ export function closeMediaWithTransition(
   sourceEl: HTMLElement | null | undefined,
   close: () => void,
 ): void {
-  // Unblur the page immediately on close: drop the morph-blur shim now so the
-  // sidebar/rail/chat go sharp the instant the user closes, rather than staying
-  // blurred while the image morphs back to its thumbnail. (The page snapshot is
-  // already sharp from the morph's first frame — the viewer's backdrop-filter
-  // isn't painted into the frozen snapshot — so the dim simply fades out over a
-  // crisp page.) Also clears any shim left over from a still-settling open.
+  // Drop the shim now so the page goes sharp the instant the user closes,
+  // rather than staying blurred through the morph back to the thumbnail.
   setMorphBlur(false);
   if (!canMorph()) {
     close();
@@ -138,12 +129,10 @@ export function closeMediaWithTransition(
 export const AGENT_CARD_VT_NAME = "agent-card-hero";
 
 /**
- * Resolve once an element matching `selector` is in the DOM (or after a safety
- * timeout). Uses a `MutationObserver`, NOT `requestAnimationFrame`: the render
- * loop is PAUSED while a view transition awaits its DOM-update callback, so rAF
- * never fires and the callback would hit the API's ~4s timeout and abort. DOM
- * mutations still dispatch on the normal event loop, so the observer sees the
- * new route mount. The timeout is a safety cap well under that 4s.
+ * Resolve once an element matching `selector` is in the DOM, or after a safety
+ * timeout. `MutationObserver`, never rAF: the render loop is paused while a
+ * view transition awaits its DOM callback, so rAF would never fire and the
+ * transition would abort on its own ~4s timeout.
  */
 export function waitForElement(selector: string, timeoutMs = 1000): Promise<HTMLElement | null> {
   return new Promise((resolve) => {
@@ -167,21 +156,15 @@ export function waitForElement(selector: string, timeoutMs = 1000): Promise<HTML
 /**
  * Drive an imperative agent-card hero morph across a client route change.
  *
- * This app uses the declarative `<BrowserRouter>`, so React Router's
- * `useViewTransitionState` isn't available AND its navigations commit through
- * `startTransition` (async) — a `flushSync` can't force the new route to mount
- * inside the transition callback. So we run an ASYNC callback: navigate, WAIT
- * for the destination card to render (`waitForTarget`), then let the browser
- * take the "new" snapshot.
+ * Declarative `<BrowserRouter>` commits navigations through `startTransition`,
+ * so no `flushSync` can mount the new route inside the transition callback.
+ * Hence an async callback: navigate, wait for the destination card, then let
+ * the browser take the "new" snapshot.
  *
- * Naming, kept unique at snapshot time (a duplicate name aborts the morph):
- *   - forward (grid → detail): pass `nameSource` = the clicked binder card; the
- *     detail card names itself via the static class. The source name is dropped
- *     before the new snapshot so it can't duplicate the detail card's.
- *   - reverse (detail → grid): the detail card is the (statically-named) source;
- *     pass `nameTarget: true` to name the resolved binder card as the target.
- *
- * Falls back to a plain navigation when the API is missing or motion is reduced.
+ * The name must be unique at snapshot time or the morph aborts: forward passes
+ * `nameSource` (the detail card names itself), reverse passes `nameTarget` so
+ * the resolved binder card is named once found. Falls back to a plain
+ * navigation without the API or under reduced motion.
  */
 export function morphAgentCardNavigation(opts: {
   navigate: () => void;
@@ -206,11 +189,8 @@ export const AUTOMATION_VT_NAME = "automation-hero";
 export const INBOX_MESSAGE_VT_NAME = "inbox-message-hero";
 
 /**
- * Generic cross-route shared-element morph — the mechanism behind
- * {@link morphAgentCardNavigation}, parameterized by `view-transition-name`
- * so other card→detail pairs (automations) reuse it. Same rules: the name
- * must be unique at snapshot time; the destination either carries it
- * statically (forward) or is named once resolved (`nameTarget`, reverse).
+ * {@link morphAgentCardNavigation} parameterized by `view-transition-name`,
+ * so other card→detail pairs reuse it. Same uniqueness rule.
  */
 export function morphHeroNavigation(opts: {
   name: string;

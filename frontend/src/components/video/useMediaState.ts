@@ -133,16 +133,17 @@ export function createMediaStore(): MediaStore {
         set({ ended: true, paused: true });
         stopRaf();
       };
-      const onWaiting = () => set({ waiting: true });
-      const onPlaying = () => set({ waiting: false });
-      const onFsChange = () =>
+      const onWaiting = () => { set({ waiting: true }); };
+      const onPlaying = () => { set({ waiting: false }); };
+      const onFsChange = () => {
         set({
           fullscreen: container
             ? document.fullscreenElement === container
             : Boolean(document.fullscreenElement),
         });
-      const onEnterPip = () => set({ pip: true });
-      const onLeavePip = () => set({ pip: false });
+      };
+      const onEnterPip = () => { set({ pip: true }); };
+      const onLeavePip = () => { set({ pip: false }); };
 
       video.addEventListener("loadedmetadata", syncCore);
       video.addEventListener("durationchange", syncCore);
@@ -283,7 +284,9 @@ export function createMediaActions(
     },
     async toggleFullscreen() {
       const c = getContainer();
-      const v = getVideo();
+      // Typed wider than the DOM lib so the iOS-only entry point below is
+      // reachable without an assertion at the call site.
+      const v: FullscreenVideo | null = getVideo();
       try {
         if (document.fullscreenElement) {
           await document.exitFullscreen();
@@ -295,7 +298,7 @@ export function createMediaActions(
         }
         // iOS Safari: only the <video> itself can go fullscreen (native
         // controls take over there).
-        (v as FullscreenVideo | null)?.webkitEnterFullscreen?.();
+        v?.webkitEnterFullscreen?.();
       } catch {
         /* rejected */
       }

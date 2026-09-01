@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type SubmitEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowRight01Icon, Cancel01Icon, ToolsIcon } from "@hugeicons/core-free-icons";
 import { useAuth } from "../context/AuthContext";
@@ -95,7 +95,7 @@ export function DevSignInPanel() {
     }
   };
 
-  const handleCustomSubmit = (e: FormEvent) => {
+  const handleCustomSubmit = (e: SubmitEvent) => {
     e.preventDefault();
     if (!customEmail) return;
     void doSignIn(customEmail);

@@ -10,9 +10,11 @@ import { readFileSync } from 'node:fs'
 // lock-step with the backend by scripts/bump_version.py). The running server
 // announces its own version on the global SSE stream; when the two diverge —
 // i.e. a tab has been open across a deploy — the app prompts a reload.
-const buildVersion = JSON.parse(
-  readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'),
-).version as string
+const buildVersion = (
+  JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as {
+    version: string
+  }
+).version
 
 export default defineConfig({
   test: {

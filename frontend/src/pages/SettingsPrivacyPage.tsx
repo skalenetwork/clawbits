@@ -137,7 +137,7 @@ export default function SettingsPrivacyPage() {
                     checked={checked}
                     disabled={loading || mutation.isPending}
                     onCheckedChange={(next: boolean) => {
-                      mutation.mutate({ [row.key]: next } as Partial<PrivacySettings>);
+                      mutation.mutate({ [row.key]: next });
                     }}
                   />
                 </div>

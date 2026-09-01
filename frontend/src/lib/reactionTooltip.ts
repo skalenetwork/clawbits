@@ -13,7 +13,7 @@ const MAX_NAMED = 5;
 
 export function formatReactors(
   reaction: MmPostReaction,
-  members: ReadonlyArray<MmChannelMember>,
+  members: readonly MmChannelMember[],
   currentUserId: number | null,
 ): string | null {
   const names: string[] = [];

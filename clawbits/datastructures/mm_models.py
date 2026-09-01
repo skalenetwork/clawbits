@@ -8,22 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from clawbits.datastructures.avatar_models import AvatarRef
 
-# ---------------------------------------------------------------------------
-# Shared literal types — single source of truth for presence + event names.
-# ---------------------------------------------------------------------------
-
 AgentPresenceStatus = Literal["online", "idle", "typing", "generating", "offline"]
-# Global online/idle/offline for a human user. Drives avatar dots on
-# DM rows and channel member lists. Per-channel ephemeral state for
-# humans is now limited to "typing" (still on the ``member.status``
-# stream — see the typing endpoint).
+# Drives the avatar dots. Per-channel human state is only "typing".
 GlobalUserStatus = Literal["online", "idle", "offline"]
-# Global liveness for an AGENT, derived from ``Agent.last_alive_at`` (the last
-# time the agent's plugin pinged ``POST /api/agentic/alive``). This is the
-# agent analogue of a human's online/offline dot — distinct from the per-channel
-# ``AgentPresenceStatus`` above, which is the transient typing/generating hint
-# during an active turn. "setup" = never pinged (still onboarding);
-# "available" = pinged within ``AGENT_OFFLINE_AFTER``; "offline" = beyond it.
+# Derived from ``Agent.last_alive_at``, not the per-turn presence above.
+# "setup" = never pinged; "available" = within AGENT_OFFLINE_AFTER.
 AgentLivenessStatus = Literal["setup", "available", "offline"]
 MemberKind = Literal["agent", "human"]
 
@@ -39,11 +28,8 @@ RealtimeEventType = Literal[
     "post.deleted",
     "member.status",
     "member.read",
-    # Control event on the *channel* topic naming who just lost access, so a
-    # live subscriber can be cut off the moment it happens. Distinct from
-    # ``channel.removed`` (personal topic, drives the sidebar) and from the
-    # ``channel.event`` timeline row, which is suppressed on DMs and so
-    # cannot carry this. Clients other than the streams ignore it.
+    # Channel-topic control event: cuts a live subscriber off the moment it
+    # loses access. Distinct from ``channel.removed`` (personal topic).
     "member.removed",
     "presence.snapshot",
     "channel.read",
@@ -54,27 +40,18 @@ RealtimeEventType = Literal[
     "user.status",
     "agent.status",
     "org.added",
-    # Per-agent control: nudges the agent's plugin to reconcile its
-    # automations (cron) against Clawbits' desired set. Carries the current
-    # desired_generation; the plugin pulls /automations/desired on receipt.
+    # Nudges the plugin to reconcile cron against the desired set.
     "automation.sync",
-    # Connection-level (not bus-published): the first frame of the global
-    # stream, carrying the server's version so a client on a stale bundle
-    # can prompt a reload after a deploy.
+    # First frame of the global stream, not bus-published: carries the
+    # server version so a stale bundle can prompt a reload.
     "server.hello",
 ]
 MmPostStatus = Literal["streaming", "draft", "published", "rejected"]
-# Inline channel timeline events (membership changes today, designed to
-# absorb channel.renamed / topic.changed / archive / etc. without a wire
-# change — extend the literal and the DB check constraint together).
+# Extend this literal and the DB check constraint together.
 MmChannelEventType = Literal["member.added", "member.removed"]
 
-# How long after an agent's last alive-ping we keep showing it "available".
-# The plugin pings every ~10 min (see plugin/src/liveness.ts), so 40 min
-# tolerates ~4 consecutive missed pings (clock skew, a deferred beat, a brief
-# gateway restart) before we flip the agent to "offline". Deliberately decoupled
-# from OpenClaw's own 30/60-min LLM heartbeat — that's a model turn, not a
-# liveness signal. Bump this and the plugin's ping interval together.
+# The plugin pings every ~10 min, so this tolerates ~4 missed beats. Bump it
+# and the plugin's interval together.
 AGENT_OFFLINE_AFTER = timedelta(minutes=40)
 
 
@@ -102,10 +79,6 @@ def agent_liveness_status(
     # reads "available" (40 min -> available; 40 min + 1s -> offline).
     return "available" if (now - last_alive_at) <= AGENT_OFFLINE_AFTER else "offline"
 
-
-# ---------------------------------------------------------------------------
-# Requests
-# ---------------------------------------------------------------------------
 
 class MmCreateChannelRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -137,9 +110,7 @@ class MmAddMemberUnifiedRequest(BaseModel):
 
 class MmPostRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    # ``streaming`` and ``draft`` posts may start empty — ``streaming`` will be
-    # filled by the agent via PATCH; ``draft`` will be flipped to ``published``
-    # by the owner via /approve.
+    # ``streaming`` fills in via PATCH; ``draft`` flips on /approve.
     message: str = Field(default="", max_length=4000, description="Message content")
     status: MmPostStatus = Field(
         default="published",
@@ -156,29 +127,22 @@ class MmPostRequest(BaseModel):
             "channel with status 'published' or 'streaming'."
         ),
     )
-    # Pre-uploaded attachments to bind to this post. Each id must reference
-    # an ``mm_files`` row owned by the caller, ``status='uploaded'``, not yet
-    # attached to a post, in the same channel as this one. Enforced atomically
-    # at create time; rejection rolls the post back.
+    # Each id must be the caller's own uploaded, unattached file in this
+    # channel. Checked atomically; a rejection rolls the post back.
     file_ids: list[str] = Field(
         default_factory=list,
         max_length=20,  # hard upper bound; soft limit is MM_FILES_MAX_PER_POST
         description="Pre-uploaded mm_files ids to attach to this post.",
     )
-    # Echoed back on the create response and the post.created SSE event so
-    # optimistic clients can dedupe between their local temp post and the
-    # server-fanned-out one without relying on content fingerprinting.
-    # Not persisted; lives only on the in-flight response/event.
+    # Echoed on the response and the SSE event so an optimistic client can
+    # dedupe its temp post. Never persisted.
     client_msg_uuid: str | None = Field(
         default=None,
         max_length=64,
         description="Client-generated id echoed back on response and SSE for optimistic-send dedupe.",
     )
-    # End-to-end latency trace id (``tr_<uuid>``). Minted by the originating
-    # client on a human send and re-stamped by the agent onto its reply, so
-    # one id spans the whole round-trip. Unlike ``client_msg_uuid`` this IS
-    # persisted (the agent reads it back off the inbound post via a separate
-    # GET). Omitted by clients that aren't tracing — defaults to None.
+    # One id across the whole round-trip: minted by the client, re-stamped by
+    # the agent onto its reply. Persisted, unlike ``client_msg_uuid``.
     trace_id: str | None = Field(
         default=None,
         max_length=64,
@@ -187,10 +151,7 @@ class MmPostRequest(BaseModel):
 
     @model_validator(mode="after")
     def _require_message_unless_streaming(self) -> MmPostRequest:
-        # Drafts are typically created with the full message (the agent has
-        # already produced its reply and is awaiting approval). Only the
-        # streaming path may legitimately start empty. Attaching files
-        # counts as content — a post with files needs no message text.
+        # Only the streaming path may start empty; files count as content.
         if self.status != "streaming" and not self.message and not self.file_ids:
             raise ValueError(
                 "message or file_ids is required unless status='streaming'"
@@ -211,10 +172,6 @@ class MmDirectUnifiedRequest(BaseModel):
     target_type: Literal["agent", "human"] = Field(description="Whether the target is an agent or human")
 
 
-# ---------------------------------------------------------------------------
-# Responses
-# ---------------------------------------------------------------------------
-
 class MmChannelResponse(BaseModel):
     channel_id: str
     org_id: str | None = None
@@ -226,29 +183,15 @@ class MmChannelResponse(BaseModel):
     created_by_human: int | None = None
     created_at: str
     last_message_at: str | None = None
-    # Newest published post id in this channel, or None when it has none.
-    # Filled by the agent channel-list read so a reconnecting agent can tell
-    # which channels moved while it was offline and skip the quiet ones
-    # without a posts GET each. A monotonic serial, so it is also the value to
-    # pass back as ``after_post_id``. Left None by the human paths, which
-    # already carry unread counts.
+    # Lets a reconnecting agent skip quiet channels without a posts GET.
+    # Monotonic, so it doubles as the ``after_post_id`` to resume from.
     latest_post_id: int | None = None
-    # The caller's own read pointer in this channel — humans from
-    # ``HumanChannelState``, agents from ``AgentChannelState``. For agents
-    # this is the restart resume point: ``None`` means "no pointer yet"
-    # (treat as first boot — seed to newest, then ack); otherwise drain
-    # ``posts?after_post_id=<this>`` to read exactly the offline gap.
-    # Filled by the list endpoints; single-channel endpoints leave it None.
+    # The caller's read pointer, and an agent's restart resume point: None =
+    # first boot (seed to newest), else drain ``posts?after_post_id=<this>``.
     last_read_post_id: int | None = None
-    # Unread / mute state from the caller's perspective (both the human and
-    # the agent list endpoints fill unread_count / unread_mention_count;
-    # mute/pin stay human-only). Defaults mean "no state": single-channel
-    # endpoints leave them untouched.
+    # Caller-relative state; mute/pin are human-only. Defaults = "no state".
     unread_count: int = 0
-    # Subset of ``unread_count`` whose posts address the caller — directly
-    # (``@<handle>``) or channel-wide (``@here``). Drives the sidebar's
-    # accent "mentioned" badge (which pierces mute). Filled by the list
-    # endpoint; single-channel endpoints leave it at 0.
+    # Subset of ``unread_count`` addressing the caller. Pierces mute.
     unread_mention_count: int = 0
     muted: bool = False
     # Per-user pin flag from ``HumanChannelState``. True means the user has
@@ -480,22 +423,15 @@ class MmFileResponse(BaseModel):
     duration_ms: int | None = None
     created_at: str
     uploaded_at: str | None = None
-    # Presigned GET URL, valid for ~1h. The post-read path inlines this
-    # for images so they render without a second round trip; for other
-    # types the client requests it on demand via ``/files/{id}/url``.
+    # ~1h presigned GET, inlined for images so they need no second trip.
     download_url: str | None = None
-    # Unix epoch seconds when ``download_url`` stops being valid on R2.
-    # The server may return a URL that was cached for a while, so this is
-    # how the client knows the *real* remaining lifetime, not just "ttl
-    # from when I received the payload."
+    # Real expiry, not "ttl from when I got this" — the URL may be cached.
     download_url_expires_at: int | None = None
     # Presigned GET for the 1024px thumbnail. NULL for non-image files.
     thumbnail_url: str | None = None
     thumbnail_url_expires_at: int | None = None
-    # Uploader identity + source message. Surfaced by the channel
-    # attachments listing so the history UI can show "shared by …" and link
-    # back to the originating post. Null on the upload-confirm response
-    # (the file isn't bound to a post yet).
+    # For the attachments listing's "shared by …" + backlink. Null until the
+    # file is bound to a post.
     uploader_human_id: int | None = None
     uploader_agent_id: str | None = None
     post_id: int | None = None
@@ -540,9 +476,7 @@ class MmPostResponse(BaseModel):
     agent_id: str | None = None
     human_id: int | None = None
     poster_display_name: str | None = None
-    # Avatar of the post author (human or agent). None on legacy paths
-    # that have not been rewired yet — frontend degrades to its
-    # initial-letter fallback when the field is missing.
+    # None on legacy paths; the client falls back to an initial letter.
     avatar: AvatarRef | None = None
     message: str
     created_at: str
@@ -551,28 +485,20 @@ class MmPostResponse(BaseModel):
     # ISO timestamp of the most recent user-visible edit; ``None`` means
     # the post has never been edited. Drives the "(edited)" marker.
     edited_at: str | None = None
-    # ISO timestamp of the moment this post was pinned to its channel;
-    # ``None`` means the post is not currently pinned. Drives the small
-    # pin glyph next to the timestamp and inclusion in the pinned-
-    # messages popover.
+    # None = not pinned; the value orders the pinned popover.
     pinned_at: str | None = None
     pinned_by_human_id: int | None = None
     parent_post_id: int | None = None
     parent_preview: MmPostParentPreview | None = None
-    # Server-resolved OG card for the first shareable URL in the message.
-    # ``None`` when the message has no URL, the fetch failed irrecoverably,
-    # or the post predates the server-side unfurl path (legacy reads).
-    # When ``None`` on a post with URLs in the body, the frontend falls
-    # back to its client-side ``useLinkPreview`` hook.
+    # None (no URL, failed unfurl, or a legacy row) makes the client fall
+    # back to its own ``useLinkPreview`` hook.
     link_preview: MmPostLinkPreviewEmbedded | None = None
     reactions: list[MmPostReactionAggregate] = Field(default_factory=list)
     files: list[MmFileResponse] = Field(default_factory=list)
     # Echoed back from MmPostRequest.client_msg_uuid only on the synchronous
     # create response and the post.created SSE event. Never set on reads.
     client_msg_uuid: str | None = None
-    # End-to-end latency trace id. Persisted (see MmPost.trace_id), so unlike
-    # ``client_msg_uuid`` it IS populated on reads too — that's how the agent
-    # poller reads the inbound post's id and re-stamps it onto the reply.
+    # Persisted, so reads carry it: that is how the agent re-stamps its reply.
     trace_id: str | None = None
 
 
@@ -601,9 +527,7 @@ class MmChannelEventResponse(BaseModel):
     subject_agent_id: str | None = None
     subject_display_name: str | None = None
     subject_avatar: AvatarRef | None = None
-    # Event-type-specific payload. Always ``None`` for ``member.*``;
-    # reserved for future event types that need to carry diff-like data
-    # (e.g. ``channel.renamed`` → ``{"old_name": ..., "new_name": ...}``).
+    # Always None for ``member.*``; reserved for diff-carrying event types.
     payload: dict | None = None
     created_at: str
 
@@ -736,19 +660,9 @@ class MmPostPatchRequest(BaseModel):
         return self
 
 
-# Defensive display clamps for agent-reported activity (LIVE_AGENT_ACTIVITY
-# plan: "server truncates defensively"). Clamped, never rejected - the agent
-# lane must stay forgiving for telemetry-class payloads.
-#
-# This is a BACKSTOP, not the primary limit: the plugin's in-VM sanitizer
-# (plugin/src/activity/sanitize.ts) is the real choke point and caps the tool
-# summary and the thinking tail at 1000 chars each. This value must stay ABOVE
-# the largest label that sanitizer can emit, or the server silently re-truncates
-# what the VM already deemed safe to send. Worst case there is
-# ``<tool>: '<snippet>'`` = ACTIVITY_TOOL_MAX_CHARS + 4 + 1000 = 1068, so 1200
-# leaves headroom for a future bump on the plugin side without a matching
-# server deploy. Raised from 160 with the plugin caps (owner decision,
-# 2026-08-11) so the UI can show what an agent actually ran.
+# A backstop, not the primary limit: the plugin's own sanitizer caps at 1000
+# chars, worst case 1068 on the wire. Stay above it or the server silently
+# re-truncates what the VM already deemed safe. Clamped, never rejected.
 ACTIVITY_LABEL_MAX_CHARS = 1200
 ACTIVITY_TOOL_MAX_CHARS = 64
 
@@ -816,11 +730,8 @@ class MmUserPresenceResponse(BaseModel):
     human_id: int
     status: GlobalUserStatus
     last_seen_at: str | None = None
-    # Telegram-style bucketed last-seen string, populated only when the
-    # target user has hidden their precise last-seen. One of "recently",
-    # "within a week", "within a month", "a long time ago". When set,
-    # ``last_seen_at`` is null and clients should render this string
-    # prefixed with "Last seen ".
+    # Set only when the user hides their precise last-seen; then
+    # ``last_seen_at`` is null and clients render "Last seen <this>".
     last_seen_label: str | None = None
 
 
@@ -850,10 +761,6 @@ class MmAgentAliveResponse(BaseModel):
     last_alive_at: str
     offline_after_seconds: int
 
-
-# ---------------------------------------------------------------------------
-# Automations sync (agent self-report + desired-set fetch)
-# ---------------------------------------------------------------------------
 
 
 class AutomationStateReportRequest(BaseModel):
@@ -904,10 +811,6 @@ class AutomationDesiredResponse(BaseModel):
     desired_generation: int
     automations: list[AutomationDesiredItem]
 
-
-# ---------------------------------------------------------------------------
-# AI-usage self-report (agent lane)
-# ---------------------------------------------------------------------------
 
 
 class UsageReportEvent(BaseModel):
@@ -1049,10 +952,6 @@ class LinkPreviewResponse(BaseModel):
     error: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# List wrappers
-# ---------------------------------------------------------------------------
-
 class MmChannelListResponse(BaseModel):
     channels: list[MmChannelResponse]
     total: int
@@ -1097,9 +996,7 @@ class MmAdminChannelResponse(BaseModel):
     last_message_text: str | None = None
     member_count: int = 0
     avatar: AvatarRef | None = None
-    # Per-channel LobsterTalk allowlist state (closed by default) — drives the
-    # approval toggles on Settings → LobsterTalk. Only ever true for public
-    # channels; the approval endpoint refuses the rest.
+    # Closed by default, and only ever true for public channels.
     lobstertalk_approved: bool = False
 
 
@@ -1111,11 +1008,8 @@ class MmAdminChannelListResponse(BaseModel):
 class MmChannelMembersListResponse(BaseModel):
     members: list[MmChannelMemberResponse]
     total: int
-    # True when the removal that produced this response left the channel
-    # with no human members and the server consequently hard-deleted it.
-    # The members/total fields are empty in that case; clients use this
-    # flag to switch their copy from "Left channel" to "Channel deleted"
-    # and to drop the row instead of refetching members.
+    # The removal emptied the channel and the server deleted it; members and
+    # total are empty, and the client drops the row instead of refetching.
     channel_deleted: bool = False
 
 
@@ -1126,10 +1020,8 @@ class MmPostListResponse(BaseModel):
     total: int
     limit: int
     offset: int
-    # Only meaningful on a forward-cursor read (``after_post_id``): true when
-    # more posts exist past this page. A resuming reader must keep paging while
-    # this is true — stopping early silently drops the newest part of its own
-    # backlog. Always false on the default newest-first read.
+    # Forward-cursor reads only: a resuming reader must page while true or it
+    # silently drops the newest part of its backlog.
     has_more: bool = False
 
 
@@ -1152,9 +1044,8 @@ class MmSearchResult(BaseModel):
     channel_type: str
     created_at: str
     author: MmSearchAuthor
-    # Server-highlighted excerpt: matched terms wrapped in ``<mark>…</mark>``
-    # by Postgres ``ts_headline`` (which HTML-escapes the rest of the text).
-    # Empty/plain for trigram-fallback hits, which did not match exactly.
+    # ``ts_headline`` output: matches in ``<mark>``, the rest HTML-escaped.
+    # Plain for trigram-fallback hits.
     snippet: str
     # ``ts_rank_cd`` for relevant sort, trigram ``similarity()`` for the
     # fallback. Opaque to the client; carried for stable ordering/debugging.
@@ -1206,9 +1097,7 @@ class MmFileListResponse(BaseModel):
     # Echoed back when the request used offset pagination so the
     # client can build the next URL without re-tracking state.
     offset: int | None = None
-    # Total matching rows in the channel. Only set when the caller
-    # asks for it via ``include_total=true`` — otherwise omitted to
-    # keep page requests cheap on large channels.
+    # Only set for ``include_total=true``; counting is expensive.
     total: int | None = None
 
 

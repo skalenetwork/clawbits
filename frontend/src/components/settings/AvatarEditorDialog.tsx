@@ -82,7 +82,7 @@ async function bakeCrop(file: File, area: Area): Promise<Blob> {
         );
         return await new Promise<Blob>((resolve, reject) => {
             canvas.toBlob(
-                blob => { blob ? resolve(blob) : reject(new Error("toBlob returned null")); },
+                blob => { if (blob) resolve(blob); else reject(new Error("toBlob returned null")); },
                 "image/jpeg",
                 EXPORT_QUALITY,
             );

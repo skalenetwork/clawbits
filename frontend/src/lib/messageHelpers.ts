@@ -8,6 +8,15 @@
 import { parseUtcTimestamp } from "@/lib/formatting";
 import type { MmChannelMember, MmChannelPost } from "@/lib/api";
 
+/** Shareable deep link to one message — ``ChannelPage`` reads ``?msg=`` and
+ *  anchors its history window on that post. A copied link has to open in a
+ *  browser, so the baked API origin (app and API share one in production)
+ *  wins over the desktop shell's ``tauri://`` one. */
+export function messageLink(channelId: string, postId: number): string {
+  const baked = (import.meta.env.VITE_CLAWBITS_API_URL as string | undefined)?.trim();
+  return `${baked || window.location.origin}/channels/${channelId}?msg=${postId}`;
+}
+
 /** Window inside which consecutive posts from the same author are
  *  collapsed under a single author header. 5 minutes matches the
  *  Slack / Discord convention. */

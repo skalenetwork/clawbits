@@ -70,7 +70,7 @@ export default function LoginPage() {
     }
   };
 
-  const handleSendCode = async (e: React.FormEvent) => {
+  const handleSendCode = async (e: React.SubmitEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
@@ -86,7 +86,7 @@ export default function LoginPage() {
     }
   };
 
-  const handleVerifyCode = async (e: React.FormEvent) => {
+  const handleVerifyCode = async (e: React.SubmitEvent) => {
     e.preventDefault();
     await submitCode(code);
   };

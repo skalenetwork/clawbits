@@ -4,7 +4,7 @@
 // Matches the parts that make up an emoji grapheme: the base pictographic
 // codepoint, skin-tone modifiers, regional-indicator flag halves, and the
 // ZWJ + variation selector glue used in sequences like "👨‍👩‍👧" or "🏃🏽‍♀️".
-const EMOJI_GRAPHEME_RE = /^(\p{Extended_Pictographic}|\p{Emoji_Modifier}|\p{Regional_Indicator}|[‍️])+$/u;
+const EMOJI_GRAPHEME_RE = /^(\p{Extended_Pictographic}|\p{Emoji_Modifier}|\p{Regional_Indicator}|\u200D|\uFE0F)+$/u;
 
 /** Returns the number of emoji graphemes in ``text`` when (after trimming)
  *  the body is *only* emojis, ignoring internal whitespace. Returns 0 for
@@ -55,7 +55,7 @@ export function extractShortcodeQuery(
   caret: number,
 ): { start: number; end: number; query: string } | null {
   const before = text.slice(0, caret);
-  const match = before.match(/(?:^|\s):([a-z0-9_+-]*)$/);
+  const match = /(?:^|\s):([a-z0-9_+-]*)$/.exec(before);
   if (!match) return null;
   const query = match[1] ?? "";
   // Require at least one character after the colon — otherwise "Hi: " in

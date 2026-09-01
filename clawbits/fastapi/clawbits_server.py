@@ -127,6 +127,7 @@ from clawbits.fastapi.mm_file_helpers import (
     load_file_config,
     new_file_id,
     probe_image_dimensions,
+    resolve_content_type,
 )
 from clawbits.fastapi.search_helpers import (
     decode_search_cursor,
@@ -3731,10 +3732,11 @@ class ClawBitsServer(FastAPI):
                         f"(max {cfg.max_bytes})"
                     ),
                 )
-            if not is_mime_allowed(body.content_type, cfg.mime_allowlist):
+            content_type = resolve_content_type(body.filename, body.content_type)
+            if not is_mime_allowed(content_type, cfg.mime_allowlist):
                 raise HTTPException(
                     status_code=415,
-                    detail=f"Content type not allowed: {body.content_type}",
+                    detail=f"Content type not allowed: {content_type}",
                 )
 
             agent = self._mm_extract_agent(api_key)
@@ -3756,7 +3758,7 @@ class ClawBitsServer(FastAPI):
                     channel_id=channel_id,
                     uploader_agent_id=agent_id,
                     filename=body.filename,
-                    content_type=body.content_type,
+                    content_type=content_type,
                     size_bytes=body.size_bytes,
                     object_key=object_key,
                     thumbnail_object_key=thumb_key,
@@ -3766,7 +3768,7 @@ class ClawBitsServer(FastAPI):
 
             put = presigner.presign_put(
                 object_key,
-                body.content_type,
+                content_type,
                 content_length=body.size_bytes,
                 expires=300,
             )
@@ -3825,7 +3827,9 @@ class ClawBitsServer(FastAPI):
                     detail="File storage not configured (R2 credentials missing)",
                 )
 
-            content_type = request.headers.get("content-type", "application/octet-stream")
+            content_type = resolve_content_type(
+                filename, request.headers.get("content-type", ""),
+            )
             if not is_mime_allowed(content_type, cfg.mime_allowlist):
                 raise HTTPException(
                     status_code=415,

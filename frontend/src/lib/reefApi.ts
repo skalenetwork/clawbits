@@ -635,27 +635,10 @@ export interface ReefBuildJob {
   log: string[]
 }
 
+/** A version floor as reported upstream: the value, and where it came from. */
 export interface ReefLatestVersion {
   latest: string | null
   source: string | null
-}
-
-/** Latest floors for one runtime: the engine + the clawbits component. */
-export interface ReefRuntimeLatest {
-  runtime: ReefLatestVersion
-  component: ReefLatestVersion
-}
-
-/** Latest available versions per runtime (`GET /versions/latest`, unauth,
- *  best-effort). IronClaw's floors are null (engine self-built; channel ships
- *  in-tree) until clawbits exposes a channel floor; Hermes' floors are null
- *  too (engine from the pinned base image; plugin ships in-tree). */
-export interface ReefLatestVersions {
-  enabled: boolean
-  fetched_at: string | null
-  openclaw: ReefRuntimeLatest
-  ironclaw: ReefRuntimeLatest
-  hermes: ReefRuntimeLatest
 }
 
 /** One runtime's build signal (`GET /images/status`): the active image's baked
@@ -702,7 +685,7 @@ export const reefBuildJob = (baseUrl: string, id: string) =>
 /** Re-point the floating active tag at an existing image (rollback / promote).
  *  Affects every newly-created VM fleet-wide — gate behind a confirm. (204) */
 export const reefActivateImage = (baseUrl: string, tag: string) =>
-  reefReq<void>(baseUrl, "/images/activate", { auth: true, method: "POST", body: { tag } })
+  reefReq<undefined>(baseUrl, "/images/activate", { auth: true, method: "POST", body: { tag } })
 
 /** Recreate one agent VM on the active image. The named volumes survive, the
  *  container rootfs does not. */
@@ -711,7 +694,3 @@ export const reefUpgrade = (baseUrl: string, id: string) =>
     auth: true,
     method: "POST",
   })
-
-/** Latest available versions (unauthenticated, best-effort). */
-export const reefLatestVersions = (baseUrl: string) =>
-  reefReq<ReefLatestVersions>(baseUrl, "/versions/latest")

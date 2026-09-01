@@ -1,6 +1,6 @@
 import {useEffect, useState} from "react";
 import {createPortal} from "react-dom";
-import {useStore} from "@tanstack/react-store";
+import {useSelector} from "@tanstack/react-store";
 import {HINT_DATA_ATTR, shortcutsAtom} from "./store";
 import {formatBinding} from "./platform";
 
@@ -33,7 +33,7 @@ const CHIP_OVERFLOW_BUDGET = 60;
  * always sit next to a real on-screen target.
  */
 export function HintOverlay({visible}: {visible: boolean}) {
-    const shortcuts = useStore(shortcutsAtom, (s) => s);
+    const shortcuts = useSelector(shortcutsAtom);
     const [anchored, setAnchored] = useState<ChipPosition[]>([]);
 
     useEffect(() => {

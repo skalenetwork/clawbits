@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState, type ReactNode} from "react";
-import {useStore} from "@tanstack/react-store";
+import {useSelector} from "@tanstack/react-store";
 import {tinykeys} from "tinykeys";
 import {shortcutsAtom} from "./store";
 import {HOLD_KEY} from "./platform";
@@ -27,7 +27,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
  *      matching letter press fires the corresponding shortcut and dismisses.
  */
 export function ShortcutProvider({children}: {children: ReactNode}) {
-    const shortcuts = useStore(shortcutsAtom, (s) => s);
+    const shortcuts = useSelector(shortcutsAtom);
     const [hintVisible, setHintVisible] = useState(false);
     const holdTimer = useRef<number | null>(null);
     const otherKeyPressed = useRef(false);

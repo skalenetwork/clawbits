@@ -80,6 +80,7 @@ from clawbits.fastapi.mm_file_helpers import (
     load_file_config,
     new_file_id,
     probe_image_dimensions,
+    resolve_content_type,
 )
 from clawbits.fastapi.search_helpers import (
     decode_search_cursor,
@@ -2030,10 +2031,11 @@ async def request_file_upload(
             status_code=413,
             detail=f"File too large: {body.size_bytes} bytes (max {cfg.max_bytes})",
         )
-    if not is_mime_allowed(body.content_type, cfg.mime_allowlist):
+    content_type = resolve_content_type(body.filename, body.content_type)
+    if not is_mime_allowed(content_type, cfg.mime_allowlist):
         raise HTTPException(
             status_code=415,
-            detail=f"Content type not allowed: {body.content_type}",
+            detail=f"Content type not allowed: {content_type}",
         )
 
     file_id = new_file_id()
@@ -2052,7 +2054,7 @@ async def request_file_upload(
             channel_id=channel_id,
             uploader_human_id=user["id"],
             filename=body.filename,
-            content_type=body.content_type,
+            content_type=content_type,
             size_bytes=body.size_bytes,
             object_key=object_key,
             thumbnail_object_key=thumb_key,
@@ -2065,7 +2067,7 @@ async def request_file_upload(
     # a 15 MB file at ~50 kB/s.
     put = presigner.presign_put(
         object_key,
-        body.content_type,
+        content_type,
         content_length=body.size_bytes,
         expires=300,
     )

@@ -26,8 +26,8 @@ export function useDesktopNav() {
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       const unlisten = await listen<string>("desktop://nav", (event) => {
-        if (event.payload === "back") navigate(-1);
-        else if (event.payload === "forward") navigate(1);
+        if (event.payload === "back") void navigate(-1);
+        else if (event.payload === "forward") void navigate(1);
         else if (event.payload === "reload") window.location.reload();
       });
       dispose = unlisten;
@@ -39,7 +39,7 @@ export function useDesktopNav() {
     if (!isDesktop) return;
     let dispose: (() => void) | undefined;
     void (async () => {
-      dispose = await listenForOpenChannel((path) => navigate(path));
+      dispose = await listenForOpenChannel((path) => { void navigate(path); });
     })();
     return () => { dispose?.(); };
   }, [navigate]);
@@ -61,8 +61,8 @@ export function useDesktopNav() {
       if (!mod || e.altKey || e.shiftKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      if (e.key === "[") { e.preventDefault(); navigate(-1); }
-      else if (e.key === "]") { e.preventDefault(); navigate(1); }
+      if (e.key === "[") { e.preventDefault(); void navigate(-1); }
+      else if (e.key === "]") { e.preventDefault(); void navigate(1); }
     };
     window.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("keydown", onKey); };

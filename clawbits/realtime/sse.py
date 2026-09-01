@@ -59,11 +59,8 @@ log = logging.getLogger(__name__)
 # 60–120s; a comment frame every 20s is a common default.
 _KEEPALIVE_SECONDS = 20
 
-# How long a stream may trust its last authorization check. Endpoint-level
-# event filters re-verify the subscriber's channel membership at most this
-# often, so a revocation path that publishes nothing on the channel topic
-# (DM kick, channel deletion, contact-grant revocation) still cuts the
-# stream within one window.
+# How long a stream may trust its last authorization check, so a revocation
+# that publishes nothing on the topic still cuts the stream within a window.
 MEMBERSHIP_RECHECK_TTL_SECONDS = 30.0
 
 
@@ -90,11 +87,9 @@ class StreamClosed(Exception):
 # the response entirely.
 EventFilter = Callable[[dict[str, Any]], bool | Awaitable[bool]]
 
-# Idle-path authorization hook. Run on every keepalive tick (i.e. when no
-# event has arrived for a whole keepalive window), so a stream whose channel
-# has gone quiet is still torn down when the subscriber's access is revoked —
-# the event filter alone only fires while traffic flows. Raise StreamClosed
-# to end the response; return value is ignored.
+# Runs on every keepalive tick, so a quiet channel still tears down on
+# revocation (the event filter only fires while traffic flows). Raise
+# StreamClosed to end the response.
 Reauthorize = Callable[[], None | Awaitable[None]]
 
 
@@ -180,14 +175,10 @@ async def _stream_topic(
                     disconnected.set()
                     break
                 if pump_task.done() and queue.empty():
-                    # Defence in depth: the pump now self-heals (see
-                    # EventBus.subscribe), so it should only finish when we
-                    # cancel it on disconnect. If it ever ends on its own,
-                    # drain what it already accepted (including the close
-                    # sentinel, so revocation ends the response in order)
-                    # and stop, so the client reconnects with a fresh pump
-                    # instead of holding a live-looking stream that silently
-                    # delivers nothing.
+                    # The pump self-heals, so this only fires if it ends on
+                    # its own: drain what it accepted (close sentinel included)
+                    # and stop, so the client reconnects instead of holding a
+                    # live-looking stream that delivers nothing.
                     break
                 try:
                     frame = await asyncio.wait_for(queue.get(), timeout=_KEEPALIVE_SECONDS)
@@ -195,10 +186,8 @@ async def _stream_topic(
                         break  # filter revoked the stream (StreamClosed)
                     yield frame
                 except TimeoutError:
-                    # Idle window elapsed. Re-check authorization before the
-                    # keepalive so a revoked stream on a quiet channel is torn
-                    # down even when no event ever arrives to trigger the
-                    # event filter.
+                    # Idle window elapsed: re-check before the keepalive so a
+                    # quiet revoked stream still ends.
                     if reauthorize is not None:
                         try:
                             result = reauthorize()
@@ -299,16 +288,10 @@ async def publish_post_created(
     if member_human_ids:
         for hid in member_human_ids:
             await bus.publish(human_topic(hid), envelope)
-        # Browser push for members whose tab is closed/backgrounded — the
-        # "reach them when SSE can't" layer. Hand the fan-out off to the
-        # background dispatcher rather than awaiting it here: this coroutine is
-        # run to completion by ``fire_and_forget`` (on a threadpool thread for
-        # sync endpoints like an agent posting), and the fan-out is slow
-        # external HTTP, so doing it inline would block that thread / stretch
-        # the fire-and-forget task. ``schedule_post_web_push`` enqueues and
-        # returns instantly; the lifespan-owned worker does the sending, skips
-        # the author + muted members, and prunes dead subscriptions. No-op
-        # unless VAPID is configured. Lazy import avoids an import cycle.
+        # Push for tabs SSE can't reach. Handed to the background dispatcher,
+        # never awaited here: the fan-out is slow external HTTP and this runs
+        # inside ``fire_and_forget`` (on a threadpool thread for sync
+        # endpoints). No-op unless VAPID is configured.
         try:
             from clawbits.realtime.web_push import schedule_post_web_push
 
@@ -321,21 +304,11 @@ async def publish_post_updated(bus: EventBus, channel_id: str, post: dict[str, A
     await bus.publish(channel_topic(channel_id), _envelope("post.updated", channel_id, post))
 
 
-# ---------------------------------------------------------------------------
-# Streaming-append coalescing (LIVE_AGENT_ACTIVITY_PLAN §4.2)
-# ---------------------------------------------------------------------------
-#
-# Token-streamed replies PATCH the draft every ~180ms and each PATCH re-fans
-# the FULL post payload. Bound the outbound event rate with a per-post
-# throttle: while the post is still ``streaming``, at most one publish per
-# window; superseded intermediates are DROPPED, which is safe because every
-# payload carries the full cumulative text (the next publish or the finalize
-# supersedes it). Terminal payloads (``published`` etc.) always publish
-# immediately, so the final state is never lost or delayed.
-#
-# A throttle (drop) rather than a debounce (delay) on purpose: it needs no
-# cross-call asyncio state, so it behaves identically under all three
-# ``fire_and_forget`` contexts, including the ephemeral-loop test fallback.
+# Streamed replies PATCH every ~180ms and each PATCH re-fans the full payload,
+# so while a post is ``streaming`` at most one publish lands per window and
+# intermediates are dropped — safe, since every payload carries the cumulative
+# text. Terminal payloads always publish immediately. A throttle, not a
+# debounce, so it needs no cross-call asyncio state.
 STREAMING_POST_UPDATE_MIN_INTERVAL_SECONDS = 0.05
 _STREAM_THROTTLE_MAX_ENTRIES = 2048
 _last_streaming_publish: dict[int, float] = {}
