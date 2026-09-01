@@ -2702,25 +2702,6 @@ export async function createSkill(
   return res.json() as Promise<Skill>;
 }
 
-/** Edit catalog metadata. Content edits go through publishSkillVersion. */
-export async function updateSkillMeta(
-  orgId: string,
-  skillId: string,
-  body: { display_name?: string },
-): Promise<Skill> {
-  const res = await fetch(
-    `${skillsBase(orgId)}/${encodeURIComponent(skillId)}`,
-    {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
-  if (!res.ok) throw new Error(await extractError(res));
-  return res.json() as Promise<Skill>;
-}
-
 /** Publish an edit as a new immutable version (implicit patch bump). */
 export async function publishSkillVersion(
   orgId: string,

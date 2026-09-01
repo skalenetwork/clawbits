@@ -14,49 +14,21 @@ import {
 } from "virtua";
 
 /**
- * Single authority for the chat scroll area. Replaces the old
- * combination of ``@tanstack/react-virtual`` + ``use-stick-to-bottom``
- * + manual ``scrollHeight`` deltas — which all wanted to own
- * ``scrollTop`` and fought each other on streaming + prepend.
+ * Single authority for the chat scroll area, replacing the old
+ * ``react-virtual`` + ``use-stick-to-bottom`` + manual ``scrollHeight`` stack,
+ * which all wanted to own ``scrollTop``.
  *
- * Responsibilities owned here:
+ * It owns: the windowed render (virtua's Virtualizer, self-measuring), the
+ * anchor-on-prepend latch (``shift`` for the render that inserts history), the
+ * stick-to-bottom ref (within 80px, cleared when the user scrolls away), the
+ * load-older trigger, and the initial/jump scrolls.
  *
- *   - **Windowed render** via virtua's :class:`Virtualizer`. Auto-
- *     measures item heights with a shared ResizeObserver and recomputes
- *     offsets on the next animation frame.
- *   - **Anchor on prepend.** Set ``shift`` to ``true`` for the render
- *     where older history is inserted at the top; virtua offsets its
- *     internal scroll bookkeeping so the visible rows don't move. The
- *     flag is cleared in a layout effect right after.
- *   - **Stick-to-bottom.** A ref tracks whether the user is "at
- *     bottom" (within 80px); when ``rows.length`` grows the effect
- *     calls ``scrollToIndex(last, { align: 'end' })``. The user
- *     scrolling away clears the ref, which suppresses auto-scroll
- *     until they scroll back down.
- *   - **History load trigger.** When ``onScroll`` fires with the
- *     offset below ``LOAD_OLDER_THRESHOLD_PX`` we tell the parent to
- *     load older messages; a single-flight ref prevents back-to-back
- *     loads.
- *   - **Bar clearance via in-flow spacers.** Header/composer clearance is
- *     reserved with a leading spacer div and a trailing spacer *row*, never
- *     with ``padding`` on the scroll element. virtua measures its viewport
- *     from the scroll element's content box (ResizeObserver ``contentRect``,
- *     which excludes padding), so padding here would inset the viewport to the
- *     region *between* the glass bars' inner edges -- and virtua trims its
- *     render window's trailing edge to that boundary while scrolling, so rows
- *     were unmounted while still visible through the translucent header/
- *     composer (the flicker). With the clearance held in content instead, the
- *     content box spans the full height and the trim lands off-screen.
- *   - **Flex spacer.** A flex-grow div above the virtualizer pushes
- *     the rows to the bottom when the channel has fewer rows than the
- *     viewport can hold. Without it, short channels would float at
- *     the top.
- *   - **Initial scroll.** On channel-change, the imperative
- *     :meth:`MessageListHandle.scrollToBottomImmediately` jumps to the
- *     last item with no animation. Unread anchor jumps (Discord/Slack
- *     pattern) are also supported via :meth:`scrollToIndex`.
+ * Header and composer clearance is held in IN-FLOW SPACERS, never in
+ * ``padding`` on the scroll element: virtua measures its viewport from the
+ * content box, so padding insets it to the gap between the glass bars and rows
+ * get unmounted while still visible through them. A flex-grow div above the
+ * virtualizer keeps short channels pinned to the bottom.
  */
-
 export interface MessageListHandle {
   /** Smooth or instant scroll to the last item. No-op when there are
    *  no rows. */
@@ -95,12 +67,9 @@ export interface MessageListProps<T> {
    *  bottom on first paint. Keep stable across renders of the same
    *  channel. */
   channelKey: string;
-  /** Height (in px) of the floating composer pill that overlays the
-   *  bottom of the scroll area. Drives the trailing spacer row's height so
-   *  the last message clears the composer with a bit of breathing room.
-   *  Reserved as an in-flow spacer rather than scroll-container
-   *  ``padding-bottom`` so virtua's viewport isn't inset (which would unmount
-   *  rows behind the glass composer -- see the JSX note below). */
+  /** Height of the floating composer pill. Drives the trailing spacer row, so
+   *  the last message clears it. In-flow, not ``padding-bottom`` — see the
+   *  note on the scroll element below. */
   composerHeightPx: number;
   /** Height (in px) of the leading spacer that keeps the first message clear
    *  of the glass header pill at the top of the viewport. Defaults to ``64px``
@@ -153,12 +122,8 @@ export interface MessageListProps<T> {
   onAtBottomChange?: (atBottom: boolean) => void;
 }
 
-/** Extra breathing room between the last message's bottom edge and
- *  the composer wrapper's top edge, *on top of* the measured wrapper
- *  height (which already includes the always-reserved typing-indicator
- *  strip above the pill — ~16px of visible air on its own). With the
- *  slimmer composer the newest message can sit flush against that
- *  strip, so this stays 0; bump it up if the chat ever feels cramped. */
+/** On top of the measured composer height, which already includes the
+ *  typing-indicator strip. 0 today; bump it if the chat feels cramped. */
 const COMPOSER_BREATHING_ROOM_PX = 0;
 
 export const MessageList = forwardRef(function MessageList<T>(
@@ -194,13 +159,9 @@ export const MessageList = forwardRef(function MessageList<T>(
   const loadingNewerRef = useRef(false);
   const [atBottom, setAtBottom] = useState(true);
 
-  // The header-clearance spacer sits *before* the Virtualizer, so virtua needs
-  // its height as ``startMargin`` to map scroll offsets correctly — without it
-  // virtua's scroll extent is short by exactly the spacer height and pinning to
-  // the bottom lands that-much above the true bottom (the newest message rests
-  // behind the composer, "opens a bit too low"). Measured (not just
-  // ``topPaddingPx``) so the ``--safe-top`` notch inset is included, and
-  // re-measured if the safe area changes (rotation).
+  // The header spacer sits before the Virtualizer, so virtua needs its height
+  // as ``startMargin`` or its scroll extent is short by exactly that and the
+  // bottom pin lands high. Measured, so the notch inset is included.
   const [startMarginPx, setStartMarginPx] = useState(topPaddingPx);
   useLayoutEffect(() => {
     const el = leadingSpacerRef.current;
@@ -300,17 +261,11 @@ export const MessageList = forwardRef(function MessageList<T>(
     return () => { cancelAnimationFrame(raf); };
   }, [rows.length, pinToBottom, autoStickToBottom]);
 
-  // Follow content-height growth while pinned. The effect above only fires
-  // on a *row-count* change, but the growths that matter most don't change
-  // the count: a streaming reply filling in (same post_id, mutated in
-  // place), a "generating" indicator swapped for the finished post, a
-  // late-loading image, the reactions strip animating in. virtua doesn't
-  // emit ``onScroll`` when content grows below a bottom-pinned viewport
-  // (scrollTop is unchanged), so without this the new content grows *below
-  // the fold* and the user is left stranded above the latest message —
-  // problem: "chat isn't scrolled when the full reply lands". Observing the
-  // content box and re-pinning on any growth covers every source with one
-  // rule, replacing the old per-source re-pin callbacks.
+  // Follow content growth while pinned. The row-count effect above misses the
+  // growths that matter — a streaming reply filling in, a late image, the
+  // reactions strip — and virtua emits no ``onScroll`` when content grows below
+  // a pinned viewport, so the reply would land below the fold. Observing the
+  // content box covers every source with one rule.
   useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
@@ -359,17 +314,11 @@ export const MessageList = forwardRef(function MessageList<T>(
     [rows.length, pinToBottom],
   );
 
-  // Re-pin to the newest message when the soft keyboard opens/closes. The
-  // fixed-viewport shell is sized to ``--vvh`` (visualViewport.height); when the
-  // keyboard opens, vv.height shrinks → the shell shrinks → this inner scroller
-  // shrinks → visualViewport fires ``resize``, and the newest row must re-pin
-  // above the composer in the now-shorter scroller. SINGLE owner of keyboard
-  // re-pin (ChannelPage's composer-measure re-pin is gated to desktop). Only
-  // re-pin when the user was already at the bottom; rAF-coalesced.
-  //
-  // No visualViewport ``scroll`` listener: pinToBottom scrolls an INNER element,
-  // which does NOT emit a visualViewport ``scroll`` (only window/document scroll
-  // does), so the old scroll⇄pin feedback loop is structurally impossible here.
+  // Re-pin when the soft keyboard opens/closes: the shell is sized to ``--vvh``,
+  // so the scroller shrinks and the newest row must re-pin above the composer.
+  // The single owner of keyboard re-pin (ChannelPage's is desktop-gated), and
+  // resize-only — pinToBottom scrolls an inner element, which emits no
+  // visualViewport ``scroll``, so no feedback loop is possible.
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -460,16 +409,10 @@ export const MessageList = forwardRef(function MessageList<T>(
     if (!hasMoreNewer) loadingNewerRef.current = false;
   }, [hasMoreNewer]);
 
-  // Shared row children, plus a trailing composer-clearance spacer as the FINAL
-  // virtualized row. Holding the composer reservation as a real virtua item
-  // (instead of the scroll container's ``padding-bottom``) keeps virtua's
-  // viewport -- which it measures from the scroll element's content box, with
-  // padding excluded -- at full height. With the old ``padding-bottom`` the
-  // viewport was inset by the composer height, so virtua unmounted rows at the
-  // composer's *inner* edge while they were still visible through the glass.
-  // ``scrollSize`` / at-bottom math stays self-consistent because the spacer is
-  // a measured item, and appending it shifts no existing row indices (deep-link
-  // jump, unread anchor, prepend-shift all index into ``rows`` only).
+  // The composer clearance is the final virtualized row, not the container's
+  // ``padding-bottom``, which would inset virtua's viewport and unmount rows at
+  // the composer's inner edge. A measured item keeps the at-bottom math honest,
+  // and appending shifts no existing row index.
   const children = rows.map((row, idx) => (
     <div key={getRowKey(row, idx)}>{renderRow(row, idx)}</div>
   ));
@@ -481,21 +424,11 @@ export const MessageList = forwardRef(function MessageList<T>(
     />,
   );
 
-  // The inner element owns the scroll on BOTH mobile and desktop. On mobile the
-  // fixed-viewport shell (sized to --vvh) gives this scroller a bounded height,
-  // so the document never scrolls; on desktop it's the content card.
-  //
-  // IMPORTANT: the header/composer clearance is reserved with in-flow spacers
-  // (the leading spacer below + the trailing composer spacer row appended to
-  // ``children``), NOT with ``padding`` on this scroll element. virtua measures
-  // its viewport from this element's ResizeObserver ``contentRect`` -- the
-  // *content box*, which excludes padding. Padding here therefore shrank
-  // virtua's viewport to the region *between* the glass bars' inner edges, and
-  // virtua trims its render window's trailing edge to that boundary while
-  // scrolling -- so rows were unmounted while still half-visible through the
-  // translucent header/composer (the flicker). With the clearance held in
-  // content instead, the content box spans the full height, the trailing trim
-  // lands off-screen, and rows stay mounted until genuinely out of view.
+  // This inner element owns the scroll on both mobile and desktop, so the
+  // document never scrolls. Clearance is held in the leading spacer and the
+  // trailing spacer row, NEVER in ``padding`` here: virtua measures its
+  // viewport from the content box, so padding would shrink it to the gap
+  // between the glass bars and trim rows that are still visible through them.
   return (
     <div
       ref={scrollRef}

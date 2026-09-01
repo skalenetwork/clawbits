@@ -38,28 +38,21 @@ log = logging.getLogger(__name__)
 # hundreds of sockets at once. Each send is a short HTTP/2 POST.
 _MAX_CONCURRENCY = 8
 
-# VAPID keypair, base64url-encoded raw EC P-256 (the format `web-push
-# generate-vapid-keys` and the browser's `applicationServerKey` use). The
-# public half is handed to the browser at subscribe time; the private half
-# signs outgoing push requests so the push service can attribute them to us.
+# base64url raw EC P-256, the format the browser's `applicationServerKey`
+# wants. Public half goes to the browser, private half signs our sends.
 VAPID_PUBLIC_KEY = os.environ.get("CLAWBITS_VAPID_PUBLIC_KEY", "").strip()
 VAPID_PRIVATE_KEY = os.environ.get("CLAWBITS_VAPID_PRIVATE_KEY", "").strip()
 # Contact URI baked into the VAPID JWT `sub` claim — push services may use
 # it to reach us about a misbehaving sender. mailto: or https: URL.
 VAPID_SUBJECT = os.environ.get("CLAWBITS_VAPID_SUBJECT", "").strip() or "mailto:support@clawbits.ai"
 
-# The push endpoint is a *client-supplied URL the server then POSTs to*, so it
-# is an SSRF sink and gets the same treatment as the LobsterTalk LLM base URL
-# and link-preview unfurls: scheme pinned, host vetted, no redirects. The
-# browser only ever hands us one of the real push services, so an allowlist is
-# affordable here and shrinks the reachable surface to ~nothing — a
-# private-address check alone would still permit a blind POST to any public
-# host on the internet.
+# A client-supplied URL the server POSTs to, i.e. an SSRF sink: scheme pinned,
+# host vetted, no redirects. The browser only ever hands us a real push service,
+# so an allowlist is affordable and a private-address check alone would still
+# permit a blind POST to any public host.
 #
-# FCM is pinned to exact hosts rather than a ``.googleapis.com`` suffix: that
-# suffix would also clear storage.googleapis.com and every other Google API,
-# handing back a chunk of the surface the allowlist exists to remove. The other
-# three genuinely vary by shard, so they match on suffix.
+# FCM is pinned to exact hosts, not a ``.googleapis.com`` suffix, which would
+# clear every other Google API. The other three vary by shard.
 _PUSH_HOSTS = frozenset(
     {
         "fcm.googleapis.com",       # FCM — Chrome, Edge (Chromium), Brave
@@ -123,20 +116,16 @@ def validate_push_endpoint(endpoint: str) -> None:
     """
     from clawbits.ssrf import UnsafeHostError, check_host_is_public, dialed_host, parse_url
 
-    # UnsafeHostError (the base) rather than PrivateAddressError for the checks
-    # that aren't about the resolved address — callers catch the base, and
-    # mislabelling a scheme or length rejection as "private address" would send
-    # whoever reads the log looking for a DNS answer that was never involved.
+    # The base error, not PrivateAddressError: this rejection has nothing to do
+    # with a resolved address, and the log line should not imply one.
     if len(endpoint) > MAX_ENDPOINT_LEN:
         raise UnsafeHostError(
             f"push endpoint too long: {len(endpoint)} > {MAX_ENDPOINT_LEN}"
         )
 
-    # Characters the two parsers treat differently, refused before either one
-    # sees them. The backslash is the live bypass (see the docstring);
-    # whitespace and C0/DEL controls are silently stripped by WHATWG-style
-    # parsers but not by all of them; non-ASCII would go through IDNA, and no
-    # real push endpoint needs any of it.
+    # Characters the two parsers disagree about, refused before either sees
+    # them: backslash is the live bypass, controls get silently stripped by
+    # some parsers, non-ASCII would go through IDNA. No real endpoint needs any.
     if not endpoint.isascii():
         raise UnsafeHostError("push endpoint must be ASCII")
     forbidden = {
@@ -157,10 +146,8 @@ def validate_push_endpoint(endpoint: str) -> None:
     if url.userinfo:
         raise UnsafeHostError("push endpoint must not contain userinfo")
 
-    # The host we vet must be the host we dial, so the transport's parser is
-    # authoritative. raw_host (never .host) on the httpx side: for an
-    # internationalised name the decoded unicode form and the punycode form the
-    # transport dials can resolve to different places. See ssrf.dialed_host.
+    # Vet the host we actually dial, so the transport's parser wins. raw_host,
+    # never .host: unicode and punycode forms can resolve differently.
     host = _transport_host(endpoint)
     if not host:
         raise UnsafeHostError("push endpoint has no host")
@@ -172,10 +159,9 @@ def validate_push_endpoint(endpoint: str) -> None:
     if host not in extra and not known:
         raise UnsafeHostError(f"not a known web-push service host: {host}")
 
-    # Belt and braces behind the allowlist: an allowlisted name can still be
-    # pointed at a private address, and an operator-supplied host has had no
-    # vetting at all. ``extra`` doubles as the private-address escape hatch so
-    # a deployment pointing push at localhost opts that name in once.
+    # An allowlisted name can still point at a private address, and an
+    # operator-supplied host had no vetting. ``extra`` is also the escape hatch
+    # for a deployment pushing to localhost.
     check_host_is_public(host, allow_hosts=extra)
 
 
@@ -281,20 +267,10 @@ def _print_env_block(env: str, subject: str) -> None:
     print()
 
 
-# ---------------------------------------------------------------------------
-# Background dispatcher — runs the push fan-out off the request path
-# ---------------------------------------------------------------------------
-#
-# Web push is slow (external HTTP to each browser's push service, up to
-# ``timeout`` seconds per send). It must NOT run inline in
-# ``publish_post_created``: that coroutine is run to completion by
-# ``fire_and_forget`` — on a threadpool thread for sync endpoints (an agent
-# posting via ``mm_create_post``) — so an inline fan-out would block that thread
-# for seconds, and on the async path would stretch a GC-droppable ``create_task``
-# from sub-millisecond to ~10s. Instead the post-created path calls
-# ``schedule_post_web_push`` (non-blocking, thread-safe) and a single long-lived
-# worker — owned by the app lifespan, pinned to the main loop — drains the queue
-# and does the sending.
+# The fan-out is slow external HTTP (seconds per send) and must never run
+# inline in ``publish_post_created``, which ``fire_and_forget`` runs to
+# completion — on a threadpool thread for sync endpoints. So that path enqueues
+# and a single lifespan-owned worker drains the queue.
 
 # Cap the backlog so a burst of posts can't grow memory without bound. A dropped
 # push degrades to the recipient's in-app unread badge (SSE) plus the snapshot
@@ -503,11 +479,8 @@ def _send_one(target: dict, data: str) -> str:
 
     from clawbits.ssrf import UnsafeHostError, redact_url
 
-    # Re-vet at dial time, not just at subscribe time: the row outlives the
-    # check that let it in, and DNS can move under us in between. Deliberately
-    # returns "error" rather than "dead" — a refused endpoint must be logged,
-    # not silently pruned, or a transient resolver failure would quietly delete
-    # a legitimate subscription.
+    # Re-vet at dial time: the row outlives the check that let it in. Returns
+    # "error", not "dead" — a resolver blip must not prune a live subscription.
     try:
         validate_push_endpoint(target["token"])
     except UnsafeHostError as exc:
