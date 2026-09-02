@@ -320,6 +320,7 @@ def test_build_env_threads_chosen_versions(monkeypatch):
         msb_load=False,
     )
     assert env["OPENCLAW_VERSION"] == "2026.7.0"
+    # One component version pins the matching channel + companion pair.
     assert env["CLAWBITS_PLUGIN_VERSION"] == "0.7.0"
     # Default = smart cache (base layers cached, plugin re-resolved); NOT no-cache.
     assert env["REEF_NO_CACHE"] == ""

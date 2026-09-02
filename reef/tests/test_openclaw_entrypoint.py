@@ -18,6 +18,15 @@ from reef.fleet import (
 ENTRYPOINT = Path(__file__).parents[1] / "images" / "openclaw-runtime" / "entrypoint.sh"
 BUILD_SCRIPT = ENTRYPOINT.with_name("build.sh")
 DOCKERFILE = ENTRYPOINT.with_name("Dockerfile")
+CLAWBITS_TOOLS = (
+    "clawbits_channels_list",
+    "clawbits_channel_members",
+    "clawbits_email_inbox",
+    "clawbits_email_get",
+    "clawbits_agent_info",
+    "clawbits_email_send",
+    "clawbits_agent_description_update",
+)
 
 
 def test_token_signup_runs_before_gateway_start():
@@ -100,6 +109,21 @@ def test_build_smart_cache_key_derivation():
     assert 'cache_key="$(date +%s)"' in text
     assert 'cache_key="nocache"' in text
     assert '--build-arg "CLAWBITS_PLUGIN_CACHE_KEY=${cache_key}"' in text
+    # One requested component version pins both halves of the split.
+    assert '--build-arg "CLAWBITS_PLUGIN_VERSION=${CLAWBITS_PLUGIN_VERSION:-}"' in text
+
+
+def test_split_plugins_are_installed_at_one_version():
+    dockerfile = DOCKERFILE.read_text()
+    assert 'openclaw plugins install "${channel_ref}" --pin' in dockerfile
+    assert 'clawhub:clawbits-openclaw-tools@${resolved_plugin_version}' in dockerfile
+    assert 'ARG CLAWBITS_PLUGIN_VERSION=' in dockerfile
+    # The default build resolves the channel first, then uses its actual version
+    # for the companion instead of independently asking ClawHub for latest.
+    assert 'id==="clawbits"' in dockerfile
+    channel = dockerfile.index('openclaw plugins install "${channel_ref}" --pin')
+    tools = dockerfile.index("clawhub:clawbits-openclaw-tools@${resolved_plugin_version}")
+    assert channel < tools
 
 
 def test_build_derives_truthful_stack_tag_from_probe():
@@ -109,7 +133,10 @@ def test_build_derives_truthful_stack_tag_from_probe():
     # tag reef-oc:oc<oc>-pl<pl> — no hand-bumped VERSION file, no reef-oc:<version>.
     assert "openclaw --version" in text
     assert "openclaw plugins list --json" in text
+    assert 'x.id==="clawbits-tools"' in text
+    assert '"${installed_plugin}" != "${installed_tools}"' in text
     assert 'stack="oc${installed_oc}-pl${installed_plugin}${stack_suffix}"' in text
+    assert "org.reef.clawbits-tools.version" in text
     assert "reef-oc:${stack}" in text
     assert 'cat "$here/VERSION"' not in text
     assert "reef-oc:${version}" not in text
@@ -125,8 +152,13 @@ def test_local_plugin_build_cannot_overwrite_a_clawhub_stack_tag():
     assert 'stack_suffix="-local"' in local_block
     assert 'image="reef-oc:local-plugin"' in local_block
     assert 'plugin_stage="plugin-local"' in local_block
+    assert 'stage-channel.mjs "${stage_dir}/channel"' in local_block
+    assert 'stage-tools.mjs "${stage_dir}/tools"' in local_block
     assert '--build-arg "CLAWBITS_PLUGIN_STAGE=${plugin_stage}"' in text
-    assert "ARG CLAWBITS_PLUGIN_STAGE=plugin-clawhub" in DOCKERFILE.read_text()
+    dockerfile = DOCKERFILE.read_text()
+    assert "ARG CLAWBITS_PLUGIN_STAGE=plugin-clawhub" in dockerfile
+    assert ".plugin-src/channel/" in dockerfile
+    assert ".plugin-src/tools/" in dockerfile
 
 
 def test_gemini_onboards_with_dedicated_auth_choice():
@@ -266,6 +298,14 @@ def test_codex_subscription_routes_openai_through_codex_harness():
     assert "plugins.entries.codex.enabled true" in text
 
 
+def test_companion_owns_split_background_services():
+    text = ENTRYPOINT.read_text()
+    ownership = "openclaw config set channels.clawbits.serviceOwner tools"
+    assert ownership in text
+    assert text.index(ownership) < text.index("reef_clawbits_autosignup\n")
+    assert text.index(ownership) < text.index("exec openclaw gateway run")
+
+
 def test_no_exclusive_plugin_allowlist():
     """`plugins.allow` is an EXCLUSIVE allowlist: setting it to '["clawbits"]'
     disabled 95 of OpenClaw's 96 BUNDLED plugins (browser, document-extract,
@@ -283,7 +323,7 @@ def test_browser_tool_is_allowed_and_configured():
     which REPLACES the profile), and headless+noSandbox are mandatory for
     Chromium to start at all in this container."""
     text = ENTRYPOINT.read_text()
-    assert "tools.alsoAllow '[\"browser\"]'" in text
+    assert "tools.alsoAllow '[\"browser\"," in text
     assert "config set tools.allow" not in text
     assert "browser.noSandbox true" in text
     assert "browser.headless true" in text
@@ -305,7 +345,7 @@ def test_capabilities_are_gated_and_revocable():
     # created but never fire, or jobs that keep firing after a revoke.
     assert "cron.enabled true" in text
     assert "cron.enabled false" in text
-    assert "tools.alsoAllow '[\"browser\",\"cron\"]'" in text
+    assert "tools.alsoAllow '[\"browser\",\"cron\"," in text
     # `cron.triggers.*` is NOT in the config schema: writing it fails validation
     # and takes the gateway down on boot. Only the comment warning about it may
     # mention the name.
@@ -319,14 +359,12 @@ def test_capabilities_are_gated_and_revocable():
     assert 'rm -f "${HOME}/.local/bin/gh"' in text
 
 
-def test_no_capability_grants_messaging():
-    """group:messaging reaches other humans/agents in the customer's org with no
-    boundary in between - no VM, egress rule or resource limit touches it. It is
-    deliberately not a capability. Asserted against what the entrypoint SETS, not
-    against the prose: the comments discuss messaging on purpose."""
+def test_companion_tools_are_allowed_without_unrestricted_messaging_group():
+    """The seven narrow companion tools are intentional. The unrestricted
+    group:messaging family must still not be enabled by Reef's tool policy."""
     text = ENTRYPOINT.read_text()
-    # The only tool merged in is `browser`; nothing grants a messaging group.
-    assert "tools.alsoAllow '[\"browser\"]'" in text
+    for tool in CLAWBITS_TOOLS:
+        assert tool in text
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("#") or not stripped:
@@ -334,6 +372,14 @@ def test_no_capability_grants_messaging():
         assert "group:messaging" not in stripped
         # tools.profile="full" would pull messaging in silently.
         assert "tools.profile" not in stripped
+
+
+def test_status_reports_both_split_plugin_versions():
+    text = ENTRYPOINT.read_text()
+    assert 'x.id === "clawbits"' in text
+    assert 'x.id === "clawbits-tools"' in text
+    assert "clawbitsPlugin: plugin" in text
+    assert "clawbitsTools: tools" in text
 
 
 # ── The reef-managed user env file (REEF_ENV_DIR/env) ─────────────────────────

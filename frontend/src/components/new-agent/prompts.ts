@@ -5,6 +5,26 @@
 import {type Org} from "@/lib/api";
 
 export const PLUGIN_SLUG = "clawhub:clawbits-openclaw-plugin";
+export const COMPANION_PLUGIN_SLUG = "clawhub:clawbits-openclaw-tools";
+
+export const CLAWBITS_OPTIONAL_TOOLS = [
+    "clawbits_channels_list",
+    "clawbits_channel_members",
+    "clawbits_email_inbox",
+    "clawbits_email_get",
+    "clawbits_agent_info",
+    "clawbits_email_send",
+    "clawbits_agent_description_update",
+] as const;
+
+function mergeToolAllowlistCommands(): string[] {
+    const tools = JSON.stringify(CLAWBITS_OPTIONAL_TOOLS);
+    return [
+        "EXISTING_TOOLS=$(openclaw config get tools.alsoAllow --json 2>/dev/null || printf '[]')",
+        `MERGED_TOOLS=$(printf '%s' "$EXISTING_TOOLS" | node -e 'const fs=require("node:fs");const current=JSON.parse(fs.readFileSync(0,"utf8"));const add=${tools};process.stdout.write(JSON.stringify([...new Set([...(Array.isArray(current)?current:[]),...add])]));')`,
+        "openclaw config set tools.alsoAllow \"$MERGED_TOOLS\" --json",
+    ];
+}
 
 /** POSIX env-var name; mirrors reef's server-side rule (which stays the
  *  source of truth — reserved keys etc. come back as a readable 422). */
@@ -29,18 +49,36 @@ export function buildOpenClawSetupPrompt(org: Org | null, signupToken: string): 
         `You are being onboarded to ${orgLabel} on Clawbits (${apiBase}).`,
         "Run these steps non-interactively. Do not invoke `openclaw configure` - it is interactive and will hang.",
         "",
-        "# 1. Install the plugin from the ClawHub registry. ClawHub prints a review",
+        "# 1. Install the channel plugin from ClawHub. ClawHub prints a review",
         "#    warning for community packages and installs anyway - no flag needed:",
         `openclaw plugins install ${PLUGIN_SLUG} --pin`,
         "",
-        "# 2. Sign up with this one-time token. No approval step is needed.",
+        "# 2. Install the matching tools/services companion. It reuses the channel",
+        "#    account configuration; do not run a second signup:",
+        `openclaw plugins install ${COMPANION_PLUGIN_SLUG} --pin`,
+        "",
+        "# 3. Sign up with this one-time token. No approval step is needed.",
         `openclaw clawbits signup --endpoint ${apiBase} --org-id ${orgId} --signup-token ${signupToken}`,
         "",
-        "# 3. The command will mint tokens, resolve the Clawbits channel, and print exact",
-        "#    `openclaw config set` commands. Run those printed commands exactly.",
+        "# 4. The signup command mints credentials, resolves the owner channel, and",
+        "#    prints exact `openclaw config set` commands. Run them exactly.",
         "",
-        "# 4. Verify the channel is wired up:",
-        "openclaw clawbits healthcheck",
+        "# 5. Hand cron, email, usage, and skills services to the companion:",
+        "openclaw config set channels.clawbits.serviceOwner tools",
+        "",
+        "# 6. Merge all optional Clawbits tools into tools.alsoAllow without removing",
+        "#    existing entries:",
+        ...mergeToolAllowlistCommands(),
+        "",
+        "# 7. Restart the Gateway to activate the ownership handoff. This may end the",
+        "#    current turn; continue with verification after reconnecting:",
+        "openclaw gateway restart",
+        "",
+        "# 8. Verify both plugins and the channel:",
+        "openclaw plugins inspect clawbits --runtime",
+        "openclaw plugins inspect clawbits-tools --runtime",
+        "openclaw clawbits version",
+        "openclaw channels status --probe",
     ].join("\n");
 }
 
