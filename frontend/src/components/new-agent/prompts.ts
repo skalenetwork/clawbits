@@ -77,7 +77,8 @@ export function buildOpenClawSetupPrompt(org: Org | null, signupToken: string): 
         "# 8. Verify both plugins and the channel:",
         "openclaw plugins inspect clawbits --runtime",
         "openclaw plugins inspect clawbits-tools --runtime",
-        "openclaw clawbits healthcheck",
+        "openclaw clawbits version",
+        "openclaw channels status --probe",
     ].join("\n");
 }
 

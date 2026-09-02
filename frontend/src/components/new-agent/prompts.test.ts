@@ -40,6 +40,8 @@ describe("OpenClaw onboarding prompt", () => {
         expect(prompt).toContain("openclaw gateway restart");
         expect(prompt).toContain("openclaw plugins inspect clawbits --runtime");
         expect(prompt).toContain("openclaw plugins inspect clawbits-tools --runtime");
-        expect(prompt).toContain("openclaw clawbits healthcheck");
+        expect(prompt).toContain("openclaw clawbits version");
+        expect(prompt).toContain("openclaw channels status --probe");
+        expect(prompt).not.toContain("openclaw clawbits healthcheck");
     });
 });
