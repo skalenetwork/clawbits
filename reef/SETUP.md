@@ -53,16 +53,25 @@ uv sync          # from the repo root; reef has no extra deps beyond the workspa
 Agents boot from a local OCI image (default tag `reef-oc:plugin`):
 
 ```bash
-reef/images/openclaw-runtime/build.sh     # REEF_NO_CACHE=1 re-resolves the pinned plugin
+reef/images/openclaw-runtime/build.sh     # REEF_NO_CACHE=1 re-resolves the plugin pair
 ```
 
 Re-run after changing the image's Dockerfile / entrypoint, or to pick up a new
 OpenClaw release. Point Reef at a different tag with `REEF_OPENCLAW_IMAGE`.
 
-#### Testing the working-tree plugin
+#### Testing the working-tree plugins
 
-By default the image installs the published plugin from clawhub. To bake the
-repo's `plugin/` instead (it gets built first, no need to pre-build):
+By default the image installs the published `clawbits-openclaw-plugin` channel
+and the matching `clawbits-openclaw-tools` companion from ClawHub. The channel
+version is resolved first and the companion is pinned to that exact version. Pin
+both explicitly when reproducing a release:
+
+```bash
+CLAWBITS_PLUGIN_VERSION=0.17.18 reef/images/openclaw-runtime/build.sh
+```
+
+To bake standalone artifacts staged from the repo's `plugin/` instead (both get
+built first, no need to pre-build):
 
 ```bash
 CLAWBITS_PLUGIN_LOCAL=1 reef/images/openclaw-runtime/build.sh
@@ -75,7 +84,10 @@ the clawhub tags. Confirm what landed:
 ```bash
 docker inspect --format '{{.Config.Labels}}' reef-oc:local-plugin | tr ' ' '\n' | grep reef
 docker run --rm --entrypoint sh reef-oc:local-plugin -lc \
-  'sha256sum /home/node/.openclaw/extensions/clawbits/dist/index.js'   # == plugin/dist/index.js
+  "openclaw plugins list --json | grep -E 'clawbits(-tools)?'"
+docker run --rm --entrypoint sh reef-oc:local-plugin -lc \
+  'test -f /home/node/.openclaw/extensions/clawbits/dist/index.js && \
+   test -f /home/node/.openclaw/extensions/clawbits-tools/dist/tools-entry.js'
 ```
 
 ### 3. Run the API
@@ -261,6 +273,12 @@ Alert on `reconciler.healthy: false` (the self-healing loop stopped passing).
 cd /opt/reef && sudo git pull && sudo -u reef uv sync
 sudo systemctl restart reef-api      # SQLite schema migrates in place; agents reconcile back
 ```
+
+OpenClaw image upgrades use Reef's normal destroy/recreate path: the old VM is
+destroyed before the replacement Gateway starts. The replacement image contains
+both split plugins, sets `channels.clawbits.serviceOwner=tools`, and restores the
+existing Clawbits identity without reusing the one-time signup token. This avoids
+running old and new cron/email/usage/skills workers at the same time.
 
 - The daily timer snapshots `REEF_DB_PATH` to `REEF_BACKUP_DIR` (keeps
   `REEF_BACKUP_KEEP`); for point-in-time use [litestream](https://litestream.io).

@@ -11,12 +11,12 @@ hints (and, joined with the active image's baked versions, the server-computed
     (``X.Y.Z-N``) never get an image tag, so the raw npm string can be unbuildable.
     The floor we advertise is the first of ``[npm version, its X.Y.Z base]`` that
     actually exists on ghcr — it prefills the build dialog, so it must be pullable.
-    clawbits **plugin** from the public ClawHub registry
+    clawbits **plugin pair** from the public ClawHub registry. The channel package
     (``GET /api/v1/packages/clawbits-openclaw-plugin`` → ``package.latestVersion``)
-    — exactly what ``clawhub:clawbits-openclaw-plugin`` installs at build time.
-    A baked version behind a floor ⇒ a rebuild is worth it. (Newest published, NOT
-    compatibility-filtered: "Build latest" pairs it with the newest engine, which
-    is the matching combination.)
+    is the release oracle; the image build installs the companion at that exact
+    version and rejects a missing/mismatched pair. A baked version behind a floor
+    ⇒ a rebuild is worth it. (Newest published, NOT compatibility-filtered:
+    "Build latest" pairs it with the newest engine.)
   • **ironclaw** — the engine is built locally from the ironclaw checkout (no
     external "latest"), and the clawbits **channel** ships from this tree, so
     IronClaw has no actionable external floor yet (both null). It gains one once
@@ -61,9 +61,9 @@ _GHCR_MANIFEST_ACCEPT = ", ".join(
         "application/vnd.docker.distribution.manifest.v2+json",
     ]
 )
-# ClawHub package metadata for the clawbits plugin — carries a top-level
-# ``package.latestVersion``; the same package ``build.sh`` installs as
-# ``clawhub:clawbits-openclaw-plugin``.
+# ClawHub channel metadata carries ``package.latestVersion``. The release workflow
+# publishes/verifies the companion first, and build.sh installs that companion at
+# the channel's exact resolved version.
 _CLAWHUB_PLUGIN = "https://clawhub.ai/api/v1/packages/clawbits-openclaw-plugin"
 _HTTP_TIMEOUT = 5.0
 
@@ -175,10 +175,11 @@ async def _openclaw_latest() -> str | None:
 
 
 async def _clawhub_plugin_latest() -> str | None:
-    """Newest published clawbits plugin on the public ClawHub registry — the same
-    source ``build.sh`` installs from (``clawhub:clawbits-openclaw-plugin``), so it
-    is exactly what a rebuild would bake. Public (no auth); a failed or unexpected
-    response yields ``None`` (→ last-good cache or null)."""
+    """Newest published clawbits channel on the public ClawHub registry.
+
+    build.sh uses this release version for the matching companion too. Public (no
+    auth); a failed or unexpected response yields ``None`` (→ last-good cache or
+    null)."""
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.get(_CLAWHUB_PLUGIN)

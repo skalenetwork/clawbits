@@ -21,11 +21,13 @@ ARG OPENCLAW_IMAGE_VARIANT=-browser
 ARG CLAWBITS_PLUGIN_STAGE=plugin-clawhub
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}${OPENCLAW_IMAGE_VARIANT} AS base
 
-# Bake in the clawbits channel plugin from the clawhub registry. `--pin` locks
-# the resolved version so the image is reproducible (bump deliberately, like the
-# base tag above). Installed as the image's `node` user, so it lands under the user
-# plugin root - kept BEFORE the entrypoint COPY so editing the entrypoint doesn't
-# invalidate this (network) layer.
+# Bake in the clawbits channel plus its tools/services companion. The channel is
+# resolved first; the companion is then installed at that EXACT version. This
+# avoids a split release's publication window producing a mismatched image.
+# CLAWBITS_PLUGIN_VERSION pins both packages when explicitly supplied. Installed
+# as the image's `node` user, so they land under the user plugin root - kept BEFORE
+# the entrypoint COPY so editing the entrypoint doesn't invalidate this network
+# layer.
 #
 # NOTE: the ClawHub trust gate has flip-flopped upstream. `--acknowledge-clawhub-risk`
 # existed, was then REMOVED (the CLI hard-errored on it, so it was dropped here),
@@ -40,17 +42,33 @@ FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}${OPENCLAW_IMAGE_VARIANT} AS b
 # plugin - when ClawHub flags a release, review the scan, don't just assume noise.
 FROM base AS plugin-clawhub
 ARG CLAWBITS_PLUGIN_CACHE_KEY=dev
+ARG CLAWBITS_PLUGIN_VERSION=
 RUN echo "clawbits plugin cache key=${CLAWBITS_PLUGIN_CACHE_KEY}" \
     && ack_flag=""; \
     if openclaw plugins install --help 2>/dev/null | grep -q -- --acknowledge-clawhub-risk; then \
       ack_flag="--acknowledge-clawhub-risk"; \
     fi; \
-    openclaw plugins install clawhub:clawbits-openclaw-plugin --pin ${ack_flag}
+    channel_ref="clawhub:clawbits-openclaw-plugin"; \
+    if [ -n "${CLAWBITS_PLUGIN_VERSION}" ]; then \
+      channel_ref="${channel_ref}@${CLAWBITS_PLUGIN_VERSION}"; \
+    fi; \
+    openclaw plugins install "${channel_ref}" --pin ${ack_flag}; \
+    resolved_plugin_version="${CLAWBITS_PLUGIN_VERSION}"; \
+    if [ -z "${resolved_plugin_version}" ]; then \
+      resolved_plugin_version="$(openclaw plugins list --json 2>/dev/null \
+        | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const p=(j.plugins||[]).find(x=>x&&x.id==="clawbits");if(p&&p.version)process.stdout.write(String(p.version))}catch{}})')"; \
+    fi; \
+    [ -n "${resolved_plugin_version}" ] \
+      || { echo "could not resolve installed clawbits channel version" >&2; exit 1; }; \
+    openclaw plugins install "clawhub:clawbits-openclaw-tools@${resolved_plugin_version}" --pin ${ack_flag}
 
-# .plugin-src/ is the working-tree ./plugin, staged into the context by build.sh.
+# .plugin-src/{channel,tools} are standalone working-tree artifacts staged by
+# build.sh. Installing both exercises the same package boundary as ClawHub.
 FROM base AS plugin-local
-COPY --chown=node:node .plugin-src/ /tmp/clawbits-plugin/
-RUN openclaw plugins install /tmp/clawbits-plugin --force
+COPY --chown=node:node .plugin-src/channel/ /tmp/clawbits-channel/
+COPY --chown=node:node .plugin-src/tools/ /tmp/clawbits-tools/
+RUN openclaw plugins install /tmp/clawbits-channel --force \
+    && openclaw plugins install /tmp/clawbits-tools --force
 
 FROM ${CLAWBITS_PLUGIN_STAGE}
 
@@ -177,12 +195,13 @@ ENV REEF_IMAGE_VERSION=${REEF_IMAGE_VERSION}
 LABEL org.opencontainers.image.version="${REEF_IMAGE_VERSION}"
 
 # Baked component versions for the dashboard's Images list. These are PLACEHOLDERS
-# (the plugin one from the cache key); build.sh re-stamps truthful
-# org.reef.openclaw.version / org.reef.clawbits-plugin.version post-build by
-# probing the built image — the same source entrypoint.sh reports into status.json
-# — so a default build is self-describing without a passed --build-arg.
+# (the plugin one from the cache key); build.sh re-stamps truthful OpenClaw,
+# channel, and companion labels post-build by probing the built image — the same
+# source entrypoint.sh reports into status.json — so a default build is
+# self-describing without a passed --build-arg.
 ARG CLAWBITS_PLUGIN_CACHE_KEY=dev
 LABEL org.reef.clawbits-plugin.version="${CLAWBITS_PLUGIN_CACHE_KEY}"
+LABEL org.reef.clawbits-tools.version="${CLAWBITS_PLUGIN_CACHE_KEY}"
 
 # Headless onboard -> foreground gateway (validated). No ports published by
 # Reef; the gateway binds loopback inside the microVM.

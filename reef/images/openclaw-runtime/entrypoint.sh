@@ -155,6 +155,11 @@ fi
 # plugin not listed. Never set it; unset it so agents carrying an old value recover.
 openclaw config unset plugins.allow >/dev/null 2>&1 || true
 
+# The image carries the slim channel plus the companion. The companion must own
+# cron reconciliation, email polling, usage reporting, and skills sync. Write this
+# every boot so upgraded pre-split agents cannot retain legacy channel ownership.
+openclaw config set channels.clawbits.serviceOwner tools
+
 # ChatGPT-subscription agents run through the bundled Codex harness (plugin id
 # `codex`), which ships DISABLED regardless of any allowlist. Enabling the entry is
 # what actually turns it on — otherwise agentRuntime.id=codex (pinned below) fails
@@ -174,19 +179,20 @@ reef_has_cap() {
 }
 
 # Tool policy. `openclaw onboard` writes tools.profile="coding", which does NOT
-# include `browser` even once the plugin loads. alsoAllow MERGES on top of the
-# profile; plain `allow` would REPLACE it and silently drop everything else.
-# Deliberately NOT using tools.profile="full": it silently includes group:messaging,
-# which would hand the model a first-class send tool on an agent enrolled in a real
-# customer org — the one capability here whose blast radius leaves the microVM.
+# include `browser`, `cron`, or the companion's optional tools. alsoAllow MERGES
+# on top of the profile; plain `allow` would REPLACE it and silently drop
+# everything else. All seven clawbits tools are first-party Reef functionality and
+# are explicitly enabled because OpenClaw does not auto-allow optional plugin
+# tools. Deliberately NOT using tools.profile="full": it silently includes the
+# unrestricted group:messaging tool family.
 #
-# `cron` is added only for agents granted the capability: it is the tool that lets
+# The built-in `cron` tool is added only for agents granted the capability: it lets
 # the agent schedule its own recurring work. Rewritten in full every boot (not
-# appended) so a revoke removes it.
+# appended) so a revoke removes it while the clawbits tools remain available.
 if reef_has_cap cron; then
-  openclaw config set tools.alsoAllow '["browser","cron"]' --json
+  openclaw config set tools.alsoAllow '["browser","cron","clawbits_channels_list","clawbits_channel_members","clawbits_email_inbox","clawbits_email_get","clawbits_agent_info","clawbits_email_send","clawbits_agent_description_update"]' --json
 else
-  openclaw config set tools.alsoAllow '["browser"]' --json
+  openclaw config set tools.alsoAllow '["browser","clawbits_channels_list","clawbits_channel_members","clawbits_email_inbox","clawbits_email_get","clawbits_agent_info","clawbits_email_send","clawbits_agent_description_update"]' --json
 fi
 
 # Exec posture. These are already OpenClaw's effective defaults (verified in-image:
@@ -592,10 +598,13 @@ reef_write_status() {
       let s = "";
       process.stdin.on("data", (d) => (s += d)).on("end", () => {
         let plugin = null;
+        let tools = null;
         try {
           const j = JSON.parse(s);
           const p = (j.plugins || []).find((x) => x && x.id === "clawbits");
+          const t = (j.plugins || []).find((x) => x && x.id === "clawbits-tools");
           if (p && p.version) plugin = String(p.version);
+          if (t && t.version) tools = String(t.version);
         } catch {}
         const out = {
           schema: 1,
@@ -605,6 +614,7 @@ reef_write_status() {
             image: process.env.REEF_IMAGE_VERSION || null,
             openclaw: process.env.REEF_OC_VERSION || null,
             clawbitsPlugin: plugin,
+            clawbitsTools: tools,
           },
         };
         try {
