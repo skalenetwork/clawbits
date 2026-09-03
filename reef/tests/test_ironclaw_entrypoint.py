@@ -245,7 +245,7 @@ def test_openrouter_no_pick_defaults_to_a_free_model():
     # a known-good default — for openrouter a FREE catalog model (bare slug,
     # IronClaw takes OpenRouter ids raw), so no spend until the owner chooses.
     assert '[ "${LLM_BACKEND:-}" = "openrouter" ]; then' in text
-    assert 'reef_model="nvidia/nemotron-nano-9b-v2:free"' in text
+    assert 'reef_model="nvidia/nemotron-3.5-lightning:free"' in text
 
 
 def test_model_pin_never_strips_openrouter_vendor_paths():

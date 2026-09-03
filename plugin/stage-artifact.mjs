@@ -39,8 +39,9 @@ export function stageArtifact(options) {
     extraDirectories = [],
     extraFiles = [],
     label,
+    vendorDependencies = false,
   } = options;
-  if (!targetArg) throw new Error(`usage: node stage-${label}.mjs <target-dir>`);
+  if (!targetArg) throw new Error(`usage: node stage-${label}.mjs <target-dir> [--vendor-deps]`);
 
   const entryPath = resolve(distRoot, entry);
   if (!existsSync(entryPath)) {
@@ -169,7 +170,34 @@ export function stageArtifact(options) {
   for (const directory of extraDirectories) {
     cpSync(resolve(pluginRoot, directory), resolve(targetRoot, directory), { recursive: true });
   }
+
+  // Vendoring is opt-in because it is only correct for PATH installs. OpenClaw
+  // runs `npm install` for managed npm/ClawHub sources (src/plugins/
+  // install-managed-npm.ts) and relinks the host peer afterwards, so a
+  // published artifact must let npm resolve normally. A directory install is a
+  // plain copy with no dependency step at all, so a declared runtime dependency
+  // that is not physically present makes the plugin fail to load — which is
+  // exactly what happened to the tools package: `typebox` is imported at module
+  // scope by companion-tools.ts, so the reef local image installed a plugin
+  // whose status was `error: missing typebox` while the channel loaded fine.
+  const vendored = [];
+  if (vendorDependencies) {
+    for (const dependency of Object.keys(packageJson.dependencies ?? {})) {
+      const source = resolve(pluginRoot, "node_modules", dependency);
+      if (!existsSync(source)) {
+        throw new Error(
+          `cannot vendor '${dependency}': ${source} is missing (run the plugin's install first)`,
+        );
+      }
+      const destination = resolve(targetRoot, "node_modules", dependency);
+      mkdirSync(dirname(destination), { recursive: true });
+      cpSync(source, destination, { recursive: true, dereference: true });
+      vendored.push(dependency);
+    }
+  }
+
   console.log(
-    `staged ${label}: ${visited.size} runtime modules (+${visitedDeclarations.size} declarations) in ${targetRoot}`,
+    `staged ${label}: ${visited.size} runtime modules (+${visitedDeclarations.size} declarations)` +
+      `${vendored.length > 0 ? ` (+vendored ${vendored.join(", ")})` : ""} in ${targetRoot}`,
   );
 }

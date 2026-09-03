@@ -39,11 +39,18 @@ openclaw clawbits update --json     # same, machine-readable: {"commands":[...]}
 
 Then run what it printed, via your shell tool:
 
-- **Remote install** → `openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force`
-  (fetches the newest compatible release and stays pinned; the ack flag clears
-  ClawHub's non-interactive gate for this first-party plugin).
+- **Remote install** → `openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities`
+  (fetches the newest compatible release; `--accept-capabilities` accepts the
+  plugin's declared surface, which OpenClaw 2026.8+ requires before it will
+  finish the install).
 - **Local checkout** → a rebuild + force-reinstall recipe
-  (`bash <dir>/update-from-source.sh`, or `git pull && npm run build && openclaw plugins install <dir> --force`).
+  (`bash <dir>/update-from-source.sh`, or `git pull && npm run build && openclaw plugins install <dir> --force --accept-capabilities`).
+
+If a command fails with an **unknown-option** error for `--accept-capabilities`,
+this gateway predates OpenClaw 2026.8: drop that option and use `--pin --force`
+instead. Never pass both — 2026.8+ refuses `--pin` for a `clawhub:` ref with
+*"--pin is only supported with npm registry installs."* Run whatever
+`openclaw clawbits update` printed; it already picks the right pair.
 
 ## Restart the gateway (required — the update is not live until you do)
 

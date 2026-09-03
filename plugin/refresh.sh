@@ -334,8 +334,25 @@ fi
 # ── tier 4 — rebuild + reinstall (opt-in) ──────────────────────────────────
 if [ "$REINSTALL" = "1" ]; then
   section "Tier 4 — rebuild and reinstall (--reinstall)"
+  # OpenClaw 2026.8 ("2.0") gates every external-plugin install behind a
+  # capability-consent review and throws ManagedPluginLifecycleError unless an
+  # operator accepts the declared surface. A local-path install can NEVER
+  # inherit an earlier acceptance (the install record pins no artifact
+  # integrity, so OpenClaw cannot prove the new bytes are the approved ones),
+  # so this asks every run. Probe --help and pass the flag only when this
+  # OpenClaw knows it: pre-2026.8 CLIs hard-error on an unknown option, and
+  # this script has to keep working on both.
+  CAP_FLAG=""
+  if command -v openclaw >/dev/null 2>&1 &&
+    openclaw plugins install --help 2>/dev/null | grep -q -- --accept-capabilities; then
+    CAP_FLAG="--accept-capabilities"
+  fi
   if [ "$DRY_RUN" = "1" ]; then
-    warn "would run: (cd $REPO_PLUGIN_DIR && npm run build) then openclaw plugins install $REPO_PLUGIN_DIR --force"
+    warn "would run: (cd $REPO_PLUGIN_DIR && npm run build)"
+    warn "would run: node stage-channel.mjs <stage>/channel --vendor-deps"
+    warn "would run: node stage-tools.mjs <stage>/tools --vendor-deps"
+    warn "would run: openclaw plugins install <stage>/channel --force $CAP_FLAG"
+    warn "would run: openclaw plugins install <stage>/tools --force $CAP_FLAG"
   else
     if ! command -v npm >/dev/null 2>&1; then
       fail "npm not on PATH; cannot rebuild"
@@ -355,14 +372,38 @@ if [ "$REINSTALL" = "1" ]; then
           rm -rf "$INSTALL_DIR"
           ok "pre-install scrub: removed $INSTALL_DIR"
         fi
-        ok "installing plugin via: openclaw plugins install $REPO_PLUGIN_DIR --force"
-        if INSTALL_OUT=$(openclaw plugins install "$REPO_PLUGIN_DIR" --force 2>&1); then
-          printf '%s\n' "$INSTALL_OUT" | sed "s/^/      ${DIM}/" | sed "s/\$/${RESET}/"
-          ok "openclaw install completed (gateway auto-restart triggered)"
-          TIER4_RAN=1
+        # Stage and install BOTH halves. The repo root is only the CHANNEL
+        # package; the companion lives behind package.tools.json. Installing the
+        # repo dir alone leaves cron, email, usage and skills on the old code.
+        # --vendor-deps copies `typebox` into the staged companion, which a path
+        # install would otherwise never install (OpenClaw copies the directory
+        # and runs no dependency step, so the plugin loads with status: error).
+        STAGE_DIR="$(mktemp -d -t clawbits-refresh-src.XXXXXX)"
+        if ! STAGE_OUT=$( (cd "$REPO_PLUGIN_DIR" \
+          && node stage-channel.mjs "$STAGE_DIR/channel" --vendor-deps \
+          && node stage-tools.mjs "$STAGE_DIR/tools" --vendor-deps) 2>&1); then
+          fail "staging failed; not running install:"
+          printf '%s\n' "$STAGE_OUT" | sed 's/^/      /'
+          rm -rf "$STAGE_DIR"
         else
-          fail "openclaw install failed:"
-          printf '%s\n' "$INSTALL_OUT" | sed 's/^/      /'
+          printf '%s\n' "$STAGE_OUT" | sed "s/^/      ${DIM}/" | sed "s/\$/${RESET}/"
+          INSTALL_FAILED=0
+          for part in channel tools; do
+            ok "installing $part via: openclaw plugins install $STAGE_DIR/$part --force $CAP_FLAG"
+            # shellcheck disable=SC2086 # CAP_FLAG is a single flag or empty by construction
+            if INSTALL_OUT=$(openclaw plugins install "$STAGE_DIR/$part" --force $CAP_FLAG 2>&1); then
+              printf '%s\n' "$INSTALL_OUT" | sed "s/^/      ${DIM}/" | sed "s/\$/${RESET}/"
+            else
+              INSTALL_FAILED=1
+              fail "openclaw install failed for $part:"
+              printf '%s\n' "$INSTALL_OUT" | sed 's/^/      /'
+            fi
+          done
+          rm -rf "$STAGE_DIR"
+          if [ "$INSTALL_FAILED" = "0" ]; then
+            ok "openclaw install completed for channel and tools (gateway auto-restart triggered)"
+            TIER4_RAN=1
+          fi
         fi
       else
         fail "build failed; not running install"

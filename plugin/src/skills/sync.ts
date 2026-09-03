@@ -86,8 +86,8 @@ export async function syncOnce(opts: SkillsReporterOptions): Promise<number> {
 
   if (applied.length > 0) {
     // Tell the gateway to refresh rather than waiting on fs-watch timing, so
-    // the skill is live on the very next turn.
-    await bumpSnapshot(workspaceDir);
+    // the skill is live on the very next turn. No-op on OpenClaw 2026.8+.
+    await bumpSnapshot(workspaceDir, log, accountId);
   }
 
   // Scan AFTER applying so the report reflects the disk we just produced.
@@ -125,16 +125,59 @@ export async function syncOnce(opts: SkillsReporterOptions): Promise<number> {
   return skills.length;
 }
 
-/** Ask OpenClaw to re-read its skill snapshot. Best-effort: the file watcher is
- *  the fallback, this just removes the wait. */
-async function bumpSnapshot(workspaceDir: string | undefined): Promise<void> {
+// `openclaw/plugin-sdk/skills-runtime` was DELETED in OpenClaw 2026.8 ("2.0").
+// It is absent from the package's 324-subpath export map and from both
+// `scripts/lib/plugin-sdk-entrypoints.json` and
+// `plugin-sdk-private-local-only-subpaths.json` — not deprecated, not demoted
+// to private-local, just gone, with no compatibility record and no public
+// replacement. The three functions still exist inside the host
+// (`src/skills/runtime/refresh-state.ts`) but nothing exposes them to a plugin.
+//
+// The imports stay because they are still the fast path on pre-2.0 gateways,
+// which the reef image still pins. What changed is the honesty of the fallback:
+// on 2.0 the poll is not a backstop, it is the ONLY path, so the degradation
+// gets logged once instead of being swallowed. Symptom when it is missing: a
+// freshly applied skill is not live until the host's own watcher or the next
+// SKILLS_REPORT_INTERVAL_MS poll picks it up.
+// NB: both `import()` calls below must keep this specifier INLINE as a string
+// literal. `stage-artifact.mjs` walks the built closure and hard-fails with
+// "unresolvable dynamic import" on a non-literal specifier, so hoisting it into
+// this constant breaks packaging (test/staging.test.ts covers it). The constant
+// exists for the log line only.
+const SKILLS_RUNTIME_SUBPATH = "openclaw/plugin-sdk/skills-runtime";
+let skillsRuntimeUnavailableLogged = false;
+
+function noteSkillsRuntimeUnavailable(log: BasicLogger | undefined, accountId: string): void {
+  if (skillsRuntimeUnavailableLogged) return;
+  skillsRuntimeUnavailableLogged = true;
+  logInfo(
+    log,
+    `[clawbits/${accountId}] skills: host does not expose ${SKILLS_RUNTIME_SUBPATH} ` +
+      `(removed in OpenClaw 2026.8) — falling back to the ${SKILLS_REPORT_INTERVAL_MS}ms poll ` +
+      `and the host's own skill watcher; newly applied skills are not live until then`,
+  );
+}
+
+/** Ask OpenClaw to re-read its skill snapshot. Best-effort: the host's own file
+ *  watcher is the fallback, this just removes the wait. Unavailable on 2.0+. */
+async function bumpSnapshot(
+  workspaceDir: string | undefined,
+  log: BasicLogger | undefined,
+  accountId: string,
+): Promise<void> {
   try {
     const mod = (await import(
       /* @vite-ignore */ "openclaw/plugin-sdk/skills-runtime"
-    )) as { bumpSkillsSnapshotVersion?: (p: { workspaceDir?: string; reason?: string }) => number };
-    mod.bumpSkillsSnapshotVersion?.({ workspaceDir, reason: "clawbits-sync" });
+    )) as {
+      bumpSkillsSnapshotVersion?: (p: { workspaceDir?: string; reason?: string }) => number;
+    };
+    if (typeof mod.bumpSkillsSnapshotVersion !== "function") {
+      noteSkillsRuntimeUnavailable(log, accountId);
+      return;
+    }
+    mod.bumpSkillsSnapshotVersion({ workspaceDir, reason: "clawbits-sync" });
   } catch {
-    // Older gateway — the watcher picks it up on its own.
+    noteSkillsRuntimeUnavailable(log, accountId);
   }
 }
 
@@ -160,15 +203,22 @@ export async function runSkillsReporter(opts: SkillsReporterOptions): Promise<vo
 
   // OpenClaw's own change signal, when the host exposes it. Fires on any skill
   // create/update/removal — including the agent installing one itself — so the
-  // mirror is fresh without shortening the poll.
+  // mirror is fresh without shortening the poll. Gone on 2026.8+ (see
+  // SKILLS_RUNTIME_SUBPATH above); there the poll is the only guarantee.
   let unsubscribe: (() => void) | undefined;
   try {
     const mod = (await import(
       /* @vite-ignore */ "openclaw/plugin-sdk/skills-runtime"
-    )) as { registerSkillsChangeListener?: (fn: () => void) => () => void };
-    unsubscribe = mod.registerSkillsChangeListener?.(wake);
+    )) as {
+      registerSkillsChangeListener?: (fn: () => void) => () => void;
+    };
+    if (typeof mod.registerSkillsChangeListener === "function") {
+      unsubscribe = mod.registerSkillsChangeListener(wake);
+    } else {
+      noteSkillsRuntimeUnavailable(log, accountId);
+    }
   } catch {
-    // Older gateway, or the export is absent — the poll is the guarantee.
+    noteSkillsRuntimeUnavailable(log, accountId);
   }
 
   const sleep = (ms: number): Promise<void> =>

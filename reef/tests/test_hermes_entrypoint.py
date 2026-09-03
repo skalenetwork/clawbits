@@ -146,7 +146,7 @@ def test_openrouter_is_only_reachable_via_its_own_key():
     assert 'base_url="https://openrouter.ai/api/v1"' in branch
     # The fallback is a FREE catalog model (matching the pickers' curated
     # default) — a no-pick agent must not spend on its owner's key.
-    assert 'fallback_model="nvidia/nemotron-nano-9b-v2:free"' in branch
+    assert 'fallback_model="nvidia/nemotron-3.5-lightning:free"' in branch
     # Exactly one openrouter selection site, and it is that keyed branch —
     # nothing else (a stray default, a resurrected `auto`) may route there.
     assert code.count('provider="openrouter"') == 1

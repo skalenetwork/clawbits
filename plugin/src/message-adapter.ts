@@ -1,5 +1,10 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { createChannelMessageAdapterFromOutbound } from "openclaw/plugin-sdk/channel-message";
+// `channel-outbound`, not the older `channel-message`: OpenClaw 2026.8
+// ("2.0") turned `channel-message` into a `@deprecated` re-export of
+// `channel-outbound` and gave it a dated removal record (`removal-pending`,
+// removeAfter 2026-09-01) in `src/plugins/compat/plugin-sdk-subpath-records.ts`.
+// The function itself moved unchanged, so this is a path-only migration.
+import { createChannelMessageAdapterFromOutbound } from "openclaw/plugin-sdk/channel-outbound";
 import { CHANNEL_ID } from "./accounts.js";
 import { outboundAdapter } from "./outbound-adapter.js";
 

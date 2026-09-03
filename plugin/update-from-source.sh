@@ -107,19 +107,55 @@ else
 fi
 
 section "Update installed plugin code"
+# BOTH halves, always. Since 0.17 Clawbits is a split pair, and the repo root is
+# only the CHANNEL package (package.json); the companion lives behind
+# package.tools.json and is produced by stage-tools.mjs. Installing the repo dir
+# alone updates the channel and silently leaves the old companion running — so
+# cron, email, usage and skills keep executing the code you just replaced.
+#
+# --vendor-deps is required for a path install: OpenClaw copies the directory
+# and never installs dependencies, and companion-tools.ts imports `typebox` at
+# module scope, so an unvendored companion loads with `status: error`.
+#
+# OpenClaw 2026.8 ("2.0") also requires capability consent before it will commit
+# an external plugin's staged artifact, and a path install can never inherit an
+# earlier acceptance (no artifact integrity is recorded for a path source), so it
+# asks on every run. Probe --help: pre-2026.8 CLIs hard-error on the flag.
+CAP_FLAG=""
+if openclaw plugins install --help 2>/dev/null | grep -q -- --accept-capabilities; then
+  CAP_FLAG="--accept-capabilities"
+fi
+STAGE_DIR="$(mktemp -d -t clawbits-update-src.XXXXXX)"
+trap 'rm -rf "$STAGE_DIR"' EXIT
 if [ "$DRY_RUN" = "1" ]; then
-  warn "would run: openclaw plugins install $REPO_PLUGIN_DIR --force"
+  warn "would run: node stage-channel.mjs <stage>/channel --vendor-deps"
+  warn "would run: node stage-tools.mjs <stage>/tools --vendor-deps"
+  warn "would run: openclaw plugins install <stage>/channel --force $CAP_FLAG"
+  warn "would run: openclaw plugins install <stage>/tools --force $CAP_FLAG"
 else
-  ok "running: openclaw plugins install $REPO_PLUGIN_DIR --force"
-  if INSTALL_OUT=$(openclaw plugins install "$REPO_PLUGIN_DIR" --force 2>&1); then
-    [ "$QUIET" = "1" ] || printf '%s\n' "$INSTALL_OUT" | sed "s/^/      ${DIM}/" | sed "s/\$/${RESET}/"
-    ok "plugin updated from source (gateway auto-restart may be triggered)"
-    UPDATED=1
-  else
-    fail "openclaw install --force failed"
-    printf '%s\n' "$INSTALL_OUT" | sed 's/^/      /'
+  ok "staging channel and companion artifacts"
+  if ! STAGE_OUT=$( (cd "$REPO_PLUGIN_DIR" \
+    && node stage-channel.mjs "$STAGE_DIR/channel" --vendor-deps \
+    && node stage-tools.mjs "$STAGE_DIR/tools" --vendor-deps) 2>&1); then
+    fail "staging failed"
+    printf '%s\n' "$STAGE_OUT" | sed 's/^/      /'
     exit 1
   fi
+  [ "$QUIET" = "1" ] || printf '%s\n' "$STAGE_OUT" | sed "s/^/      ${DIM}/" | sed "s/\$/${RESET}/"
+  for part in channel tools; do
+    ok "running: openclaw plugins install $STAGE_DIR/$part --force $CAP_FLAG"
+    # shellcheck disable=SC2086 # CAP_FLAG is a single flag or empty by construction
+    if INSTALL_OUT=$(openclaw plugins install "$STAGE_DIR/$part" --force $CAP_FLAG 2>&1); then
+      [ "$QUIET" = "1" ] || printf '%s\n' "$INSTALL_OUT" | sed "s/^/      ${DIM}/" | sed "s/\$/${RESET}/"
+      ok "$part updated from source"
+      UPDATED=1
+    else
+      fail "openclaw install --force failed for $part"
+      printf '%s\n' "$INSTALL_OUT" | sed 's/^/      /'
+      exit 1
+    fi
+  done
+  ok "channel and companion updated (gateway auto-restart may be triggered)"
 fi
 
 section "Verify data preserved"

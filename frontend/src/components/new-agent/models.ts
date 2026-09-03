@@ -161,10 +161,15 @@ export const CURATED_MODELS: Record<string, CuratedModel[]> = {
             label: "Nemotron 3 Ultra",
             blurb: "NVIDIA's largest open model",
         },
+        // Also the entrypoints' no-pick default. Verified live on 2026-09-03;
+        // the previous `nemotron-nano-9b-v2:free` had been withdrawn from
+        // OpenRouter and 404'd for every agent that took the default. Free-tier
+        // slugs rotate — check https://openrouter.ai/api/v1/models before
+        // editing, and keep this in step with the runtime entrypoints.
         {
-            id: "nvidia/nemotron-nano-9b-v2:free",
-            label: "Nemotron Nano 9B",
-            blurb: "NVIDIA's efficient open model",
+            id: "nvidia/nemotron-3.5-lightning:free",
+            label: "Nemotron 3.5 Lightning",
+            blurb: "NVIDIA's efficient open model, tuned for agents",
         },
     ],
     // Ollama models are whatever the user's server has pulled — suggestions

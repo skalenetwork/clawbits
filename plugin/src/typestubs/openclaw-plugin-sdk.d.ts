@@ -23,6 +23,12 @@ declare module "openclaw/plugin-sdk/channel-inbound" {
     messageId: string;
     timestamp?: number;
     commandAuthorized?: boolean;
+    /** OpenClaw 2026.8 ("2.0"), `src/channels/direct-dm.ts`: "Set only after the
+     *  channel's sender/pairing guard admits this event." Clawbits admits inbound
+     *  server-side (the agentic GET only returns approved posts), so we pass
+     *  `true`. Leaving it unset silently disables conversation-route recording,
+     *  DM sender persistence, turn-reply capture and archived-session restore. */
+    inboundAccessAuthorized?: boolean;
     bodyForAgent?: string;
     commandBody?: string;
     provider?: string;
@@ -125,18 +131,24 @@ declare module "openclaw/plugin-sdk/core" {
     stop: (message?: string) => void;
   }
 
+  // Mirrors OpenClaw 2026.8 `src/wizard/prompts.ts`. Two members this stub used
+  // to declare do not exist on the real prompter and were silently undefined at
+  // runtime: `password` (never called here) and `log` (called by setup-adapter,
+  // so every signup progress line was swallowed). `plain` is the real unadorned
+  // line printer; `sensitive` is the real masked-input flag.
   export interface WizardPrompter {
     text: (opts: {
       message: string;
       placeholder?: string;
       initialValue?: string;
       validate?: (value: string) => string | undefined;
+      /** Masked input: the value is never echoed to the terminal. */
+      sensitive?: boolean;
     }) => Promise<string>;
-    password?: (opts: { message: string; placeholder?: string }) => Promise<string>;
     confirm: (opts: { message: string; initialValue?: boolean }) => Promise<boolean>;
     note?: (message: string, title?: string) => Promise<void>;
+    plain?: (message: string) => Promise<void>;
     progress?: (label: string) => WizardProgress;
-    log?: { info?: (msg: string) => void; warn?: (msg: string) => void };
   }
 
   export interface ChannelSetupConfigureContext {

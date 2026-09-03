@@ -19,6 +19,9 @@ export interface CronKindSchedule {
 }
 export interface AtSchedule {
   kind: "at";
+  /** Epoch milliseconds *in the client model only*. The wire form is a string —
+   *  see {@link scheduleToSpec}. Kept numeric here because every consumer
+   *  compares it against `Date.now()` or feeds it to a date picker. */
   at: number;
 }
 export type Schedule = EverySchedule | CronKindSchedule | AtSchedule;
@@ -42,10 +45,26 @@ export function parseSchedule(raw: unknown): Schedule | null {
       tz: typeof s.tz === "string" && s.tz ? s.tz : undefined,
     };
   }
-  if (s.kind === "at" && typeof s.at === "number" && Number.isFinite(s.at)) {
-    return { kind: "at", at: s.at };
+  if (s.kind === "at") {
+    // Accepts every form an `at` spec has been stored in: a legacy epoch number
+    // (what this app used to serialize), an epoch-millisecond digit string, and
+    // the ISO-8601 string OpenClaw's cron schema actually wants. Without the
+    // string cases a normalized automation would silently render as "no
+    // schedule" and the composer would offer to overwrite it.
+    const at = parseAtValue(s.at);
+    if (at !== null) return { kind: "at", at };
   }
   return null;
+}
+
+/** Epoch milliseconds from an epoch number, an epoch digit string, or ISO-8601. */
+function parseAtValue(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const ms = /^\d+$/.test(trimmed) ? Number(trimmed) : Date.parse(trimmed);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /** Serialize back to the OpenClaw `schedule` payload shape. */
@@ -58,7 +77,13 @@ export function scheduleToSpec(schedule: Schedule): Record<string, unknown> {
         ? { kind: "cron", expr: schedule.expr, tz: schedule.tz }
         : { kind: "cron", expr: schedule.expr };
     case "at":
-      return { kind: "at", at: schedule.at };
+      // ISO-8601, not the epoch number this app models internally. OpenClaw's
+      // cron schema declares `at` as a non-empty STRING inside a closed object
+      // (packages/gateway-protocol/src/schema/cron.ts), so a numeric `at` is
+      // rejected outright: the automation reports sync_status="failed" and the
+      // one-shot never fires. The plugin normalizes defensively too, for specs
+      // this app authored before the fix.
+      return { kind: "at", at: new Date(schedule.at).toISOString() };
   }
 }
 
