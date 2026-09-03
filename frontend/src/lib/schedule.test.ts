@@ -26,6 +26,29 @@ describe("parseSchedule / scheduleToSpec", () => {
     }
   });
 
+  it("serializes a one-shot `at` as an ISO string, not an epoch number", () => {
+    // OpenClaw's cron schema is a closed object whose `at` is a non-empty
+    // STRING (packages/gateway-protocol/src/schema/cron.ts). Sending the epoch
+    // number this app models internally is rejected outright: cron.add fails,
+    // the automation reports sync_status="failed", and it never fires.
+    const at = 1_800_000_000_000;
+    expect(scheduleToSpec({ kind: "at", at })).toEqual({
+      kind: "at",
+      at: new Date(at).toISOString(),
+    });
+  });
+
+  it("parses every `at` form an automation may already be stored in", () => {
+    const at = 1_800_000_000_000;
+    const iso = new Date(at).toISOString();
+    // Legacy epoch number written before the wire form was fixed.
+    expect(parseSchedule({ kind: "at", at })).toEqual({ kind: "at", at });
+    // Epoch digit string — also accepted by OpenClaw's own parser.
+    expect(parseSchedule({ kind: "at", at: String(at) })).toEqual({ kind: "at", at });
+    // The ISO form this app now writes.
+    expect(parseSchedule({ kind: "at", at: iso })).toEqual({ kind: "at", at });
+  });
+
   it("rejects malformed input defensively", () => {
     expect(parseSchedule(null)).toBeNull();
     expect(parseSchedule("weekly")).toBeNull();
@@ -33,6 +56,8 @@ describe("parseSchedule / scheduleToSpec", () => {
     expect(parseSchedule({ kind: "every", everyMs: "1h" })).toBeNull();
     expect(parseSchedule({ kind: "cron", expr: "  " })).toBeNull();
     expect(parseSchedule({ kind: "at", at: Number.NaN })).toBeNull();
+    expect(parseSchedule({ kind: "at", at: "not-a-time" })).toBeNull();
+    expect(parseSchedule({ kind: "at", at: "" })).toBeNull();
   });
 
   it("omits an empty tz on serialize", () => {

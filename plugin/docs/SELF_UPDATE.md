@@ -4,7 +4,16 @@
 > [SPLIT_MIGRATION.md](SPLIT_MIGRATION.md) to install the companion and hand off
 > services before installing the slim channel.
 
-Agents are installed as a **pinned remote ClawHub package**:
+Agents are installed as a **remote ClawHub package**. On OpenClaw 2026.8 ("2.0")
+and later, pin by putting the version in the spec and accept the declared
+capability surface:
+
+```bash
+openclaw plugins install clawhub:clawbits-openclaw-plugin@0.17.0 --accept-capabilities
+```
+
+On a gateway older than 2026.8, `--pin` still works for a ClawHub ref and
+`--accept-capabilities` does not exist:
 
 ```bash
 openclaw plugins install clawhub:clawbits-openclaw-plugin --pin
@@ -34,35 +43,60 @@ printed. Add `--json` for a single machine-readable recommendation.
 For a remote install, `openclaw clawbits update` prints:
 
 ```bash
+openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities
+```
+
+and, as a fallback for a gateway older than OpenClaw 2026.8:
+
+```bash
 openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force
 ```
+
+Both are printed because there is no way to tell the two host eras apart from
+inside the plugin: `OpenClawPluginCliContext` carries `program`, `parentPath`,
+`config`, `workspaceDir` and `logger`, and no host version. The agent runs the
+first and falls back on an unknown-option error.
 
 Why this exact form:
 
 - The spec has **no version**, so OpenClaw resolves the **newest compatible**
   published release (it inspects metadata and drops back to an older release if
   the newest needs a newer host).
-- `--pin` re-pins to whatever it resolved, so the install **stays pinned** —
-  no floating tags, no drift between runs.
 - `--force` overwrites the current install in place.
+- `--accept-capabilities` clears 2026.8's capability-consent gate. OpenClaw
+  reviews each external plugin's declared surface and refuses to commit the
+  staged artifact without an operator's acceptance; a non-interactive shell has
+  no consent handler, and Clawbits is not in OpenClaw's official plugin/channel
+  catalogs, so it gets no exemption.
 
-> **Removed flag.** This command used to pass `--acknowledge-clawhub-risk`.
-> OpenClaw removed it, and the CLI now hard-errors with *"does not recognize
-> option"* — so the printed command failed for every agent that ran it. The gate
-> moved into `security.installPolicy`; a community package prints a review
-> warning and installs. Do not reintroduce the flag.
+> **Flag history — read before editing this command.** It has churned upstream
+> three times.
+>
+> - `--acknowledge-clawhub-risk` was passed here, was removed upstream (the CLI
+>   hard-errored with *"does not recognize option"*, so every agent that ran the
+>   printed command failed), came back fail-closed in 2026.7.1-2, and is gone
+>   again in 2026.8 — its role now belongs to
+>   `--acknowledge-install-policy-warning`. Do not reintroduce the old name.
+> - `--pin` is **rejected** as of 2026.8 for `clawhub:` refs. OpenClaw's install
+>   preflight allows it only for npm, official and bundled sources and otherwise
+>   fails with *"--pin is only supported with npm registry installs."* Pin by
+>   putting the version in the spec instead.
+> - `--accept-capabilities` is new in 2026.8 and does not exist before it.
 
 This is why a plain `openclaw plugins update clawbits` is **not** used: passing
 the bare id reuses the stored spec, and on a pinned install the stored spec *is*
 the frozen version — so `update` re-resolves to the same version and upgrades
-nothing. The `install … --pin --force` form is what actually moves a pinned
-install forward.
+nothing. The `install … --force` form is what actually moves an install forward.
 
 ### Pinning to a specific version instead
 
 To move to an exact version rather than "newest compatible":
 
 ```bash
+# OpenClaw 2026.8+
+openclaw plugins install clawhub:clawbits-openclaw-plugin@0.4.17 --force --accept-capabilities
+
+# older gateways
 openclaw plugins install clawhub:clawbits-openclaw-plugin@0.4.17 --pin --force
 ```
 
@@ -112,8 +146,13 @@ explicit steps:
 cd /path/to/plugin
 git pull --ff-only
 npm run build               # OpenClaw never compiles TypeScript for you
-openclaw plugins install /path/to/plugin --force
+openclaw plugins install /path/to/plugin --force --accept-capabilities
 ```
+
+Drop `--accept-capabilities` on a gateway older than 2026.8. On 2026.8+ it is
+needed on **every** local-path install, not just the first: a path source records
+no artifact integrity, so OpenClaw cannot prove the new bytes are the ones you
+approved last time and asks again.
 
 The build step is mandatory: plugin installs run with `--ignore-scripts` and
 copy a pre-built `dist/`; the installer will not run `tsc`. This path is for

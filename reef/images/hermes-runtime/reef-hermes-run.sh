@@ -128,7 +128,11 @@ reef_configure_model() {
     base_url="https://openrouter.ai/api/v1"
     # Full vendor/model slug (what the openrouter API takes), and a FREE one —
     # the pickers' curated default; no spend until the owner picks a model.
-    fallback_model="nvidia/nemotron-nano-9b-v2:free"
+    #
+    # Verified live on 2026-09-03: the previous `nvidia/nemotron-nano-9b-v2:free`
+    # was withdrawn from OpenRouter and 404s with "No endpoints found". Free-tier
+    # slugs rotate — re-check https://openrouter.ai/api/v1/models before editing.
+    fallback_model="nvidia/nemotron-3.5-lightning:free"
   else
     # No key injected — leave the stock config alone. The owner configures a provider
     # in the dashboard; overriding here would only trade one broken default for another.

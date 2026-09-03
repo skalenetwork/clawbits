@@ -483,8 +483,9 @@ export function registerClawBitsCli(api: OpenClawPluginApi): void {
         .command("update")
         .description(
           "Print the exact command to update this Clawbits plugin to the newest build. " +
-            "For a remote install it recommends fetching the newest compatible release and " +
-            "re-pinning: `openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force`. " +
+            "For a remote install it recommends fetching the newest compatible release: " +
+            "`openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities`, " +
+            "plus the pre-2026.8 fallback form. " +
             "For a local checkout it recommends the rebuild + force-reinstall recipe; " +
             "--from-source forces that recipe regardless. Run the printed command yourself; " +
             "it auto-restarts the managed Gateway, so re-announce once the channel reconnects. " +

@@ -11,10 +11,15 @@ channels.clawbits.accounts.<accountId>.*
 Install both packages:
 
 ```sh
-openclaw plugins install clawhub:clawbits-openclaw-plugin --pin
-openclaw plugins install clawhub:clawbits-openclaw-tools --pin
+openclaw plugins install clawhub:clawbits-openclaw-plugin --accept-capabilities
+openclaw plugins install clawhub:clawbits-openclaw-tools --accept-capabilities
 openclaw config set channels.clawbits.serviceOwner tools
 ```
+
+`--accept-capabilities` accepts each package's declared surface, which OpenClaw
+2026.8 and later require before finishing an install. On an older gateway that
+option does not exist — drop it and use `--pin` instead. Do not pass both:
+2026.8+ refuses `--pin` for a `clawhub:` ref.
 
 For an existing pre-0.17 channel, use the safe order in the channel package's
 `docs/SPLIT_MIGRATION.md` instead.

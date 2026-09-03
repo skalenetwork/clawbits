@@ -806,6 +806,13 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
   const allowFromSet = new Set(
     (account.allowFrom ?? []).map((v) => String(v).trim()).filter((v) => v.length > 0),
   );
+  // `"*"` is OpenClaw's canonical allow-everyone entry (its shared matcher,
+  // `src/plugin-sdk/allow-from.ts`, special-cases it). Clawbits matched entries
+  // by exact set membership only, so an operator who wrote the documented
+  // OpenClaw form got the opposite of what they asked for: no key ever equals
+  // `"*"`, so a non-empty list denied EVERY sender. Fail open on the wildcard,
+  // matching the host, rather than silently denying the whole channel.
+  const allowFromWildcard = allowFromSet.has("*");
   const answers = resolveKnownAnswers(account.knownAnswers);
   let interAgentMode = account.interAgentMode === true;
   let interAgentMessageLimit = clampInterAgentMessageLimit(account.interAgentMessageLimit);
@@ -1233,7 +1240,9 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     }
     const senderAllowed = interAgentMode || !isAgentAuthored;
     const senderAllowedByAllowFrom =
-      allowFromSet.size === 0 || senderAllowKeys.some((key) => allowFromSet.has(key));
+      allowFromSet.size === 0 ||
+      allowFromWildcard ||
+      senderAllowKeys.some((key) => allowFromSet.has(key));
     const postChannelId = post.channel_id ?? channelId;
     const hasMention = account.agentId ? hasAgentMention(post.message ?? "", account.agentId) : false;
     const humanTaggedThisAgent = isUserPost && !isSelfAuthored && !isAgentAuthored && hasMention;

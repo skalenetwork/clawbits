@@ -10,22 +10,38 @@
 // ready-to-run `openclaw config set` lines rather than mutating config
 // in-process. The agent runs the printed command from its shell.
 //
-// Provisioning model: agents are installed as a PINNED REMOTE ClawHub
-// package. The canonical self-update re-fetches the newest compatible build
-// and re-pins to it, so the install stays pinned without any version
-// bookkeeping:
+// Provisioning model: agents are installed as a REMOTE ClawHub package. The
+// canonical self-update re-fetches the newest compatible build:
 //
-//     openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force
+//     openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities
 //
-// (`--force` overwrites in place; the version-less spec resolves to the
-// newest compatible release; `--pin` pins to whatever it resolved.)
+// (`--force` overwrites in place; the version-less spec resolves to the newest
+// compatible release.)
 //
-// This command used to carry `--acknowledge-clawhub-risk`. OpenClaw REMOVED
-// that flag - the CLI now hard-errors with "does not recognize option", so the
-// printed command failed for every agent that ran it. The gate moved into
-// `security.installPolicy`; a community package prints a review warning and
-// installs. Do not reintroduce the flag; if installs ever fail closed again,
-// the fix is that config key.
+// FLAG HISTORY - this line has churned upstream twice, so read before editing.
+//
+// 1. `--acknowledge-clawhub-risk` was here, was REMOVED upstream (the CLI
+//    hard-errored with "does not recognize option", so every agent that ran the
+//    printed command failed), and in 2026.8 the option does not exist at all -
+//    its role is now `--acknowledge-install-policy-warning`. Do not reintroduce
+//    the old name.
+//
+// 2. `--pin` was here and is REJECTED as of 2026.8 for `clawhub:` specs:
+//    `src/cli/plugins-install-preflight.ts` allows it only for `npm`,
+//    `official` and `bundled` sources and otherwise fails preflight with
+//    "--pin is only supported with npm registry installs." (upstream test
+//    `plugins-install-preflight.test.ts` covers `["clawhub:demo", "--pin"]`
+//    exactly). It landed 2026-07-28 in openclaw#115464. To pin on 2026.8+, put
+//    the version in the spec - `clawhub:clawbits-openclaw-plugin@0.17.0` - not
+//    in a flag.
+//
+// 3. `--accept-capabilities` is REQUIRED as of 2026.8 whenever the declared
+//    surface has changed since the last acceptance, which an upgrade normally
+//    has. Clawbits is not in OpenClaw's official plugin/channel catalogs, so it
+//    gets no `official` exemption from `src/plugins/capability-consent.ts`.
+//    The option does not exist before 2026.8, hence the printed fallback.
+//
+// `--from-source` is unaffected by (2) but still needs (3) on 2026.8+.
 //
 // `--from-source` is a developer escape hatch for a local checkout: rebuild
 // `dist/` and force-reinstall from the directory. OpenClaw never compiles
@@ -46,11 +62,53 @@ import { CHANNEL_ID } from "../accounts.js";
 
 const PLUGIN_ID = CHANNEL_ID; // "clawbits"
 const PACKAGE_NAME = "clawbits-openclaw-plugin";
+const TOOLS_PACKAGE_NAME = "clawbits-openclaw-tools";
 const CLAWHUB_SPEC = `clawhub:${PACKAGE_NAME}`;
-/** Upgrade a pinned remote install to the newest compatible build, staying
- *  pinned. Version-less spec → newest compatible; --pin re-pins to it;
- *  --force overwrites the current install in place. */
-const PINNED_UPDATE_COMMAND = `openclaw plugins install ${CLAWHUB_SPEC} --pin --force`;
+const TOOLS_CLAWHUB_SPEC = `clawhub:${TOOLS_PACKAGE_NAME}`;
+
+/** Upgrade a remote install to the newest compatible build.
+ *
+ *  BOTH packages, always. Since 0.17 the install is a split pair and most of
+ *  what an operator means by "update Clawbits" — cron, email, usage, skills —
+ *  lives in the companion, not this channel. Updating the channel alone
+ *  succeeds, reports success, and silently leaves the old companion running, so
+ *  the fixes the update was run for never land. The companion is pinned to the
+ *  channel's resolved version so a split publication window cannot pair
+ *  mismatched halves (the same rule the reef image build follows).
+ *
+ *  Version-less channel spec → newest compatible; `--force` overwrites the
+ *  current install in place; `--accept-capabilities` clears 2026.8's consent
+ *  gate. No `--pin`: see the fallback commands below. */
+function remoteUpdateCommands(toolsVersion: string | null): string[] {
+  const toolsSpec = toolsVersion ? `${TOOLS_CLAWHUB_SPEC}@${toolsVersion}` : TOOLS_CLAWHUB_SPEC;
+  return [
+    `openclaw plugins install ${CLAWHUB_SPEC} --force --accept-capabilities`,
+    `openclaw plugins install ${toolsSpec} --force --accept-capabilities`,
+  ];
+}
+
+/** The same pair for a pre-2026.8 gateway, which has no `--accept-capabilities`
+ *  and hard-errors on an unknown option. There is one command per host era and
+ *  no way to tell them apart from here — `OpenClawPluginCliContext` carries
+ *  `program`, `parentPath`, `config`, `workspaceDir` and `logger`, and no host
+ *  version — so both are printed and the agent picks on the error. */
+function remoteUpdateFallbackCommands(toolsVersion: string | null): string[] {
+  const toolsSpec = toolsVersion ? `${TOOLS_CLAWHUB_SPEC}@${toolsVersion}` : TOOLS_CLAWHUB_SPEC;
+  return [
+    `openclaw plugins install ${CLAWHUB_SPEC} --pin --force`,
+    `openclaw plugins install ${toolsSpec} --pin --force`,
+  ];
+}
+
+const UPDATE_ORDER_NOTE =
+  "Run both, in that order: the companion owns cron, email, usage and skills, and an " +
+  "update that moves only the channel leaves those on the old code.";
+const UPDATE_VERSION_NOTE =
+  `After the channel install, re-pin the companion to the channel's new version — ` +
+  `\`openclaw plugins list --json\` reports it — so the two halves stay matched.`;
+const UPDATE_FALLBACK_NOTE =
+  "If either fails with an unknown-option error, this gateway predates OpenClaw 2026.8 — " +
+  "re-run that command with `--pin --force` and without `--accept-capabilities`.";
 
 export interface UpdateCliOptions {
   /** Developer escape hatch: rebuild + force-reinstall from a local checkout. */
@@ -147,11 +205,26 @@ function fromSourceCommands(dir: string): string[] {
   if (existsSync(path.join(dir, "update-from-source.sh"))) {
     return [`bash ${dir}/update-from-source.sh`];
   }
+  // The repo root is only the CHANNEL package. The companion is behind
+  // package.tools.json and has to be staged, so a bare
+  // `plugins install <dir>` updates half the install and silently strands cron,
+  // email, usage and skills on the old code. `--vendor-deps` copies `typebox`
+  // into the staged companion, which a path install would otherwise never
+  // install (OpenClaw copies the directory; it runs no dependency step).
+  //
+  // Local-path installs also can never inherit capability acceptance on
+  // 2026.8+: the install record pins no artifact integrity, so OpenClaw cannot
+  // prove the new bytes are the ones previously approved and asks every single
+  // time. Drop that flag on a pre-2026.8 gateway, which rejects it.
   return [
     `cd ${dir}`,
     "git pull --ff-only   # if this checkout tracks a remote",
     "npm run build",
-    `openclaw plugins install ${dir} --force`,
+    'stage="$(mktemp -d)"',
+    `node stage-channel.mjs "$stage/channel" --vendor-deps`,
+    `node stage-tools.mjs "$stage/tools" --vendor-deps`,
+    'openclaw plugins install "$stage/channel" --force --accept-capabilities',
+    'openclaw plugins install "$stage/tools" --force --accept-capabilities',
   ];
 }
 
@@ -196,6 +269,7 @@ function recommendFromSource(opts: UpdateCliOptions, record: InstallRecord | nul
     [
       `[clawbits] [dev] Rebuild and reinstall from the local checkout (${dir}):`,
       ...commands.map((c) => `    ${c}`),
+      "[clawbits] Drop --accept-capabilities if this gateway predates OpenClaw 2026.8.",
       `[clawbits] ${RESTART_NOTE}`,
     ],
   );
@@ -221,19 +295,30 @@ export function runUpdateCommand(
     return recommendFromSource(opts, record);
   }
 
+  // The channel install resolves "newest compatible" on its own, so the
+  // companion cannot be pinned to that version until it has run. Leave the
+  // companion spec version-less and tell the operator to re-pin, rather than
+  // pinning it to the version being replaced.
+  const commands = remoteUpdateCommands(null);
   emit(
     opts,
     {
       event: "recommendation",
-      mode: "pinned-remote",
+      mode: "remote",
       install_source: record?.source ?? "unknown",
       installed_version: record?.version ?? null,
-      commands: [PINNED_UPDATE_COMMAND],
+      packages: [PACKAGE_NAME, TOOLS_PACKAGE_NAME],
+      commands,
+      fallback_commands: remoteUpdateFallbackCommands(null),
+      fallback_when: "gateway predates OpenClaw 2026.8 (rejects --accept-capabilities)",
       gateway_restart: true,
     },
     [
-      "[clawbits] Fetch the newest compatible build and update to it (stays pinned):",
-      `    ${PINNED_UPDATE_COMMAND}`,
+      "[clawbits] Fetch the newest compatible build of BOTH packages and update to it:",
+      ...commands.map((c) => `    ${c}`),
+      `[clawbits] ${UPDATE_ORDER_NOTE}`,
+      `[clawbits] ${UPDATE_VERSION_NOTE}`,
+      `[clawbits] ${UPDATE_FALLBACK_NOTE}`,
       `[clawbits] ${RESTART_NOTE}`,
     ],
   );

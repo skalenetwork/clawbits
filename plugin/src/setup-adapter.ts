@@ -135,6 +135,9 @@ export const setupWizard: ChannelSetupWizardAdapter = {
       message: "Signup token (copy from the Clawbits Add agent prompt)",
       placeholder: "human-...",
       validate: nonEmpty("Enter the signup token."),
+      // One-time credential: keep it out of terminal scrollback, transcripts
+      // and screenshots. Older prompters ignore the flag and echo as before.
+      sensitive: true,
     });
 
     // If we already have credentials, offer to keep them.
@@ -175,9 +178,24 @@ export const setupWizard: ChannelSetupWizardAdapter = {
           writeLatencyLog(accountId, metric);
         },
       });
+      // `WizardPrompter` has no `log` member (OpenClaw 2026.8
+      // `src/wizard/prompts.ts`), so the old `prompter.log` was always
+      // undefined: `logInfo`/`logWarn` optional-chain the sink, which meant
+      // every signup progress line reached the plugin log file and NOTHING
+      // reached the operator running `openclaw configure`. `plain` is the real
+      // unadorned line printer; `note` is the boxed fallback. Both are async
+      // and we are inside a sync sink, so the promise is intentionally floated.
+      const wizardSink = {
+        info: (msg: string) => {
+          void (prompter.plain?.(msg) ?? prompter.note?.(msg));
+        },
+        warn: (msg: string) => {
+          void (prompter.plain?.(`warning: ${msg}`) ?? prompter.note?.(msg, "Warning"));
+        },
+      };
       const log = {
-        info: (msg: string) => logInfo(prompter.log, msg),
-        warn: (msg: string) => logWarn(prompter.log, msg),
+        info: (msg: string) => logInfo(wizardSink, msg),
+        warn: (msg: string) => logWarn(wizardSink, msg),
       };
       let approvalProgress:
         | { update: (message: string) => void; stop: (message?: string) => void }

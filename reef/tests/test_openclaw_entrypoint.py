@@ -126,6 +126,41 @@ def test_split_plugins_are_installed_at_one_version():
     assert channel < tools
 
 
+def test_channel_install_falls_back_when_pin_is_refused():
+    # OpenClaw 2026.8 fails install preflight with "--pin is only supported with
+    # npm registry installs." for any clawhub: ref, and the option still exists
+    # so --help cannot detect it. Preflight rejects before staging or network, so
+    # the version-agnostic form is: try with --pin, retry without. A real failure
+    # fails both attempts. Losing the retry silently breaks every 2026.8+ build.
+    dockerfile = DOCKERFILE.read_text()
+    assert (
+        'openclaw plugins install "${channel_ref}" --pin ${ack_flag} ${cap_flag} \\\n'
+        '      || openclaw plugins install "${channel_ref}" ${ack_flag} ${cap_flag};'
+    ) in dockerfile
+    # The companion pins via its @version spec, so it must not carry --pin at all.
+    tools_line = next(
+        line
+        for line in dockerfile.splitlines()
+        if "clawhub:clawbits-openclaw-tools@${resolved_plugin_version}" in line
+    )
+    assert "--pin" not in tools_line
+
+
+def test_plugin_installs_probe_for_capability_consent():
+    # 2026.8 refuses to commit an external plugin's artifact without capability
+    # consent, and a Docker RUN has no TTY to prompt on. The option does not
+    # exist before 2026.8, so it is probed rather than passed unconditionally.
+    dockerfile = DOCKERFILE.read_text()
+    assert dockerfile.count("--accept-capabilities") >= 2, (
+        "both the clawhub and the local plugin stage must probe for the flag"
+    )
+    assert "grep -q -- --accept-capabilities" in dockerfile
+    # 2026.8 replaced --acknowledge-clawhub-risk with the install-policy flag;
+    # both are probed so old and new pinned OPENCLAW_VERSIONs keep building.
+    assert "--acknowledge-clawhub-risk" in dockerfile
+    assert "--acknowledge-install-policy-warning" in dockerfile
+
+
 def test_build_derives_truthful_stack_tag_from_probe():
     text = BUILD_SCRIPT.read_text()
     # The build probes the BUILT image for the real versions (same extraction the
@@ -133,13 +168,61 @@ def test_build_derives_truthful_stack_tag_from_probe():
     # tag reef-oc:oc<oc>-pl<pl> — no hand-bumped VERSION file, no reef-oc:<version>.
     assert "openclaw --version" in text
     assert "openclaw plugins list --json" in text
-    assert 'x.id==="clawbits-tools"' in text
+    assert "require_loaded_plugin clawbits-tools" in text
     assert '"${installed_plugin}" != "${installed_tools}"' in text
     assert 'stack="oc${installed_oc}-pl${installed_plugin}${stack_suffix}"' in text
     assert "org.reef.clawbits-tools.version" in text
     assert "reef-oc:${stack}" in text
     assert 'cat "$here/VERSION"' not in text
     assert "reef-oc:${version}" not in text
+
+
+def test_openclaw_version_extraction_drops_the_build_sha():
+    # OpenClaw 2026.8 ("2.0") prints `OpenClaw 2026.8.1 (ea80657)`; 2026.6.10
+    # printed `OpenClaw 2026.6.10`. Stripping only the prefix left a value with a
+    # space and parentheses, which is not a legal Docker reference — the build
+    # failed at the re-stamp with `invalid tag "reef-oc:oc2026.8.1 (ea80657)-pl…"`
+    # after the image had already been built, and the same string would have gone
+    # into status.json where reef reads it host-side.
+    extraction = "sed 's/^OpenClaw //' | awk '{print $1}' | tr -d '\\r'"
+    build = BUILD_SCRIPT.read_text()
+    entrypoint = ENTRYPOINT.read_text()
+    assert extraction in build, "build.sh must take only the version token"
+    assert extraction in entrypoint, "entrypoint.sh must take only the version token"
+    # The two must agree: build.sh bakes the label, entrypoint.sh reports the
+    # running value, and a drift between them makes the image lie about itself.
+    assert build.count(extraction) == 1
+    assert entrypoint.count(extraction) == 1
+
+
+def test_build_passes_the_image_variant_through():
+    # Upstream does not publish `-browser` for every version, and the Dockerfile
+    # fails loudly at pull time when it is missing. Without this passthrough the
+    # only escape was editing the Dockerfile.
+    text = BUILD_SCRIPT.read_text()
+    assert 'OPENCLAW_IMAGE_VARIANT+set' in text, "empty must be distinguishable from unset"
+    assert '--build-arg "OPENCLAW_IMAGE_VARIANT=${OPENCLAW_IMAGE_VARIANT}"' in text
+
+
+def test_probe_requires_both_plugins_to_be_loaded_not_merely_present():
+    # A plugin reports a `version` as soon as its manifest is copied, loaded or
+    # not. Checking only the version let an image ship whose tools plugin had
+    # installed and then failed at import (missing runtime dependency), while
+    # the build reported success. `status` is the field that tells them apart.
+    text = BUILD_SCRIPT.read_text()
+    assert 'p.status ?? "unknown"' in text
+    assert '"${status}" != "loaded"' in text
+    for plugin_id in ("clawbits", "clawbits-tools"):
+        assert f"require_loaded_plugin {plugin_id}" in text
+
+
+def test_local_plugin_staging_vendors_runtime_dependencies():
+    # An OpenClaw directory install is a plain copy with no dependency step, so
+    # the staged companion must carry `typebox` or it loads with status: error.
+    text = BUILD_SCRIPT.read_text()
+    assert "stage-tools.mjs" in text
+    staging = text[text.index("stage-channel.mjs") : text.index("plugin_stage=\"plugin-local\"")]
+    assert staging.count("--vendor-deps") == 2, "both halves stage with --vendor-deps"
 
 
 def test_local_plugin_build_cannot_overwrite_a_clawhub_stack_tag():
@@ -250,7 +333,68 @@ def test_openrouter_no_pick_defaults_to_a_free_model():
     # No model pick must land on a FREE catalog model (the pickers' curated
     # default), never the plugin's openrouter/auto paid routing — a fresh
     # BYO-key agent doesn't spend until its owner chooses.
-    assert '"") reef_model="openrouter/nvidia/nemotron-nano-9b-v2:free"' in text
+    assert 'reef_model="openrouter/nvidia/nemotron-3.5-lightning:free"' in text
+
+
+def test_reef_chosen_default_carries_a_fallback_model():
+    """A withdrawn default must cost one retry, not the whole turn.
+
+    OpenRouter dropped `nvidia/nemotron-nano-9b-v2:free`, which was the no-pick
+    default. Every fresh BYO-key agent then died with `404 No endpoints found`
+    and `model fallback decision: ... next=none` — no second candidate existed,
+    so one upstream withdrawal was total. The fallback is only attached to the
+    default REEF picks itself; an operator's explicit choice keeps whatever they
+    configured rather than being silently rerouted.
+    """
+    text = ENTRYPOINT.read_text()
+    assert "reef_model_fallbacks=" in text
+    assert "agents.defaults.model.fallbacks" in text
+    # A different VENDOR, or one vendor's withdrawal takes out both candidates.
+    assert "openrouter/z-ai/glm-5.2:free" in text
+    # ...and a ROUTER as the last link. A pinned slug can be withdrawn; the Free
+    # Models Router cannot, so total failure stops being possible. The doubled
+    # prefix is required: parseModelRef splits on the FIRST slash, so a single
+    # `openrouter/free` would resolve to a model literally named "free".
+    assert '"openrouter/openrouter/free"' in text
+    assert '"openrouter/free"' not in text, (
+        "single-prefix form resolves to provider=openrouter, model=free — not the router"
+    )
+    # Attached to the no-pick branch only.
+    default_branch = text[
+        text.index('reef_model="openrouter/nvidia/nemotron-3.5-lightning:free"') :
+    ]
+    assert default_branch.index("reef_model_fallbacks=") < default_branch.index("openrouter/*)")
+
+
+def test_free_default_model_is_identical_across_runtimes_and_pickers():
+    """One slug, five places. A partial rotation is the bug this catches.
+
+    The same OpenRouter default is duplicated across three runtime entrypoints
+    and two create-agent pickers. Nothing links them, so a rotation that updates
+    some and misses others leaves agents defaulting to a model the UI no longer
+    offers — or, as happened here, to one the provider no longer serves.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    slug = "nvidia/nemotron-3.5-lightning:free"
+    required = [
+        repo / "reef" / "images" / "openclaw-runtime" / "entrypoint.sh",
+        repo / "reef" / "images" / "ironclaw-runtime" / "entrypoint.sh",
+        repo / "reef" / "images" / "hermes-runtime" / "reef-hermes-run.sh",
+        repo / "frontend" / "src" / "components" / "new-agent" / "models.ts",
+        repo / "reef" / "admin-ui" / "src" / "components" / "create-agent" / "models.ts",
+    ]
+    for path in required:
+        assert path.exists(), f"missing {path}"
+        assert slug in path.read_text(), f"{path} does not carry the shared default {slug}"
+    # And no CODE line still selects the withdrawn slug. Comment lines are
+    # exempt on purpose: each site documents what was withdrawn and why, and
+    # that history is worth more than a blanket string ban.
+    for path in required:
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("#") or stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            assert "nemotron-nano-9b-v2" not in line, f"{path}:{lineno} still selects the dead slug"
 
 
 def test_ollama_onboard_falls_back_to_detached_boot():

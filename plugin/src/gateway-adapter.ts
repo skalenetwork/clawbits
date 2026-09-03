@@ -700,6 +700,14 @@ export async function dispatchInboundMessage(
         ),
         commandBody: effectiveText,
         commandAuthorized: isAuthorizedCommand ? true : undefined,
+        // OpenClaw 2026.8 ("2.0") only records conversation-route context,
+        // persists DM sender identity, captures pending turn replies and
+        // restores archived sessions when the channel attests that its own
+        // guard admitted the event. Clawbits admits inbound server-side — the
+        // agentic GET only returns posts the org already approved (see the
+        // note further down this file) — plus the allowFrom/mention gate in
+        // inbound-poller, so the attestation is truthful here.
+        inboundAccessAuthorized: true,
         messageId: msg.postId,
         timestamp: msg.createAt || Date.now(),
         provider: CHANNEL_ID,

@@ -17,7 +17,15 @@
 export type CronSchedule =
   | { kind: "every"; everyMs: number; anchorMs?: number }
   | { kind: "cron"; expr: string; tz?: string; staggerMs?: number }
-  | { kind: "at"; at: number };
+  // `at` is a STRING on the wire, not an epoch number: OpenClaw's
+  // `packages/gateway-protocol/src/schema/cron.ts` declares
+  // `closedObject({ kind: Type.Literal("at"), at: NonEmptyString })`. The
+  // Clawbits backend stores whatever the frontend authored, and the frontend
+  // authors an epoch NUMBER (`frontend/src/lib/schedule.ts` `AtSchedule`), so
+  // the spec that arrives here is routinely the wrong type. `normalizeSchedule`
+  // below converts at the RPC boundary — changing this type alone would only
+  // relabel the bug, since `specToCronAdd` casts the stored spec unchecked.
+  | { kind: "at"; at: string };
 
 export type CronPayload =
   | { kind: "agentTurn"; message: string; model?: string; [k: string]: unknown }
@@ -194,6 +202,48 @@ export function parseSentinel(job: CronJobView): string | undefined {
  *  runtime-only value the backend can't author (it stores no channel identity
  *  for an agent), so the caller passes `defaultDelivery` and we apply it unless
  *  the spec already carries an explicit `delivery` override. */
+/** Coerce a one-shot `at` value into the string OpenClaw's cron schema demands.
+ *
+ *  The gateway types `at` as a non-empty STRING and parses it with
+ *  `src/cron/parse.ts parseAbsoluteTimeMs`, which accepts an ISO-8601 timestamp
+ *  or a bare epoch-millisecond digit string. The Clawbits frontend authors an
+ *  epoch NUMBER, and the backend stores the spec verbatim, so an unconverted
+ *  `{ kind: "at", at: 1789..., }` is rejected by the closed schema: the add
+ *  fails, reconcile reports `sync_status="failed"`, and the one-shot automation
+ *  never fires.
+ *
+ *  Emits ISO-8601 because that is the form OpenClaw's own validation error
+ *  names, and because the gateway stores the value verbatim (`src/cron/
+ *  normalize.ts` only strips sibling fields), so what we send is what drift
+ *  detection later reads back.
+ *
+ *  Anything that is neither a finite epoch number nor a parseable timestamp is
+ *  returned unchanged, so the gateway rejects it with its own precise message
+ *  instead of us silently substituting a wrong time. */
+export function normalizeCronAtValue(raw: unknown): unknown {
+  const epochMs =
+    typeof raw === "number" && Number.isFinite(raw)
+      ? raw
+      : typeof raw === "string" && /^\d+$/.test(raw.trim())
+        ? Number(raw.trim())
+        : undefined;
+  if (epochMs === undefined) return raw;
+  const asDate = new Date(Math.trunc(epochMs));
+  if (!Number.isFinite(asDate.getTime())) return raw;
+  return asDate.toISOString();
+}
+
+/** Apply {@link normalizeCronAtValue} to a schedule without touching the other
+ *  kinds. Non-object input is passed through for the gateway to reject. */
+export function normalizeCronSchedule(raw: unknown): CronSchedule {
+  if (!raw || typeof raw !== "object") return raw as CronSchedule;
+  const schedule = raw as Record<string, unknown>;
+  if (schedule.kind !== "at") return raw as CronSchedule;
+  const normalized = normalizeCronAtValue(schedule.at);
+  if (normalized === schedule.at) return raw as CronSchedule;
+  return { ...schedule, at: normalized } as CronSchedule;
+}
+
 export function specToCronAdd(
   spec: Record<string, unknown>,
   automationId: string,
@@ -221,7 +271,9 @@ export function specToCronAdd(
   return {
     name: typeof spec.name === "string" && spec.name.trim() ? spec.name : "Automation",
     description: `${sentinel}${userDesc}`,
-    schedule: spec.schedule as CronSchedule,
+    // NOT a bare cast: the stored spec routinely carries a numeric `at`, which
+    // the gateway's closed schema rejects outright. See normalizeCronSchedule.
+    schedule: normalizeCronSchedule(spec.schedule),
     sessionTarget:
       typeof spec.sessionTarget === "string" ? spec.sessionTarget : "isolated",
     wakeMode: typeof spec.wakeMode === "string" ? spec.wakeMode : "next-heartbeat",
@@ -305,11 +357,16 @@ function scheduleMatches(desired: CronSchedule, actual: unknown): boolean {
       // staggerMs is runtime-defaulted unless authored — ignore the job's own.
       return desired.staggerMs === undefined || a.staggerMs === desired.staggerMs;
     case "at": {
-      const dn = typeof desired.at === "number" ? desired.at : Number(desired.at);
-      const an = typeof a.at === "number" ? a.at : Number(a.at);
-      return Number.isFinite(dn) && Number.isFinite(an)
-        ? dn === an
-        : deepEqual(a.at, desired.at);
+      // Normalize BOTH sides through the same converter before comparing. The
+      // gateway may hold an epoch-digit string written by an older plugin while
+      // `desired` is now ISO; comparing the raw values would report drift on
+      // every cycle, and re-applying an `at` patch each cycle is exactly the
+      // failure the comment above this block warns about — the gateway
+      // recomputes nextRunAtMs from `now`, so the job never fires.
+      return deepEqual(
+        normalizeCronAtValue((a as { at?: unknown }).at),
+        normalizeCronAtValue(desired.at),
+      );
     }
   }
 }

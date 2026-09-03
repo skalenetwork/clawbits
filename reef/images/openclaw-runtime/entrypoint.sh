@@ -345,8 +345,35 @@ if [ -n "${did_onboard}" ] || ! openclaw config get agents.defaults.model.primar
     # catalog model (the pickers' curated default), NOT the plugin's
     # openrouter/auto paid routing — a fresh BYO-key agent shouldn't spend
     # until its owner chooses a model.
+    #
+    # Verified against https://openrouter.ai/api/v1/models on 2026-09-03: the
+    # previous default `nvidia/nemotron-nano-9b-v2:free` is GONE from the
+    # catalog and 404s with "No endpoints found", which killed every fresh
+    # BYO-OpenRouter-key agent that had not picked a model. Free-tier slugs
+    # rotate, so re-check the live catalog before changing this — and keep the
+    # fallback on a DIFFERENT vendor so one vendor's withdrawal cannot take
+    # both out at once. Both are :free, tool-calling, and $0/$0.
     case "${reef_model}" in
-      "") reef_model="openrouter/nvidia/nemotron-nano-9b-v2:free" ;;
+      "")
+        reef_model="openrouter/nvidia/nemotron-3.5-lightning:free"
+        # Defence in depth, last link first in importance:
+        #   1. z-ai/glm-5.2:free  — a different VENDOR, so one vendor's
+        #      withdrawal cannot take out both deterministic candidates.
+        #   2. openrouter/free    — OpenRouter's own Free Models Router. It is a
+        #      ROUTER, not a model, so it cannot be withdrawn the way a pinned
+        #      slug can; it picks from whatever free models are live. $0/$0 and
+        #      tool-calling, so it preserves the no-spend guarantee. Random
+        #      model per request makes it a poor PRIMARY (an agent wants
+        #      predictable tool behaviour) but an ideal last resort.
+        # Note the doubled prefix on that last one: the model's own id contains
+        # a slash, and parseModelRef splits on the FIRST slash only
+        # (openclaw src/agents/model-selection-normalize.ts), so
+        # `openrouter/openrouter/free` resolves to provider=openrouter,
+        # model=openrouter/free. Same hazard the nearai branch above documents
+        # (openai/gpt-oss-120b -> nearai/openai/gpt-oss-120b). Writing a single
+        # `openrouter/free` would silently ask for a model named "free".
+        reef_model_fallbacks='["openrouter/z-ai/glm-5.2:free","openrouter/openrouter/free"]'
+        ;;
       openrouter/*) ;;
       *) reef_model="openrouter/${reef_model}" ;;
     esac
@@ -390,6 +417,17 @@ if [ -n "${did_onboard}" ] || ! openclaw config get agents.defaults.model.primar
           "agents.defaults.models[\"${reef_model}\"].agentRuntime.id" \
           "${reef_runtime}" 1>&2 \
           || echo "reef-entrypoint: WARNING could not set ${reef_model} runtime to ${reef_runtime}" >&2
+      fi
+      # Only set when REEF chose the model itself (the no-pick default above).
+      # An operator's explicit pick keeps whatever fallbacks they configured —
+      # silently rerouting a deliberate choice to a model they never asked for
+      # would be worse than failing. Without this the fallback decision logs
+      # `next=none`, so a single withdrawn slug ends the turn outright instead
+      # of costing one retry. `config set` parses the value as JSON5, so the
+      # array literal lands as a real array.
+      if [ -n "${reef_model_fallbacks:-}" ]; then
+        openclaw config set agents.defaults.model.fallbacks "${reef_model_fallbacks}" 1>&2 \
+          || echo "reef-entrypoint: WARNING could not set model fallbacks ${reef_model_fallbacks}" >&2
       fi
     else
       echo "reef-entrypoint: WARNING could not set default model ${reef_model}" >&2
@@ -592,7 +630,12 @@ reef_identity_persist_loop &
 reef_write_status() {
   [ -n "${REEF_STATUS_DIR:-}" ] || return 0
   mkdir -p "${REEF_STATUS_DIR}" 2>/dev/null || return 0
-  _ocv=$(openclaw --version 2>/dev/null | sed 's/^OpenClaw //' | tr -d '\r')
+  # Version token only: OpenClaw 2026.8 ("2.0") prints `OpenClaw <version> (<sha>)`
+  # where older releases printed `OpenClaw <version>`. Keeping the SHA would put
+  # "2026.8.1 (ea80657)" into status.json, which reef reads host-side — it breaks
+  # version comparisons and is not a legal Docker tag. Must stay byte-identical
+  # to the probe in build.sh.
+  _ocv=$(openclaw --version 2>/dev/null | sed 's/^OpenClaw //' | awk '{print $1}' | tr -d '\r')
   openclaw plugins list --json 2>/dev/null \
     | REEF_OC_VERSION="${_ocv}" REEF_IMAGE_VERSION="${REEF_IMAGE_VERSION:-}" node -e '
       let s = "";
