@@ -18,8 +18,8 @@ function allFiles(root: string, current = root): string[] {
   return files.sort();
 }
 
-function stage(script: string, target: string): void {
-  execFileSync(process.execPath, [join(pluginRoot, script), target], {
+function stage(script: string, target: string, ...flags: string[]): void {
+  execFileSync(process.execPath, [join(pluginRoot, script), target, ...flags], {
     cwd: pluginRoot,
     stdio: "pipe",
   });
@@ -70,6 +70,35 @@ describe("standalone package staging", () => {
       ]) {
         assert.ok(!toolsFiles.includes(channelOnly), `${channelOnly} excluded from companion`);
       }
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("vendors runtime dependencies only when asked", { timeout: 30_000 }, () => {
+    // OpenClaw installs a DIRECTORY by copying it — no dependency step ever
+    // runs (managed npm/ClawHub sources are the ones that get `npm install`,
+    // src/plugins/install-managed-npm.ts). companion-tools.ts imports `typebox`
+    // at module scope, so an unvendored companion installed from a path loads
+    // with `status: error, missing typebox` while the channel looks healthy.
+    // Published artifacts must NOT vendor, or npm resolution is bypassed.
+    const temp = mkdtempSync(join(tmpdir(), "clawbits-vendor-"));
+    try {
+      execFileSync("bun", ["run", "build"], { cwd: pluginRoot, stdio: "pipe" });
+
+      const plain = join(temp, "tools-plain");
+      stage("stage-tools.mjs", plain);
+      assert.ok(
+        !allFiles(plain).some((path) => path.startsWith("node_modules/")),
+        "default staging leaves dependency resolution to npm",
+      );
+
+      const vendored = join(temp, "tools-vendored");
+      stage("stage-tools.mjs", vendored, "--vendor-deps");
+      assert.ok(
+        allFiles(vendored).some((path) => path.startsWith("node_modules/typebox/")),
+        "--vendor-deps makes a path install self-contained",
+      );
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }

@@ -17,6 +17,11 @@
   "peerDependencies": {
     "openclaw": ">=2026.6.10"
   },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
   "dependencies": {
     "typebox": "^1.1.38"
   },
@@ -39,8 +44,8 @@
       "minGatewayVersion": "2026.6.10"
     },
     "build": {
-      "openclawVersion": "2026.6.33",
-      "pluginSdkVersion": "2026.6.33"
+      "openclawVersion": "2026.8.1",
+      "pluginSdkVersion": "2026.8.1"
     },
     "configSchema": {
       "type": "object",

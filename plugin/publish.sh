@@ -162,8 +162,10 @@ if [ "$artifact_kind" = "legacy-zip" ]; then
 fi
 
 step "Done"
-echo "Install with (pinned remote):"
+echo "Install with (OpenClaw 2026.8+, pin via the spec — --pin is rejected for clawhub: refs):"
+echo "  openclaw plugins install clawhub:clawbits-openclaw-plugin@${VERSION} --accept-capabilities"
+echo "Install with (pre-2026.8 gateway, no --accept-capabilities option):"
 echo "  openclaw plugins install clawhub:clawbits-openclaw-plugin --pin"
 echo "Self-update later with: openclaw clawbits update"
-echo "  → prints: openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force"
-echo "    (re-fetches the newest compatible release and stays pinned)"
+echo "  → prints: openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities"
+echo "    (re-fetches the newest compatible release; prints the pre-2026.8 form as a fallback)"

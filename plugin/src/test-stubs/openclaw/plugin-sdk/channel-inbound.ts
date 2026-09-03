@@ -10,6 +10,11 @@ export async function dispatchInboundDirectDmWithRuntime(params: {
   bodyForAgent?: string;
   commandBody?: string;
   commandAuthorized?: boolean;
+  // OpenClaw 2026.8 ("2.0"). Real direct-dm.ts stamps `InboundAccessAuthorized`
+  // (and `ConversationRouteContextObserved`) only when this is true; without it
+  // route-context recording, DM sender persistence, turn-reply capture and
+  // archived-session restore all skip silently.
+  inboundAccessAuthorized?: boolean;
   messageId: string;
   timestamp?: number;
   extraContext?: Record<string, unknown>;
@@ -34,6 +39,9 @@ export async function dispatchInboundDirectDmWithRuntime(params: {
     ConversationId: conversationId,
     SessionKey: `clawbits:${params.accountId}:${conversationId}`,
     CommandAuthorized: params.commandAuthorized === true,
+    ...(params.inboundAccessAuthorized === true
+      ? { InboundAccessAuthorized: true, ConversationRouteContextObserved: true }
+      : {}),
     MessageId: params.messageId,
     Timestamp: params.timestamp,
     ...(params.extraContext ?? {}),

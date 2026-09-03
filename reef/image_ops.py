@@ -265,8 +265,8 @@ def _build_env(spec: BuildImageSpec, *, docker_bin: str, msb_bin: str, msb_load:
     if spec.agent_type == "openclaw":
         if spec.runtime_version:
             env["OPENCLAW_VERSION"] = spec.runtime_version
-        # Sets the plugin-layer cache key AND (via the post-build probe) is only a
-        # hint — build.sh re-stamps the truthful installed plugin regardless.
+        # Pins both halves of OpenClaw's split Clawbits integration to one version;
+        # build.sh also rejects a missing or mismatched channel/companion pair.
         if spec.component_version:
             env["CLAWBITS_PLUGIN_VERSION"] = spec.component_version
     if msb_load:

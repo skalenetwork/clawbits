@@ -107,7 +107,7 @@
           },
           "allowFrom": {
             "type": "array",
-            "description": "Optional inbound sender allowlist. Empty or missing allows everyone. Use values like human:123 or agent:agent_abc; bare numbers alias human:<id>.",
+            "description": "Optional inbound sender allowlist. Empty or missing allows everyone, and so does a single \"*\" entry (OpenClaw's canonical allow-all form). Use values like human:123 or agent:agent_abc; bare numbers alias human:<id>.",
             "items": {
               "type": [
                 "string",
@@ -201,7 +201,7 @@
                 },
                 "allowFrom": {
                   "type": "array",
-                  "description": "Optional inbound sender allowlist. Empty or missing allows everyone. Use values like human:123 or agent:agent_abc; bare numbers alias human:<id>.",
+                  "description": "Optional inbound sender allowlist. Empty or missing allows everyone, and so does a single \"*\" entry (OpenClaw's canonical allow-all form). Use values like human:123 or agent:agent_abc; bare numbers alias human:<id>.",
                   "items": {
                     "type": [
                       "string",

@@ -14,6 +14,17 @@ signup again.
 
 Migrate in this order. Do not upgrade the channel first.
 
+On OpenClaw 2026.8 ("2.0") and later:
+
+```sh
+openclaw plugins install clawhub:clawbits-openclaw-tools --accept-capabilities
+openclaw config set channels.clawbits.serviceOwner tools
+openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities
+```
+
+On a gateway older than 2026.8, which has no `--accept-capabilities` option and
+still accepts `--pin` for a ClawHub ref:
+
 ```sh
 openclaw plugins install clawhub:clawbits-openclaw-tools --pin
 openclaw config set channels.clawbits.serviceOwner tools

@@ -281,6 +281,56 @@ describe("interpretRunResult", () => {
   });
 });
 
+describe("one-shot `at` schedules", () => {
+  // The Clawbits frontend authors `at` as an epoch NUMBER
+  // (frontend/src/lib/schedule.ts) and the backend stores the spec verbatim,
+  // but OpenClaw's cron schema is a CLOSED object whose `at` is a non-empty
+  // STRING (packages/gateway-protocol/src/schema/cron.ts). An unconverted
+  // numeric `at` is rejected outright: cron.add fails, reconcile reports
+  // sync_status="failed", and the one-shot automation never fires.
+  const AT_MS = 1_788_000_000_000;
+  const AT_ISO = new Date(AT_MS).toISOString();
+  const atSpecWith = (at: unknown) => ({ ...everySpec, schedule: { kind: "at", at } });
+
+  it("converts a numeric epoch `at` to the ISO string the gateway accepts", () => {
+    const params = specToCronAdd(atSpecWith(AT_MS), "auto1");
+    assert.deepEqual(params.schedule, { kind: "at", at: AT_ISO });
+  });
+
+  it("converts an epoch digit-string `at` as well", () => {
+    const params = specToCronAdd(atSpecWith(String(AT_MS)), "auto1");
+    assert.deepEqual(params.schedule, { kind: "at", at: AT_ISO });
+  });
+
+  it("leaves an already-ISO `at` untouched", () => {
+    const params = specToCronAdd(atSpecWith(AT_ISO), "auto1");
+    assert.deepEqual(params.schedule, { kind: "at", at: AT_ISO });
+  });
+
+  it("passes an unparseable `at` through so the gateway rejects it precisely", () => {
+    const params = specToCronAdd(atSpecWith("not-a-time"), "auto1");
+    assert.deepEqual(params.schedule, { kind: "at", at: "not-a-time" });
+  });
+
+  it("does not report drift against a job stored in a different `at` form", () => {
+    // A job written by an older plugin can hold the epoch digit string while the
+    // desired spec now normalizes to ISO. Comparing raw values would report
+    // drift every cycle, and re-applying an `at` patch makes the gateway
+    // recompute nextRunAtMs from `now` — the job would never fire.
+    const params = specToCronAdd(atSpecWith(AT_MS), "auto1");
+    const job = appliedJobView(params);
+    (job.schedule as { at?: unknown }).at = String(AT_MS);
+    assert.equal(cronJobMatchesParams(job, params), true);
+  });
+
+  it("still reports drift when the instant actually changed", () => {
+    const params = specToCronAdd(atSpecWith(AT_MS), "auto1");
+    const job = appliedJobView(params);
+    (job.schedule as { at?: unknown }).at = new Date(AT_MS + 60_000).toISOString();
+    assert.equal(cronJobMatchesParams(job, params), false);
+  });
+});
+
 describe("cronJobMatchesParams", () => {
   const cronSpec = {
     ...everySpec,

@@ -1,4 +1,4 @@
-// Minimal stand-in for `openclaw/plugin-sdk/channel-message`. The real SDK
+// Minimal stand-in for `openclaw/plugin-sdk/channel-outbound`. The real SDK
 // export builds a `ChannelMessageAdapter` that the host's codex/agent bridge
 // uses to deliver `tools.message` / `agent_message` output to channel plugins.
 // Tests in this package do not exercise that bridge end-to-end, so the stub

@@ -175,7 +175,11 @@ if [ "${FRESH_BOOT}" = "1" ] && [ -z "${OPENAI_MODEL:-}" ]; then
     # FREE catalog model (the pickers' curated default), not the client's paid
     # default_model — a fresh BYO-key agent shouldn't spend until its owner
     # chooses. Bare slug: IronClaw takes OpenRouter ids raw, no prefix.
-    reef_model="nvidia/nemotron-nano-9b-v2:free"
+    #
+    # Verified live on 2026-09-03: the previous `nvidia/nemotron-nano-9b-v2:free`
+    # was withdrawn from OpenRouter and 404s with "No endpoints found". Free-tier
+    # slugs rotate — re-check https://openrouter.ai/api/v1/models before editing.
+    reef_model="nvidia/nemotron-3.5-lightning:free"
   fi
   if [ -n "${reef_model}" ]; then
     log "fresh boot, no model configured — pinning default model ${reef_model}"

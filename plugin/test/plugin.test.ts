@@ -490,6 +490,14 @@ describe("dispatchInboundMessage", () => {
     assert.equal(dispatched.ctx.ChatType, "direct");
     assert.equal(dispatched.ctx.ConversationId, "chan-1");
     assert.equal(dispatched.ctx.SessionKey, "clawbits:default:chan-1");
+    // OpenClaw 2026.8 gates conversation-route recording, DM sender identity
+    // persistence, pending turn-reply capture and archived-session restore on
+    // the channel attesting that its own guard admitted the event. Clawbits
+    // admits inbound server-side (the agentic GET only returns approved posts)
+    // plus the poller's allowFrom/mention checks, so it passes the attestation.
+    // Dropping it degrades all four silently — no error, no log.
+    assert.equal(dispatched.ctx.InboundAccessAuthorized, true);
+    assert.equal(dispatched.ctx.ConversationRouteContextObserved, true);
   });
 
   it("authorizes /usage in the operator DM as a text command so the host doesn't swallow it", async () => {

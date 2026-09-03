@@ -1143,6 +1143,61 @@ describe("runInboundPoller", () => {
     );
   });
 
+  it('treats a "*" entry in allowFrom as allow-all, not as a literal sender id', async () => {
+    // `"*"` is OpenClaw's canonical allow-everyone entry (its shared matcher in
+    // src/plugin-sdk/allow-from.ts special-cases it). Clawbits matched entries
+    // by exact set membership, so an operator writing the documented OpenClaw
+    // form got the OPPOSITE of what they asked for: no sender key ever equals
+    // "*", so a non-empty list denied every sender and the channel went silent.
+    const posts: MattermostPost[] = [
+      { id: "from-1", create_at: 200, human_id: 1, message: "hello", channel_id: "chan-123" },
+      { id: "from-9", create_at: 300, human_id: 9, message: "also hello", channel_id: "chan-123" },
+    ];
+    const stub = installFetchStub((url) => {
+      if (url.endsWith("/api/agentic/mm/channels")) {
+        return {
+          body: {
+            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
+          },
+        };
+      }
+      return {
+        body: {
+          order: posts.map((p) => p.id),
+          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
+        },
+      };
+    });
+    const ac = new AbortController();
+    const received: InboundMessage[] = [];
+    const warnings: string[] = [];
+    try {
+      await runInboundPoller({
+        client: makeClient(),
+        account: makeAccount({ allowFrom: ["*"] }),
+        abortSignal: ac.signal,
+        initialCursor: 150,
+        pollIntervalMs: 1,
+        log: { warn: (msg) => warnings.push(msg) },
+        onInboundMessage: (msg) => {
+          received.push(msg);
+          if (received.length === 2) ac.abort();
+        },
+      });
+    } finally {
+      stub.restore();
+    }
+    assert.deepEqual(
+      received.map((m) => m.postId),
+      ["from-1", "from-9"],
+      "every sender is admitted under a wildcard allowlist",
+    );
+    assert.ok(
+      !warnings.some((msg) => msg.includes("inbound blocked by allowFrom")),
+      "no sender is blocked under a wildcard allowlist",
+    );
+  });
+
   it("requires an @mention in non-direct channels discovered via listChannels", async () => {
     // A public/group channel returned by listChannels. The bot is a member
     // but the post doesn't mention @bot-agent — dispatch must be skipped.

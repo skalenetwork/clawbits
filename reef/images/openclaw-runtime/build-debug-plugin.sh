@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Debug-only: build a Reef OpenClaw image with the repo's local ./plugin folder
-# copied over the baked clawbits plugin, then load it into microsandbox.
+# Debug-only: build a Reef OpenClaw image with standalone channel and companion
+# artifacts staged from the repo's local ./plugin folder, then load it into
+# microsandbox.
 #
 # Usage:
 #   ./reef/images/openclaw-runtime/build-debug-plugin.sh
@@ -38,15 +39,31 @@ fi
   exit 1
 }
 
+stage_dir="$root/reef/images/openclaw-runtime/.debug-plugin-src"
+rm -rf "$stage_dir"
+mkdir -p "$stage_dir"
+trap 'rm -rf "$stage_dir"' EXIT
+# --vendor-deps: these are installed by PATH below, and a directory install does
+# not install dependencies. See build.sh for the full reasoning.
+(cd "$plugin_dir" \
+  && bun stage-channel.mjs "$stage_dir/channel" --vendor-deps \
+  && bun stage-tools.mjs "$stage_dir/tools" --vendor-deps)
+
 tmp="$(mktemp -t reef-debug-plugin.XXXXXX.Dockerfile)"
-trap 'rm -f "$tmp"' EXIT
+trap 'rm -f "$tmp"; rm -rf "$stage_dir"' EXIT
 cat > "$tmp" <<'DOCKERFILE'
 ARG BASE_IMAGE=reef-oc:plugin
 FROM ${BASE_IMAGE}
 USER root
-RUN rm -rf /home/node/.openclaw/extensions/clawbits
-COPY --chown=node:node plugin/ /home/node/.openclaw/extensions/clawbits/
+COPY --chown=node:node reef/images/openclaw-runtime/.debug-plugin-src/channel/ /tmp/clawbits-channel/
+COPY --chown=node:node reef/images/openclaw-runtime/.debug-plugin-src/tools/ /tmp/clawbits-tools/
 USER node
+RUN cap_flag=""; \
+    if openclaw plugins install --help 2>/dev/null | grep -q -- --accept-capabilities; then \
+      cap_flag="--accept-capabilities"; \
+    fi; \
+    openclaw plugins install /tmp/clawbits-channel --force ${cap_flag} \
+      && openclaw plugins install /tmp/clawbits-tools --force ${cap_flag}
 DOCKERFILE
 
 echo "reef-debug: building $image from $base_image with ./plugin…"

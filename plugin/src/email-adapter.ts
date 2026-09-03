@@ -436,6 +436,17 @@ export async function dispatchInboundEmail(
         conversationLabel: `Clawbits email ${email.fromAddr || conversationId}`,
         rawBody: email.bodyText ?? "",
         bodyForAgent,
+        // DELIBERATELY NOT setting `inboundAccessAuthorized` here, unlike the
+        // chat path in gateway-adapter.ts. OpenClaw defines it as "set only
+        // after the channel's sender/pairing guard admits this event", and the
+        // email path has no such guard: email-poller.ts fetches whatever is in
+        // the account mailbox and only suppresses self-loops. There is no
+        // allowlist, no owner check, and no pairing — `fromAddr` is recorded,
+        // never validated. Attesting here would hand any sender who can reach
+        // the mailbox trusted route/session behaviour, including archived
+        // session restoration. Losing route-context recording on email is the
+        // correct trade until an explicit sender guard exists; add the
+        // attestation in the same change as the guard, not before.
         messageId: `email-${email.uid}`,
         timestamp: Date.now(),
         provider: CHANNEL_ID,
