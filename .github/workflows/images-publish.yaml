@@ -1,0 +1,155 @@
+name: Images publish
+
+# Builds the clawbits agent image on native runners, one architecture each,
+# pushes both by digest, then merges them into a single multi-arch tag on ghcr.
+#
+# Manual only. This is a multi-gigabyte build and a deliberate release action,
+# not something every images/ commit should trigger.
+#
+# Native runners, not QEMU: the plugin stage runs `openclaw plugins install`
+# (node, network-heavy) inside the target rootfs, which is slow enough under
+# emulation to be worth two runners instead. buildkit defaults to the worker's
+# own platform, so neither job passes --platform and the Dockerfile's TARGETARCH
+# resolves correctly on each.
+#
+# Version consistency: with both inputs blank each runner resolves "latest"
+# independently, so a release landing between the two jobs would bake different
+# versions into the two halves of one manifest. The tag encodes both versions,
+# so `merge` refuses when the halves disagree — re-run with the inputs pinned.
+#
+# setup-buildx-action is required in the build jobs and only there: it provisions
+# a docker-container builder, and the default docker driver hard-errors on
+# push-by-digest. `imagetools` is a pure registry operation, so `merge` needs no
+# builder and no checkout.
+#
+# The first successful run creates the ghcr package PRIVATE. Flip it to public
+# once by hand (package settings, Danger Zone) or reef cannot pull it
+# anonymously; the change is one-way.
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: OpenClaw version (blank = latest published)
+        type: string
+      plugin:
+        description: Clawbits plugin version (blank = latest published)
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: images
+          key: ${{ matrix.arch }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Inputs go through env, never string interpolation into the script.
+      - name: Build and push by digest
+        working-directory: images
+        env:
+          ENGINE: ${{ inputs.engine }}
+          PLUGIN: ${{ inputs.plugin }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          args=(--push --digest --yes)
+          [ -z "$ENGINE" ] || args+=(--engine "$ENGINE")
+          [ -z "$PLUGIN" ] || args+=(--plugin "$PLUGIN")
+          cargo run --release -- "${args[@]}" | tee build.log
+          mkdir -p "$RUNNER_TEMP/refs"
+          awk '$1=="image"{i=$2} $1=="pushed"{split($2,d,"@"); print i, d[2]}' \
+            build.log > "$RUNNER_TEMP/refs/$ARCH"
+          cat "$RUNNER_TEMP/refs/$ARCH"
+
+      - name: Upload ref
+        uses: actions/upload-artifact@v7
+        with:
+          name: refs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/refs/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to ghcr
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download refs
+        uses: actions/download-artifact@v8
+        with:
+          path: refs
+          pattern: refs-*
+          merge-multiple: true
+
+      - name: Merge into one tag
+        working-directory: refs
+        run: |
+          set -euo pipefail
+          image="$(cut -d' ' -f1 -- * | sort -u)"
+          if [ "$(printf '%s\n' "$image" | wc -l)" -ne 1 ]; then
+            echo "::error::architectures resolved different versions:"
+            printf '%s\n' "$image"
+            exit 1
+          fi
+          repo="${image%%:*}"
+          mapfile -t refs < <(cut -d' ' -f2 -- * | sed "s|^|$repo@|")
+          docker buildx imagetools create -t "$image" "${refs[@]}"
+          digest="$(docker buildx imagetools inspect "$image" \
+            --format '{{.Manifest.Digest}}')"
+          docker buildx imagetools inspect "$image"
+          {
+            echo '### Published'
+            echo
+            echo "Pin this in a reef role:"
+            echo
+            echo '```toml'
+            echo "image = \"$repo@$digest\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
