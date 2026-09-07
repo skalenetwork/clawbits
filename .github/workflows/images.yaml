@@ -1,0 +1,68 @@
+name: Images
+
+# PR gate for the agent-image builder in images/ — fmt / clippy / build, plus a
+# static Dockerfile lint. It is a standalone crate with its own lockfile (like
+# cli/ and ironclaw-channel; there is no Cargo workspace in this repo), so it
+# gets its own workflow.
+#
+# Publishing lives in images-publish.yaml, which is workflow_dispatch only. The
+# split follows cli.yaml / cli-release.yaml: a `pull_request`-triggered workflow
+# lists EVERY job in the PR's checks, including ones whose `if:` is false, so
+# keeping the multi-gigabyte publish out of a PR-triggered workflow is the only
+# way it stays out of the checks list.
+#
+# There are no tests: the crate resolves two registry versions and shells out to
+# buildx, so everything worth asserting needs a live registry and a docker
+# daemon. The real gate is the publish run itself, whose Dockerfile asserts both
+# plugins load before the image is pushed.
+on:
+  pull_request:
+    paths:
+      - images/**
+      - .github/workflows/images.yaml
+      - .github/workflows/images-publish.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: images
+
+      - name: Format
+        working-directory: images
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: images
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        working-directory: images
+        run: cargo build --release
+
+      # BASE is a required ARG with no default (the builder always supplies it),
+      # so --check needs a value; it is never pulled, this is static analysis.
+      - name: Dockerfile
+        working-directory: images/openclaw
+        run: docker buildx build --check --build-arg BASE=alpine .
