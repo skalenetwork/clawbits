@@ -1,0 +1,79 @@
+#!/bin/sh
+set -e
+
+if [ "$(id -u)" = 0 ]; then
+  as_node() { /usr/sbin/runuser -u node -- "$@"; }
+else
+  as_node() { "$@"; }
+fi
+oc() { as_node /usr/local/bin/node /app/openclaw.mjs "$@"; }
+acct=channels.clawbits.accounts.default
+ep="${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
+mirror=/home/node/.openclaw/state/clawbits-identity
+override=/etc/openclaw/defaults.json
+
+apply_identity() {
+  [ -s "$mirror" ] || return 1
+  o=$(sed -n 1p "$mirror" | tr -d '\r')
+  a=$(sed -n 2p "$mirror" | tr -d '\r')
+  k=$(sed -n 3p "$mirror" | tr -d '\r')
+  c=$(sed -n 4p "$mirror" | tr -d '\r')
+  [ -n "$o" ] && [ -n "$a" ] && [ -n "$k" ] && [ -n "$c" ] || return 1
+  oc config set "$acct.orgId" "$o"
+  oc config set "$acct.agentId" "$a"
+  oc config set "$acct.apiKey" "$k"
+  oc config set "$acct.channelId" "$c"
+}
+
+save_identity() {
+  oc config file | { read -r f; as_node /usr/local/bin/node -e '
+const fs = require("fs");
+const d = (((JSON.parse(fs.readFileSync(process.argv[1], "utf8")).channels || {}).clawbits || {}).accounts || {}).default || {};
+if (d.orgId && d.agentId && d.apiKey && d.channelId) {
+  fs.writeFileSync(process.argv[2] + ".tmp", [d.orgId, d.agentId, d.apiKey, d.channelId].join("\n"), { mode: 0o600 });
+  fs.renameSync(process.argv[2] + ".tmp", process.argv[2]);
+}' "$f" "$mirror"; }
+}
+
+if [ "$(id -u)" = 0 ]; then
+  install -d -o node -g node /home/node/.openclaw/state
+else
+  mkdir -p /home/node/.openclaw/state
+fi
+oc config patch --stdin < /usr/local/share/clawbits-defaults.json
+if [ -e "$override" ]; then
+  oc config patch --stdin < "$override"
+fi
+oc config set channels.clawbits.endpoint "$ep"
+
+if [ -n "$(oc config get "$acct.channelId" 2>/dev/null)" ]; then
+  :
+elif apply_identity; then
+  :
+elif [ -n "${CLAWBITS_ORG_ID:-}" ] && [ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ]; then
+  oc config set channels.clawbits.orgId "$CLAWBITS_ORG_ID"
+  oc clawbits signup --json --endpoint "$ep" --org-id "$CLAWBITS_ORG_ID" \
+    --signup-token "$CLAWBITS_SIGNUP_TOKEN" | as_node /usr/local/bin/node -e '
+const fs = require("fs");
+const e = fs.readFileSync(0, "utf8").split("\n").filter(Boolean)
+  .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+  .find((x) => x && x.agent_id && x.api_key && x.channel_id);
+if (e) {
+  fs.writeFileSync(process.argv[1] + ".tmp", [e.org_id, e.agent_id, e.api_key, e.channel_id].join("\n"), { mode: 0o600 });
+  fs.renameSync(process.argv[1] + ".tmp", process.argv[1]);
+}' "$mirror" || true
+  if apply_identity; then
+    :
+  else
+    echo "clawbits: signup failed or returned no channel; starting without one" >&2
+  fi
+fi
+
+oc config set "$acct.endpoint" "$ep"
+save_identity || true
+
+if [ "$(id -u)" = 0 ]; then
+  exec /usr/sbin/runuser -u node -- \
+    /usr/local/bin/node /app/openclaw.mjs gateway --bind lan --auth token
+fi
+exec /usr/local/bin/node /app/openclaw.mjs gateway --bind lan --auth token

@@ -1,0 +1,25 @@
+{
+  "gateway": { "mode": "local" },
+  "tools": {
+    "web": { "search": { "enabled": false } },
+    "alsoAllow": [
+      "browser",
+      "clawbits_channels_list",
+      "clawbits_channel_members",
+      "clawbits_email_inbox",
+      "clawbits_email_get",
+      "clawbits_agent_info",
+      "clawbits_email_send",
+      "clawbits_agent_description_update"
+    ]
+  },
+  "plugins": {
+    "entries": {
+      "clawbits": { "enabled": true, "hooks": { "allowConversationAccess": true } },
+      "clawbits-tools": { "enabled": true, "hooks": { "allowConversationAccess": true } }
+    }
+  },
+  "channels": {
+    "clawbits": { "serviceOwner": "tools" }
+  }
+}

@@ -35,6 +35,9 @@ FROM ${PLUGIN_STAGE}
 RUN openclaw plugins list --json | node -e 'const p=JSON.parse(require("fs").readFileSync(0,"utf8")).plugins||[];for(const id of["clawbits","clawbits-tools"]){const x=p.find(y=>y.id===id)||{};if(x.status!=="loaded"){console.error(id,x.status||"missing");process.exit(1)}}' \
  && rm -f /tmp/pi /home/node/.openclaw/openclaw.json /home/node/.openclaw/openclaw.json.bak
 
+COPY --chmod=0755 start /usr/local/bin/clawbits-start
+COPY --chmod=0644 defaults.json /usr/local/share/clawbits-defaults.json
+
 ARG ENGINE_VERSION
 ARG PLUGIN_VERSION
 ARG IMAGE_VERSION
