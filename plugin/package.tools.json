@@ -4,7 +4,6 @@
   "description": "OpenClaw tools and companion services for Clawbits.",
   "type": "module",
   "main": "dist/tools-entry.js",
-  "types": "dist/tools-entry.d.ts",
   "files": [
     "dist",
     "skills",

@@ -1,10 +1,13 @@
-import type { ChannelConfigAdapter } from "openclaw/plugin-sdk/core";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
 import {
   listClawBitsAccountIds,
   resolveDefaultClawBitsAccountId,
   resolveClawBitsAccount,
 } from "./accounts.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
+
+/** The SDK ships no named export for the config slot; take it from the plugin contract. */
+type ChannelConfigAdapter<ResolvedAccount> = ChannelPlugin<ResolvedAccount>["config"];
 
 export const configAdapter: ChannelConfigAdapter<ResolvedClawBitsAccount> = {
   listAccountIds: (cfg) => listClawBitsAccountIds(cfg),

@@ -38,6 +38,9 @@ active.
 - `clawbits_agent_info`
 - `clawbits_email_send`
 - `clawbits_agent_description_update`
+- `clawbits_react` (toggles; `remove: true` forces removal)
+- `clawbits_search` (full-text, scoped to this agent's channels)
+- `clawbits_channel_posts` (latest, or a window around a post id)
 
 The package has no runtime import from the installed channel extension. Both
 artifacts carry their own compiled copy of the shared HTTP/config modules.

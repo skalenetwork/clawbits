@@ -1,11 +1,7 @@
 import type {
   ChannelSetupAdapter,
-  ChannelSetupConfigureContext,
-  ChannelSetupResult,
-  ChannelSetupStatusContext,
-  ChannelSetupStatus,
   ChannelSetupWizardAdapter,
-} from "openclaw/plugin-sdk/core";
+} from "openclaw/plugin-sdk/setup";
 import {
   CHANNEL_ID,
   DEFAULT_ACCOUNT_ID,
@@ -70,6 +66,13 @@ export const setupAdapter: ChannelSetupAdapter = {
 // ---------------------------------------------------------------------------
 // imperative wizard - drives the interactive signup for `openclaw configure`
 // ---------------------------------------------------------------------------
+
+// The wizard slot types are not re-exported by name from any plugin-sdk
+// subpath, so derive them from the adapter the host actually consumes.
+type ChannelSetupStatusContext = Parameters<ChannelSetupWizardAdapter["getStatus"]>[0];
+type ChannelSetupStatus = Awaited<ReturnType<ChannelSetupWizardAdapter["getStatus"]>>;
+type ChannelSetupConfigureContext = Parameters<ChannelSetupWizardAdapter["configure"]>[0];
+type ChannelSetupResult = Awaited<ReturnType<ChannelSetupWizardAdapter["configure"]>>;
 
 function nonEmpty(msg: string) {
   return (v: string) => (v.trim() ? undefined : msg);

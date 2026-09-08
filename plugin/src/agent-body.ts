@@ -36,9 +36,13 @@ export function clawbitsSessionId(chatId: string): string {
 /**
  * Assemble the bracketed Clawbits context block. When a hashed ``sessionId`` is
  * supplied it is woven in so the agent can answer "what is your session id?"
- * straight from context, with no tool call. The id is stable per chat, so the
- * block stays byte-identical across turns of the same conversation (prompt
- * cache safe within a session).
+ * straight from context, with no tool call; it is stable per chat, so repeated
+ * turns report the same id.
+ *
+ * ``postId`` names the current message. It is the agent's only view of the id
+ * `clawbits_react` needs, so without it reacting is unreachable: the host used
+ * to supply the target itself through the shared `message` tool, which no
+ * longer works (see the reactions note on the plugin's capabilities).
  *
  * ``agentId`` names the agent to itself. Without it the agent has no idea what
  * it is called — it cannot recognise "Scaleweld, any idea why…" as addressed to
@@ -50,25 +54,31 @@ export function clawbitsSessionId(chatId: string): string {
  * Stated here rather than in the attention block because it is true on every
  * path; DMs and @mentions simply never needed it.
  */
-function buildClawbitsContext(sessionId?: string, agentId?: string): string {
+function buildClawbitsContext(opts: AgentBodyOptions): string {
   const lines = ["[Clawbits context]", ...CLAWBITS_CONTEXT_LINES];
-  if (agentId) {
+  if (opts.agentId) {
     lines.push(
-      `You are the Clawbits agent ${agentId}. People may address you by that name`,
+      `You are the Clawbits agent ${opts.agentId}. People may address you by that name`,
       "without an @mention — treat a message that names you as directed at you.",
     );
   }
-  if (sessionId) {
+  if (opts.sessionId) {
     lines.push(
-      `Your Clawbits session id for this chat is ${sessionId}. If asked for your`,
+      `Your Clawbits session id for this chat is ${opts.sessionId}. If asked for your`,
       "session id (or which session/chat this is), report it exactly as written.",
+    );
+  }
+  if (opts.postId) {
+    lines.push(
+      `The message below is Clawbits post ${opts.postId}. Pass that id to clawbits_react`,
+      "to react to it.",
     );
   }
   lines.push("[end Clawbits context]");
   return lines.join("\n");
 }
 
-const CLAWBITS_AGENT_PREAMBLE = buildClawbitsContext();
+const CLAWBITS_AGENT_PREAMBLE = buildClawbitsContext({});
 
 /**
  * A single inbound attachment that has been downloaded and persisted into the
@@ -80,6 +90,22 @@ export interface SavedInboundMedia {
   fileId: string;
   path: string;
   contentType?: string;
+}
+
+/** Everything besides the raw message text that shapes the agent's prompt.
+ *  Every field is optional; omitting all of them yields the bare preamble. */
+export interface AgentBodyOptions {
+  files?: readonly InboundFile[];
+  savedByFileId?: ReadonlyMap<string, SavedInboundMedia>;
+  sessionId?: string;
+  /** Clawbits post id of the current message, so the agent can react to it. */
+  postId?: string;
+  priorContext?: readonly InboundContextPost[];
+  senderTag?: string;
+  attention?: boolean;
+  agentId?: string;
+  /** Reframes the history block from read-only context to unanswered backlog. */
+  catchUp?: boolean;
 }
 
 /** One-line human-readable byte size. Strips a trailing ``.0`` so exact
@@ -189,25 +215,17 @@ function buildAttentionBlock(attention: boolean | undefined): string {
   ].join("\n");
 }
 
-export function buildAgentBody(
-  rawBody: string,
-  files?: readonly InboundFile[],
-  savedByFileId?: ReadonlyMap<string, SavedInboundMedia>,
-  sessionId?: string,
-  priorContext?: readonly InboundContextPost[],
-  senderTag?: string,
-  attention?: boolean,
-  agentId?: string,
-  catchUp?: boolean,
-): string {
-  // Without a session id *or* an agent id the context block is byte-identical
-  // to the pre-feature preamble, so callers/tests that omit both keep the exact
-  // old prompt shape. Either one folds into the bracketed context.
+export function buildAgentBody(rawBody: string, opts: AgentBodyOptions = {}): string {
+  // With none of the identifying fields the context block is byte-identical to
+  // the pre-feature preamble, so callers/tests that omit them all keep the exact
+  // old prompt shape. Any one of them folds into the bracketed context.
   const context =
-    sessionId || agentId ? buildClawbitsContext(sessionId, agentId) : CLAWBITS_AGENT_PREAMBLE;
-  const historyBlock = buildHistoryBlock(priorContext, catchUp === true);
-  const replyTagBlock = buildReplyTagBlock(senderTag);
-  const attentionBlock = buildAttentionBlock(attention);
+    opts.sessionId || opts.agentId || opts.postId
+      ? buildClawbitsContext(opts)
+      : CLAWBITS_AGENT_PREAMBLE;
+  const historyBlock = buildHistoryBlock(opts.priorContext, opts.catchUp === true);
+  const replyTagBlock = buildReplyTagBlock(opts.senderTag);
+  const attentionBlock = buildAttentionBlock(opts.attention);
   // Channel catch-up history sits between the Clawbits context and the
   // current message so the model reads the backlog before the ask. Reply
   // tagging and the attention framing follow it so the addressing rule and the
@@ -215,7 +233,7 @@ export function buildAgentBody(
   const head = [context, historyBlock, replyTagBlock, attentionBlock]
     .filter(Boolean)
     .join("\n\n");
-  const attachmentsBlock = buildAttachmentsBlock(files, savedByFileId);
+  const attachmentsBlock = buildAttachmentsBlock(opts.files, opts.savedByFileId);
   // The bare-text path (no attachments) keeps a stable prompt shape so prompt
   // caching / replay across upgrades stays stable within a session.
   if (!attachmentsBlock && rawBody) {

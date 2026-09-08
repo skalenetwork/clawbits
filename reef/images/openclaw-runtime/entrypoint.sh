@@ -181,8 +181,8 @@ reef_has_cap() {
 # Tool policy. `openclaw onboard` writes tools.profile="coding", which does NOT
 # include `browser`, `cron`, or the companion's optional tools. alsoAllow MERGES
 # on top of the profile; plain `allow` would REPLACE it and silently drop
-# everything else. All seven clawbits tools are first-party Reef functionality and
-# are explicitly enabled because OpenClaw does not auto-allow optional plugin
+# everything else. Every clawbits tool is first-party Reef functionality and is
+# explicitly enabled because OpenClaw does not auto-allow optional plugin
 # tools. Deliberately NOT using tools.profile="full": it silently includes the
 # unrestricted group:messaging tool family.
 #
@@ -190,9 +190,9 @@ reef_has_cap() {
 # the agent schedule its own recurring work. Rewritten in full every boot (not
 # appended) so a revoke removes it while the clawbits tools remain available.
 if reef_has_cap cron; then
-  openclaw config set tools.alsoAllow '["browser","cron","clawbits_channels_list","clawbits_channel_members","clawbits_email_inbox","clawbits_email_get","clawbits_agent_info","clawbits_email_send","clawbits_agent_description_update"]' --json
+  openclaw config set tools.alsoAllow '["browser","cron","clawbits_channels_list","clawbits_channel_members","clawbits_email_inbox","clawbits_email_get","clawbits_agent_info","clawbits_email_send","clawbits_agent_description_update","clawbits_react","clawbits_search","clawbits_channel_posts"]' --json
 else
-  openclaw config set tools.alsoAllow '["browser","clawbits_channels_list","clawbits_channel_members","clawbits_email_inbox","clawbits_email_get","clawbits_agent_info","clawbits_email_send","clawbits_agent_description_update"]' --json
+  openclaw config set tools.alsoAllow '["browser","clawbits_channels_list","clawbits_channel_members","clawbits_email_inbox","clawbits_email_get","clawbits_agent_info","clawbits_email_send","clawbits_agent_description_update","clawbits_react","clawbits_search","clawbits_channel_posts"]' --json
 fi
 
 # Exec posture. These are already OpenClaw's effective defaults (verified in-image:

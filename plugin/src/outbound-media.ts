@@ -8,7 +8,7 @@
 // (reserve → PUT to R2 → confirm), where the confirm-time server probe still
 // backfills image dimensions.
 import { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
-import type { ChannelOutboundContext } from "openclaw/plugin-sdk/core";
+import type { ChannelOutboundContext } from "openclaw/plugin-sdk/channel-contract";
 import type { ClawBitsClient } from "./client.js";
 import { withChallenge } from "./challenge.js";
 import { ClawBitsError } from "./errors.js";
