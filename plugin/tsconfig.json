@@ -8,11 +8,17 @@
     "declaration": true,
     "outDir": "dist",
     "rootDir": "src",
-    "baseUrl": ".",
     "paths": {
-      "openclaw/plugin-sdk/*": ["src/test-stubs/openclaw/plugin-sdk/*"]
+      "openclaw/plugin-sdk/*": [
+        "./src/test-stubs/openclaw/plugin-sdk/*"
+      ]
     },
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*"]
+  "include": [
+    "src/**/*"
+  ]
 }
