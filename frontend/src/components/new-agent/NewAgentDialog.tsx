@@ -21,8 +21,8 @@ import {Icon} from "@/components/Icon";
 import {useAuth} from "@/context/AuthContext";
 import {useIsMobile} from "@/hooks/use-mobile";
 import {
-    getOrgs, getReefConnection, startHumanAgentSignup, linkReefVm, getAgents, createOrGetMmDirect,
-    createMmChannelPost,
+    checkPluginVersion, getOrgs, getReefConnection, startHumanAgentSignup, linkReefVm, getAgents,
+    createOrGetMmDirect, createMmChannelPost,
     type AgentUser, type MmChannel, type Org,
 } from "@/lib/api";
 import {
@@ -46,6 +46,7 @@ import {ModelStep} from "./ModelStep";
 import {OptionsStep} from "./OptionsStep";
 import {ConnectStep} from "./ConnectStep";
 import {LaunchStep, type TimelinePhase} from "./LaunchStep";
+import {imageCompatibility} from "./imageCompatibility";
 import {
     buildHermesSetupPrompt, buildIronClawSetupPrompt, buildOpenClawSetupPrompt, deriveClawbitsUrl,
 } from "./prompts";
@@ -57,6 +58,10 @@ import {
 /** linkReefVm is best-effort — after this long with no attributed agent, the
  *  first joined agent is accepted as the hero (plan §2.2). */
 const HERO_ATTRIBUTION_TIMEOUT_MS = 30_000;
+
+/** A Reef create only proves the VM process started. Enrollment is synchronous
+ *  in the guest and capped at 120 s, so no agent row after this is a failure. */
+const ENROLLMENT_TIMEOUT_MS = 180_000;
 
 /** The self-host onboarding prompt each runtime gets on the Connect step. */
 const SELF_PROMPTS: Record<Runtime, (org: Org | null, signupToken: string) => string> = {
@@ -263,6 +268,29 @@ function WizardBody({
         staleTime: 60_000,
     });
     const images: ReefImage[] | null = imagesQuery.data ?? null;
+    const selectedImage = useMemo(() => {
+        if (state.runtime === null || images === null) return null;
+        const candidates = images.filter(i => (i.agent_type ?? "openclaw") === state.runtime);
+        if (state.imageTag !== null) return candidates.find(i => i.tag === state.imageTag) ?? null;
+        return candidates.find(i => i.is_active) ?? candidates[0] ?? null;
+    }, [images, state.runtime, state.imageTag]);
+    const imagePluginVersion = selectedImage?.component_version ?? null;
+    const pluginCompatibilityQuery = useQuery({
+        queryKey: [
+            "plugin-compatibility",
+            state.runtime ?? "none",
+            imagePluginVersion ?? "unknown",
+        ],
+        queryFn: () => checkPluginVersion(
+            state.runtime ?? "openclaw",
+            imagePluginVersion ?? "",
+        ),
+        enabled:
+            state.mode === "reef" && state.runtime !== null
+            && imagePluginVersion !== null,
+        retry: false,
+        staleTime: 60_000,
+    });
 
     // ── Watch for agents joining while the dialog is open ──
     const agentsQuery = useQuery({
@@ -375,6 +403,7 @@ function WizardBody({
     // Flips true HERO_ATTRIBUTION_TIMEOUT_MS after the create succeeds — the
     // signal to stop waiting for a reef_sandbox_id match and accept first-joined.
     const [attributionExpired, setAttributionExpired] = useState(false);
+    const [enrollmentTimedOut, setEnrollmentTimedOut] = useState(false);
     const [pwCopied, setPwCopied] = useState(false);
     // Owner passed the password gate ("Copy & continue"). Lives here (not in
     // LaunchStep) because the dock chip's dismiss guard hangs off it.
@@ -432,6 +461,9 @@ function WizardBody({
                 console.warn("reef VM link failed (non-fatal):", e);
             }
             return res;
+        },
+        onMutate: () => {
+            setEnrollmentTimedOut(false);
         },
         onSuccess: (res) => {
             if (targetOrgId) {
@@ -500,6 +532,14 @@ function WizardBody({
     }, [joined, state.mode, createdSandboxId, attributionExpired]);
     const others = joined.filter(a => a.agent_id !== hero?.agent_id);
     const heroOnline = hero !== null && agentLivenessStatus(hero.last_alive_at ?? null) === "available";
+    useEffect(() => {
+        if (createdSandboxId === null || hero !== null) return;
+        const t = setTimeout(() => { setEnrollmentTimedOut(true); }, ENROLLMENT_TIMEOUT_MS);
+        return () => { clearTimeout(t); };
+    }, [createdSandboxId, hero]);
+    const launchError = createError ?? (enrollmentTimedOut
+        ? "The VM started but did not enroll within 3 minutes. Check its Reef logs, then delete it before trying again."
+        : null);
 
     // ── Validity ──
     const picked = providerList?.find(p => p.id === state.providerId) ?? null;
@@ -511,8 +551,18 @@ function WizardBody({
     // Model step's Continue; Options adds env validity itself before Create.
     const modelStepComplete =
         state.providerId !== null && !pickNeedsValue && !byoBadUrl && !pickNeedsModel;
+    const compatibility = imageCompatibility({
+        runtime: state.mode === "reef" ? state.runtime : null,
+        imagesState: imagesQuery.isError ? "error" : imagesQuery.isSuccess ? "success" : "pending",
+        selectedImage,
+        verdictState: pluginCompatibilityQuery.isError
+            ? "error"
+            : pluginCompatibilityQuery.isSuccess ? "success" : "pending",
+        verdict: pluginCompatibilityQuery.data,
+    });
     const createEnabled =
-        reefConnected && providersReady && state.runtime !== null && modelStepComplete;
+        reefConnected && providersReady && state.runtime !== null && modelStepComplete
+        && compatibility.ready;
 
     // ── ChatGPT-subscription (oauth) handoff for the Launch step ──
     // Only when an oauth provider was picked AND the create returned an exposed
@@ -539,7 +589,7 @@ function WizardBody({
     // Launch locks the rail on BOTH paths (it isn't a step of its own — the
     // frozen chips are the record of what was chosen); a failed reef create
     // unfreezes it for Retry/Back.
-    const frozen = state.launched && createError === null;
+    const frozen = state.launched && launchError === null;
 
     // ── Launch timeline ──
     const phases: TimelinePhase[] = useMemo(() => {
@@ -579,8 +629,8 @@ function WizardBody({
     useEffect(() => {
         const seq = stepsFor(state.mode);
         const summary: WizardChipSummary =
-            createError !== null || banner !== null
-                ? {title: "Add agent", subtitle: createError ?? banner ?? "", status: "error", progress: null}
+            launchError !== null || banner !== null
+                ? {title: "Add agent", subtitle: launchError ?? banner ?? "", status: "error", progress: null}
                 : heroName !== null && heroOnline
                     ? {
                         title: heroName,
@@ -602,7 +652,7 @@ function WizardBody({
                             progress: (seq.indexOf(state.step) + 1) / seq.length,
                         };
         publishWizardMeta({dirty, guard, summary});
-    }, [dirty, guard, state.mode, state.step, state.launched, createError, banner, heroName, heroOnline, phaseLabel, createdPassword]);
+    }, [dirty, guard, state.mode, state.step, state.launched, launchError, banner, heroName, heroOnline, phaseLabel, createdPassword]);
 
     if (!targetOrgId) {
         return (
@@ -716,6 +766,8 @@ function WizardBody({
                             createMutation.mutate();
                         }}
                         createEnabled={createEnabled}
+                        createBlockReason={compatibility.problem}
+                        compatibilityChecking={compatibility.checking}
                         pending={createMutation.isPending}
                     />
                 )}
@@ -736,8 +788,12 @@ function WizardBody({
                         mode={state.mode}
                         visible={visible}
                         phases={phases}
-                        createError={createError}
-                        onRetry={() => { createMutation.mutate(); }}
+                        createError={launchError}
+                        onRetry={createError !== null ? () => { createMutation.mutate(); } : null}
+                        onInspectReef={enrollmentTimedOut ? () => {
+                            minimizeWizard();
+                            void navigate("/settings/reef");
+                        } : null}
                         onBack={() => {
                             createMutation.reset();
                             dispatch({type: "unlaunch"});

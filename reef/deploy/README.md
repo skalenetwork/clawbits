@@ -139,9 +139,12 @@ systemd restarts the whole API if the process dies.
 ## Upgrades
 
 ```bash
-cd /opt/reef && sudo git pull && sudo -u reef uv sync
-sudo systemctl restart reef-api          # store survives; agents reconcile back as managed
+cd /opt/reef && sudo git pull
+sudo reef/deploy/install.sh              # refreshes deps, UI, and the active agent image
+sudo systemctl restart reef-api reef-admin-ui
 ```
 
+Do not pass `--skip-image` when the Clawbits plugin floor changed. The server can
+reject enrollment from an older baked plugin even though its VM is running.
 A SQLite schema bump migrates in place on start (`PRAGMA user_version`); the daily
 backup is your rollback point.

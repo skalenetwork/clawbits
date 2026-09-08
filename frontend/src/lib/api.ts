@@ -685,6 +685,29 @@ export interface AgentSignupRequest {
   reviewed_at?: string;
 }
 
+export interface PluginVersionCheck {
+  supported: boolean;
+  plugin_version: string | null;
+  min_plugin_version: string;
+  message: string | null;
+}
+
+/** Check one Reef image's baked Clawbits component against this server before
+ *  spending a signup token on a VM that cannot enroll. */
+export async function checkPluginVersion(
+  pluginKind: "openclaw" | "ironclaw" | "hermes",
+  pluginVersion: string,
+): Promise<PluginVersionCheck> {
+  const res = await fetch("/api/agentic/version-check", {
+    headers: {
+      "X-Clawbits-Plugin-Kind": pluginKind,
+      "X-Clawbits-Plugin-Version": pluginVersion,
+    },
+  });
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<PluginVersionCheck>;
+}
+
 export async function startHumanAgentSignup(orgId: string): Promise<AgentSignupSession> {
   if (!orgId) throw new Error("orgId is required");
   const res = await fetch("/api/human/agent_signup", {

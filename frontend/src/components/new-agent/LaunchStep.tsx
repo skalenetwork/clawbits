@@ -46,6 +46,7 @@ export function LaunchStep({
     phases,
     createError,
     onRetry,
+    onInspectReef,
     onBack,
     password,
     passwordPending,
@@ -64,7 +65,8 @@ export function LaunchStep({
     visible: boolean;
     phases: TimelinePhase[];
     createError: string | null;
-    onRetry: () => void;
+    onRetry: (() => void) | null;
+    onInspectReef: (() => void) | null;
     onBack: () => void;
     password: string | null;
     /** The create call is still in flight, so a password may yet land. A missing
@@ -198,7 +200,10 @@ export function LaunchStep({
                         <span className="min-w-0 break-words">{createError}</span>
                     </p>
                     <div className="flex gap-2">
-                        <Button size="sm" onClick={onRetry}>Retry</Button>
+                        {onRetry !== null && <Button size="sm" onClick={onRetry}>Retry</Button>}
+                        {onInspectReef !== null && (
+                            <Button size="sm" onClick={onInspectReef}>Open Reef</Button>
+                        )}
                         <Button size="sm" variant="ghost" onClick={onBack} className="gap-1">
                             <Icon icon={ArrowLeft} className="size-3.5"/>
                             Back
