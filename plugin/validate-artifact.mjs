@@ -36,7 +36,10 @@ if (kind === "channel") {
   }
 
   // Prove companion-owned email dispatch through the installed SDK's public
-  // non-channel plugin runtime surface.
+  // non-channel plugin runtime surface. The host reaches the agent through
+  // `reply.dispatchReplyWithBufferedBlockDispatcher` up to 2026.6.x and through
+  // `inbound.run` from 2026.9.x; both hand over the same finalized context, so
+  // the stub captures either and the assertion stays version independent.
   const { dispatchInboundEmail } = await artifactImport("dist/email-adapter.js");
   let dispatched;
   const channelRuntime = {
@@ -58,6 +61,11 @@ if (kind === "channel") {
       finalizeInboundContext: (input) => input,
       dispatchReplyWithBufferedBlockDispatcher: async ({ ctx }) => {
         dispatched = ctx;
+      },
+    },
+    inbound: {
+      run: async ({ raw }) => {
+        dispatched = raw;
       },
     },
   };
