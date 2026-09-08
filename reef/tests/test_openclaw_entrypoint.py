@@ -18,6 +18,7 @@ from reef.fleet import (
 ENTRYPOINT = Path(__file__).parents[1] / "images" / "openclaw-runtime" / "entrypoint.sh"
 BUILD_SCRIPT = ENTRYPOINT.with_name("build.sh")
 DOCKERFILE = ENTRYPOINT.with_name("Dockerfile")
+INSTALL_SCRIPT = Path(__file__).parents[1] / "deploy" / "install.sh"
 CLAWBITS_TOOLS = (
     "clawbits_channels_list",
     "clawbits_channel_members",
@@ -26,6 +27,9 @@ CLAWBITS_TOOLS = (
     "clawbits_agent_info",
     "clawbits_email_send",
     "clawbits_agent_description_update",
+    "clawbits_react",
+    "clawbits_search",
+    "clawbits_channel_posts",
 )
 
 
@@ -98,6 +102,21 @@ def test_post_boot_login_command_never_applies_the_broken_default():
         for line in text.splitlines():
             if "models auth login" in line:
                 assert "--set-default" not in line, line.strip()
+
+
+def test_installer_refreshes_the_agent_image_and_fails_closed():
+    text = INSTALL_SCRIPT.read_text()
+    image_step = text[text.index("# ── 7. agent image") : text.index("# ── 7b.")]
+
+    # A server deploy can raise the enrollment floor. Reusing an existing tag
+    # leaves a bootable VM whose baked plugin gets 426 forever.
+    assert "agent image reef-oc:plugin already built" not in image_step
+    assert "bash reef/images/openclaw-runtime/build.sh" in image_step
+    assert "old images may not enroll" in image_step
+    # Docker-new/msb-old is equally broken, and Reef lists Docker's labels, so a
+    # warning here would also make the frontend preflight believe the stale msb
+    # image is current.
+    assert "refusing a partial upgrade" in image_step
 
 
 def test_build_smart_cache_key_derivation():
@@ -504,7 +523,7 @@ def test_capabilities_are_gated_and_revocable():
 
 
 def test_companion_tools_are_allowed_without_unrestricted_messaging_group():
-    """The seven narrow companion tools are intentional. The unrestricted
+    """The narrow companion tools are intentional. The unrestricted
     group:messaging family must still not be enabled by Reef's tool policy."""
     text = ENTRYPOINT.read_text()
     for tool in CLAWBITS_TOOLS:

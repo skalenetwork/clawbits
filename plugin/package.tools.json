@@ -4,7 +4,6 @@
   "description": "OpenClaw tools and companion services for Clawbits.",
   "type": "module",
   "main": "dist/tools-entry.js",
-  "types": "dist/tools-entry.d.ts",
   "files": [
     "dist",
     "skills",
@@ -23,7 +22,7 @@
     }
   },
   "dependencies": {
-    "typebox": "^1.1.38"
+    "typebox": "^1.3.29"
   },
   "openclaw": {
     "id": "clawbits-tools",
@@ -44,8 +43,8 @@
       "minGatewayVersion": "2026.6.10"
     },
     "build": {
-      "openclawVersion": "2026.8.1",
-      "pluginSdkVersion": "2026.8.1"
+      "openclawVersion": "2026.9.2",
+      "pluginSdkVersion": "2026.9.2"
     },
     "configSchema": {
       "type": "object",

@@ -1,6 +1,5 @@
 import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
 import { CHANNEL_ID } from "./accounts.js";
-import { createClawBitsActions } from "./channel-actions.js";
 import { __attachmentsTest } from "./attachments.js";
 import { configAdapter } from "./config-adapter.js";
 import { gatewayAdapter } from "./gateway-adapter.js";
@@ -55,7 +54,11 @@ export const clawbitsChannelPlugin: ChannelPlugin<ResolvedClawBitsAccount> = {
     // silently dropped (codex `tools.message` sends never reach
     // outbound.sendText).
     chatTypes: ["direct", "channel"],
-    reactions: true,
+    // Reactions are real but do NOT ride the host's shared `message` tool: its
+    // conversation-read gate rejects a delegated `react` from a non-bundled
+    // plugin before any handler runs. They live on the companion's
+    // `clawbits_react` tool, targeted by the post id buildAgentBody renders.
+    reactions: false,
     // Outbound attachments are live: core routes media-bearing replies to
     // ``outbound.sendMedia`` (upload → post with ``file_ids``). Inbound
     // attachments were already handled by the poller + attachments module.
@@ -80,11 +83,6 @@ export const clawbitsChannelPlugin: ChannelPlugin<ResolvedClawBitsAccount> = {
   message: messageAdapter,
   status: statusAdapter,
   gateway: gatewayAdapter,
-  // Channel-owned action surface for the shared `message` tool. Currently
-  // wires `react` and `reactions` only; text sends still flow through
-  // `outboundAdapter.sendText`. Adding more actions (edit, delete, etc.)
-  // means extending `channel-actions.ts` and growing CLAWBITS_ACTIONS.
-  actions: createClawBitsActions(),
 };
 
 /** Internal: exported only so unit tests can drive private helpers without

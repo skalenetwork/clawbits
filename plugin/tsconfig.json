@@ -5,14 +5,25 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "esModuleInterop": true,
-    "declaration": true,
+    // No declarations: the plugin is loaded by OpenClaw at runtime, nothing
+    // type-imports it, and the host does not publicly export
+    // DefinedChannelPluginEntry or ChannelConfigSchema, so tsc cannot emit a
+    // self-contained .d.ts for the channel entry against the real SDK.
+    "declaration": false,
     "outDir": "dist",
     "rootDir": "src",
-    "baseUrl": ".",
     "paths": {
-      "openclaw/plugin-sdk/*": ["src/test-stubs/openclaw/plugin-sdk/*"]
+      "openclaw/plugin-sdk/*": [
+        "./.sdk/openclaw/dist/plugin-sdk/*",
+        "./src/test-stubs/openclaw/plugin-sdk/*"
+      ]
     },
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*"]
+  "include": [
+    "src/**/*"
+  ]
 }

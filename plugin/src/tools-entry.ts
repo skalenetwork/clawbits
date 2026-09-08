@@ -1,4 +1,5 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { emptyPluginConfigSchema } from "openclaw/plugin-sdk/core";
 import { registerCompanionServices } from "./companion-services.js";
 import { registerClawbitsTools } from "./companion-tools.js";
 
@@ -8,11 +9,7 @@ export default definePluginEntry({
   id: "clawbits-tools",
   name: "Clawbits Tools & Services",
   description: "Clawbits tools and companion background services.",
-  configSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {},
-  },
+  configSchema: emptyPluginConfigSchema(),
   register(api) {
     registerClawbitsTools(api);
     if (api.registrationMode === "full" || api.registrationMode === undefined) {

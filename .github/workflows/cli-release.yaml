@@ -19,11 +19,12 @@ name: CLI Release
 # skip-if-exists guard; the `force` dispatch input re-uploads that version's
 # assets.
 #
-# Linux builds run on ubuntu-22.04 deliberately: binaries link the runner's
-# glibc, so 22.04 (glibc 2.35) sets the compatibility floor — ubuntu-latest
-# would silently raise it on every runner-image bump. Fully-static musl builds
-# would remove the floor entirely but need a musl cross toolchain for ring's C
-# — worth revisiting, not worth an unverifiable first release recipe.
+# Linux runners are PINNED, never ubuntu-latest: binaries link the runner's
+# glibc, so the image sets the compatibility floor and `latest` would move it
+# on every runner-image bump. ubuntu-24.04 (glibc 2.39) is that floor now;
+# 22.04 held it at 2.35 until GitHub deprecated the image. The raise drops
+# Ubuntu 22.04, Debian 12 and RHEL 9 hosts. Fully-static musl builds would
+# remove the floor entirely but need a musl cross toolchain for ring's C.
 on:
   push:
     branches: [main]
@@ -46,10 +47,10 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -82,19 +83,19 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-24.04-arm
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-26
           # Cross-compiled from the arm runner — the Apple toolchain carries
           # both architectures, so no Intel runner (deprecating anyway).
           - target: x86_64-apple-darwin
-            runner: macos-14
+            runner: macos-26
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Full history: the auto version's patch component is the count of
           # commits touching cli/.
@@ -154,7 +155,7 @@ jobs:
           tar -tzf "${name}.tar.gz"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}
           path: cli/clawbits-cli-v*.tar.gz
@@ -163,7 +164,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # Creates the `cli-v*` tag + release on this repo. The default
       # GITHUB_TOKEN suffices — no cross-repo secret, unlike the plugin
@@ -171,7 +172,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -192,7 +193,7 @@ jobs:
           echo "tag=cli-v$version" >> "$GITHUB_OUTPUT"
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: cli-*
           path: dist

@@ -1,8 +1,5 @@
-import type {
-  ChannelGatewayAdapter,
-  ChannelGatewayContext,
-  ChannelReplyDispatchContext,
-} from "openclaw/plugin-sdk/core";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
+import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { CHANNEL_ID } from "./accounts.js";
 import { buildAgentBody, clawbitsSessionId } from "./agent-body.js";
@@ -44,6 +41,15 @@ import * as realtimeTools from "./tools/realtime.js";
 import * as versionTools from "./tools/version.js";
 import type { VersionCheckResponse } from "./tools/version.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
+import { runOutsideGatewayRootWork } from "./gateway-root-work.js";
+
+// Slot types of the host's real ChannelPlugin. Neither is re-exported by name
+// from a plugin-sdk subpath, so deriving them keeps an upstream rename a
+// typecheck failure instead of silent drift.
+type ChannelGatewayAdapter<ResolvedAccount> = NonNullable<
+  ChannelPlugin<ResolvedAccount>["gateway"]
+>;
+type DirectDmRoutePeer = Parameters<typeof dispatchInboundDirectDmWithRuntime>[0]["peer"];
 
 // Shared across every account started in this process: a single file-backed
 // watermark store so the catch-up backlog isn't re-injected after a restart.
@@ -661,7 +667,12 @@ export async function dispatchInboundMessage(
         channel: CHANNEL_ID,
         channelLabel: CHANNEL_ID,
         accountId: ctx.accountId,
-        peer: routePeer,
+        // The host publishes `peer` as `DirectDmRoutePeer` (`kind: "direct"`),
+        // narrower than what it accepts: it only reads `peer.id` and forwards
+        // the object to `resolveAgentRoute`, whose `RoutePeer.kind` is the full
+        // `ChatType` ("direct" | "group" | "channel"). A channel peer is what
+        // keys a room's isolated session, so it must survive the call.
+        peer: routePeer as DirectDmRoutePeer,
         senderId,
         senderAddress: senderAddr,
         recipientAddress: recipientAddr,
@@ -674,30 +685,32 @@ export async function dispatchInboundMessage(
         // what environment it's in and what files came along. The hashed
         // per-chat session id lets the agent report a stable session id without
         // a tool call or exposing the raw channel id.
-        bodyForAgent: buildAgentBody(
-          effectiveText,
-          msg.files,
+        bodyForAgent: buildAgentBody(effectiveText, {
+          files: msg.files,
           savedByFileId,
-          clawbitsSessionId(conversationId),
+          sessionId: clawbitsSessionId(conversationId),
+          // The only way the agent learns the id of the message it is answering,
+          // and so the only way it can react to it (clawbits_react takes one).
+          postId: msg.postId,
           // Render the catch-up history directly into the agent's body. The
           // structured `InboundHistory` context field is capped at 20 entries and
           // framed as "untrusted, for context", so the agent treats it as
           // background and doesn't actually fold it into the reply. The body is
           // the agent's real input (proven by DMs), has no entry cap, and is what
           // the model acts on — so prior messages must go here to be used.
-          msg.priorContext,
-          msg.senderTag,
-          msg.attention,
+          priorContext: msg.priorContext,
+          senderTag: msg.senderTag,
+          attention: msg.attention,
           // Name the agent to itself. Attention nudges fire partly on a
           // plain-text name reference, which the agent can't act on unless it
           // knows what it's called.
-          ctx.account.agentId,
+          agentId: ctx.account.agentId,
           // Boot catch-up: flips the history block from "do not reply to these"
           // to "these are unanswered, address them". Without it the recovered
           // messages reach the model under an explicit instruction to ignore
           // them, and the agent answers only the trigger.
-          msg.catchUp,
-        ),
+          catchUp: msg.catchUp,
+        }),
         commandBody: effectiveText,
         commandAuthorized: isAuthorizedCommand ? true : undefined,
         // OpenClaw 2026.8 ("2.0") only records conversation-route context,
@@ -729,7 +742,7 @@ export async function dispatchInboundMessage(
           // labels it untrusted background, which the agent ignores — see the
           // buildAgentBody call above for the rationale.
           ...mediaContext,
-        } as unknown as ChannelReplyDispatchContext,
+        },
         deliver,
         onRecordError: (err) => {
           logWarn(
@@ -950,12 +963,14 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
       log: ctx.log,
       watermarkStore: channelWatermarkStore,
       onInboundMessage: (msg) =>
-        dispatchInboundMessage(ctx, msg, {
-          client,
-          answers,
-          setStatus: ctx.setStatus,
-          groupChannelShimmer: account.groupChannelShimmer,
-        }),
+        runOutsideGatewayRootWork(() =>
+          dispatchInboundMessage(ctx, msg, {
+            client,
+            answers,
+            setStatus: ctx.setStatus,
+            groupChannelShimmer: account.groupChannelShimmer,
+          }),
+        ),
     });
   },
 };

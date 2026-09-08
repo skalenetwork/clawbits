@@ -358,16 +358,10 @@ export async function dispatchInboundEmail(
       footerLines: lines.length > 0 ? ["**Attachments:**", ...lines] : undefined,
     }),
   );
-  const bodyForAgent = buildAgentBody(
-    turnText,
-    undefined,
-    undefined,
-    clawbitsSessionId(conversationId),
-    undefined,
-    undefined,
-    undefined,
-    ctx.account.agentId,
-  );
+  const bodyForAgent = buildAgentBody(turnText, {
+    sessionId: clawbitsSessionId(conversationId),
+    agentId: ctx.account.agentId,
+  });
 
   // The buffered-block dispatcher can call `deliver` several times for one turn
   // (one coalesced block at a time, plus possibly a final repeat). Accumulate

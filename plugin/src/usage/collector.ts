@@ -23,6 +23,13 @@
 //
 // See docs/protocol/AGENT_USAGE_TRACKING_PLAN.md §1/§3.
 
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+
+// The host does not export its hook-name union by name, so derive it from the
+// API surface. A hook renamed or removed upstream then fails the typecheck
+// instead of silently registering a handler that never fires.
+type PluginHookName = Parameters<NonNullable<OpenClawPluginApi["on"]>>[0];
+
 // ---------------------------------------------------------------------------
 // Wire shape (matches the server's UsageReportEvent contract)
 // ---------------------------------------------------------------------------
@@ -235,7 +242,7 @@ export function recordReplyPayloadSending(event: unknown): void {
  *  `registerFull`, next to the cron hooks). The `llm_output` registration is
  *  a no-op warn on installs without the conversation-access grant. */
 export function registerUsageHooks(hookApi: {
-  on?: (hook: string, handler: (event: unknown, ctx?: unknown) => void) => void;
+  on?: (hook: PluginHookName, handler: (event: unknown, ctx?: unknown) => void) => void;
 }): void {
   hookApi.on?.("reply_payload_sending", (event) => {
     recordReplyPayloadSending(event);
