@@ -1227,7 +1227,7 @@ describe("clawbitsSessionId", () => {
 describe("buildAgentBody (session id)", () => {
   it("weaves a provided session id into context and keeps user text trailing", () => {
     const sid = clawbitsSessionId("room-9");
-    const out = buildAgentBody("hello", undefined, undefined, sid);
+    const out = buildAgentBody("hello", { sessionId: sid });
     assert.ok(out.includes(sid), "hashed session id present");
     assert.ok(out.includes("session id for this chat"), "labelled for the model");
     assert.ok(out.includes("[end Clawbits context]"), "stays inside the context block");
@@ -1243,8 +1243,7 @@ describe("buildAgentBody (session id)", () => {
 
 describe("buildAgentBody (agent identity)", () => {
   const body = (agentId?: string, attention?: boolean) =>
-    buildAgentBody("Scaleweld, any idea why staging broke?", undefined, undefined,
-      undefined, undefined, undefined, attention, agentId);
+    buildAgentBody("Scaleweld, any idea why staging broke?", { attention, agentId });
 
   it("names the agent to itself inside the context block", () => {
     const out = body("Scaleweld");
@@ -1266,17 +1265,35 @@ describe("buildAgentBody (agent identity)", () => {
   it("omits the line when no agent id is given (prompt unchanged)", () => {
     const out = body(undefined);
     assert.ok(!out.includes("You are the Clawbits agent"));
-    assert.strictEqual(buildAgentBody("hello"), buildAgentBody("hello", undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined));
+    assert.strictEqual(buildAgentBody("hello"), buildAgentBody("hello", {}));
   });
 
   it("combines with the session id in one context block", () => {
     const sid = clawbitsSessionId("room-9");
-    const out = buildAgentBody("hi", undefined, undefined, sid, undefined, undefined,
-      undefined, "Scaleweld");
+    const out = buildAgentBody("hi", { sessionId: sid, agentId: "Scaleweld" });
     assert.ok(out.includes("You are the Clawbits agent Scaleweld"));
     assert.ok(out.includes(sid));
     assert.strictEqual(out.match(/\[Clawbits context\]/g)?.length, 1, "one context block");
+  });
+});
+
+describe("buildAgentBody (post id)", () => {
+  it("names the current post so the agent can react to it", () => {
+    // clawbits_react takes a post id and the model has no other view of one:
+    // without this line reacting is unreachable, not merely undocumented.
+    const out = buildAgentBody("nice work", { postId: "11358", sessionId: "sess_x" });
+    assert.ok(out.includes("Clawbits post 11358"), "post id present");
+    assert.ok(out.includes("clawbits_react"), "the tool that consumes it is named");
+    assert.ok(
+      out.indexOf("Clawbits post 11358") < out.indexOf("[end Clawbits context]"),
+      "inside the context block",
+    );
+    assert.strictEqual(out.match(/\[Clawbits context\]/g)?.length, 1, "one context block");
+    assert.ok(out.endsWith("\n\nnice work"), "user text still trails the prompt");
+  });
+
+  it("omits the line when no post id is given (prompt unchanged)", () => {
+    assert.ok(!buildAgentBody("hello").includes("clawbits_react"));
   });
 });
 
@@ -1287,7 +1304,7 @@ describe("buildAgentBody (channel history)", () => {
   ];
 
   it("renders a read-only history block before the tagged message", () => {
-    const out = buildAgentBody("@bot what's left?", undefined, undefined, undefined, ctx);
+    const out = buildAgentBody("@bot what's left?", { priorContext: ctx });
     const historyIdx = out.indexOf("[Channel history");
     const bodyIdx = out.indexOf("@bot what's left?");
     assert.ok(historyIdx !== -1, "history header present");
@@ -1300,13 +1317,13 @@ describe("buildAgentBody (channel history)", () => {
   });
 
   it("leaves the prompt unchanged when there is no prior context", () => {
-    const out = buildAgentBody("hello", undefined, undefined, undefined, []);
+    const out = buildAgentBody("hello", { priorContext: [] });
     assert.ok(!out.includes("[Channel history"), "no history block when empty");
     assert.ok(out.endsWith("\n\nhello"));
   });
 
   it("adds reply-tagging instructions when a sender tag is supplied", () => {
-    const out = buildAgentBody("hello", undefined, undefined, undefined, [], "@Stan-Lee");
+    const out = buildAgentBody("hello", { priorContext: [], senderTag: "@Stan-Lee" });
     assert.ok(out.includes("[Reply tagging]"));
     assert.ok(out.includes("Start your reply to the current message with @Stan-Lee."));
     assert.ok(out.endsWith("\n\nhello"));
@@ -1321,11 +1338,12 @@ describe("buildAgentBody", () => {
   });
 
   it("summarizes saved image attachments without embedding local markdown paths", () => {
-    const out = buildAgentBody(
-      "look",
-      [makeFile()],
-      new Map([["f1", { fileId: "f1", path: "/tmp/openclaw-media/shot.png", contentType: "image/png" }]]),
-    );
+    const out = buildAgentBody("look", {
+      files: [makeFile()],
+      savedByFileId: new Map([
+        ["f1", { fileId: "f1", path: "/tmp/openclaw-media/shot.png", contentType: "image/png" }],
+      ]),
+    });
     assert.ok(out.includes("[Attachments]"), "attachments header present");
     assert.ok(!out.includes("![shot.png]"), "no markdown image syntax with stale host path");
     assert.ok(!out.includes("/tmp/openclaw-media/shot.png"), "no pre-staged host path in prompt text");
@@ -1337,16 +1355,18 @@ describe("buildAgentBody", () => {
   });
 
   it("renders non-image files as labelled links", () => {
-    const out = buildAgentBody("here is a doc", [
-      makeFile({
-        filename: "notes.pdf",
-        contentType: "application/pdf",
-        sizeBytes: 1500000,
-        downloadUrl: "https://signed.example/notes.pdf",
-        width: null,
-        height: null,
-      }),
-    ]);
+    const out = buildAgentBody("here is a doc", {
+      files: [
+        makeFile({
+          filename: "notes.pdf",
+          contentType: "application/pdf",
+          sizeBytes: 1500000,
+          downloadUrl: "https://signed.example/notes.pdf",
+          width: null,
+          height: null,
+        }),
+      ],
+    });
     assert.ok(out.includes("- notes.pdf [id=f1] (application/pdf, 1.4MB)"));
     assert.ok(out.includes("attachment download unavailable"));
     assert.ok(
@@ -1356,7 +1376,7 @@ describe("buildAgentBody", () => {
   });
 
   it("handles attachment-only posts (no caption text)", () => {
-    const out = buildAgentBody("", [makeFile()]);
+    const out = buildAgentBody("", { files: [makeFile()] });
     assert.ok(
       out.includes("(no message text — see attachments)"),
       "user body placeholder keeps prompt grammatical",
@@ -1365,13 +1385,9 @@ describe("buildAgentBody", () => {
   });
 
   it("uses unavailable placeholder when attachment was not saved", () => {
-    const out = buildAgentBody("hi", [
-      makeFile({
-        filename: "data.zip",
-        contentType: "application/zip",
-        downloadUrl: null,
-      }),
-    ]);
+    const out = buildAgentBody("hi", {
+      files: [makeFile({ filename: "data.zip", contentType: "application/zip", downloadUrl: null })],
+    });
     assert.ok(
       out.includes("<attachment download unavailable; ask the user to re-upload if visual access is required>"),
       "does not expose expiring/private URLs to the model",
@@ -1379,10 +1395,12 @@ describe("buildAgentBody", () => {
   });
 
   it("does not double-render multiple attachments", () => {
-    const out = buildAgentBody("multi", [
-      makeFile({ fileId: "a", filename: "a.png" }),
-      makeFile({ fileId: "b", filename: "b.jpg", contentType: "image/jpeg" }),
-    ]);
+    const out = buildAgentBody("multi", {
+      files: [
+        makeFile({ fileId: "a", filename: "a.png" }),
+        makeFile({ fileId: "b", filename: "b.jpg", contentType: "image/jpeg" }),
+      ],
+    });
     const headerCount = (out.match(/\[Attachments\]/g) ?? []).length;
     assert.equal(headerCount, 1);
     assert.ok(out.includes("a.png") && out.includes("b.jpg"));

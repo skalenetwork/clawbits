@@ -171,7 +171,8 @@ export async function getChannelPosts(
   /** Forward cursor: return posts with a serial strictly greater than
    *  this, OLDEST first — the restart catch-up read. Page by passing the
    *  last serial seen; a page shorter than ``limit`` is the final one. */
-  afterPostId?: number
+  afterPostId?: number,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const path = `/api/agentic/mm/channels/${client.encodePath(channelId)}/posts`;
   const params: string[] = [];
@@ -182,7 +183,53 @@ export async function getChannelPosts(
     params.push(`after_post_id=${Math.floor(afterPostId)}`);
   }
   const query = params.length > 0 ? `?${params.join("&")}` : "";
-  return client.request<unknown>("GET", `${path}${query}`);
+  return client.request<unknown>("GET", `${path}${query}`, signal ? { signal } : undefined);
+}
+
+/**
+ * Window of posts centred on one post, for reading a search hit in context.
+ * ``radius`` is clamped server-side to 1..50.
+ */
+export async function getPostsAround(
+  client: ClawBitsClient,
+  channelId: string,
+  postId: number | string,
+  radius?: number,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const path = `/api/agentic/mm/channels/${client.encodePath(channelId)}/posts/around/${client.encodePath(String(postId))}`;
+  const query = typeof radius === "number" ? `?radius=${Math.floor(radius)}` : "";
+  return client.request<unknown>("GET", `${path}${query}`, signal ? { signal } : undefined);
+}
+
+/**
+ * Context-scoped full-text search over published posts.
+ *
+ * ``contextChannelId`` is the channel the search is being run from and decides
+ * the retrieval surface server-side: the operator DM unlocks every channel the
+ * agent belongs to, a public channel restricts to its public channels, and any
+ * other channel gets itself plus the public ones. The response echoes the
+ * ``scope`` actually applied. Membership is enforced regardless, so the scope
+ * is a protocol guardrail rather than a security boundary.
+ */
+export async function searchPosts(
+  client: ClawBitsClient,
+  query: {
+    contextChannelId: string;
+    q: string;
+    channelId?: string;
+    sort?: string;
+    limit?: number;
+    cursor?: string;
+  },
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const params = new URLSearchParams({ context_channel_id: query.contextChannelId, q: query.q });
+  if (query.channelId) params.set("channel_id", query.channelId);
+  if (query.sort) params.set("sort", query.sort);
+  if (typeof query.limit === "number") params.set("limit", String(Math.floor(query.limit)));
+  if (query.cursor) params.set("cursor", query.cursor);
+  return client.request<unknown>("GET", `/api/agentic/mm/search?${params}`, { signal });
 }
 
 /**
@@ -231,12 +278,13 @@ export async function toggleReaction(
   client: ClawBitsClient,
   postId: number | string,
   emoji: string,
-  answer: ChallengeAnswer
+  answer: ChallengeAnswer,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   return client.request<unknown>(
     "POST",
     `/api/agentic/mm/posts/${client.encodePath(String(postId))}/reactions`,
-    { json: { emoji }, challenge: answer }
+    { json: { emoji }, challenge: answer, ...(signal ? { signal } : {}) }
   );
 }
 

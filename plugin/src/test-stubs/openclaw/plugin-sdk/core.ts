@@ -19,6 +19,27 @@ export function defineChannelPluginEntry<
   };
 }
 
+const EMPTY_OBJECT_SCHEMA = { type: "object", additionalProperties: false, properties: {} } as const;
+
+function parseEmpty(value: unknown) {
+  if (value === undefined) return { success: true, data: undefined };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { success: false, error: { issues: [{ path: [], message: "expected config object" }] } };
+  }
+  if (Object.keys(value).length > 0) {
+    return { success: false, error: { issues: [{ path: [], message: "config must be empty" }] } };
+  }
+  return { success: true, data: value };
+}
+
+export function emptyPluginConfigSchema() {
+  return { safeParse: parseEmpty, jsonSchema: EMPTY_OBJECT_SCHEMA };
+}
+
+export function emptyChannelConfigSchema() {
+  return { schema: EMPTY_OBJECT_SCHEMA, runtime: { safeParse: parseEmpty } };
+}
+
 export type OpenClawConfig = { channels?: Record<string, unknown>; [key: string]: unknown };
 export type ChannelAccountSnapshot = Record<string, unknown>;
 export type ChannelConfigAdapter<T = unknown> = Record<string, unknown>;

@@ -191,9 +191,13 @@ export function registerCompanionServices(api: OpenClawPluginApi): void {
       });
     },
   });
-  api.on?.("gateway_start", async (_event: unknown, hookContext?: GatewayHookContext) => {
-    const cfg = hookContext?.config ?? api.config;
-    await startCompanionServices(api, cfg, hookContext ?? {});
+  api.on?.("gateway_start", async (_event, hookContext) => {
+    // The host's public context types `getCron` as the narrow
+    // PluginHookGatewayCronService; the object it actually hands over is the
+    // full runtime CronService. See automations/cron-handle.ts for why we use
+    // the wider surface (re-verified against 2026.9.2, which still has `run`).
+    const ctx = (hookContext ?? {}) as unknown as GatewayHookContext;
+    await startCompanionServices(api, ctx.config ?? api.config, ctx);
   });
   api.on?.("cron_changed", () => {
     if (running) wakeAutomationsReconciler();

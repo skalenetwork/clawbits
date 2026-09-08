@@ -56,9 +56,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import type { OpenClawConfig, OpenClawPluginCliContext } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 import { CHANNEL_ID } from "../accounts.js";
+import type { OpenClawPluginCliContext } from "../cli.js";
 
 const PLUGIN_ID = CHANNEL_ID; // "clawbits"
 const PACKAGE_NAME = "clawbits-openclaw-plugin";

@@ -26,6 +26,9 @@ CLAWBITS_TOOLS = (
     "clawbits_agent_info",
     "clawbits_email_send",
     "clawbits_agent_description_update",
+    "clawbits_react",
+    "clawbits_search",
+    "clawbits_channel_posts",
 )
 
 
@@ -504,7 +507,7 @@ def test_capabilities_are_gated_and_revocable():
 
 
 def test_companion_tools_are_allowed_without_unrestricted_messaging_group():
-    """The seven narrow companion tools are intentional. The unrestricted
+    """The narrow companion tools are intentional. The unrestricted
     group:messaging family must still not be enabled by Reef's tool policy."""
     text = ENTRYPOINT.read_text()
     for tool in CLAWBITS_TOOLS:

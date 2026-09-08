@@ -76,10 +76,20 @@ describe("clawbitsChannelPlugin surface", () => {
     // "channel" is required so core's outbound router will deliver
     // channel-typed replies back through this plugin (DMs + shared channels).
     assert.deepEqual(capabilities.chatTypes, ["direct", "channel"]);
-    assert.equal(capabilities.reactions, true);
     // Outbound media is live (sendMedia uploads + posts file_ids).
     assert.equal(capabilities.media, true);
     assert.equal(capabilities.threads, false);
+  });
+
+  it("keeps reactions off the host's shared message tool", () => {
+    // Regression: OpenClaw 2026.7.2 added enforceMessageActionConversationReadGate
+    // inside dispatchChannelMessageAction. It runs before handleAction and clears
+    // only for bundled registrations or a minted message-action turn capability,
+    // so a ClawHub-installed plugin can never satisfy it and every delegated
+    // `message(action="react")` fails. Reactions live on the companion's
+    // clawbits_react tool; re-declaring them here re-advertises the broken path.
+    assert.equal(clawbitsChannelPlugin.actions, undefined);
+    assert.notEqual(clawbitsChannelPlugin.capabilities.reactions, true);
   });
 
   it("wires every adapter the host expects", () => {

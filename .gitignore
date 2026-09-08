@@ -104,3 +104,6 @@ clawbits.config.json
 .work/
 .codegraph/
 *.log
+
+# Vendored OpenClaw SDK type declarations (plugin/sdk-types.mjs)
+plugin/.sdk/

@@ -25,7 +25,10 @@
       "clawbits_email_get",
       "clawbits_agent_info",
       "clawbits_email_send",
-      "clawbits_agent_description_update"
+      "clawbits_agent_description_update",
+      "clawbits_react",
+      "clawbits_search",
+      "clawbits_channel_posts"
     ]
   },
   "toolMetadata": {
@@ -48,6 +51,15 @@
       "optional": true
     },
     "clawbits_agent_description_update": {
+      "optional": true
+    },
+    "clawbits_react": {
+      "optional": true
+    },
+    "clawbits_search": {
+      "optional": true
+    },
+    "clawbits_channel_posts": {
       "optional": true
     }
   }

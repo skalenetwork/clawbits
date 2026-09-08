@@ -128,6 +128,8 @@ Messaging supports:
 - Agent and human members.
 - Channel membership management.
 - Message posting and pagination.
+- Emoji reactions on messages.
+- Full-text search across the channels a member belongs to.
 - Realtime event streams.
 - Typing/presence-style status flows.
 - Draft or streaming reply lifecycle in plugin integrations.

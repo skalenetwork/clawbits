@@ -1,11 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type {
-  OpenClawPluginApi,
-  StubAgentTool,
-} from "openclaw/plugin-sdk/plugin-entry";
+import type { AnyAgentTool, OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import toolsEntry, { CLAWBITS_TOOL_NAMES } from "../src/tools-entry.js";
+import { summarizeChannels, summarizePosts } from "../src/tool-views.js";
 import { resolveCompanionServiceActivation } from "../src/companion-services.js";
 import {
   CLAWBITS_SERVICE_HANDOFF_CAPABILITY,
@@ -35,32 +33,63 @@ const DEFAULT_ACCOUNT = {
   knownAnswers: { "What is the capital of France?": "Paris" },
 };
 
+// The host keeps its hook handler map internal, so recover each hook's real
+// handler type by instantiating the published `on` signature.
+declare const registerHook: OpenClawPluginApi["on"];
+type HookName = Parameters<typeof registerHook>[0];
+type HookHandler<K extends HookName> = Parameters<typeof registerHook<K>>[1];
+type HookHandlers = Map<HookName, HookHandler<HookName>[]>;
+
+// `on` correlates its hook name and handler through one type parameter, a
+// correlation TypeScript cannot carry through a shared store; the bucket under
+// `hookName` only ever holds handlers registered under that same name.
+function hookHandler<K extends HookName>(
+  handlers: HookHandlers,
+  hookName: K,
+): HookHandler<K> | undefined {
+  return handlers.get(hookName)?.[0] as HookHandler<K> | undefined;
+}
+
+type PluginRuntime = OpenClawPluginApi["runtime"];
+type StubRuntime = Pick<PluginRuntime, "version"> & {
+  channel: Pick<PluginRuntime["channel"], "runtimeContexts">;
+};
+type StubPluginApi = Pick<
+  OpenClawPluginApi,
+  "registrationMode" | "config" | "logger" | "registerTool" | "on"
+> & { runtime: StubRuntime };
+
 interface RegisteredTool {
-  tool: StubAgentTool;
+  tool: AnyAgentTool;
   optional: boolean;
 }
 
-function runtimeWithHandoff(version?: string): OpenClawPluginApi["runtime"] {
+// The host builds the whole plugin api before calling `register`; the double
+// implements only the seams the tools entry touches, and every implemented slot
+// keeps the host's published type.
+function asPluginApi(api: StubPluginApi): OpenClawPluginApi {
+  return api as OpenClawPluginApi;
+}
+
+function agentTool(tool: Parameters<OpenClawPluginApi["registerTool"]>[0]): AnyAgentTool {
+  assert.ok(typeof tool !== "function", "clawbits registers tool objects, not factories");
+  return tool;
+}
+
+function runtimeWithHandoff(version?: string): StubRuntime {
   const contexts = new Map<string, unknown>();
-  const runtime: OpenClawPluginApi["runtime"] = {
+  const runtime: StubRuntime = {
     version: "2026.6.33",
     channel: {
       runtimeContexts: {
-        register({ channelId, capability, context }: {
-          channelId: string;
-          capability: string;
-          context: unknown;
-        }) {
+        register({ channelId, capability, context }) {
           const key = `${channelId}:${capability}`;
           contexts.set(key, context);
           return { dispose: () => contexts.delete(key) };
         },
-        get<T>({ channelId, capability }: {
-          channelId: string;
-          capability: string;
-        }): T | undefined {
-          return contexts.get(`${channelId}:${capability}`) as T | undefined;
-        },
+        get: <T = unknown>({ channelId, capability }: { channelId: string; capability: string }) =>
+          contexts.get(`${channelId}:${capability}`) as T | undefined,
+        watch: () => () => {},
       },
     },
   };
@@ -70,29 +99,32 @@ function runtimeWithHandoff(version?: string): OpenClawPluginApi["runtime"] {
 
 function pluginApi(
   section: Record<string, unknown>,
-  opts: { registrationMode?: string; runtime?: OpenClawPluginApi["runtime"] } = {},
+  opts: {
+    registrationMode?: OpenClawPluginApi["registrationMode"];
+    runtime?: StubRuntime;
+  } = {},
 ): {
-  api: OpenClawPluginApi;
+  api: StubPluginApi;
   tools: RegisteredTool[];
-  hooks: string[];
-  handlers: Map<string, Array<(...args: any[]) => unknown>>;
+  hooks: HookName[];
+  handlers: HookHandlers;
 } {
   const tools: RegisteredTool[] = [];
-  const hooks: string[] = [];
-  const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
-  const api: OpenClawPluginApi = {
+  const hooks: HookName[] = [];
+  const handlers: HookHandlers = new Map();
+  const api: StubPluginApi = {
     registrationMode: opts.registrationMode ?? "tool-discovery",
     config: { channels: { clawbits: section } },
-    logger: {},
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
     runtime: opts.runtime ?? runtimeWithHandoff(),
     registerTool(tool, registration) {
-      tools.push({ tool, optional: registration?.optional === true });
+      tools.push({ tool: agentTool(tool), optional: registration?.optional === true });
     },
-    on(hook, handler) {
-      hooks.push(hook);
-      const existing = handlers.get(hook) ?? [];
+    on(hookName, handler) {
+      hooks.push(hookName);
+      const existing = handlers.get(hookName) ?? [];
       existing.push(handler);
-      handlers.set(hook, existing);
+      handlers.set(hookName, existing);
     },
   };
   return { api, tools, hooks, handlers };
@@ -105,33 +137,31 @@ function configuredApi(): ReturnType<typeof pluginApi> {
 function registeredTools(api = configuredApi().api): RegisteredTool[] {
   const collected: RegisteredTool[] = [];
   const original = api.registerTool.bind(api);
-  api.registerTool = ((tool: StubAgentTool, opts?: { optional?: boolean }) => {
-    collected.push({ tool, optional: opts?.optional === true });
+  api.registerTool = (tool, opts) => {
+    collected.push({ tool: agentTool(tool), optional: opts?.optional === true });
     original(tool, opts);
-  }) as OpenClawPluginApi["registerTool"];
-  toolsEntry.register(api);
+  };
+  toolsEntry.register(asPluginApi(api));
   return collected;
 }
 
-function findTool(name: (typeof CLAWBITS_TOOL_NAMES)[number]): StubAgentTool {
+function findTool(name: (typeof CLAWBITS_TOOL_NAMES)[number]): AnyAgentTool {
   const tool = registeredTools().find((candidate) => candidate.tool.name === name)?.tool;
   assert.ok(tool, `tool ${name}`);
   return tool;
 }
 
 async function executeTool(
-  tool: StubAgentTool,
+  tool: AnyAgentTool,
   params: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  const result = (await tool.execute("tool-call-1", params, signal)) as {
-    details?: unknown;
-  };
+  const result = await tool.execute("tool-call-1", params, signal);
   return result.details;
 }
 
 async function callWithMockedFetch(
-  tool: StubAgentTool,
+  tool: AnyAgentTool,
   params: Record<string, unknown>,
   respond: (input: unknown, init?: RequestInit) => Response,
 ): Promise<{ result: unknown; init: RequestInit | undefined }> {
@@ -146,6 +176,20 @@ async function callWithMockedFetch(
   } finally {
     globalThis.fetch = originalFetch;
   }
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function challengeResponse(): Response {
+  return jsonResponse({
+    session_token: "session-1",
+    challenge: "What is the capital of France?",
+  });
 }
 
 describe("clawbits companion plugin", () => {
@@ -169,6 +213,23 @@ describe("clawbits companion plugin", () => {
     assert.deepEqual(manifest.contracts?.tools, [...CLAWBITS_TOOL_NAMES]);
     assert.deepEqual(Object.keys(manifest.toolMetadata ?? {}), [...CLAWBITS_TOOL_NAMES]);
     assert.ok(Object.values(manifest.toolMetadata ?? {}).every((tool) => tool.optional === true));
+  });
+
+  it("keeps every companion tool in the agent images' optional-tool allowlists", () => {
+    // OpenClaw does not auto-allow optional plugin tools: one missing from
+    // tools.alsoAllow ships invisible to the agent, which is how a working
+    // tool surface still reads as "broken in production".
+    const defaults = readJson("../../images/openclaw/defaults.json") as {
+      tools?: { alsoAllow?: string[] };
+    };
+    const entrypoint = readFileSync(
+      new URL("../../reef/images/openclaw-runtime/entrypoint.sh", import.meta.url),
+      "utf8",
+    );
+    for (const name of CLAWBITS_TOOL_NAMES) {
+      assert.ok(defaults.tools?.alsoAllow?.includes(name), `${name} in image defaults.json`);
+      assert.ok(entrypoint.includes(`"${name}"`), `${name} in the reef entrypoint tool policy`);
+    }
   });
 
   it("publishes a separate mixed tools/services entry", () => {
@@ -232,11 +293,11 @@ describe("clawbits companion plugin", () => {
 
   it("registers services only in full runtime mode", () => {
     const discovery = pluginApi({}, { registrationMode: "tool-discovery" });
-    toolsEntry.register(discovery.api);
+    toolsEntry.register(asPluginApi(discovery.api));
     assert.deepEqual(discovery.hooks, []);
 
     const full = pluginApi({}, { registrationMode: "full" });
-    toolsEntry.register(full.api);
+    toolsEntry.register(asPluginApi(full.api));
     assert.ok(full.hooks.includes("gateway_start"));
     assert.ok(full.hooks.includes("gateway_stop"));
     assert.ok(full.hooks.includes("cron_changed"));
@@ -247,15 +308,16 @@ describe("clawbits companion plugin", () => {
       { serviceOwner: "tools" },
       { registrationMode: "full", runtime: runtimeWithHandoff("0.17.0") },
     );
-    toolsEntry.register(setup.api);
-    const start = setup.handlers.get("gateway_start")?.[0];
-    const stop = setup.handlers.get("gateway_stop")?.[0];
+    toolsEntry.register(asPluginApi(setup.api));
+    const start = hookHandler(setup.handlers, "gateway_start");
+    const stop = hookHandler(setup.handlers, "gateway_stop");
     assert.ok(start);
     assert.ok(stop);
-    await start({}, { config: setup.api.config });
-    await start({}, { config: setup.api.config });
-    await stop();
-    await stop();
+    const gatewayCtx = { config: setup.api.config };
+    await start({ port: 0 }, gatewayCtx);
+    await start({ port: 0 }, gatewayCtx);
+    await stop({}, gatewayCtx);
+    await stop({}, gatewayCtx);
   });
 
   it("fails closed until tools ownership and a compatible slim channel marker agree", () => {
@@ -313,15 +375,179 @@ describe("clawbits companion plugin", () => {
     let authorization = "";
     const { result, init } = await callWithMockedFetch(listTool, {}, (_input, requestInit) => {
       authorization = new Headers(requestInit?.headers).get("Authorization") ?? "";
-      return new Response(JSON.stringify([{ channel_id: "channel-1" }]), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return jsonResponse({ channels: [{ channel_id: "channel-1", name: "ops" }], total: 1 });
     });
-    assert.deepEqual(result, [{ channel_id: "channel-1" }]);
+    assert.deepEqual(result, [
+      {
+        channel_id: "channel-1",
+        display_name: "ops",
+        channel_type: undefined,
+        private: undefined,
+        unread_count: undefined,
+        last_message_at: undefined,
+        latest_post_id: undefined,
+      },
+    ]);
     assert.equal(authorization, "Bearer secret-key");
     assert.ok(!JSON.stringify(result).includes("secret-key"));
     assert.ok(init?.signal instanceof AbortSignal);
+  });
+
+  it("narrows dashboard payloads to what the model can act on", () => {
+    // Server responses carry avatars, presigned urls, sidebar preview rows and
+    // per-viewer pin/mute state. Every byte of it is tokens in a tool result.
+    const [channel] = summarizeChannels({
+      channels: [
+        {
+          channel_id: "c1",
+          name: "ops",
+          display_name: "Ops",
+          channel_type: "public",
+          unread_count: 3,
+          muted: true,
+          pinned: true,
+          org_id: "org-1",
+          last_message_text: "sidebar preview",
+          last_message_author_avatar: { url: "https://cdn/avatar.png" },
+          dm_peer_human_id: 7,
+        },
+      ],
+    });
+    assert.deepEqual(Object.keys(channel ?? {}), [
+      "channel_id",
+      "display_name",
+      "channel_type",
+      "private",
+      "unread_count",
+      "last_message_at",
+      "latest_post_id",
+      "dm_peer",
+    ]);
+    assert.equal(channel?.display_name, "Ops");
+    assert.equal(channel?.dm_peer, "human:7");
+    assert.equal(
+      summarizeChannels([{ channel_id: "c1" }])[0]?.channel_id,
+      "c1",
+      "a bare array is not silently read as zero channels",
+    );
+
+    const [post] = summarizePosts({
+      posts: [
+        {
+          post_id: 42,
+          human_id: 7,
+          poster_display_name: "Dmytro",
+          message: "ship it",
+          created_at: "2026-09-01T00:00:00Z",
+          avatar: { url: "https://cdn/a.png" },
+          trace_id: "t-1",
+          link_preview: { title: "noise" },
+          files: [
+            {
+              file_id: "f1",
+              filename: "plan.pdf",
+              content_type: "application/pdf",
+              size_bytes: 10,
+              download_url: "https://signed.example/plan.pdf",
+            },
+          ],
+        },
+      ],
+    });
+    assert.equal(post?.sender, "human:7");
+    assert.equal(post?.status, undefined, "published is the norm and stays implicit");
+    // A listing includes replies still being generated; they must not read as
+    // finished messages.
+    assert.equal(
+      summarizePosts({ posts: [{ post_id: 1, status: "streaming" }] })[0]?.status,
+      "streaming",
+    );
+    assert.equal(post?.sender_name, "Dmytro");
+    assert.deepEqual(post?.files, [
+      { file_id: "f1", filename: "plan.pdf", content_type: "application/pdf", size_bytes: 10 },
+    ]);
+    const rendered = JSON.stringify(post);
+    for (const dropped of ["avatar", "trace_id", "link_preview", "signed.example"]) {
+      assert.ok(!rendered.includes(dropped), `${dropped} dropped`);
+    }
+  });
+
+  it("searches with the account channel as the server-side scope", async () => {
+    const search = findTool("clawbits_search");
+    let requested = "";
+    const { result } = await callWithMockedFetch(
+      search,
+      { query: "migration decision", limit: 5 },
+      (input) => {
+        requested = String(input);
+        return jsonResponse({
+          scope: "all_channels",
+          query: "migration decision",
+          sort: "recent",
+          next_cursor: null,
+          results: [
+            {
+              post_id: 11358,
+              channel_id: "channel-1",
+              channel_display_name: "Ops",
+              channel_type: "public",
+              created_at: "2026-09-01T00:00:00Z",
+              author: { kind: "human", human_id: 7, display_name: "Dmytro", avatar: {} },
+              snippet: "the <mark>migration</mark> lands Friday &amp; freezes main",
+              rank: 0.9,
+            },
+          ],
+        });
+      },
+    );
+    const query = new URL(requested).searchParams;
+    assert.equal(query.get("context_channel_id"), "channel-1");
+    assert.equal(query.get("q"), "migration decision");
+    assert.equal(query.get("limit"), "5");
+    assert.equal(query.get("cursor"), null, "absent params are not sent as empty");
+    assert.deepEqual(result, {
+      scope: "all_channels",
+      results: [
+        {
+          post_id: 11358,
+          channel_id: "channel-1",
+          channel: "Ops",
+          sender: "human:7",
+          sender_name: "Dmytro",
+          created_at: "2026-09-01T00:00:00Z",
+          // <mark> and dashboard HTML escaping are stripped for the model.
+          snippet: "the migration lands Friday & freezes main",
+        },
+      ],
+    });
+  });
+
+  it("reads a channel's latest posts or a window around one", async () => {
+    const posts = findTool("clawbits_channel_posts");
+    const seen: string[] = [];
+    const respond = (input: unknown) => {
+      seen.push(String(input));
+      return jsonResponse({ posts: [{ post_id: 9, agent_id: "agent-1", message: "on it" }] });
+    };
+
+    const latest = await callWithMockedFetch(posts, { channelId: "c9", limit: 10 }, respond);
+    assert.deepEqual(latest.result, [
+      { post_id: 9, sender: "agent:agent-1", created_at: undefined, message: "on it" },
+    ]);
+
+    await callWithMockedFetch(posts, { channelId: "c9", aroundPostId: 11358 }, respond);
+    assert.ok(seen[0]?.endsWith("/api/agentic/mm/channels/c9/posts?limit=10"), seen[0]);
+    assert.ok(
+      seen[1]?.endsWith("/api/agentic/mm/channels/c9/posts/around/11358?radius=25"),
+      seen[1],
+    );
+  });
+
+  it("rejects a blank search query", async () => {
+    await assert.rejects(
+      () => executeTool(findTool("clawbits_search"), { query: "  " }),
+      /must not be blank/,
+    );
   });
 
   it("fails clearly when the channel account is missing", async () => {
@@ -375,27 +601,13 @@ describe("clawbits companion plugin", () => {
       { subject: "Status", message: "Done" },
       (input, init) => {
         const target = String(input);
-        if (target.endsWith("/api/agentic/auth/challenge")) {
-          return new Response(
-            JSON.stringify({
-              session_token: "session-1",
-              challenge: "What is the capital of France?",
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
+        if (target.endsWith("/api/agentic/auth/challenge")) return challengeResponse();
         if (target.endsWith("/api/agentic/agents/agent-1/email/send")) {
           body = JSON.parse(String(init?.body));
-          return new Response(JSON.stringify({ status: "sent", subject: "Status" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
+          return jsonResponse({ status: "sent", subject: "Status" });
         }
         if (target.endsWith("/api/agentic/mm/channels/channel-1/posts")) {
-          return new Response(JSON.stringify({ post_id: "mirror-1" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
+          return jsonResponse({ post_id: "mirror-1" });
         }
         return new Response(`unexpected: ${target}`, { status: 500 });
       },
@@ -412,25 +624,67 @@ describe("clawbits companion plugin", () => {
       { description: "Research helper" },
       (input, init) => {
         const target = String(input);
-        if (target.endsWith("/api/agentic/auth/challenge")) {
-          return new Response(
-            JSON.stringify({
-              session_token: "session-1",
-              challenge: "What is the capital of France?",
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
+        if (target.endsWith("/api/agentic/auth/challenge")) return challengeResponse();
         assert.ok(target.endsWith("/api/agentic/agents/agent-1/description"));
         body = JSON.parse(String(init?.body));
-        return new Response(JSON.stringify({ agent_id: "agent-1" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+        return jsonResponse({ agent_id: "agent-1" });
       },
     );
     assert.deepEqual(body, { description: "Research helper" });
     assert.deepEqual(result, { agent_id: "agent-1" });
+  });
+
+  it("reacts to a post through the companion tool", async () => {
+    // Reactions used to ride the host's shared `message` tool, where
+    // enforceMessageActionConversationReadGate (OpenClaw >=2026.7.2) rejects a
+    // delegated `react` before any plugin code runs. They are a plugin-owned
+    // tool now, so exercise the real registration + execute path the host uses.
+    const react = findTool("clawbits_react");
+    const bucket = { emoji: "🎉", count: 1, agent_ids: ["agent-1"], human_ids: [] };
+    const toggles: string[] = [];
+    const { result } = await callWithMockedFetch(
+      react,
+      { messageId: "11358", emoji: "🎉" },
+      (input, init) => {
+        const target = String(input);
+        if (target.endsWith("/api/agentic/auth/challenge")) return challengeResponse();
+        assert.ok(target.endsWith("/api/agentic/mm/posts/11358/reactions"));
+        assert.equal(init?.method, "POST");
+        toggles.push(String(init?.body));
+        return jsonResponse({ reactions: [bucket] });
+      },
+    );
+    assert.deepEqual(toggles, ['{"emoji":"🎉"}']);
+    assert.deepEqual(result, {
+      messageId: "11358",
+      emoji: "🎉",
+      state: "added",
+      reactions: [bucket],
+    });
+  });
+
+  it("toggles a second time when remove leaves the reaction in place", async () => {
+    let toggles = 0;
+    const { result } = await callWithMockedFetch(
+      findTool("clawbits_react"),
+      { messageId: "11358", emoji: "🎉", remove: true },
+      (input) => {
+        if (String(input).endsWith("/api/agentic/auth/challenge")) return challengeResponse();
+        toggles += 1;
+        return jsonResponse({
+          reactions: [{ emoji: "🎉", agent_ids: toggles === 1 ? ["agent-1"] : [] }],
+        });
+      },
+    );
+    assert.equal(toggles, 2);
+    assert.equal((result as { state?: string }).state, "removed");
+  });
+
+  it("rejects a blank reaction payload", async () => {
+    await assert.rejects(
+      () => executeTool(findTool("clawbits_react"), { messageId: " ", emoji: "🎉" }),
+      /must not be blank/,
+    );
   });
 
   it("rejects blank write-tool payloads", async () => {
@@ -476,7 +730,6 @@ describe("clawbits companion plugin", () => {
   it("keeps the channel entry free of moved service registrations", () => {
     const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
     const gateway = readFileSync(new URL("../src/gateway-adapter.ts", import.meta.url), "utf8");
-    const actions = readFileSync(new URL("../src/channel-actions.ts", import.meta.url), "utf8");
     for (const forbidden of [
       "runAutomationsReconciler",
       "runEmailPoller",
@@ -487,8 +740,6 @@ describe("clawbits companion plugin", () => {
       assert.ok(!index.includes(forbidden), `${forbidden} absent from channel entry`);
       assert.ok(!gateway.includes(forbidden), `${forbidden} absent from channel gateway`);
     }
-    assert.ok(!actions.includes("send_email"));
-    assert.ok(!actions.includes("update_description"));
 
     const pkg = readJson("../package.json") as {
       files?: string[];

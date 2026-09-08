@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import type {
   ChannelOutboundAdapter,
   ChannelOutboundContext,
-  OutboundDeliveryResult,
-} from "openclaw/plugin-sdk/core";
+} from "openclaw/plugin-sdk/channel-contract";
+import type { OutboundDeliveryResult } from "openclaw/plugin-sdk/channel-send-result";
 import { CHANNEL_ID, resolveClawBitsAccount } from "./accounts.js";
 import { resolveKnownAnswers, withChallenge } from "./challenge.js";
 import { buildClientForAccount } from "./client-factory.js";
@@ -13,6 +13,11 @@ import { consoleErrorWithFile, pluginDebug } from "./file-logger.js";
 import { uploadOutboundMedia } from "./outbound-media.js";
 import * as mmTools from "./tools/mattermost.js";
 import * as realtimeTools from "./tools/realtime.js";
+
+// The host's OutboundDeliveryResult declares no `channelId`, but our sends
+// resolve one and hand it back alongside the published fields (a superset the
+// host ignores and our own callers read).
+type ClawBitsDeliveryResult = OutboundDeliveryResult & { channelId: string };
 
 // ---------------------------------------------------------------------------
 // Outbound idempotency
@@ -42,7 +47,7 @@ import * as realtimeTools from "./tools/realtime.js";
 // minutes later is not suppressed.
 const DEDUP_TTL_MS = 5 * 60_000;
 const DEDUP_MAX_ENTRIES = 500;
-const recentSends = new Map<string, { result: OutboundDeliveryResult; ts: number }>();
+const recentSends = new Map<string, { result: ClawBitsDeliveryResult; ts: number }>();
 
 function recentSendKey(parts: {
   accountId: string;
@@ -193,7 +198,7 @@ export const outboundAdapter: ChannelOutboundAdapter = {
         pluginDebug(
           `outbound.sendText finalized open draft postId=${String(draftPostId)} channel=${channelId} in place (no separate post minted)`,
         );
-        const result: OutboundDeliveryResult = {
+        const result: ClawBitsDeliveryResult = {
           channel: CHANNEL_ID,
           messageId: String(draftPostId),
           channelId,
@@ -237,7 +242,7 @@ export const outboundAdapter: ChannelOutboundAdapter = {
         `Delivered. Clawbits delivery is working — posted reply postId=${messageId || "(unknown)"} channel=${channelId}.`,
       );
 
-      const result: OutboundDeliveryResult = {
+      const result: ClawBitsDeliveryResult = {
         channel: CHANNEL_ID,
         messageId,
         channelId,
@@ -344,7 +349,7 @@ export const outboundAdapter: ChannelOutboundAdapter = {
       pluginDebug(
         `outbound.sendMedia delivered postId=${messageId || "(unknown)"} channel=${channelId} fileId=${fileId}`,
       );
-      const result: OutboundDeliveryResult = {
+      const result: ClawBitsDeliveryResult = {
         channel: CHANNEL_ID,
         messageId,
         channelId,
