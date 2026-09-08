@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -31,8 +32,20 @@ if (kind === "channel") {
     },
     on() {},
   });
-  if (names.length !== 7) {
-    throw new Error(`expected 7 tools, got ${names.length}`);
+  // Checked against the manifest the artifact actually ships rather than a
+  // literal count: a tool added without its `contracts.tools` entry (or the
+  // reverse) is exactly the drift this gate exists to catch, and a hardcoded
+  // number goes stale instead of catching it.
+  const declared = JSON.parse(
+    readFileSync(resolve(root, "openclaw.plugin.json"), "utf8"),
+  ).contracts?.tools;
+  if (!declared?.length) {
+    throw new Error("manifest declares no tools under contracts.tools");
+  }
+  if (names.join(",") !== declared.join(",")) {
+    throw new Error(
+      `registered tools [${names.join(", ")}] do not match the manifest contract [${declared.join(", ")}]`,
+    );
   }
 
   // Prove companion-owned email dispatch through the installed SDK's public
