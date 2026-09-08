@@ -685,30 +685,32 @@ export async function dispatchInboundMessage(
         // what environment it's in and what files came along. The hashed
         // per-chat session id lets the agent report a stable session id without
         // a tool call or exposing the raw channel id.
-        bodyForAgent: buildAgentBody(
-          effectiveText,
-          msg.files,
+        bodyForAgent: buildAgentBody(effectiveText, {
+          files: msg.files,
           savedByFileId,
-          clawbitsSessionId(conversationId),
+          sessionId: clawbitsSessionId(conversationId),
+          // The only way the agent learns the id of the message it is answering,
+          // and so the only way it can react to it (clawbits_react takes one).
+          postId: msg.postId,
           // Render the catch-up history directly into the agent's body. The
           // structured `InboundHistory` context field is capped at 20 entries and
           // framed as "untrusted, for context", so the agent treats it as
           // background and doesn't actually fold it into the reply. The body is
           // the agent's real input (proven by DMs), has no entry cap, and is what
           // the model acts on — so prior messages must go here to be used.
-          msg.priorContext,
-          msg.senderTag,
-          msg.attention,
+          priorContext: msg.priorContext,
+          senderTag: msg.senderTag,
+          attention: msg.attention,
           // Name the agent to itself. Attention nudges fire partly on a
           // plain-text name reference, which the agent can't act on unless it
           // knows what it's called.
-          ctx.account.agentId,
+          agentId: ctx.account.agentId,
           // Boot catch-up: flips the history block from "do not reply to these"
           // to "these are unanswered, address them". Without it the recovered
           // messages reach the model under an explicit instruction to ignore
           // them, and the agent answers only the trigger.
-          msg.catchUp,
-        ),
+          catchUp: msg.catchUp,
+        }),
         commandBody: effectiveText,
         commandAuthorized: isAuthorizedCommand ? true : undefined,
         // OpenClaw 2026.8 ("2.0") only records conversation-route context,

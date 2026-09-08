@@ -48,6 +48,7 @@ describe("standalone package staging", () => {
         "dist/email-poller.js",
         "dist/usage/reporter.js",
         "dist/skills/sync.js",
+        "dist/tool-views.js",
       ]) {
         assert.ok(!channelFiles.includes(moved), `${moved} excluded from channel`);
       }
@@ -58,6 +59,7 @@ describe("standalone package staging", () => {
       assert.ok(toolsFiles.includes("dist/email-poller.js"));
       assert.ok(toolsFiles.includes("dist/usage/reporter.js"));
       assert.ok(toolsFiles.includes("dist/skills/sync.js"));
+      assert.ok(toolsFiles.includes("dist/tool-views.js"));
       assert.ok(toolsFiles.some((path) => path.startsWith("skills/")));
       assert.ok(!toolsFiles.some((path) => path.startsWith("src/")));
       for (const channelOnly of [
@@ -65,7 +67,6 @@ describe("standalone package staging", () => {
         "dist/plugin.js",
         "dist/gateway-adapter.js",
         "dist/inbound-poller.js",
-        "dist/channel-actions.js",
         "dist/cli.js",
       ]) {
         assert.ok(!toolsFiles.includes(channelOnly), `${channelOnly} excluded from companion`);

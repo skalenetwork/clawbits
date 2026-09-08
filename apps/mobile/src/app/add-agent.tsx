@@ -40,6 +40,9 @@ const CLAWBITS_OPTIONAL_TOOLS = [
   'clawbits_agent_info',
   'clawbits_email_send',
   'clawbits_agent_description_update',
+  'clawbits_react',
+  'clawbits_search',
+  'clawbits_channel_posts',
 ] as const;
 
 function mergeToolAllowlistCommands(): string[] {
