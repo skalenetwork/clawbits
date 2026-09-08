@@ -44,6 +44,7 @@ import * as realtimeTools from "./tools/realtime.js";
 import * as versionTools from "./tools/version.js";
 import type { VersionCheckResponse } from "./tools/version.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
+import { runOutsideGatewayRootWork } from "./gateway-root-work.js";
 
 // Shared across every account started in this process: a single file-backed
 // watermark store so the catch-up backlog isn't re-injected after a restart.
@@ -950,12 +951,14 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
       log: ctx.log,
       watermarkStore: channelWatermarkStore,
       onInboundMessage: (msg) =>
-        dispatchInboundMessage(ctx, msg, {
-          client,
-          answers,
-          setStatus: ctx.setStatus,
-          groupChannelShimmer: account.groupChannelShimmer,
-        }),
+        runOutsideGatewayRootWork(() =>
+          dispatchInboundMessage(ctx, msg, {
+            client,
+            answers,
+            setStatus: ctx.setStatus,
+            groupChannelShimmer: account.groupChannelShimmer,
+          }),
+        ),
     });
   },
 };

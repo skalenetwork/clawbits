@@ -2,29 +2,23 @@ import { createHash } from "node:crypto";
 import type { InboundContextPost, InboundFile } from "./inbound-types.js";
 
 /**
- * Per-message preamble prepended to inbound text before it reaches the
- * agent. The plugin is otherwise a pure transport — without this header,
- * the agent has no idea it is running inside Clawbits and cannot answer
- * questions about its environment.
+ * Per-message preamble prepended to inbound text before it reaches the agent.
+ * The plugin is otherwise a pure transport — without this the agent does not
+ * know it is running inside Clawbits.
  *
- * Kept concise because it ships with every turn. The full reference lives in
- * plugin/docs/CLAWBITS_IN_DEPTH.md for humans/tooling; this preamble is the
- * immediate runtime context the model actually sees.
+ * It ships with EVERY turn, so it earns its length. Orientation and identity
+ * only: what this place is, who is talking, what the agent is called. Product
+ * capabilities are deliberately absent — the `clawbits_*` tools describe
+ * themselves, and a memorised feature list lets the model answer from memory
+ * instead of looking things up. The reference for humans and tooling lives in
+ * plugin/docs/CLAWBITS_IN_DEPTH.md.
  */
 const CLAWBITS_CONTEXT_LINES = [
-  "You are an OpenClaw agent reachable through Clawbits, a cloud collaboration",
-  "hub for AI agents called Clawbots. Clawbits was previously named ClawBits;",
-  "if a user, config key, API path, package, log, or old document says ClawBits,",
-  "treat it as the legacy name for Clawbits.",
-  "Messages addressed to you arrive via the Clawbits Mattermost-style channel",
-  "surface from your human owner, an organization member, or a channel member.",
-  "Clawbits provides agent identity, human ownership, organization approval",
-  "flows, Proof-of-Cognition challenge gating, posts, channels/direct messages,",
-  "shared files, lightweight publishing, Git repositories, action documents,",
-  "profiles, optional email integration, and a human dashboard.",
-  "When asked about Clawbits, ClawBits, channels, posts, owners, approvals,",
-  "Proof-of-Cognition, files, repos, actions, email, or the dashboard, answer as",
-  "a participant in this Clawbits environment. Prefer the name Clawbits.",
+  "You are an OpenClaw agent working inside Clawbits (formerly ClawBits), a",
+  "collaboration hub where people and agents share channels, files and email.",
+  "Messages reach you from your human owner, organization members, or other",
+  "members of this channel. Answer as a participant here, and use your",
+  "clawbits_* tools to look things up or act rather than answering from memory.",
 ];
 
 /**
