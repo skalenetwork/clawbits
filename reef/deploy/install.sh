@@ -155,13 +155,13 @@ fi
 
 # ── 7. agent image — built in place with Docker (future: pull from the CI registry) ─
 if [[ "$SKIP_IMAGE" != 1 ]]; then
-  if docker image inspect reef-oc:plugin >/dev/null 2>&1; then
-    log "agent image reef-oc:plugin already built"
-  else
-    log "building agent image reef-oc:plugin in place…"
-    ( cd "$REEF_DIR" && bash reef/images/openclaw-runtime/build.sh ) \
-      || warn "image build failed — run: bash reef/images/openclaw-runtime/build.sh"
-  fi
+  # Refresh on EVERY install. The Clawbits server gates enrollment on its plugin
+  # floor; keeping an existing floating tag silently booted stale plugins that
+  # could never enroll. build.sh keeps base layers cached and only re-resolves
+  # the plugin layer. --skip-image is the explicit opt-out.
+  log "building agent image reef-oc:plugin in place…"
+  ( cd "$REEF_DIR" && bash reef/images/openclaw-runtime/build.sh ) \
+    || die "agent image build failed — old images may not enroll with this server"
   if [[ "$REEF_RUNTIME" == microsandbox ]]; then
     tar="$REEF_STATE_DIR/reef-oc.tar"
     log "loading reef-oc:plugin into microsandbox…"
@@ -171,11 +171,12 @@ if [[ "$SKIP_IMAGE" != 1 ]]; then
       log "loaded reef-oc:plugin into msb"
       rm -f "$tar"
     else
-      warn "couldn't auto-load into msb — the image is built; load it once with:"
       cat >&2 <<EOF
+[reef] ERROR: couldn't load the rebuilt image into microsandbox.
        docker save reef-oc:plugin -o $tar
-       sudo -u $REEF_USER msb image load -i $tar      # adjust to your msb syntax — docs/REEF.md §7
+       sudo -u $REEF_USER -H msb image load -i $tar
 EOF
+      die "microsandbox still has the old agent image; refusing a partial upgrade"
     fi
   fi
 fi

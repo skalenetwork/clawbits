@@ -18,6 +18,7 @@ from reef.fleet import (
 ENTRYPOINT = Path(__file__).parents[1] / "images" / "openclaw-runtime" / "entrypoint.sh"
 BUILD_SCRIPT = ENTRYPOINT.with_name("build.sh")
 DOCKERFILE = ENTRYPOINT.with_name("Dockerfile")
+INSTALL_SCRIPT = Path(__file__).parents[1] / "deploy" / "install.sh"
 CLAWBITS_TOOLS = (
     "clawbits_channels_list",
     "clawbits_channel_members",
@@ -98,6 +99,21 @@ def test_post_boot_login_command_never_applies_the_broken_default():
         for line in text.splitlines():
             if "models auth login" in line:
                 assert "--set-default" not in line, line.strip()
+
+
+def test_installer_refreshes_the_agent_image_and_fails_closed():
+    text = INSTALL_SCRIPT.read_text()
+    image_step = text[text.index("# ── 7. agent image") : text.index("# ── 7b.")]
+
+    # A server deploy can raise the enrollment floor. Reusing an existing tag
+    # leaves a bootable VM whose baked plugin gets 426 forever.
+    assert "agent image reef-oc:plugin already built" not in image_step
+    assert "bash reef/images/openclaw-runtime/build.sh" in image_step
+    assert "old images may not enroll" in image_step
+    # Docker-new/msb-old is equally broken, and Reef lists Docker's labels, so a
+    # warning here would also make the frontend preflight believe the stale msb
+    # image is current.
+    assert "refusing a partial upgrade" in image_step
 
 
 def test_build_smart_cache_key_derivation():

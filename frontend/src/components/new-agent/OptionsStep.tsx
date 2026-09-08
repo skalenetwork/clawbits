@@ -110,6 +110,8 @@ export function OptionsStep({
     onEnvRows,
     onCreate,
     createEnabled,
+    createBlockReason,
+    compatibilityChecking,
     pending,
 }: {
     state: WizardState;
@@ -126,6 +128,8 @@ export function OptionsStep({
     onEnvRows: (rows: {key: string; value: string}[]) => void;
     onCreate: () => void;
     createEnabled: boolean;
+    createBlockReason: string | null;
+    compatibilityChecking: boolean;
     pending: boolean;
 }) {
     const picked = providers?.find(p => p.id === state.providerId) ?? null;
@@ -523,12 +527,19 @@ export function OptionsStep({
                 </div>
             )}
 
+            {createBlockReason !== null && (
+                <p className="mt-4 flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-3.5 py-3 text-[13px] font-medium text-destructive">
+                    <Icon icon={Alert} className="mt-0.5 size-4 shrink-0"/>
+                    <span>{createBlockReason}</span>
+                </p>
+            )}
+
             <Button
                 onClick={onCreate}
                 disabled={!createEnabled || envInvalid || pending}
                 className="mt-4 h-12 w-full text-base"
             >
-                {pending ? "Creating…" : "Create agent"}
+                {pending ? "Creating…" : compatibilityChecking ? "Checking image…" : "Create agent"}
             </Button>
         </div>
     );

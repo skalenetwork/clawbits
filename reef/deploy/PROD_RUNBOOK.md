@@ -156,18 +156,13 @@ sudo -u reef -H msb list    # msb's own view (per-user state - the `-u reef` mat
 
 ```bash
 cd /opt/reef && sudo git pull
-sudo reef/deploy/install.sh --skip-image   # re-syncs deps, rebuilds the dashboard, refreshes units
+sudo reef/deploy/install.sh   # refreshes deps, dashboard, units, and the active agent image
 sudo systemctl restart reef-api reef-admin-ui   # store survives; agents reconcile back as managed
 ```
 
-If the agent image changed, rebuild + reload it (affects **newly created**
-agents; existing agents move over via the per-agent Upgrade action):
-
-```bash
-sudo bash reef/images/openclaw-runtime/build.sh
-sudo docker save reef-oc:plugin -o /var/lib/reef/reef-oc.tar
-sudo -u reef -H msb image load -i /var/lib/reef/reef-oc.tar && sudo rm /var/lib/reef/reef-oc.tar
-```
+The image refresh affects **newly created** agents; existing agents move over via
+the per-agent Upgrade action. Do not pass `--skip-image` when the Clawbits plugin
+floor changed: an older baked plugin can boot normally but cannot enroll.
 
 **Backups:** `reef-db-backup.timer` snapshots `/var/lib/reef/reef.db` - the
 source of truth for every agent's desired state - to `/var/backups/reef` daily
