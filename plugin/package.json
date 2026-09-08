@@ -4,7 +4,6 @@
   "description": "OpenClaw channel plugin: bridges an agent to its Clawbits organization via the Clawbits Mattermost surface.",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "files": [
     "dist",
     "docs",
@@ -60,8 +59,8 @@
   },
   "scripts": {
     "start": "bun src/index.ts",
-    "build": "tsc",
-    "typecheck": "tsc -p tsconfig.test.json",
+    "build": "node sdk-types.mjs && tsc",
+    "typecheck": "node sdk-types.mjs && tsc -p tsconfig.test.json",
     "test": "bun test"
   },
   "devDependencies": {

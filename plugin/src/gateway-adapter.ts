@@ -1,8 +1,5 @@
-import type {
-  ChannelGatewayAdapter,
-  ChannelGatewayContext,
-  ChannelReplyDispatchContext,
-} from "openclaw/plugin-sdk/core";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
+import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { CHANNEL_ID } from "./accounts.js";
 import { buildAgentBody, clawbitsSessionId } from "./agent-body.js";
@@ -45,6 +42,14 @@ import * as versionTools from "./tools/version.js";
 import type { VersionCheckResponse } from "./tools/version.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
 import { runOutsideGatewayRootWork } from "./gateway-root-work.js";
+
+// Slot types of the host's real ChannelPlugin. Neither is re-exported by name
+// from a plugin-sdk subpath, so deriving them keeps an upstream rename a
+// typecheck failure instead of silent drift.
+type ChannelGatewayAdapter<ResolvedAccount> = NonNullable<
+  ChannelPlugin<ResolvedAccount>["gateway"]
+>;
+type DirectDmRoutePeer = Parameters<typeof dispatchInboundDirectDmWithRuntime>[0]["peer"];
 
 // Shared across every account started in this process: a single file-backed
 // watermark store so the catch-up backlog isn't re-injected after a restart.
@@ -662,7 +667,12 @@ export async function dispatchInboundMessage(
         channel: CHANNEL_ID,
         channelLabel: CHANNEL_ID,
         accountId: ctx.accountId,
-        peer: routePeer,
+        // The host publishes `peer` as `DirectDmRoutePeer` (`kind: "direct"`),
+        // narrower than what it accepts: it only reads `peer.id` and forwards
+        // the object to `resolveAgentRoute`, whose `RoutePeer.kind` is the full
+        // `ChatType` ("direct" | "group" | "channel"). A channel peer is what
+        // keys a room's isolated session, so it must survive the call.
+        peer: routePeer as DirectDmRoutePeer,
         senderId,
         senderAddress: senderAddr,
         recipientAddress: recipientAddr,
@@ -730,7 +740,7 @@ export async function dispatchInboundMessage(
           // labels it untrusted background, which the agent ignores — see the
           // buildAgentBody call above for the rationale.
           ...mediaContext,
-        } as unknown as ChannelReplyDispatchContext,
+        },
         deliver,
         onRecordError: (err) => {
           logWarn(

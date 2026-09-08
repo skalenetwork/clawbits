@@ -83,12 +83,18 @@ describe("clawbits channel reactions", () => {
         action: "react",
         cfg: cfgWith(configuredSection()),
         params: { messageId: "42", emoji: "🎉" },
-      })) as { ok: boolean; data: Record<string, unknown> };
+      })) as {
+        content: Array<{ type: string; text: string }>;
+        details: Record<string, unknown>;
+      };
       assert.equal(captured.length, 1);
       assert.equal(captured[0]?.method, "POST");
       assert.deepEqual(JSON.parse(captured[0]?.body ?? "{}"), { emoji: "🎉" });
-      assert.equal(result.ok, true);
-      assert.equal(result.data.added, "🎉");
+      assert.equal(result.details.added, "🎉");
+      // The host reads `details` first and falls back to parsing this text
+      // block, so both legs of AgentToolResult must carry the payload.
+      assert.equal(result.content[0]?.type, "text");
+      assert.deepEqual(JSON.parse(result.content[0]?.text ?? "{}"), result.details);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -122,9 +128,9 @@ describe("clawbits channel reactions", () => {
         action: "react",
         cfg: cfgWith(configuredSection()),
         params: { messageId: "42", emoji: "🎉", remove: true },
-      })) as { data: Record<string, unknown> };
+      })) as { details: Record<string, unknown> };
       assert.equal(calls, 2);
-      assert.equal(result.data.removed, "🎉");
+      assert.equal(result.details.removed, "🎉");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -145,8 +151,8 @@ describe("clawbits channel reactions", () => {
         action: "reactions",
         cfg: cfgWith(configuredSection()),
         params: { messageId: "42" },
-      })) as { data: Record<string, unknown> };
-      assert.deepEqual(result.data.reactions, [{ emoji: "👍", count: 2 }]);
+      })) as { details: Record<string, unknown> };
+      assert.deepEqual(result.details.reactions, [{ emoji: "👍", count: 2 }]);
     } finally {
       globalThis.fetch = originalFetch;
     }

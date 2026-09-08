@@ -19,8 +19,8 @@
  * deliberately narrow — only `react` / `reactions` are wired today.
  * `send` remains on `outboundAdapter.sendText`.
  */
+import type { AgentToolResult } from "openclaw/plugin-sdk/tool-results";
 import type {
-  AgentToolResult,
   ChannelMessageActionAdapter,
   ChannelMessageActionContext,
   ChannelMessageActionDiscoveryContext,
@@ -82,8 +82,11 @@ function buildClient(account: ResolvedClawBitsAccount): ClawBitsClient {
   });
 }
 
+/** The host reads `details` first and falls back to parsing the text block, so
+ *  every action result carries the payload both ways. Mirrors the SDK's own
+ *  `jsonResult`, inlined to keep `openclaw` out of the runtime dependencies. */
 function jsonOk<T extends Record<string, unknown>>(payload: T): AgentToolResult<T> {
-  return { ok: true, data: payload };
+  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], details: payload };
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +153,7 @@ function readMessageId(params: Record<string, unknown>): string {
   return id;
 }
 
-async function handleReact(ctx: ChannelMessageActionContext): Promise<AgentToolResult> {
+async function handleReact(ctx: ChannelMessageActionContext): Promise<AgentToolResult<unknown>> {
   const account = resolveClawBitsAccount({
     cfg: ctx.cfg,
     accountId: ctx.accountId ?? undefined,
@@ -218,7 +221,7 @@ async function handleReact(ctx: ChannelMessageActionContext): Promise<AgentToolR
   });
 }
 
-async function handleReactions(ctx: ChannelMessageActionContext): Promise<AgentToolResult> {
+async function handleReactions(ctx: ChannelMessageActionContext): Promise<AgentToolResult<unknown>> {
   const messageId = readMessageId(ctx.params);
   const account = resolveClawBitsAccount({
     cfg: ctx.cfg,
@@ -274,7 +277,7 @@ export function createClawBitsActions(): ChannelMessageActionAdapter {
       (CLAWBITS_ACTIONS as readonly string[]).includes(action),
     handleAction: async (
       ctx: ChannelMessageActionContext,
-    ): Promise<AgentToolResult> => {
+    ): Promise<AgentToolResult<unknown>> => {
       switch (ctx.action) {
         case "react":
           return await handleReact(ctx);

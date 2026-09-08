@@ -1,10 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type {
-  OpenClawPluginApi,
-  StubAgentTool,
-} from "openclaw/plugin-sdk/plugin-entry";
+import type { AnyAgentTool, OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import toolsEntry, { CLAWBITS_TOOL_NAMES } from "../src/tools-entry.js";
 import { resolveCompanionServiceActivation } from "../src/companion-services.js";
 import {
@@ -35,32 +32,63 @@ const DEFAULT_ACCOUNT = {
   knownAnswers: { "What is the capital of France?": "Paris" },
 };
 
+// The host keeps its hook handler map internal, so recover each hook's real
+// handler type by instantiating the published `on` signature.
+declare const registerHook: OpenClawPluginApi["on"];
+type HookName = Parameters<typeof registerHook>[0];
+type HookHandler<K extends HookName> = Parameters<typeof registerHook<K>>[1];
+type HookHandlers = Map<HookName, HookHandler<HookName>[]>;
+
+// `on` correlates its hook name and handler through one type parameter, a
+// correlation TypeScript cannot carry through a shared store; the bucket under
+// `hookName` only ever holds handlers registered under that same name.
+function hookHandler<K extends HookName>(
+  handlers: HookHandlers,
+  hookName: K,
+): HookHandler<K> | undefined {
+  return handlers.get(hookName)?.[0] as HookHandler<K> | undefined;
+}
+
+type PluginRuntime = OpenClawPluginApi["runtime"];
+type StubRuntime = Pick<PluginRuntime, "version"> & {
+  channel: Pick<PluginRuntime["channel"], "runtimeContexts">;
+};
+type StubPluginApi = Pick<
+  OpenClawPluginApi,
+  "registrationMode" | "config" | "logger" | "registerTool" | "on"
+> & { runtime: StubRuntime };
+
 interface RegisteredTool {
-  tool: StubAgentTool;
+  tool: AnyAgentTool;
   optional: boolean;
 }
 
-function runtimeWithHandoff(version?: string): OpenClawPluginApi["runtime"] {
+// The host builds the whole plugin api before calling `register`; the double
+// implements only the seams the tools entry touches, and every implemented slot
+// keeps the host's published type.
+function asPluginApi(api: StubPluginApi): OpenClawPluginApi {
+  return api as OpenClawPluginApi;
+}
+
+function agentTool(tool: Parameters<OpenClawPluginApi["registerTool"]>[0]): AnyAgentTool {
+  assert.ok(typeof tool !== "function", "clawbits registers tool objects, not factories");
+  return tool;
+}
+
+function runtimeWithHandoff(version?: string): StubRuntime {
   const contexts = new Map<string, unknown>();
-  const runtime: OpenClawPluginApi["runtime"] = {
+  const runtime: StubRuntime = {
     version: "2026.6.33",
     channel: {
       runtimeContexts: {
-        register({ channelId, capability, context }: {
-          channelId: string;
-          capability: string;
-          context: unknown;
-        }) {
+        register({ channelId, capability, context }) {
           const key = `${channelId}:${capability}`;
           contexts.set(key, context);
           return { dispose: () => contexts.delete(key) };
         },
-        get<T>({ channelId, capability }: {
-          channelId: string;
-          capability: string;
-        }): T | undefined {
-          return contexts.get(`${channelId}:${capability}`) as T | undefined;
-        },
+        get: <T = unknown>({ channelId, capability }: { channelId: string; capability: string }) =>
+          contexts.get(`${channelId}:${capability}`) as T | undefined,
+        watch: () => () => {},
       },
     },
   };
@@ -70,29 +98,32 @@ function runtimeWithHandoff(version?: string): OpenClawPluginApi["runtime"] {
 
 function pluginApi(
   section: Record<string, unknown>,
-  opts: { registrationMode?: string; runtime?: OpenClawPluginApi["runtime"] } = {},
+  opts: {
+    registrationMode?: OpenClawPluginApi["registrationMode"];
+    runtime?: StubRuntime;
+  } = {},
 ): {
-  api: OpenClawPluginApi;
+  api: StubPluginApi;
   tools: RegisteredTool[];
-  hooks: string[];
-  handlers: Map<string, Array<(...args: any[]) => unknown>>;
+  hooks: HookName[];
+  handlers: HookHandlers;
 } {
   const tools: RegisteredTool[] = [];
-  const hooks: string[] = [];
-  const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
-  const api: OpenClawPluginApi = {
+  const hooks: HookName[] = [];
+  const handlers: HookHandlers = new Map();
+  const api: StubPluginApi = {
     registrationMode: opts.registrationMode ?? "tool-discovery",
     config: { channels: { clawbits: section } },
-    logger: {},
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
     runtime: opts.runtime ?? runtimeWithHandoff(),
     registerTool(tool, registration) {
-      tools.push({ tool, optional: registration?.optional === true });
+      tools.push({ tool: agentTool(tool), optional: registration?.optional === true });
     },
-    on(hook, handler) {
-      hooks.push(hook);
-      const existing = handlers.get(hook) ?? [];
+    on(hookName, handler) {
+      hooks.push(hookName);
+      const existing = handlers.get(hookName) ?? [];
       existing.push(handler);
-      handlers.set(hook, existing);
+      handlers.set(hookName, existing);
     },
   };
   return { api, tools, hooks, handlers };
@@ -105,33 +136,31 @@ function configuredApi(): ReturnType<typeof pluginApi> {
 function registeredTools(api = configuredApi().api): RegisteredTool[] {
   const collected: RegisteredTool[] = [];
   const original = api.registerTool.bind(api);
-  api.registerTool = ((tool: StubAgentTool, opts?: { optional?: boolean }) => {
-    collected.push({ tool, optional: opts?.optional === true });
+  api.registerTool = (tool, opts) => {
+    collected.push({ tool: agentTool(tool), optional: opts?.optional === true });
     original(tool, opts);
-  }) as OpenClawPluginApi["registerTool"];
-  toolsEntry.register(api);
+  };
+  toolsEntry.register(asPluginApi(api));
   return collected;
 }
 
-function findTool(name: (typeof CLAWBITS_TOOL_NAMES)[number]): StubAgentTool {
+function findTool(name: (typeof CLAWBITS_TOOL_NAMES)[number]): AnyAgentTool {
   const tool = registeredTools().find((candidate) => candidate.tool.name === name)?.tool;
   assert.ok(tool, `tool ${name}`);
   return tool;
 }
 
 async function executeTool(
-  tool: StubAgentTool,
+  tool: AnyAgentTool,
   params: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  const result = (await tool.execute("tool-call-1", params, signal)) as {
-    details?: unknown;
-  };
+  const result = await tool.execute("tool-call-1", params, signal);
   return result.details;
 }
 
 async function callWithMockedFetch(
-  tool: StubAgentTool,
+  tool: AnyAgentTool,
   params: Record<string, unknown>,
   respond: (input: unknown, init?: RequestInit) => Response,
 ): Promise<{ result: unknown; init: RequestInit | undefined }> {
@@ -232,11 +261,11 @@ describe("clawbits companion plugin", () => {
 
   it("registers services only in full runtime mode", () => {
     const discovery = pluginApi({}, { registrationMode: "tool-discovery" });
-    toolsEntry.register(discovery.api);
+    toolsEntry.register(asPluginApi(discovery.api));
     assert.deepEqual(discovery.hooks, []);
 
     const full = pluginApi({}, { registrationMode: "full" });
-    toolsEntry.register(full.api);
+    toolsEntry.register(asPluginApi(full.api));
     assert.ok(full.hooks.includes("gateway_start"));
     assert.ok(full.hooks.includes("gateway_stop"));
     assert.ok(full.hooks.includes("cron_changed"));
@@ -247,15 +276,16 @@ describe("clawbits companion plugin", () => {
       { serviceOwner: "tools" },
       { registrationMode: "full", runtime: runtimeWithHandoff("0.17.0") },
     );
-    toolsEntry.register(setup.api);
-    const start = setup.handlers.get("gateway_start")?.[0];
-    const stop = setup.handlers.get("gateway_stop")?.[0];
+    toolsEntry.register(asPluginApi(setup.api));
+    const start = hookHandler(setup.handlers, "gateway_start");
+    const stop = hookHandler(setup.handlers, "gateway_stop");
     assert.ok(start);
     assert.ok(stop);
-    await start({}, { config: setup.api.config });
-    await start({}, { config: setup.api.config });
-    await stop();
-    await stop();
+    const gatewayCtx = { config: setup.api.config };
+    await start({ port: 0 }, gatewayCtx);
+    await start({ port: 0 }, gatewayCtx);
+    await stop({}, gatewayCtx);
+    await stop({}, gatewayCtx);
   });
 
   it("fails closed until tools ownership and a compatible slim channel marker agree", () => {

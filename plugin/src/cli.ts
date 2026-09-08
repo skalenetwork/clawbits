@@ -1,8 +1,4 @@
-import type {
-  OpenClawConfig,
-  OpenClawPluginApi,
-  OpenClawPluginCliContext,
-} from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import {
   CHANNEL_ID,
@@ -22,6 +18,14 @@ import {
   type ChannelHealthcheckResult,
   type SignupFlowResult,
 } from "./setup-flow.js";
+
+/** The host never re-exports the CLI registrar's context type by name, so it is
+ *  derived from the real `registerCli` slot: an upstream reshape fails here
+ *  instead of silently drifting. Carries `program`, `parentPath`, `config`,
+ *  `workspaceDir` and `logger`. */
+export type OpenClawPluginCliContext = Parameters<
+  Parameters<OpenClawPluginApi["registerCli"]>[0]
+>[0];
 
 interface SignupCliOptions {
   endpoint?: string;

@@ -1,4 +1,4 @@
-import type { ChannelGatewayContext } from "openclaw/plugin-sdk/core";
+import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import { formatBytes, type SavedInboundMedia } from "./agent-body.js";
 import { ClawBitsClient } from "./client.js";
 import { logWarn } from "./file-logger.js";
