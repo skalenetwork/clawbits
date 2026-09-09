@@ -8,8 +8,10 @@ Authentication itself (magic auth + social OAuth) lives in
 
 import asyncio
 import logging
+import os
 import time
 import uuid as _uuid
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -38,7 +40,6 @@ from clawbits.datastructures.email_models import (
     EmailSetReadRequest,
     EmailSummaryResponse,
 )
-from clawbits.datastructures.known_answers import get_random_question_answer
 from clawbits.datastructures.mm_models import (
     GlobalUserStatus,
     PrivacyModeRequest,
@@ -49,6 +50,7 @@ from clawbits.datastructures.mm_models import (
 from clawbits.datastructures.org_models import (
     AddOrgMemberRequest,
     CreateOrgRequest,
+    CreateReefAgentRequest,
     OrgAttentionResponse,
     OrgListResponse,
     OrgLobstertalkChannelResponse,
@@ -57,11 +59,17 @@ from clawbits.datastructures.org_models import (
     OrgMemberResponse,
     OrgMembersListResponse,
     OrgResponse,
-    ReefConnectionResponse,
+    ReefAgentResponse,
+    ReefDeclaredResponse,
+    ReefHostResponse,
+    ReefResponse,
+    ReefRoleResponse,
+    ReefSecretResponse,
+    ReefStatusResponse,
     SetOrgAttentionRequest,
     SetOrgLobstertalkChannelRequest,
     SetOrgLobstertalkRequest,
-    SetReefConnectionRequest,
+    SetReefRepoRequest,
     UpdateOrgMemberRoleRequest,
 )
 from clawbits.db.models import DISPLAY_NAME_MAX_LENGTH
@@ -76,6 +84,7 @@ from clawbits.email.imap_client import (
     list_emails,
     set_email_read,
 )
+from clawbits.fastapi.agent_signup import AgentSignup
 from clawbits.fastapi.session_cookie import stage_session_clear
 from clawbits.fastapi.workos_auth import get_current_human_user
 from clawbits.lobstertalk.attention.crypto import (
@@ -100,6 +109,15 @@ from clawbits.realtime import (
     publish_member_removed,
     publish_org_added,
     publish_org_updated,
+)
+from clawbits.reef_repo import (
+    OWNER_RE,
+    Author,
+    ReefRepo,
+    ReefRepoError,
+    fleet_toml,
+    parse_role,
+    parse_status,
 )
 from clawbits.ssrf import HostResolutionError, PrivateAddressError, arun_guarded
 
@@ -351,6 +369,15 @@ def _verify_org_membership(db, org_id: str, user: dict) -> None:
         raise HTTPException(status_code=403, detail="Not a member of this organization")
 
 
+def _require_org_owner(db, org_id: str, user: dict) -> None:
+    """Verify the caller owns the organization. The wire word is "admins"; the
+    stored role string is "owner"."""
+    if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
+        raise HTTPException(
+            status_code=403, detail="Only organization admins can change this setting"
+        )
+
+
 def _verify_agent_in_org(db, org_id: str, agent_id: str) -> None:
     """Verify the agent is associated with the given organization."""
     if not TableRead.is_agent_in_org(db, agent_id, org_id):
@@ -471,9 +498,10 @@ async def list_agents(
                 ),
                 "operator": operator,
                 "avatar": avatar,
-                # If provisioned via "Run on Reef", the reef VM it runs in (the
-                # reef base URL is the org's ``reef_api_url``). NULL otherwise.
-                "reef_sandbox_id": row.reef_sandbox_id if row is not None else None,
+                # Declared on a reef host: the pair naming its fleet file.
+                # NULL for a self-hosted agent.
+                "reef_host": row.reef_host if row is not None else None,
+                "reef_name": row.reef_name if row is not None else None,
                 # Self-reported by the plugin on its liveness ping — runtime kind
                 # + Clawbits plugin version, for the card's "spec" stickers. NULL
                 # until the first modern ping.
@@ -878,8 +906,9 @@ async def get_agent_profile(
                 db, agent_id, user["id"]
             ),
             "avatar": avatar,
-            # Reef VM this agent runs in, if provisioned via "Run on Reef".
-            "reef_sandbox_id": agent_row.reef_sandbox_id if agent_row else None,
+            # Declared on a reef host: the pair naming its fleet file.
+            "reef_host": agent_row.reef_host if agent_row else None,
+            "reef_name": agent_row.reef_name if agent_row else None,
             # Self-reported by the plugin on its liveness ping — runtime kind +
             # Clawbits plugin version, for the card's "spec" stickers.
             "agent_type": agent_row.agent_type if agent_row else None,
@@ -1845,61 +1874,278 @@ async def mark_org_visited(
     return None
 
 
-# ── Reef connection ──────────────────────────────────────────────────────────
-# An org connects ONE self-hosted Reef by URL. clawbits stores only that URL and
-# never connects to Reef — the operator's browser talks to Reef directly over the
-# owner's tunnel, presenting an admin token entered per session (never persisted
-# here). So these endpoints only read/write the stored URL.
+# ── Reef ─────────────────────────────────────────────────────────────────────
+# Git is the bus. An org connects ONE private repository; clawbits writes a
+# fleet file per agent on the `fleet` branch and reads what each host pushes to
+# the `status` branch. clawbits never talks to a reef host, and nothing on the
+# network reaches it — the host pulls on a timer. See clawbits/reef_repo.py and
+# reef/README.md for host setup.
+
+# Status is a handful of small files behind a token, read on every settings
+# poll by every member of the org. Fifteen seconds is under the reconciler's
+# thirty, so a host's push is never more than one tick stale.
+_REEF_STATUS_TTL = 15.0
+_reef_status_cache: dict[str, tuple[float, dict[str, dict]]] = {}
 
 
-@human_router.get("/api/human/orgs/{org_id}/reef-connection", response_model=ReefConnectionResponse)
-async def get_reef_connection(
+def _reef_repo(db, org_id: str) -> ReefRepo:
+    """The org's repository with its token unsealed. 409 when none is
+    connected, or when a rotated secrets key left the token unreadable —
+    reconnecting is the fix in both cases."""
+    stored = TableRead.get_org_reef(db, org_id)
+    token = decrypt_secret(stored[1]) if stored else None
+    if stored is None or token is None:
+        raise HTTPException(status_code=409, detail="No reef repository connected")
+    return ReefRepo(repo=stored[0], token=token)
+
+
+async def _reef_hosts(org_id: str, repo: ReefRepo) -> dict[str, dict]:
+    """``{host: status}`` for every host that has pushed. A host exists exactly
+    when its status file does — hosts are never stored here."""
+    cached = _reef_status_cache.get(org_id)
+    now = time.monotonic()
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    names = [n for n in await repo.list("status", "status") if n.endswith(".json")]
+    files = await asyncio.gather(*(repo.read("status", f"status/{n}") for n in names))
+    hosts = {
+        name.removesuffix(".json"): status
+        for name, found in zip(names, files, strict=True)
+        if found and (status := parse_status(found[1])) is not None
+    }
+    _reef_status_cache[org_id] = (now + _REEF_STATUS_TTL, hosts)
+    return hosts
+
+
+def _reef_author(user: dict) -> Author:
+    """Fleet commits are authored by the person who clicked, so `git log` on
+    the fleet branch is the audit trail."""
+    return Author(name=user.get("display_name") or user["email"], email=user["email"])
+
+
+@human_router.get("/api/human/orgs/{org_id}/reef", response_model=ReefResponse)
+async def get_reef(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """The org's connected Reef API URL (or null). Any member can read it."""
+    """The org's reef repository and the hosts reporting into it. Any member."""
     with _get_db(request) as db:
         if not TableRead.is_org_member(db, org_id, user["id"]):
             raise HTTPException(status_code=403, detail="Not a member of this organization")
-        return ReefConnectionResponse(api_url=TableRead.get_org_reef_api_url(db, org_id))
+        stored = TableRead.get_org_reef(db, org_id)
+    token = decrypt_secret(stored[1]) if stored else None
+    if stored is None or token is None:
+        return ReefResponse(repo=stored[0] if stored else None, connected=False)
+    repo = ReefRepo(repo=stored[0], token=token)
+    hosts = sorted((await _reef_hosts(org_id, repo)).items())
+    seen = await asyncio.gather(
+        *(repo.last_commit("status", f"status/{host}.json") for host, _ in hosts)
+    )
+    return ReefResponse(
+        repo=stored[0],
+        connected=True,
+        hosts=[
+            ReefHostResponse(
+                host=host,
+                reef=status.get("reef"),
+                agents=len(status.get("agents") or []),
+                last_seen=at,
+            )
+            for (host, status), at in zip(hosts, seen, strict=True)
+        ],
+    )
 
 
-@human_router.put("/api/human/orgs/{org_id}/reef-connection", response_model=ReefConnectionResponse)
-async def set_reef_connection(
+@human_router.put("/api/human/orgs/{org_id}/reef", response_model=ReefResponse)
+async def set_reef(
     org_id: str,
-    body: SetReefConnectionRequest,
+    body: SetReefRepoRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Connect (or re-point) the org's self-hosted Reef. Owner only. Stores ONLY
-    the URL — no token or per-agent secret ever reaches clawbits."""
+    """Connect the org's reef repository. Owner only. The token is proven
+    against GitHub before anything is stored, and sealed at rest."""
     with _get_db(request) as db:
-        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
-            raise HTTPException(
-                status_code=403, detail="Only organization admins can change the Reef connection"
-            )
-        if not TableWrite.set_org_reef_api_url(db, org_id, body.api_url):
+        _require_org_owner(db, org_id, user)
+    await ReefRepo(repo=body.repo, token=body.token).probe()
+    try:
+        sealed = encrypt_secret(body.token)
+    except EphemeralSecretsKeyError:
+        raise HTTPException(
+            status_code=503,
+            detail="This server has no durable secrets key configured, so a reef "
+            "token cannot be stored. Set CLAWBITS_ATTENTION_SECRETS_KEY.",
+        )
+    with _get_db(request) as db:
+        _require_org_owner(db, org_id, user)
+        if not TableWrite.set_org_reef(db, org_id, body.repo, sealed):
             raise HTTPException(status_code=404, detail="Organization not found")
         db.commit()
-        return ReefConnectionResponse(api_url=body.api_url)
+    _reef_status_cache.pop(org_id, None)
+    return ReefResponse(repo=body.repo, connected=True)
 
 
-@human_router.delete("/api/human/orgs/{org_id}/reef-connection", status_code=204)
-async def delete_reef_connection(
+@human_router.delete("/api/human/orgs/{org_id}/reef", status_code=204)
+async def delete_reef(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Disconnect the org's Reef (clears the stored URL). Owner only."""
+    """Disconnect the repository. Owner only. Agents already declared keep
+    running: their fleet files are still on the branch, untouched."""
     with _get_db(request) as db:
-        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
-            raise HTTPException(
-                status_code=403, detail="Only organization admins can change the Reef connection"
-            )
-        if not TableWrite.set_org_reef_api_url(db, org_id, None):
+        _require_org_owner(db, org_id, user)
+        if not TableWrite.set_org_reef(db, org_id, None, None):
             raise HTTPException(status_code=404, detail="Organization not found")
         db.commit()
+    _reef_status_cache.pop(org_id, None)
+    return None
+
+
+@human_router.get(
+    "/api/human/orgs/{org_id}/reef/roles", response_model=list[ReefRoleResponse]
+)
+async def list_reef_roles(
+    org_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """The role catalog from ``main:roles/``. Roles pointing their agents at a
+    different clawbits are left out: an agent created from one would boot, run,
+    and enrol somewhere else."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        repo = _reef_repo(db, org_id)
+    names = [n for n in await repo.list("main", "roles") if n.endswith(".toml")]
+    files = await asyncio.gather(*(repo.read("main", f"roles/{n}") for n in names))
+    endpoint = os.environ.get("CLAWBITS_BASE_URL", "http://localhost:8000")
+    roles = [
+        parse_role(name.removesuffix(".toml"), found[1], endpoint)
+        for name, found in zip(names, files, strict=True)
+        if found
+    ]
+    return [
+        ReefRoleResponse(
+            name=role.name,
+            image=role.image,
+            egress=role.egress,
+            secrets=[ReefSecretResponse(env=s.env, host=s.host) for s in role.secrets],
+            resources=role.resources,
+        )
+        for role in sorted(filter(None, roles), key=lambda r: r.name)
+    ]
+
+
+@human_router.get(
+    "/api/human/orgs/{org_id}/reef/status", response_model=ReefStatusResponse
+)
+async def get_reef_status(
+    org_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """What every host last pushed, plus the agents declared but not yet
+    enrolled — an unspent signup token is exactly that state."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        repo = _reef_repo(db, org_id)
+        declared = TableRead.list_declared_reef_agents(db, org_id, datetime.now(UTC))
+    return ReefStatusResponse(
+        hosts=await _reef_hosts(org_id, repo),
+        declared=[ReefDeclaredResponse(**row) for row in declared],
+    )
+
+
+@human_router.post(
+    "/api/human/orgs/{org_id}/reef/agents", response_model=ReefAgentResponse
+)
+async def create_reef_agent(
+    org_id: str,
+    body: CreateReefAgentRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Declare an agent on a reef host. Any member.
+
+    The signup token is minted first and the fleet file carries it: it is the
+    agent's whole identity until it enrols and keeps its own key. A failed
+    write takes the session back down with it, so a declared agent always has
+    a file and a file always has a live token."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        repo = _reef_repo(db, org_id)
+    owner = body.owner or user["email"].split("@")[0]
+    if not OWNER_RE.match(owner):
+        raise HTTPException(status_code=422, detail="owner is required for this account")
+    if body.host not in await _reef_hosts(org_id, repo):
+        raise HTTPException(status_code=422, detail=f"No reef host named '{body.host}'")
+    endpoint = os.environ.get("CLAWBITS_BASE_URL", "http://localhost:8000")
+    role_file = await repo.read("main", f"roles/{body.role}.toml")
+    if role_file is None or parse_role(body.role, role_file[1], endpoint) is None:
+        raise HTTPException(
+            status_code=422, detail=f"No role named '{body.role}' points at this server"
+        )
+    path = f"fleet/{body.host}/{body.name}.toml"
+    if await repo.read("fleet", path) is not None:
+        raise HTTPException(
+            status_code=409, detail=f"'{body.name}' is already declared on {body.host}"
+        )
+
+    with _get_db(request) as db:
+        token, _, expires_at = AgentSignup.mint_human_session(
+            db, org_id, user["id"], reef=(body.host, body.name)
+        )
+        db.commit()
+    env = {"CLAWBITS_ORG_ID": org_id, "CLAWBITS_SIGNUP_TOKEN": token}
+    if body.public_host:
+        env["OPENCLAW_PUBLIC_HOST"] = body.public_host
+    try:
+        await repo.write(
+            "fleet",
+            path,
+            fleet_toml(body.name, body.role, owner, env),
+            f"declare {body.name} on {body.host}",
+            _reef_author(user),
+        )
+    except ReefRepoError:
+        with _get_db(request) as db:
+            TableWrite.delete_challenge_session(db, token)
+            db.commit()
+        raise
+    return ReefAgentResponse(host=body.host, name=body.name, expires_at=expires_at)
+
+
+@human_router.delete(
+    "/api/human/orgs/{org_id}/reef/agents/{host}/{name}", status_code=204
+)
+async def delete_reef_agent(
+    org_id: str,
+    host: str,
+    name: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Remove the fleet file. The next reconcile prunes the VM; its volumes and
+    its clawbits agent row survive, so re-declaring the same name brings the
+    same agent back."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        operator = TableRead.get_org_reef_agent_operator(db, org_id, host, name)
+        if operator != user["id"] and TableRead.get_org_member_role(
+            db, org_id, user["id"]
+        ) != "owner":
+            raise HTTPException(
+                status_code=403,
+                detail="Only the agent's operator or an organization admin can remove it",
+            )
+        repo = _reef_repo(db, org_id)
+    await repo.delete(
+        "fleet",
+        f"fleet/{host}/{name}.toml",
+        f"remove {name} from {host}",
+        _reef_author(user),
+    )
     return None
 
 
@@ -2192,38 +2438,6 @@ async def set_org_lobstertalk_channel(
     return OrgLobstertalkChannelResponse(
         channel_id=channel_id, lobstertalk_approved=body.approved
     )
-
-
-class LinkReefVmRequest(BaseModel):
-    """Stamp a pending signup session with the reef VM it provisioned."""
-
-    session_token: str = Field(min_length=1, max_length=256)
-    sandbox_id: str = Field(min_length=1, max_length=200)
-
-
-@human_router.post("/api/human/agents/link-reef-vm", status_code=204)
-async def link_reef_vm(
-    body: LinkReefVmRequest,
-    request: Request,
-    user: dict = Depends(get_current_human_user),
-):
-    """Link a reef VM to the agent that a pending signup session will create.
-
-    The "Add agent → Run on Reef" flow mints a signup token, hands it to reef,
-    and gets back a sandbox id. This records that id on the signup session so
-    that when the VM enrolls (signup-commit) the resulting agent is linked to
-    its reef sandbox. Best-effort and idempotent; only the human who opened the
-    session may stamp it. The sandbox id is not a secret."""
-    with _get_db(request) as db:
-        sess = TableRead.get_challenge_session(db, body.session_token)
-        if sess is None:
-            raise HTTPException(status_code=404, detail="Signup session not found")
-        if sess.get("human_id") != user["id"]:
-            raise HTTPException(status_code=403, detail="Not your signup session")
-        if not TableWrite.set_challenge_reef_sandbox(db, body.session_token, body.sandbox_id):
-            raise HTTPException(status_code=404, detail="Signup session not found")
-        db.commit()
-    return None
 
 
 @human_router.get("/api/human/orgs/{org_id}/members", response_model=OrgMembersListResponse)
@@ -2610,30 +2824,13 @@ def human_agents_signup(
     Returns a challenge question with a session token prefixed with ``human-``.
     The commit step uses the same ``POST /api/agentic/signup-commit`` endpoint.
     """
-    import secrets
-    from datetime import UTC, datetime, timedelta
-
     with _get_db(request) as db:
         if not TableRead.is_org_member(db, body.org_id, user["id"]):
             raise HTTPException(status_code=403, detail="You are not a member of this organization")
-
-        question, answer = get_random_question_answer()
-        session_token = "human-" + secrets.token_urlsafe(32)
-
-        expires_at = datetime.now(UTC) + timedelta(minutes=10)
-        # Store the initiating human alongside the org so commit can record
-        # the operator without a second auth roundtrip.
-        TableWrite.create_challenge_session(
-            db,
-            session_token=session_token,
-            question=question,
-            answer=answer,
-            expires_at=expires_at,
-            org_id=body.org_id,
-            human_id=user["id"],
+        session_token, question, _ = AgentSignup.mint_human_session(
+            db, body.org_id, user["id"]
         )
         db.commit()
-
         return ChallengeQuestionResponse(
             session_token=session_token,
             challenge_question=question,

@@ -1,102 +1,86 @@
-# Reef
+# Reef reconciler
 
-Isolated microVM hosting for agents — one microVM per agent, **agent-agnostic**.
-A standalone sub-project: **clawbits depends on Reef, never the reverse** (no
-`clawbits.*` imports live here).
+Git is the bus between clawbits and a reef host. This directory is the whole
+host side of it: a shell script and a timer. There is no daemon, no port, and
+nothing on the network reaches the host — it pulls.
 
-Design & decisions: [`../docs/REEF.md`](../docs/REEF.md).
-Setup guide (dev + prod, full env-var reference, commands): [`SETUP.md`](SETUP.md).
-
-## Layout
-
-| File | What |
-|---|---|
-| `runtime.py` | `AgentRuntime` (lifecycle seam) + `FleetRuntime` (read seam) + `AdminRuntime`; `SandboxSpec`, `SandboxState`, `Limits`, `SandboxInfo`, `MetricsSample` |
-| `profiles.py` | `AgentProfile` (the agent-type seam) + `OpenClawProfile` / `IronClawProfile` / `HermesProfile`; `AccessInfo` |
-| `agents.py` | `AGENT_TYPES` registry (openclaw ✅ · ironclaw ✅ · hermes ✅) + `infer_type` |
-| `manager.py` | `SandboxManager` — idempotent lifecycle facade (`ensure_running` / `expose` / `stop` / `destroy`) |
-| `fleet.py` | `FleetService` — fleet view (merge live runtime + store), secret redaction, create, lifecycle by name (handles drift) |
-| `reconciler.py` | `Reconciler` — self-healing control loop: drives each managed sandbox toward `desired_state` per its `restart_policy`, with crash-loop backoff; runs in the API lifespan |
-| `microsandbox_runtime.py` | real prod runtime — drives `msb` via subprocess (validated) |
-| `docker_runtime.py` | dev runtime — drives `docker`/OrbStack (msb's host↔guest relay is flaky on macOS) |
-| `runtime_factory.py` | `make_runtime` / `make_exposure` — pick backend + exposure by platform/env |
-| `exposure.py` | `ExposureStrategy` + `DirectPortExposure` (dev) + `SubdomainProxyExposure` (prod nginx) |
-| `ports.py` | `PortAllocator` — host-port range for web-UI forwards |
-| `status.py` | host-side reader for the agent-volunteered `status.json` (no guest execution) |
-| `store.py` | `SandboxStore` + `InMemorySandboxStore` |
-| `models.py` | `Sandbox` — Reef's own state record |
-| `fake_runtime.py` | in-memory runtime for tests/dev |
-| `api/` | the admin/fleet HTTP API (FastAPI) — Reef's own entrypoint |
-| `admin-ui/` | the operator dashboard (Vite + React) — see [`admin-ui/README.md`](admin-ui/README.md) |
-| `images/openclaw-runtime/` | the OpenClaw agent image (Dockerfile + entrypoint) |
-| `images/hermes-runtime/` | the Hermes agent image wrapper (upstream Hermes + baked Clawbits extension) |
-| `deploy/` | production setup — one-shot [`install.sh`](deploy/README.md) (Ubuntu), systemd unit (`Restart=always` + boot-start), env template, DB-backup timer |
-
-## Test
-
-```bash
-uv run pytest reef/tests -q
+```text
+main    roles/*.toml                platform team, by reviewed pull request
+fleet   fleet/<host>/<name>.toml    clawbits, one file per agent
+status  status/<host>.json          each host, from this timer
 ```
 
-Pure in-memory — no DB, network, or hypervisor required.
+Every 30 seconds the host pulls all three, and when `main` or `fleet` has moved
+it runs `reef role apply` and `reef fleet apply --prune`. Then it writes what
+`reef` observed to `status/<host>.json` and pushes, but only when the content
+changed — the commit is the timestamp.
 
-## Runtime selection
+A host that cannot reach the repository changes nothing. An apply that fails
+leaves the recorded HEADs alone, so the next tick retries it, and the status
+file still goes out: a failed agent's state and reason are the only diagnosis
+the org gets. `journalctl -u reef-reconcile` has the rest.
 
-One seam (`AdminRuntime`), two backends. `reef.runtime_factory.make_runtime()`
-picks **docker on macOS** (dev — OrbStack), **microsandbox elsewhere** (prod —
-Linux/KVM). Override with `REEF_RUNTIME=docker|microsandbox`. Both drive a CLI via
-subprocess and expose the same lifecycle + fleet surface, so nothing downstream
-changes. (Dev Docker has no per-container egress allowlist — a single-tenant
-local-dev trade-off; prod microVMs do.)
+## Set up a host
 
-Build agent images:
+Prepare the machine first: [reef's host
+guide](https://reef.clawbits.ai/docs/setup/host) covers `msb`, KVM, the `reef`
+account and the state directory. Then, as `reef`, put the provider secrets in
+`~/.local/state/reef/secrets.toml` (`chmod 600`) and check `reef doctor`.
 
-```bash
-reef/images/openclaw-runtime/build.sh
-# Hermes wrapper: first build/pull a `hermes-agent` base image, then:
-reef/images/hermes-runtime/build.sh
-# For msb hosts, load the built image into microsandbox's image store.
+`jq` and `git` are the only extra packages this needs.
+
+Give the host a deploy key with **write** access — it has to push status — and
+add it to the repository. A ruleset on `main` and `fleet` keeps that key off
+both.
+
+```sh
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 -C "reef@$(hostname)"
+ssh -o StrictHostKeyChecking=accept-new -T git@github.com || true
+cat ~/.ssh/id_ed25519.pub
 ```
 
-## Admin / fleet API
+One clone per branch, so `git pull --ff-only` is the only git the timer ever
+needs:
 
-Reef's own entrypoint — an operator view + lifecycle control over the agent
-microVMs, wrapping the runtime's `list/metrics/inspect/logs` and a create+expose
-path. Standalone (depends only on `reef.*` + FastAPI, never clawbits).
-
-```bash
-uv run python -m reef.api            # or: uv run uvicorn reef.api.app:app  → 127.0.0.1:8787
+```sh
+mkdir -p ~/agents
+for branch in main fleet status; do
+  git clone --branch "$branch" --single-branch git@github.com:ORG/REPO.git ~/agents/"$branch"
+done
+git -C ~/agents/status config user.name  reef
+git -C ~/agents/status config user.email reef@example.com
+printf 'version = 1\n' > ~/agents/empty.toml
 ```
 
-| Endpoint | What |
-|---|---|
-| `GET /fleet` | all sandboxes (live runtime + Reef metadata; `?state=running`) |
-| `POST /fleet` | create + expose a new agent VM (`{type: "openclaw"|"ironclaw"|"hermes", name?, cpus?, memory_mib?, org_id?, clawbits_url?, signup_token?, …}`) → `{sandbox_id, access:{url,password?}}` |
-| `GET /fleet/{id}` | detail — limits, network policy, mounts, **env with secrets redacted**, `access`, status telemetry |
-| `GET /fleet/{id}/logs?tail=N` | captured output |
-| `POST /fleet/{id}/start`·`/stop`, `DELETE /fleet/{id}` | lifecycle control |
-| `GET /healthz` | liveness + runtime reachability (unauthenticated) |
-| `GET /versions/latest` | latest available versions per runtime (`openclaw` · `ironclaw` · `hermes`) for the dashboard's "update available" hints (optional, best-effort, cached; IronClaw + Hermes floors are null — engines self-built / base-image, components in-tree) |
+`empty.toml` declares no agents. It is passed to every `fleet apply` so
+`--prune` stays meaningful when this host has no fleet files: reef bails when
+handed nothing, and a partial file list with `--prune` deletes every agent it
+cannot see.
 
-Auth (`reef/api/security.py`): **Cloudflare Access** JWT for human operators
-(`REEF_ACCESS_TEAM_DOMAIN` + `REEF_ACCESS_AUD`) and/or a **bearer service token**
-(`REEF_ADMIN_TOKEN`) for the clawbits→Reef machine path. Open only when neither is
-set (local dev).
+Install the script and the timer, naming this host — the name is the directory
+under `fleet/` and the file under `status/`, and it is what people pick in
+clawbits:
 
-Config (all `REEF_*`, optional): `REEF_RUNTIME`, `REEF_MSB_BIN`, `REEF_DOCKER_BIN`,
-`REEF_OPENCLAW_IMAGE` (default `reef-oc:plugin`), `REEF_HERMES_IMAGE` (default
-`reef-hm:plugin`), `REEF_API_HOST`/`REEF_API_PORT` (default `127.0.0.1:8787`),
-`REEF_CORS_ORIGINS` (default the Vite dev server), `REEF_BASE_DOMAIN` +
-`REEF_NGINX_DIR` / `REEF_TLS_*` / `REEF_SUBDOMAIN_SECRET` (prod web-UI exposure —
-see [`../nginx/reef-base.conf.example`](../nginx/reef-base.conf.example)).
+```sh
+install -m 755 reconcile.sh ~/agents/reconcile.sh
+sudo install -m 644 reef-reconcile.service reef-reconcile.timer /etc/systemd/system/
+sudo systemctl edit reef-reconcile.service      # [Service] Environment=REEF_HOST=prod-eu
+sudo systemctl enable --now reef-reconcile.timer
+```
 
-**Latest-version checks** (`GET /versions/latest`, optional + best-effort): `REEF_VERSION_CHECK`
-(`0` disables all outbound checks — default on), `REEF_CLAWBITS_URL` (opt-in clawbits base URL
-for the plugin-version floor; unset → plugin latest is skipped, keeping Reef decoupled),
-`REEF_VERSION_CHECK_TTL` (cache seconds, default `10800`). OpenClaw latest comes from npm, the
-reef image from the local `VERSION` file (swap for a registry tag once the image is published).
+`REEF_REPO` (default `~/agents`) and `REEF` (default `~/.local/bin/reef`)
+override the rest.
 
-## Operator UI
+## Check it
 
-`reef/admin-ui/` — a standalone Vite/React dashboard over the API above. See its
-[README](admin-ui/README.md). Separate from the customer app, per docs/REEF.md §10.
+```sh
+systemctl list-timers reef-reconcile.timer
+journalctl -u reef-reconcile -n 50
+git -C ~/agents/status log -1 --format='%cr'
+```
+
+The last one is the liveness signal the org sees: when the status commit stops
+advancing, this timer stopped.
+
+Once a status file lands, the host appears in clawbits under Settings → Reef and
+people can create agents on it. Nothing else on this host is ever contacted.

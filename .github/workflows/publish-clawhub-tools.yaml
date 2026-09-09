@@ -155,10 +155,9 @@ jobs:
       # support: the compat floor AND the SDK it was built against (2026.6.10
       # and 2026.6.33 today, so this runs twice).
       #
-      # The floor stays at 2026.6.10 to match the channel plugin and the
-      # OpenClaw tag Reef's runtime image pins (see
-      # reef/images/openclaw-runtime/Dockerfile) — both packages have to install
-      # into that same agent image. Because this step exercises the floor rather
+      # The floor stays at 2026.6.10 to match the channel plugin — both packages
+      # have to install into the same agent image
+      # (images/openclaw). Because this step exercises the floor rather
       # than trusting it, an artifact that can no longer load on the oldest
       # supported host fails the release instead of shipping a false claim.
       - name: Validate staged artifact against the floor and pinned OpenClaw SDKs

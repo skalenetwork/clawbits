@@ -180,7 +180,7 @@ export default function App() {
         </UserPresenceProvider>
       </AuthProvider>
       {/* Explicit DEV literal so the bundler drops this from production: the
-          devtools panel renders the whole query cache, reef reads included. */}
+          devtools panel renders the whole query cache. */}
       {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
     </QueryClientProvider>
     </ThemeProvider>

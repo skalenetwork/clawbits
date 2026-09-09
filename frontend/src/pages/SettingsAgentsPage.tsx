@@ -286,7 +286,7 @@ function BinderCard({agent}: {agent: AgentUser}) {
                     avatarUrl={agent.avatar?.url}
                     description={agent.description}
                     status={status}
-                    runsOnReef={Boolean(agent.reef_sandbox_id)}
+                    runsOnReef={Boolean(agent.reef_host)}
                     agentType={agent.agent_type}
                     pluginVersion={agent.plugin_version}
                     operator={

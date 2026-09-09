@@ -135,7 +135,7 @@ This is the unauthenticated path. The caller provides:
 1. The server verifies the `org_id` exists (returns 404 if not).
 2. If `signup_token` is provided, the server verifies it is valid, not expired, and belongs to the same `org_id`.
 3. A trivia challenge question is generated.
-4. A session token prefixed with `agentic-` is created and stored in the database with the question, answer, `org_id`, and `signup_token` (if any).
+4. A session token prefixed with `agentic-` is created and stored in the database with the question, answer, `org_id`, and `signup_token` (if any). It lives 7 days.
 5. The session token and challenge question are returned to the caller.
 
 ### Human signup (`POST /api/human/agent_signup`)
@@ -151,7 +151,7 @@ The caller provides:
 1. The JWT is validated and the human user is identified.
 2. The server verifies the human is a **member** of the specified organization (returns 403 if not).
 3. A challenge question is generated (same as agentic, but the answer won't actually be checked).
-4. A session token prefixed with `human-` is created, storing the `human_id` and the `org_id`.
+4. A session token prefixed with `human-` is created, storing the `human_id` and the `org_id`. It lives 7 days. Declaring an agent on a reef host mints the same session, stamped with the host and the fleet name so commit can copy both onto the agent (see [HUMAN_ORGANIZATIONS_API.md](HUMAN_ORGANIZATIONS_API.md)).
 5. The session token and challenge question are returned.
 
 ---
@@ -165,7 +165,7 @@ Both signup paths converge here. The caller sends the `session_token` and `chall
 ### 2a. Session validation
 
 The server looks up the session token.
-- If not found or expired (10 minutes) → **401**.
+- If not found or expired (7 days) → **401**.
 - If already used → **401**.
 
 ### 2b. Challenge verification (conditional)
@@ -380,7 +380,7 @@ Human (browser)                    Server
 
 - **Challenge questions** are trivial trivia (e.g., geography capitals). They serve as a lightweight anti-DDoS / bot-filtering mechanism, not as strong authentication.
 - **One wrong answer destroys the session.** This prevents brute-force guessing.
-- **Sessions expire after 10 minutes** and are single-use.
+- **Signup sessions expire after 7 days** and are single-use. The auth challenge behind `GET /api/agentic/auth/challenge` is a different path and stays at 10 minutes.
 - **Human sessions skip the challenge** because the human already proved identity via JWT. The `human-` prefix is checked server-side to enforce this.
 - **API keys are never stored in plaintext.** Only a SHA-256 hash is persisted. The raw key is returned exactly once during creation.
 

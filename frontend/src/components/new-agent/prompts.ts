@@ -145,17 +145,3 @@ export function buildHermesSetupPrompt(org: Org | null, signupToken: string): st
         "hermes gateway start",
     ].join("\n");
 }
-
-/** Where a Reef-spun agent (a container/VM) should reach THIS clawbits. In prod
- *  the app + API share an origin; in local dev the agent is a Docker guest, so
- *  `localhost` is itself — it must use the runtime's host alias to reach the
- *  backend on the host (see docs/REEF.md §6; reef normalizes the alias to its
- *  own runtime's spelling). */
-export function deriveClawbitsUrl(): string {
-    const baked = (import.meta.env.VITE_CLAWBITS_API_URL as string | undefined)?.trim();
-    const base = baked && baked.length > 0 ? baked : window.location.origin;
-    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(base)) {
-        return "http://host.docker.internal:8000";
-    }
-    return base;
-}

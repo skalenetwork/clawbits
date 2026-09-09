@@ -1,10 +1,12 @@
 """Organization data models (GitHub-style orgs)."""
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from clawbits.datastructures.avatar_models import AvatarRef
+from clawbits.reef_repo import NAME_RE, OWNER_RE, PUBLIC_HOST_RE, REPO_RE
 
 # ---------------------------------------------------------------------------
 # Requests
@@ -32,21 +34,33 @@ class UpdateOrgMemberRoleRequest(BaseModel):
     role: Literal["owner", "member"] = Field(description="New role in the organization")
 
 
-class SetReefConnectionRequest(BaseModel):
-    """Connect (or re-point) the org's self-hosted Reef. We persist ONLY this URL."""
+class SetReefRepoRequest(BaseModel):
+    """Connect the org's reef repository. Git is the only bus to a reef host."""
     model_config = ConfigDict(extra="forbid", frozen=True)
-    api_url: str = Field(
-        min_length=1, max_length=2048,
-        description="Base URL of the self-hosted Reef API, reachable over the owner's tunnel",
+    repo: str = Field(
+        pattern=REPO_RE.pattern,
+        description="The private repository on github.com, as ``owner/name``",
+    )
+    token: str = Field(
+        min_length=1, max_length=512,
+        description="Fine-grained token scoped to that repository, Contents read and write",
     )
 
-    @field_validator("api_url")
-    @classmethod
-    def _normalize_url(cls, v: str) -> str:
-        v = v.strip().rstrip("/")
-        if not (v.startswith("http://") or v.startswith("https://")):
-            raise ValueError("api_url must start with http:// or https://")
-        return v
+
+class CreateReefAgentRequest(BaseModel):
+    """Declare one agent on a reef host: clawbits writes its fleet file."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    host: str = Field(pattern=NAME_RE.pattern, description="A host that has written a status file")
+    role: str = Field(pattern=NAME_RE.pattern, description="A role from the org's catalog")
+    name: str = Field(pattern=NAME_RE.pattern, description="The agent's name on that host")
+    owner: str | None = Field(
+        default=None, pattern=OWNER_RE.pattern,
+        description="Who `reef agent serve` admits for terminals; defaults to the caller",
+    )
+    public_host: str | None = Field(
+        default=None, pattern=PUBLIC_HOST_RE.pattern,
+        description="Optional OPENCLAW_PUBLIC_HOST for the agent's own URL",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +223,58 @@ class OrgListResponse(BaseModel):
     total: int
 
 
-class ReefConnectionResponse(BaseModel):
-    """The org's connected Reef API URL, or ``None`` when no Reef is connected."""
-    api_url: str | None = None
+class ReefHostResponse(BaseModel):
+    """One reef host, as its own status file describes it. ``last_seen`` is when
+    that file last changed — the host writes no timestamp, so a commit that stops
+    advancing is what a stopped reconciler looks like."""
+    host: str
+    reef: str | None = None
+    agents: int
+    last_seen: datetime | None = None
+
+
+class ReefResponse(BaseModel):
+    """The org's reef repository. ``connected`` is false when no repository is
+    stored, or when its token cannot be unsealed (the secrets key rotated)."""
+    repo: str | None = None
+    connected: bool
+    hosts: list[ReefHostResponse] = []
+
+
+class ReefSecretResponse(BaseModel):
+    env: str
+    host: str
+
+
+class ReefRoleResponse(BaseModel):
+    """One reviewed role from ``main:roles/``: the whole blast radius an agent
+    created from it inherits."""
+    name: str
+    image: str
+    egress: list[str]
+    secrets: list[ReefSecretResponse]
+    resources: dict[str, int]
+
+
+class ReefDeclaredResponse(BaseModel):
+    """An agent whose fleet file is written but which has not enrolled yet."""
+    host: str
+    name: str
+    expires_at: datetime
+
+
+class ReefStatusResponse(BaseModel):
+    """What each host last pushed, verbatim. The per-host blob stays opaque so
+    a new field in reef's ``--json`` rows reaches the UI without a change here."""
+    hosts: dict[str, dict[str, Any]]
+    declared: list[ReefDeclaredResponse]
+
+
+class ReefAgentResponse(BaseModel):
+    """The declared agent, and when its one-time signup token dies."""
+    host: str
+    name: str
+    expires_at: datetime
 
 
 class OrgMemberResponse(BaseModel):

@@ -1,6 +1,6 @@
 /**
  * The always-visible summary of past choices — and the wizard's stepper.
- * Centered under the title, one chip per step of the current mode's sequence:
+ * Centered under the title, one chip per step:
  * completed chips carry the chosen value (icon over a tiny label) and jump
  * back on click; the current step is highlighted (and the only one with a
  * full-color icon — others gray out); steps not yet reached render as muted
@@ -8,33 +8,14 @@
  * freezes (dimmed, non-interactive) until failure unfreezes it.
  */
 import type {ReactNode} from "react";
-import {
-    Comment02Icon as SkipGlyph,
-    CpuIcon as Chip,
-    Settings02Icon as Sliders,
-} from "@hugeicons/core-free-icons";
-import {Icon} from "@/components/Icon";
 import {cn} from "@/lib/utils";
-import type {ReefProvider} from "@/lib/reefApi";
 import {MaskIcon} from "./bits";
-import {providerBrand} from "./brands";
-import {stepsFor, STEP_TITLES, type Runtime, type StepId, type WizardState} from "./useWizard";
+import {STEPS, STEP_TITLES, type Runtime, type StepId, type WizardState} from "./useWizard";
 
-// Chip icons keep their brand colors (deploy marks + AI providers); ollama's
-// and nearai's marks are monochrome by design and the utility icons stay
-// neutral.
-const REEF_TINT = "text-[#FF8781]";
-const SELF_TINT = "text-[#6260ec]";
 const CONNECT_TINT = "text-[#0EA5E9]";
 // The Hermes mark renders in plain ink (black / white by theme), not a brand
 // colour — the silhouette is the brand.
 const HERMES_TINT = "text-foreground";
-const PROVIDER_TINTS: Record<string, string> = {
-    anthropic: "text-[#D97757]",
-    openai: "text-[#10A37F]",
-    gemini: "text-[#4285F4]",
-};
-
 /** The runtime chip's mark + name. OpenClaw/IronClaw ship colour rasters; the
  *  Hermes mark is a monochrome silhouette, so it tints via MaskIcon. */
 const RUNTIME_CHIPS: Record<Runtime, {title: string; icon: ReactNode}> = {
@@ -55,46 +36,12 @@ const RUNTIME_CHIPS: Record<Runtime, {title: string; icon: ReactNode}> = {
 function chipValue(
     step: StepId,
     state: WizardState,
-    providers: ReefProvider[] | null,
-    passed: boolean,
 ): {icon: React.ReactNode; label: string} | null {
     switch (step) {
-        case "deploy":
-            if (!state.mode) return null;
-            return state.mode === "reef"
-                ? {icon: <MaskIcon src="/reef.svg" className={cn("size-6", REEF_TINT)}/>, label: "Reef"}
-                : {icon: <MaskIcon src="/server4-filled.svg" className={cn("size-6", SELF_TINT)}/>, label: "Self-hosted"};
         case "runtime": {
             if (!state.runtime) return null;
             const {title, icon} = RUNTIME_CHIPS[state.runtime];
-            return {
-                icon,
-                label: state.imageTag ? `${title} · ${state.imageTag.split(":").pop() ?? ""}` : title,
-            };
-        }
-        case "model": {
-            if (!state.providerId) return null;
-            if (state.providerId === "none") {
-                return {icon: <Icon icon={SkipGlyph} className="size-6"/>, label: "Model later"};
-            }
-            const p = providers?.find(x => x.id === state.providerId);
-            const {Glyph} = providerBrand(state.providerId);
-            const isCodex = state.providerId === "openai-codex";
-            const tint = PROVIDER_TINTS[state.providerId];
-            return {
-                icon: Glyph ? <Glyph className={cn("size-6", tint)}/> : <Icon icon={Chip} className="size-6"/>,
-                // Just the provider — the model choice stays the Options step's
-                // detail. The subscription card's full label is long for a chip.
-                label: isCodex ? "ChatGPT" : (p?.label ?? state.providerId),
-            };
-        }
-        case "options": {
-            const n = state.envRows.filter(r => r.key.trim().length > 0).length;
-            if (n > 0) {
-                return {icon: <Icon icon={Sliders} className="size-6"/>, label: `${String(n)} env var${n > 1 ? "s" : ""}`};
-            }
-            // Nothing extra picked: only reads "Defaults" once the step is behind us.
-            return passed ? {icon: <Icon icon={Sliders} className="size-6"/>, label: "Defaults"} : null;
+            return {icon, label: title};
         }
         case "connect":
             return state.launched
@@ -108,17 +55,15 @@ function chipValue(
 export function SummaryRail({
     state,
     frozen,
-    providers,
     onGoto,
 }: {
     state: WizardState;
     frozen: boolean;
-    providers: ReefProvider[] | null;
     onGoto: (step: StepId) => void;
 }) {
     // Launch isn't a step to navigate — reaching it just locks the rail
     // (every chip freezes as the record of what was chosen).
-    const seq = stepsFor(state.mode).filter(s => s !== "launch");
+    const seq = STEPS.filter(s => s !== "launch");
     const currentIdx = state.step === "launch" ? seq.length : seq.indexOf(state.step);
     return (
         <div
@@ -129,7 +74,7 @@ export function SummaryRail({
             aria-label="Setup progress"
         >
             {seq.map((step, i) => {
-                const value = chipValue(step, state, providers, i < currentIdx);
+                const value = chipValue(step, state);
                 const isCurrent = i === currentIdx;
                 const reachable = value !== null || i < currentIdx;
                 if (value === null && !isCurrent && !reachable) {

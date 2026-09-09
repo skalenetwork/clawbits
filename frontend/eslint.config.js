@@ -7,10 +7,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  // Excluded from tsconfig.app.json (it imports reef/admin-ui, which the
-  // frontend Docker build context doesn't contain), so type-aware linting
-  // can't parse it either. CI runs it under vitest with the whole repo.
-  globalIgnores(['dist', 'src/components/reef/envApplyParity.test.ts']),
+  globalIgnores(['dist']),
   {
     files: ['**/*.{ts,tsx}'],
     plugins: {

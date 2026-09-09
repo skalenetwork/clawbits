@@ -133,8 +133,6 @@ export interface AgentCollectibleCardProps {
    *  site). Derive it via ``useAgentStatus`` so it ticks offline on its own. */
   status?: AgentLivenessStatus | null;
   runsOnReef?: boolean;
-  /** Click handler for the "Runs on Reef" sticker (e.g. open reef settings). */
-  onReefClick?: () => void;
   /** Runtime kind ("openclaw" | "ironclaw") self-reported by the agent's plugin.
    *  Renders a small logo sticker (logo only, no background) in the top-left
    *  corner. Omit/unknown → no sticker. */
@@ -224,7 +222,6 @@ export function AgentCollectibleCard({
   description,
   status,
   runsOnReef = false,
-  onReefClick,
   agentType,
   pluginVersion,
   themeOverrides,
@@ -287,8 +284,6 @@ export function AgentCollectibleCard({
         key: "reef",
         icon: <ReefCoralGlyph color={theme.accent} className={ICON_CLS} />,
         text: "Reef", textColor: theme.accent,
-        onClick: interactive ? onReefClick : undefined,
-        title: interactive ? "Runs on Reef - open Reef settings" : undefined,
       });
     // Plugin version — a frosted rail chip next to Reef (full variant only, so
     // the smaller "grid" card doesn't carry it). Informational, so no onClick.

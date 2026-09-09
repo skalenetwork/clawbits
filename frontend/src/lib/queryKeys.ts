@@ -53,18 +53,8 @@ export const queryKeys = {
   orgSignupRequests: (orgId: string) => ["org", orgId, "signup-requests"] as const,
   /** The org's LobsterTalk attention config (toggle + mode + LLM connection). */
   orgLobstertalk: (orgId: string) => ["org", orgId, "lobstertalk"] as const,
-  /** The org's stored Reef API URL (clawbits backend). */
-  reefConnection: (orgId: string) => ["org", orgId, "reef-connection"] as const,
-  /** Browser-direct Reef health probe for the connection's status badge. */
-  reefHealth: (orgId: string) => ["org", orgId, "reef-health"] as const,
-  /** Browser-direct Reef fleet list (gated on the in-memory session token). */
-  reefFleet: (orgId: string) => ["org", orgId, "reef-fleet"] as const,
-  /** Browser-direct Reef provider availability (presence booleans only). */
-  reefProviders: (orgId: string) => ["org", orgId, "reef-providers"] as const,
-  /** One agent's Reef env (key names + lengths, never values). Keyed by
-   *  sandbox id, so the agent Manage section and Settings → Reef share a cache. */
-  reefAgentEnv: (orgId: string, sandboxId: string) =>
-    ["org", orgId, "reef-agent-env", sandboxId] as const,
+  /** The org's reef repository, plus the hosts reporting into it. */
+  reef: (orgId: string) => ["org", orgId, "reef"] as const,
   /** Operator-only agent email inbox (Stalwart). */
   agentInbox: {
     /** Prefix to invalidate every cache for one agent's inbox at once. */

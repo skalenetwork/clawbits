@@ -25,7 +25,6 @@ import { Stagger } from "@/components/agent/manage/Stagger";
 import { IdentitySection } from "@/components/agent/manage/IdentitySection";
 import { BehaviorSection } from "@/components/agent/manage/BehaviorSection";
 import { AccessSection } from "@/components/agent/manage/AccessSection";
-import { EnvSection } from "@/components/agent/manage/EnvSection";
 import { DangerZone } from "@/components/agent/manage/DangerZone";
 
 export default function AgentManagePage() {
@@ -84,12 +83,6 @@ export default function AgentManagePage() {
           {profile.is_operator && (
             <Stagger delay={80}>
               <BehaviorSection orgId={orgId} profile={profile} />
-            </Stagger>
-          )}
-
-          {profile.reef_sandbox_id && (
-            <Stagger delay={160}>
-              <EnvSection orgId={orgId} sandboxId={profile.reef_sandbox_id} />
             </Stagger>
           )}
 

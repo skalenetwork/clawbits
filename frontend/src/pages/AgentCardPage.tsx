@@ -5,7 +5,7 @@
  * This is the index route for an agent (`/agents/:id`); the buttons deep-link to
  * the routed subpages. The agent profile is loaded once by {@link AgentShell}.
  */
-import { type CSSProperties, useState } from "react";
+import { type CSSProperties } from "react";
 import { Link, useNavigate, useOutletContext } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -13,18 +13,13 @@ import {
   Clock05Icon,
   Settings02Icon,
   BubbleChatIcon,
-  TerminalIcon,
-  CrabIcon,
-  DashboardSquare01Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { agentDisplay } from "@/lib/agentDisplay";
 import { auraFromSeed } from "@/lib/gradientFromSeed";
 import { useAgentStatus } from "@/hooks/useAgentPresence";
-import { createOrGetMmDirect, listAgentAutomations, getReefConnection } from "@/lib/api";
+import { createOrGetMmDirect, listAgentAutomations } from "@/lib/api";
 import { supportsAutomations } from "@/lib/automations";
-import { forgetTokenIfRejected } from "@/lib/reefApi";
-import { OpenSurfaceDialog } from "@/components/reef/OpenSurfaceDialog";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -174,20 +169,6 @@ export default function AgentCardPage() {
 
   const canChat = Boolean(profile?.can_dm);
 
-  // Reef-hosted agents get quick "Terminal" / "OpenClaw gateway" actions. Both
-  // need the org's connected Reef (its api_url); the one-time access password is
-  // collected by OpenSurfaceDialog on open (never stored). Operator-only.
-  const isReefHosted = Boolean(profile?.reef_sandbox_id);
-  const reefConnQuery = useQuery({
-    queryKey: queryKeys.reefConnection(orgId),
-    queryFn: () => getReefConnection(orgId),
-    enabled: Boolean(orgId) && isOperator && isReefHosted,
-    retry: false,
-  });
-  const reefApiUrl = reefConnQuery.data?.api_url ?? null;
-  const canOpenSurfaces = isOperator && isReefHosted && Boolean(reefApiUrl);
-  const [openSurface, setOpenSurface] = useState<"ui" | "terminal" | null>(null);
-
   return (
     <div className="@container relative flex flex-1 flex-col items-center justify-start px-4 pt-4 pb-16 @4xl:justify-center">
       <PageHeader breadcrumb={agentBreadcrumbs(agentId, profile, undefined, { onAll: backToAll })} />
@@ -268,10 +249,8 @@ export default function AgentCardPage() {
               avatarUrl={profile.avatar?.url}
               email={profile.email_address}
               status={status}
-              runsOnReef={Boolean(profile.reef_sandbox_id)}
               agentType={profile.agent_type}
               pluginVersion={profile.plugin_version}
-              onReefClick={() => { void navigate("/settings/reef"); }}
               operator={
                 profile.operator
                   ? {
@@ -293,48 +272,21 @@ export default function AgentCardPage() {
             )}
           </div>
 
-          {/* Right rail — (reef-hosted) Terminal + OpenClaw UI, then Manage.
-              Operator-only. */}
+          {/* Right rail — Manage. Operator-only. */}
           {isOperator && (
             <ButtonColumn order="order-3">
-              {canOpenSurfaces && (
-                <>
-                  <CardNavButton
-                    icon={TerminalIcon}
-                    label="Terminal"
-                    onClick={() => { setOpenSurface("terminal"); }}
-                    delay={140}
-                  />
-                  {/* The primary web surface is runtime-specific: OpenClaw's
-                      Control UI vs the Hermes dashboard. */}
-                  <CardNavButton
-                    icon={profile.agent_type === "hermes" ? DashboardSquare01Icon : CrabIcon}
-                    label={profile.agent_type === "hermes" ? "Dashboard" : "OpenClaw UI"}
-                    onClick={() => { setOpenSurface("ui"); }}
-                    delay={200}
-                  />
-                </>
-              )}
               <CardNavButton
                 icon={Settings02Icon}
                 label="Manage"
                 to={`${base}/manage`}
                 onNavigate={suppressCardMorph}
-                delay={canOpenSurfaces ? 260 : 140}
+                delay={140}
               />
             </ButtonColumn>
           )}
         </div>
       )}
 
-      {openSurface !== null && profile?.reef_sandbox_id && reefApiUrl && (
-        <OpenSurfaceDialog
-          target={{ id: profile.reef_sandbox_id, surface: openSurface }}
-          apiUrl={reefApiUrl}
-          onClose={() => { setOpenSurface(null); }}
-          onAuthReject={forgetTokenIfRejected}
-        />
-      )}
     </div>
   );
 }

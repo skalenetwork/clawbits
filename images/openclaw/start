@@ -20,6 +20,20 @@ else
   cp /usr/local/share/clawbits-soul.md "$house/SOUL.md"
 fi
 
+# The gateway token is a property of this machine, not of the fleet file: it
+# lives on the state volume, so it survives a recreate and never has to travel
+# through git. Read it with:
+#   reef agent exec NAME -- cat /home/node/.openclaw/state/gateway-token
+gateway_token=/home/node/.openclaw/state/gateway-token
+if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+  if [ ! -s "$gateway_token" ]; then
+    (umask 077; od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$gateway_token")
+    if [ "$(id -u)" = 0 ]; then chown node:node "$gateway_token"; fi
+  fi
+  OPENCLAW_GATEWAY_TOKEN="$(cat "$gateway_token")"
+  export OPENCLAW_GATEWAY_TOKEN
+fi
+
 if ! boot probe && [ -n "${CLAWBITS_ORG_ID:-}" ] && [ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ]; then
   oc clawbits signup --json --endpoint "$ep" --org-id "$CLAWBITS_ORG_ID" \
     --signup-token "$CLAWBITS_SIGNUP_TOKEN" \

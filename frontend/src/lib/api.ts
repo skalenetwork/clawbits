@@ -93,10 +93,10 @@ export interface AgentUser {
    *  contact allowlist — gates the "Who can contact" management panel. */
   can_manage_contacts?: boolean;
   avatar?: AvatarRef | null;
-  /** The reef VM (sandbox id) this agent runs in, when it was provisioned via
-   *  "Add agent → Run on Reef". Null for self-hosted agents. The reef base URL
-   *  is the org's connected Reef (``getReefConnection``). */
-  reef_sandbox_id?: string | null;
+  /** The reef host and fleet name this agent was declared under. Null for a
+   *  self-hosted agent. */
+  reef_host?: string | null;
+  reef_name?: string | null;
   /** Runtime kind self-reported by the agent's plugin on its liveness ping
    *  ("openclaw" | "ironclaw" | "hermes"). Null until the first modern ping —
    *  drives the card's type-logo sticker. */
@@ -154,9 +154,10 @@ export interface AgentProfile {
   lobstertalk_message_limit?: number;
   /** Server-generated bottts avatar (see :class:`AvatarRef`). */
   avatar?: AvatarRef | null;
-  /** The reef VM (sandbox id) this agent runs in, when provisioned via "Run on
-   *  Reef". Null for self-hosted agents. */
-  reef_sandbox_id?: string | null;
+  /** The reef host and fleet name this agent was declared under. Null for a
+   *  self-hosted agent. */
+  reef_host?: string | null;
+  reef_name?: string | null;
   /** Runtime kind self-reported by the agent's plugin ("openclaw" | "ironclaw"
    *  | "hermes"). Null until the first modern liveness ping — drives the card's
    *  type sticker. */
@@ -513,42 +514,60 @@ export async function removeOrgMember(
   return res.json() as Promise<{ members: OrgMember[]; total: number }>;
 }
 
-/** The org's connected self-hosted Reef. clawbits stores ONLY this URL — the
- *  browser talks to Reef directly (see lib/reefApi.ts), never the backend. */
-export interface ReefConnection {
-  api_url: string | null;
+/** The org's reef repository and the hosts reporting into it.
+ *
+ *  Git is the bus: Clawbits writes one file per agent to the repo's `fleet`
+ *  branch and reads what each host pushes to `status`. It never talks to a reef
+ *  host, and nothing on the network reaches one — the host pulls on a timer. */
+export interface ReefHost {
+  host: string;
+  reef: string | null;
+  agents: number;
+  /** When this host last pushed its status file. The host writes no timestamp
+   *  of its own, so a value that stops advancing is a stopped reconciler. */
+  last_seen: string | null;
 }
 
-export async function getReefConnection(orgId: string): Promise<ReefConnection> {
+export interface Reef {
+  repo: string | null;
+  /** False when nothing is stored, or when the token can no longer be
+   *  unsealed. Reconnecting is the fix either way. */
+  connected: boolean;
+  hosts: ReefHost[];
+}
+
+export async function getReef(orgId: string): Promise<Reef> {
   if (!orgId) throw new Error("orgId is required");
-  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/reef-connection`, {
+  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/reef`, {
     credentials: "include",
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<ReefConnection>;
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<Reef>;
 }
 
-/** Connect (or re-point) the org's Reef. Owner-only on the server. */
-export async function setReefConnection(orgId: string, apiUrl: string): Promise<ReefConnection> {
+/** Connect the org's reef repository. Owner-only on the server. The token is
+ *  proven against GitHub before anything is stored, and never returned. */
+export async function setReef(orgId: string, repo: string, token: string): Promise<Reef> {
   if (!orgId) throw new Error("orgId is required");
-  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/reef-connection`, {
+  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/reef`, {
     credentials: "include",
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_url: apiUrl }),
+    body: JSON.stringify({ repo, token }),
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<ReefConnection>;
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<Reef>;
 }
 
-/** Disconnect the org's Reef (clears the stored URL). Owner-only on the server. */
-export async function deleteReefConnection(orgId: string): Promise<void> {
+/** Disconnect the repository. Owner-only. Agents already declared keep running:
+ *  their fleet files stay on the branch, untouched. */
+export async function deleteReef(orgId: string): Promise<void> {
   if (!orgId) throw new Error("orgId is required");
-  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/reef-connection`, {
+  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/reef`, {
     credentials: "include",
     method: "DELETE",
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readErrorDetail(res));
 }
 
 /** The org's LobsterTalk attention config. ``mode`` picks the pipeline —
@@ -718,19 +737,6 @@ export async function startHumanAgentSignup(orgId: string): Promise<AgentSignupS
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<AgentSignupSession>;
-}
-
-/** Link a reef VM (sandbox id) to the agent a pending signup session will
- *  create. Called by "Add agent → Run on Reef" right after reef returns the
- *  sandbox id, so the resulting agent records which reef VM it runs in. */
-export async function linkReefVm(sessionToken: string, sandboxId: string): Promise<void> {
-  const res = await fetch("/api/human/agents/link-reef-vm", {
-    credentials: "include",
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_token: sessionToken, sandbox_id: sandboxId }),
-  });
-  if (!res.ok) throw new Error(await res.text());
 }
 
 export async function listOrgSignupRequests(orgId: string): Promise<{ requests: AgentSignupRequest[] }> {

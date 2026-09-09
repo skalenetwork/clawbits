@@ -21,8 +21,48 @@ from clawbits.db.table_write import TableWrite
 
 logger = logging.getLogger(__name__)
 
+# Long enough for a reef agent to reach its first boot: the fleet file the token
+# rides in is pulled by a timer, and a cold image pull on a host that was down
+# for a while is measured in hours, not minutes. Single use either way. The
+# per-call auth challenge behind GET /api/agentic/auth/challenge is a different
+# path and stays at ten minutes.
+SIGNUP_TOKEN_TTL = timedelta(days=7)
+
+
+def _reef_pair(session: dict) -> tuple[str, str] | None:
+    """``(host, name)`` when this signup session was minted by declaring an
+    agent on a reef host, else ``None``. Both columns move together."""
+    host, name = session.get("reef_host"), session.get("reef_name")
+    return (host, name) if host and name else None
+
 
 class AgentSignup:
+    @staticmethod
+    def mint_human_session(
+        db: Session,
+        org_id: str,
+        human_id: int,
+        reef: tuple[str, str] | None = None,
+    ) -> tuple[str, str, datetime]:
+        """``(session_token, challenge, expires_at)`` for a human-initiated
+        signup. The ``human-`` prefix is what lets commit skip the challenge,
+        so the answer is stored and never checked. Does not commit."""
+        question, answer = get_random_question_answer()
+        session_token = "human-" + secrets.token_urlsafe(32)
+        expires_at = datetime.now(UTC) + SIGNUP_TOKEN_TTL
+        TableWrite.create_challenge_session(
+            db,
+            session_token=session_token,
+            question=question,
+            answer=answer,
+            expires_at=expires_at,
+            org_id=org_id,
+            human_id=human_id,
+            reef_host=reef[0] if reef else None,
+            reef_name=reef[1] if reef else None,
+        )
+        return session_token, question, expires_at
+
     @staticmethod
     def agents_signup_impl(
         server,
@@ -56,7 +96,7 @@ class AgentSignup:
         session_token = "agentic-" + secrets.token_urlsafe(32)
 
         # Persist the challenge session in the database with a short expiration (e.g., 10 minutes)
-        expires_at = datetime.now(UTC) + timedelta(minutes=10)
+        expires_at = datetime.now(UTC) + SIGNUP_TOKEN_TTL
         with Session(server._engine) as db:
             TableWrite.create_challenge_session(
                 db,
@@ -143,11 +183,11 @@ class AgentSignup:
                     )
 
             signup_token = challenge.get("owner_email")
-            # "Run on Reef" stamps the reef VM id onto the human signup session
-            # (which is ``challenge`` for a direct human-commit, or the
-            # ``signup_session`` looked up below for the VM/agentic path). NULL
-            # for self-hosted signups.
-            reef_sandbox_id: str | None = challenge.get("reef_sandbox_id")
+            # Declaring an agent on a reef host stamps the host and fleet name
+            # onto the human signup session (which is ``challenge`` for a direct
+            # human-commit, or the ``signup_session`` looked up below for the
+            # agentic path). None for self-hosted signups.
+            reef: tuple[str, str] | None = _reef_pair(challenge)
             if human_id is not None and signup_token:
                 signup_session = TableRead.get_challenge_session(db, signup_token)
                 if signup_session is None:
@@ -157,7 +197,7 @@ class AgentSignup:
                 if datetime.now(UTC) > signup_session["expires_at"]:
                     TableWrite.delete_challenge_session(db, signup_token)
                     raise HTTPException(status_code=401, detail="Signup token expired")
-                reef_sandbox_id = signup_session.get("reef_sandbox_id") or reef_sandbox_id
+                reef = _reef_pair(signup_session) or reef
                 TableWrite.mark_challenge_session_used(db, signup_token)
             TableWrite.mark_challenge_session_used(db, session_token)
 
@@ -180,9 +220,9 @@ class AgentSignup:
                 )
 
             api_key_str = TableWrite.create_agent(db, agent_id, nickname)
-            if reef_sandbox_id:
-                # Provisioned via "Run on Reef": link the agent to its reef VM.
-                TableWrite.set_agent_reef_sandbox(db, agent_id.value, reef_sandbox_id)
+            if reef is not None:
+                # Declared on a reef host: carry the pair onto the agent row.
+                TableWrite.set_agent_reef(db, agent_id.value, *reef)
 
             if human_id is not None:
                 # Human/token-initiated: bind org + operator + DM immediately.

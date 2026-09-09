@@ -203,7 +203,8 @@ class TableRead:
             "owner_email": row.owner_email,
             "org_id": row.org_id,
             "human_id": row.human_id,
-            "reef_sandbox_id": row.reef_sandbox_id,
+            "reef_host": row.reef_host,
+            "reef_name": row.reef_name,
         }
 
     @staticmethod
@@ -1204,10 +1205,50 @@ class TableRead:
         return TableRead._org_to_dict(row) if row else None
 
     @staticmethod
-    def get_org_reef_api_url(session: Session, org_id: str) -> str | None:
-        """The org's connected Reef API base URL, or ``None`` if no Reef is connected."""
+    def get_org_reef(session: Session, org_id: str) -> tuple[str, str] | None:
+        """``(repo, sealed_token)`` for the org's reef repository, or ``None``
+        when the org has none. The token stays sealed here — only
+        :mod:`clawbits.reef_repo`'s caller unseals it, per request."""
         row = session.get(Organization, org_id)
-        return row.reef_api_url if row else None
+        if row is None or not row.reef_repo or not row.reef_repo_token:
+            return None
+        return row.reef_repo, row.reef_repo_token
+
+    @staticmethod
+    def get_org_reef_agent_operator(
+        session: Session, org_id: str, host: str, name: str
+    ) -> int | None:
+        """The operator of the org's agent declared as ``host``/``name``, or
+        ``None`` when no agent has enrolled under that pair yet."""
+        row = session.exec(
+            select(Agent)
+            .where(
+                Agent.org_id == org_id,
+                Agent.reef_host == host,
+                Agent.reef_name == name,
+            )
+            .order_by(Agent.creation_time.desc())
+        ).first()
+        return row.operator_id if row else None
+
+    @staticmethod
+    def list_declared_reef_agents(
+        session: Session, org_id: str, now: datetime
+    ) -> list[dict]:
+        """Agents declared on a reef host whose signup token is still unspent:
+        the fleet file is written but the VM has not enrolled yet."""
+        rows = session.exec(
+            select(ChallengeSession).where(
+                ChallengeSession.org_id == org_id,
+                ChallengeSession.reef_host.is_not(None),
+                ChallengeSession.used == False,  # noqa: E712
+                ChallengeSession.expires_at > now,
+            )
+        ).all()
+        return [
+            {"host": r.reef_host, "name": r.reef_name, "expires_at": r.expires_at}
+            for r in rows
+        ]
 
     @staticmethod
     def get_org_attention_enabled(session: Session, org_id: str) -> bool:

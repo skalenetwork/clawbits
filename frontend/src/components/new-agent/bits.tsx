@@ -9,7 +9,6 @@ import {Input} from "@/components/ui/input";
 import {Icon} from "@/components/Icon";
 import {cn} from "@/lib/utils";
 
-export {AddEnvRowButton, EnvVarRow} from "@/components/reef/envRows";
 
 /** A monochrome SVG silhouette painted with the CURRENT text colour (CSS mask,
  *  not `<img>`). Use this for single-colour glyphs — an `<img>` would freeze them

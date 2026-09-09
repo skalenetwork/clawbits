@@ -301,14 +301,14 @@ class TableWrite:
         return api_key
 
     @staticmethod
-    def set_agent_reef_sandbox(
-        session: Session, agent_id: str, sandbox_id: str
-    ) -> None:
-        """Record the reef VM an agent runs in (set at signup-commit for the
-        'Run on Reef' flow). Best-effort: a missing row is a no-op."""
+    def set_agent_reef(session: Session, agent_id: str, host: str, name: str) -> None:
+        """Record the reef host and fleet name an agent was declared under,
+        copied from its signup session at commit. Best-effort: a missing row
+        is a no-op."""
         row = session.get(Agent, agent_id)
         if row is not None:
-            row.reef_sandbox_id = sandbox_id
+            row.reef_host = host
+            row.reef_name = name
             session.flush()
 
     @staticmethod
@@ -379,6 +379,8 @@ class TableWrite:
         owner_email: str | None = None,
         org_id: str | None = None,
         human_id: int | None = None,
+        reef_host: str | None = None,
+        reef_name: str | None = None,
     ) -> None:
         session.add(
             ChallengeSession(
@@ -390,6 +392,8 @@ class TableWrite:
                 owner_email=owner_email,
                 org_id=org_id,
                 human_id=human_id,
+                reef_host=reef_host,
+                reef_name=reef_name,
             )
         )
         session.flush()
@@ -400,20 +404,6 @@ class TableWrite:
         if row is not None:
             row.used = True
             session.flush()
-
-    @staticmethod
-    def set_challenge_reef_sandbox(
-        session: Session, session_token: str, sandbox_id: str
-    ) -> bool:
-        """Record which reef VM a pending signup session provisioned, so
-        signup-commit can copy it onto the resulting agent. Returns False when
-        the session doesn't exist (the caller 404s)."""
-        row = session.get(ChallengeSession, session_token)
-        if row is None:
-            return False
-        row.reef_sandbox_id = sandbox_id
-        session.flush()
-        return True
 
     @staticmethod
     def cleanup_expired_challenge_sessions(session: Session, now: datetime) -> None:
@@ -1900,13 +1890,17 @@ class TableWrite:
         return True
 
     @staticmethod
-    def set_org_reef_api_url(session: Session, org_id: str, api_url: str | None) -> bool:
-        """Set (or clear, when ``api_url`` is None) the org's connected Reef API URL.
-        Returns ``False`` if the org doesn't exist (caller decides 404)."""
+    def set_org_reef(
+        session: Session, org_id: str, repo: str | None, sealed_token: str | None
+    ) -> bool:
+        """Set (or clear, when both are ``None``) the org's reef repository and
+        its sealed token. Returns ``False`` if the org doesn't exist (caller
+        decides 404)."""
         row = session.get(Organization, org_id)
         if row is None:
             return False
-        row.reef_api_url = api_url
+        row.reef_repo = repo
+        row.reef_repo_token = sealed_token
         session.flush()
         return True
 

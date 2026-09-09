@@ -267,7 +267,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `avatar_kind` | `TEXT` | NOT NULL, default `generated` |
 | `avatar_version` | `INTEGER` | NOT NULL, default `1` |
 | `org_id` | `VARCHAR` | → `organizations.org_id` |
-| `reef_sandbox_id` | `VARCHAR` | — |
+| `reef_host` | `VARCHAR` | — |
+| `reef_name` | `VARCHAR` | — |
 | `operator_id` | `INTEGER` | → `human_users.id` |
 | `last_alive_at` | `TIMESTAMP WITH TIME ZONE` | — |
 | `agent_type` | `VARCHAR` | — |
@@ -340,7 +341,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `owner_email` | `VARCHAR` | — |
 | `org_id` | `VARCHAR` | — |
 | `human_id` | `INTEGER` | → `human_users.id` |
-| `reef_sandbox_id` | `VARCHAR` | — |
+| `reef_host` | `VARCHAR` | — |
+| `reef_name` | `VARCHAR` | — |
 
 ## human_api_tokens
 
@@ -560,7 +562,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `is_personal` | `BOOLEAN` | NOT NULL |
 | `created_by` | `INTEGER` | NOT NULL, → `human_users.id` |
 | `created_at` | `TIMESTAMP WITH TIME ZONE` | default `now()` |
-| `reef_api_url` | `VARCHAR` | — |
+| `reef_repo` | `VARCHAR` | — |
+| `reef_repo_token` | `TEXT` | — |
 | `attention_enabled` | `BOOLEAN` | NOT NULL, default `false` |
 | `attention_mode` | `TEXT` | NOT NULL, default `embedding` |
 | `attention_llm_base_url` | `TEXT` | — |

@@ -119,9 +119,10 @@ class Agent(SQLModel, table=True):
     )
     # Set at signup approval/commit. Nullable for pre-collapse legacy rows.
     org_id: str | None = Field(default=None, foreign_key="organizations.org_id")
-    # Reef-provisioned agents only: the VM id. NULL when self-hosted; the
-    # base URL comes from ``Organization.reef_api_url``.
-    reef_sandbox_id: str | None = None
+    # Reef-hosted agents only: the host and the agent name in the org's reef
+    # repo (``fleet/<host>/<name>.toml``). NULL when self-hosted.
+    reef_host: str | None = None
+    reef_name: str | None = None
     # Holds all manage-permission authority. Nullable for legacy rows.
     operator_id: int | None = Field(default=None, foreign_key="human_users.id")
     # Last ``POST /api/agentic/alive`` ping. NULL = never pinged ("setup").
@@ -167,8 +168,10 @@ class ChallengeSession(SQLModel, table=True):
     org_id: str | None = None
     # Set on human-initiated signup so commit can record the operator.
     human_id: int | None = Field(default=None, foreign_key="human_users.id")
-    # Stamped by the "Run on Reef" flow so commit knows the VM. NULL if none.
-    reef_sandbox_id: str | None = None
+    # Stamped when the agent is declared on a reef host, so commit can copy
+    # both onto the agent row. NULL for every other signup.
+    reef_host: str | None = None
+    reef_name: str | None = None
 
 
 class HumanUser(SQLModel, table=True):
@@ -373,9 +376,11 @@ class Organization(SQLModel, table=True):
     is_personal: bool = Field(default=False, nullable=False)
     created_by: int = Field(nullable=False, foreign_key="human_users.id")
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # The org's self-hosted Reef API base URL. ONLY the URL is stored — the
-    # operator's browser holds the admin token and talks to Reef directly.
-    reef_api_url: str | None = None
+    # The org's reef repository, ``owner/name`` on github.com, and a
+    # Fernet-sealed fine-grained token scoped to it. Git is the only bus to a
+    # reef host: clawbits writes fleet files, hosts write status files.
+    reef_repo: str | None = None
+    reef_repo_token: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
     # Org opt-in for the attention gate. It still fires only where the `router`
     # extra is installed and only for agents with `lobstertalk_enabled`.
     attention_enabled: bool = Field(
