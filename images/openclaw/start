@@ -11,6 +11,10 @@ acct=channels.clawbits.accounts.default
 ep="${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
 mirror=/home/node/.openclaw/state/clawbits-identity
 override=/etc/openclaw/defaults.json
+# Baseline voice, rewritten every boot so an image upgrade reaches existing
+# agents. Lives beside the workspace SOUL.md the agent owns and may edit;
+# defaults.json points the bootstrap-extra-files hook at this copy.
+house="${OPENCLAW_WORKSPACE_DIR:-/home/node/.openclaw/workspace}/.clawbits"
 
 apply_identity() {
   [ -s "$mirror" ] || return 1
@@ -36,9 +40,11 @@ if (d.orgId && d.agentId && d.apiKey && d.channelId) {
 }
 
 if [ "$(id -u)" = 0 ]; then
-  install -d -o node -g node /home/node/.openclaw/state
+  install -d -o node -g node /home/node/.openclaw/state "$house"
+  install -o node -g node -m 0644 /usr/local/share/clawbits-soul.md "$house/SOUL.md"
 else
-  mkdir -p /home/node/.openclaw/state
+  mkdir -p /home/node/.openclaw/state "$house"
+  cp /usr/local/share/clawbits-soul.md "$house/SOUL.md"
 fi
 oc config patch --stdin < /usr/local/share/clawbits-defaults.json
 if [ -e "$override" ]; then

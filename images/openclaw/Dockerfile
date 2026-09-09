@@ -37,6 +37,7 @@ RUN openclaw plugins list --json | node -e 'const p=JSON.parse(require("fs").rea
 
 COPY --chmod=0755 start /usr/local/bin/clawbits-start
 COPY --chmod=0644 defaults.json /usr/local/share/clawbits-defaults.json
+COPY --chmod=0644 soul.md /usr/local/share/clawbits-soul.md
 
 ARG ENGINE_VERSION
 ARG PLUGIN_VERSION
