@@ -124,7 +124,7 @@ fn resolve(recipe: &'static Recipe, cli: &Cli) -> Result<Plan> {
     let (e, p) = recipe.tag;
     let version = match cli.local {
         true => format!("{e}{engine}-local"),
-        false => format!("{e}{engine}-{p}{plugin}"),
+        false => format!("{e}{engine}-{p}{plugin}-g{}", head()?),
     };
     Ok(Plan {
         dir: Path::new(IMAGES).join(recipe.name),
@@ -188,6 +188,18 @@ fn ghcr_has(repo: &str, tag: &str) -> Result<bool> {
         Err(ureq::Error::StatusCode(404)) => Ok(false),
         Err(error) => Err(error).context("ghcr manifest"),
     }
+}
+
+fn head() -> Result<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(IMAGES)
+        .output()
+        .context("git not found")?;
+    if !out.status.success() {
+        bail!("git rev-parse exited with {}", out.status);
+    }
+    Ok(String::from_utf8(out.stdout)?.trim().to_owned())
 }
 
 fn stage_plugin(dir: &Path) -> Result<()> {
