@@ -36,6 +36,7 @@ RUN openclaw plugins list --json | node -e 'const p=JSON.parse(require("fs").rea
  && rm -f /tmp/pi /home/node/.openclaw/openclaw.json /home/node/.openclaw/openclaw.json.bak
 
 COPY --chmod=0755 start /usr/local/bin/clawbits-start
+COPY --chmod=0644 boot.ts /usr/local/share/clawbits-boot.ts
 COPY --chmod=0644 defaults.json /usr/local/share/clawbits-defaults.json
 COPY --chmod=0644 soul.md /usr/local/share/clawbits-soul.md
 
