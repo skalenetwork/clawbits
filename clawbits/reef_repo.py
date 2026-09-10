@@ -3,7 +3,7 @@
 One private repo per org, three branches, one writer each. ``main`` holds the
 reviewed ``roles/*.toml``; clawbits writes ``fleet/<host>/<name>.toml`` on
 ``fleet``; each host writes ``status/<host>.json`` on ``status``. clawbits never
-talks to a reef host and nothing ever connects to it — the host pulls.
+talks to a reef host and nothing ever connects to it: the host pulls.
 
 Only ``api.github.com`` is reached from here, with a fine-grained token scoped
 to that one repository. The token is unsealed per request and never logged.
@@ -11,6 +11,7 @@ to that one repository. The token is unsealed per request and never logged.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -21,11 +22,11 @@ import httpx
 
 API = "https://api.github.com"
 TIMEOUT = httpx.Timeout(10.0)
+BRANCHES = ("main", "fleet", "status")
 
 REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]{0,99}/[A-Za-z0-9][\w.-]{0,99}$")
-# reef's own rule (crates/reef-core/src/name.rs ``is_name``): 1-40 chars,
-# starts with a lowercase letter, no trailing hyphen. Enforced here so a bad
-# name fails in the UI instead of on the host.
+# reef's own rule (crates/reef-core/src/name.rs ``is_name``), enforced here so
+# a bad name fails in the UI instead of on the host.
 NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$")
 OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PUBLIC_HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
@@ -67,11 +68,32 @@ class ReefRepo:
     token: str
 
     async def probe(self) -> None:
-        """Raise unless the token can see this repository. The one call the
-        connect form makes: a repo the token cannot read is a 404 on every
-        later path, indistinguishable from an empty branch."""
-        if await self._send("GET", f"{API}/repos/{self.repo}") is None:
+        """Raise unless the bus can run here: the token sees the repository, it
+        is private, and all three branches exist.
+
+        The connect form makes this one call, so every check that has to happen
+        before a token is stored happens in it. Privacy is not a preference:
+        every fleet file carries a live single-use signup token and the org id.
+        A missing branch answers 404 on the Contents API exactly as a missing
+        path does, so a later write could never tell them apart."""
+        found = await self._send("GET", f"{API}/repos/{self.repo}")
+        if found is None or isinstance(found, list):
             raise ReefRepoError(f"{self.repo} not found, or the token cannot see it")
+        if not found.get("private"):
+            raise ReefRepoError(
+                f"{self.repo} is public. Fleet files carry one-time signup tokens, "
+                "so the repository has to be private."
+            )
+        heads = await asyncio.gather(
+            *(self._send("GET", f"{API}/repos/{self.repo}/branches/{b}") for b in BRANCHES)
+        )
+        missing = [b for b, head in zip(BRANCHES, heads, strict=True) if head is None]
+        if missing:
+            raise ReefRepoError(
+                f"{self.repo} is missing the {', '.join(missing)} "
+                f"branch{'es' if len(missing) > 1 else ''}. "
+                "Create the three the bus runs on: main, fleet and status."
+            )
 
     async def read(self, branch: str, path: str) -> tuple[str, bytes] | None:
         """``(sha, content)`` for a file, or ``None`` when it does not exist."""
@@ -83,38 +105,29 @@ class ReefRepo:
     async def write(
         self, branch: str, path: str, content: bytes, message: str, author: Author
     ) -> None:
-        """Create a file. Fails with 409 semantics if it already exists: no sha
-        is sent, so GitHub refuses to overwrite."""
-        await self._send(
-            "PUT",
-            self._url(path),
-            json={
-                "branch": branch,
-                "message": message,
-                "content": base64.b64encode(content).decode(),
-                "author": {"name": author.name, "email": author.email},
-            },
-        )
+        """Create a file. No sha is sent, so GitHub refuses to overwrite.
+
+        A 404 means the branch is gone, and it must not read as success: the
+        caller has already minted the one-time token this file was to carry, so
+        a silent no-op burns it and declares an agent that can never enrol."""
+        body = _commit(branch, message, author, content=base64.b64encode(content).decode())
+        written = await self._send("PUT", self._url(path), json=body)
+        if written is None:
+            raise ReefRepoError(
+                f"branch '{branch}' not found in {self.repo}: nothing was written"
+            )
 
     async def delete(self, branch: str, path: str, message: str, author: Author) -> None:
         head = await self.read(branch, path)
         if head is None:
             return
-        await self._send(
-            "DELETE",
-            self._url(path),
-            json={
-                "branch": branch,
-                "message": message,
-                "sha": head[0],
-                "author": {"name": author.name, "email": author.email},
-            },
-        )
+        body = _commit(branch, message, author, sha=head[0])
+        await self._send("DELETE", self._url(path), json=body)
 
     async def last_commit(self, branch: str, path: str) -> str | None:
         """When a path last changed, ISO-8601. A host's status file carries no
-        timestamp of its own — the commit is the timestamp, and a commit that
-        stops advancing is how a stopped reconciler looks."""
+        timestamp of its own: the commit is the timestamp, and one that stops
+        advancing is how a stopped reconciler looks."""
         found = await self._send(
             "GET",
             f"{API}/repos/{self.repo}/commits",
@@ -152,6 +165,15 @@ class ReefRepo:
         if r.status_code >= 400:
             raise ReefRepoError(_github_message(r))
         return r.json() if r.content else None
+
+
+def _commit(branch: str, message: str, author: Author, **body: str) -> dict:
+    return {
+        "branch": branch,
+        "message": message,
+        "author": {"name": author.name, "email": author.email},
+        **body,
+    }
 
 
 def _github_message(r: httpx.Response) -> str:

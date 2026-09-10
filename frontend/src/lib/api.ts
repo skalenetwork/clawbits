@@ -200,6 +200,9 @@ export interface Org {
   /** Org-level opt-in for the LobsterTalk attention gate (owner-toggled).
    *  Replaced the old server-wide CLAWBITS_ATTENTION_ENABLED env flag. */
   attention_enabled?: boolean;
+  /** Whether a reef repository is connected. The repo name and its token
+   *  never leave the server, so the home tile gates itself with no round-trip. */
+  reef_connected?: boolean;
 }
 
 export interface OrgMember {

@@ -8,6 +8,7 @@ through signup-commit.
 """
 from __future__ import annotations
 
+import asyncio
 import tomllib
 from datetime import UTC, datetime, timedelta
 
@@ -16,7 +17,7 @@ from sqlmodel import Session
 
 import clawbits.fastapi.human_endpoints as he
 from clawbits.db.models import Agent
-from clawbits.reef_repo import ReefRepoError
+from clawbits.reef_repo import ReefRepo, ReefRepoError
 from tests.fastapi._auth_helpers import auth_headers as _auth
 from tests.fastapi._auth_helpers import register_human as _register
 
@@ -121,7 +122,8 @@ def fake_repo(monkeypatch):
 
 
 def _org(test_client, slug: str, owner_email: str, member_email: str | None = None):
-    """``(org_id, owner, member)`` with the repository already connected."""
+    """``(org_id, owner, member)`` with the repository connected, one role in
+    the catalog and one host reporting: what every test below starts from."""
     owner = _register(test_client, owner_email)
     org_id = test_client.post(
         "/api/human/orgs", json={"name": slug}, headers=_auth(owner["access_token"])
@@ -140,19 +142,18 @@ def _org(test_client, slug: str, owner_email: str, member_email: str | None = No
         headers=_auth(owner["access_token"]),
     )
     assert r.status_code == 200, r.text
+    FakeRepo.files[("main", "roles/clawbits-openclaw.toml")] = ROLE
+    FakeRepo.files[("status", "status/prod-eu.json")] = STATUS
     return org_id, owner, member
 
 
-# ---------------------------------------------------------------------------
-# Connecting the repository
-# ---------------------------------------------------------------------------
+# ── Connecting the repository ────────────────────────────────────────────────
 
 def test_connect_lifecycle(test_client, _test_engine):
     """Owner connects, everyone reads, owner disconnects. The token is sealed
     at rest and never leaves the server."""
     org_id, owner, member = _org(test_client, "reef-life", "rl-o@test.com", "rl-m@test.com")
     outsider = _register(test_client, "rl-x@test.com")
-    FakeRepo.files[("status", "status/prod-eu.json")] = STATUS
 
     r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(member["access_token"]))
     assert r.status_code == 200, r.text
@@ -184,6 +185,25 @@ def test_connect_lifecycle(test_client, _test_engine):
     assert r.status_code == 204
     r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(owner["access_token"]))
     assert r.json() == {"repo": None, "connected": False, "hosts": []}
+
+
+def test_org_payload_carries_the_connected_bit(test_client):
+    """The home tile gates on this, so it must ride the org payload and never
+    carry the repository or its token."""
+    org_id, owner, _ = _org(test_client, "reef-bit", "rbit-o@test.com")
+    headers = _auth(owner["access_token"])
+
+    def org_row():
+        r = test_client.get("/api/human/orgs", headers=headers)
+        assert r.status_code == 200, r.text
+        return next(o for o in r.json()["organizations"] if o["org_id"] == org_id)
+
+    row = org_row()
+    assert row["reef_connected"] is True
+    assert "reef_repo" not in row and "ghp-good" not in str(row)
+
+    assert test_client.delete(f"/api/human/orgs/{org_id}/reef", headers=headers).status_code == 204
+    assert org_row()["reef_connected"] is False
 
 
 def test_connect_is_owner_only(test_client):
@@ -235,15 +255,12 @@ def test_endpoints_409_without_a_repository(test_client):
     assert test_client.get(f"/api/human/orgs/{org_id}/reef/status", headers=headers).status_code == 409
 
 
-# ---------------------------------------------------------------------------
-# The catalog and the status branch
-# ---------------------------------------------------------------------------
+# ── The catalog and the status branch ────────────────────────────────────────
 
 def test_roles_only_lists_roles_pointing_here(test_client):
     """A role whose CLAWBITS_ENDPOINT names another server is left out: an
     agent created from it would enrol somewhere else."""
     org_id, owner, _ = _org(test_client, "reef-roles", "rr-o@test.com")
-    FakeRepo.files[("main", "roles/clawbits-openclaw.toml")] = ROLE
     FakeRepo.files[("main", "roles/somebody-elses.toml")] = ELSEWHERE
     FakeRepo.files[("main", "roles/README.md")] = b"not a role"
 
@@ -264,8 +281,6 @@ def test_roles_only_lists_roles_pointing_here(test_client):
 
 def test_status_carries_hosts_and_declared(test_client):
     org_id, owner, _ = _org(test_client, "reef-status", "rs-o@test.com")
-    FakeRepo.files[("main", "roles/clawbits-openclaw.toml")] = ROLE
-    FakeRepo.files[("status", "status/prod-eu.json")] = STATUS
     FakeRepo.files[("status", "status/garbage.json")] = b"{not json"
 
     test_client.post(
@@ -283,21 +298,12 @@ def test_status_carries_hosts_and_declared(test_client):
     assert [(d["host"], d["name"]) for d in body["declared"]] == [("prod-eu", "ana-bot")]
 
 
-# ---------------------------------------------------------------------------
-# Declaring an agent
-# ---------------------------------------------------------------------------
-
-def _seed(test_client, slug: str, email: str, member_email: str | None = None):
-    org_id, owner, member = _org(test_client, slug, email, member_email)
-    FakeRepo.files[("main", "roles/clawbits-openclaw.toml")] = ROLE
-    FakeRepo.files[("status", "status/prod-eu.json")] = STATUS
-    return org_id, owner, member
-
+# ── Declaring an agent ───────────────────────────────────────────────────────
 
 def test_create_writes_the_fleet_file(test_client):
     """The file is the whole handoff: role, owner, org and a live one-time
     token, authored by the person who clicked."""
-    org_id, owner, _ = _seed(test_client, "reef-create", "rc-o@test.com")
+    org_id, owner, _ = _org(test_client, "reef-create", "rc-o@test.com")
 
     r = test_client.post(
         f"/api/human/orgs/{org_id}/reef/agents",
@@ -330,7 +336,7 @@ def test_create_writes_the_fleet_file(test_client):
 def test_create_rejects_bad_input(test_client):
     """reef's own name rule, a host that has never reported, and a role that
     is not in the catalog all fail here rather than on the host."""
-    org_id, owner, _ = _seed(test_client, "reef-bad-in", "rbi-o@test.com")
+    org_id, owner, _ = _org(test_client, "reef-bad-in", "rbi-o@test.com")
     headers = _auth(owner["access_token"])
     good = {"host": "prod-eu", "role": "clawbits-openclaw", "name": "ana-bot"}
 
@@ -354,7 +360,7 @@ def test_create_rejects_bad_input(test_client):
 
 
 def test_create_refuses_a_name_already_declared(test_client):
-    org_id, owner, _ = _seed(test_client, "reef-dup", "rd-o@test.com")
+    org_id, owner, _ = _org(test_client, "reef-dup", "rd-o@test.com")
     body = {"host": "prod-eu", "role": "clawbits-openclaw", "name": "ana-bot"}
     headers = _auth(owner["access_token"])
     assert (
@@ -370,7 +376,7 @@ def test_create_refuses_a_name_already_declared(test_client):
 def test_create_takes_the_session_down_with_a_failed_write(test_client):
     """A declared agent always has a file, and a file always has a live token:
     if the write fails the minted session goes with it."""
-    org_id, owner, _ = _seed(test_client, "reef-roll", "rrb-o@test.com")
+    org_id, owner, _ = _org(test_client, "reef-roll", "rrb-o@test.com")
     FakeRepo.unreachable = True
 
     r = test_client.post(
@@ -387,9 +393,7 @@ def test_create_takes_the_session_down_with_a_failed_write(test_client):
     assert r.json()["declared"] == []
 
 
-# ---------------------------------------------------------------------------
-# The token is the identity: signup-commit
-# ---------------------------------------------------------------------------
+# ── The token is the identity: signup-commit ─────────────────────────────────
 
 def _declare(test_client, org_id: str, owner: dict, name: str = "ana-bot") -> str:
     r = test_client.post(
@@ -403,7 +407,7 @@ def _declare(test_client, org_id: str, owner: dict, name: str = "ana-bot") -> st
 
 
 def test_commit_copies_host_and_name_onto_the_agent(test_client, _test_engine):
-    org_id, owner, _ = _seed(test_client, "reef-commit", "rk-o@test.com")
+    org_id, owner, _ = _org(test_client, "reef-commit", "rk-o@test.com")
     token = _declare(test_client, org_id, owner)
 
     r = test_client.post(
@@ -431,7 +435,7 @@ def test_commit_copies_host_and_name_onto_the_agent(test_client, _test_engine):
 def test_a_spent_token_cannot_mint_a_second_agent(test_client):
     """The token in the fleet file stays there forever; it is dead after the
     first boot spends it."""
-    org_id, owner, _ = _seed(test_client, "reef-spent", "rp-o@test.com")
+    org_id, owner, _ = _org(test_client, "reef-spent", "rp-o@test.com")
     token = _declare(test_client, org_id, owner)
 
     first = test_client.post(
@@ -445,7 +449,7 @@ def test_a_spent_token_cannot_mint_a_second_agent(test_client):
 
 
 def test_declared_clears_once_the_agent_enrols(test_client):
-    org_id, owner, _ = _seed(test_client, "reef-enrol", "re-o@test.com")
+    org_id, owner, _ = _org(test_client, "reef-enrol", "re-o@test.com")
     token = _declare(test_client, org_id, owner)
     headers = _auth(owner["access_token"])
 
@@ -462,12 +466,10 @@ def test_declared_clears_once_the_agent_enrols(test_client):
     )
 
 
-# ---------------------------------------------------------------------------
-# Removing an agent
-# ---------------------------------------------------------------------------
+# ── Removing an agent ────────────────────────────────────────────────────────
 
 def test_remove_deletes_the_fleet_file(test_client):
-    org_id, owner, _ = _seed(test_client, "reef-rm", "rm-o@test.com")
+    org_id, owner, _ = _org(test_client, "reef-rm", "rm-o@test.com")
     _declare(test_client, org_id, owner)
 
     r = test_client.delete(
@@ -482,7 +484,7 @@ def test_remove_deletes_the_fleet_file(test_client):
 def test_remove_is_operator_or_owner_only(test_client):
     """A member who neither owns the org nor operates the agent cannot pull it
     out from under its operator."""
-    org_id, owner, member = _seed(test_client, "reef-rmx", "rx-o@test.com", "rx-m@test.com")
+    org_id, owner, member = _org(test_client, "reef-rmx", "rx-o@test.com", "rx-m@test.com")
     _declare(test_client, org_id, owner)
 
     r = test_client.delete(
@@ -491,3 +493,35 @@ def test_remove_is_operator_or_owner_only(test_client):
     )
     assert r.status_code == 403, r.text
     assert ("fleet", "fleet/prod-eu/ana-bot.toml") in FakeRepo.files
+
+
+@pytest.mark.parametrize(
+    ("private", "branches", "expected"),
+    [
+        (True, {"main", "fleet", "status"}, None),
+        (False, {"main", "fleet", "status"}, "is public"),
+        (True, {"main", "status"}, "missing the fleet branch"),
+        (True, {"main"}, "missing the fleet, status branches"),
+    ],
+)
+def test_probe_refuses_a_repo_the_bus_cannot_run_on(monkeypatch, private, branches, expected):
+    """The connect form makes exactly one call, so probe carries every check
+    that has to happen before a token is stored: the repo is visible, it is
+    private, and all three branches exist. A missing branch answers 404 on the
+    Contents API just as a missing file does, so a write would otherwise fail
+    much later with nothing useful to say."""
+
+    async def _send(self, method, url, **kw):
+        if url.endswith(f"/repos/{self.repo}"):
+            return {"private": private}
+        tail = url.rsplit("/", 1)[-1]
+        return {"name": tail} if tail in branches else None
+
+    monkeypatch.setattr(ReefRepo, "_send", _send)
+    repo = ReefRepo(repo="acme/store", token="ghp-good")
+
+    if expected is None:
+        asyncio.run(repo.probe())
+        return
+    with pytest.raises(ReefRepoError, match=expected):
+        asyncio.run(repo.probe())

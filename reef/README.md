@@ -2,7 +2,7 @@
 
 Git is the bus between clawbits and a reef host. This directory is the whole
 host side of it: a shell script and a timer. There is no daemon, no port, and
-nothing on the network reaches the host — it pulls.
+nothing on the network reaches the host: it pulls.
 
 ```text
 main    roles/*.toml                platform team, by reviewed pull request
@@ -13,7 +13,7 @@ status  status/<host>.json          each host, from this timer
 Every 30 seconds the host pulls all three, and when `main` or `fleet` has moved
 it runs `reef role apply` and `reef fleet apply --prune`. Then it writes what
 `reef` observed to `status/<host>.json` and pushes, but only when the content
-changed — the commit is the timestamp.
+changed: the commit is the timestamp.
 
 A host that cannot reach the repository changes nothing. An apply that fails
 leaves the recorded HEADs alone, so the next tick retries it, and the status
@@ -29,47 +29,31 @@ account and the state directory. Then, as `reef`, put the provider secrets in
 
 `jq` and `git` are the only extra packages this needs.
 
-Give the host a deploy key with **write** access — it has to push status — and
-add it to the repository. A ruleset on `main` and `fleet` keeps that key off
-both.
+Then run `bootstrap.sh`, naming this host. The name is the directory under
+`fleet/` and the file under `status/`, and it is what people pick in clawbits,
+so it follows reef's own rule: lowercase letters, digits and hyphens, starting
+with a letter.
 
 ```sh
-ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 -C "reef@$(hostname)"
-ssh -o StrictHostKeyChecking=accept-new -T git@github.com || true
-cat ~/.ssh/id_ed25519.pub
+curl -fsSL https://raw.githubusercontent.com/skalenetwork/clawbits/main/reef/bootstrap.sh |
+  REEF_HOST=prod-eu REEF_REPO=acme/reef-store sh
 ```
 
-One clone per branch, so `git pull --ff-only` is the only git the timer ever
-needs:
+It makes an ed25519 key, pins github.com's published host key, clones one tree
+per branch so `git pull --ff-only` is the only git the timer ever needs, and
+installs the script and the timer with a drop-in carrying this machine's
+account, paths and host name. It also writes `empty.toml`, which declares no
+agents and is passed to every `fleet apply`: reef bails when handed no files,
+and a partial list with `--prune` deletes every agent it cannot see.
 
-```sh
-mkdir -p ~/agents
-for branch in main fleet status; do
-  git clone --branch "$branch" --single-branch git@github.com:ORG/REPO.git ~/agents/"$branch"
-done
-git -C ~/agents/status config user.name  reef
-git -C ~/agents/status config user.email reef@example.com
-printf 'version = 1\n' > ~/agents/empty.toml
-```
+The first run stops after the key: nothing else is possible until that key is
+on the repository. Add it under **Settings → Deploy keys** with **Allow write
+access**, which the host needs so it can push its status, then run the same
+line again. Protect `main` and `fleet` with a ruleset so the key can only ever
+push `status`.
 
-`empty.toml` declares no agents. It is passed to every `fleet apply` so
-`--prune` stays meaningful when this host has no fleet files: reef bails when
-handed nothing, and a partial file list with `--prune` deletes every agent it
-cannot see.
-
-Install the script and the timer, naming this host — the name is the directory
-under `fleet/` and the file under `status/`, and it is what people pick in
-clawbits:
-
-```sh
-install -m 755 reconcile.sh ~/agents/reconcile.sh
-sudo install -m 644 reef-reconcile.service reef-reconcile.timer /etc/systemd/system/
-sudo systemctl edit reef-reconcile.service      # [Service] Environment=REEF_HOST=prod-eu
-sudo systemctl enable --now reef-reconcile.timer
-```
-
-`REEF_REPO` (default `~/agents`) and `REEF` (default `~/.local/bin/reef`)
-override the rest.
+`REEF_DIR` (default `~/agents`) moves the trees and bootstrap writes it into
+the drop-in. `reconcile.sh` finds reef at `REEF`, default `~/.local/bin/reef`.
 
 ## Check it
 

@@ -80,8 +80,6 @@ export function DesktopShell() {
 
   const section = deriveSection(location.pathname);
   const showContextual = sectionHasSidebar(section);
-  // Home is vertically centered, so it wants a touch less top clearance than the
-  // scrolling pages (which need the full header-height gap).
   const isHome = location.pathname === "/home";
 
   const channelRouteMatch = /^\/channels\/([^/]+)/.exec(location.pathname);
@@ -158,24 +156,25 @@ export function DesktopShell() {
           {/* Content column. */}
           <PageHeaderSlotProvider value={headerSlot}>
             <div className="relative flex min-w-0 flex-1 flex-col">
-              {/* Unified page-header bar — same height + bottom border as
-                                the sidebar's ContextualHeader so the two line up as one
-                                header row across the card. */}
-              <div className="absolute inset-x-0 top-0 z-10 h-12 border-b border-sidebar-border bg-panel/80 backdrop-blur-xl supports-[backdrop-filter]:bg-panel/65">
-                {/* Header content is centered and width-capped to match the
-                    body beneath it. Channel routes run the narrower chat
-                    column (``max-w-chat``) so the avatar/name aligns with the
-                    message column and the actions align with the composer's
-                    right edge; every other page keeps ``max-w-content``. The
-                    full-width border + background above stay full-bleed. */}
-                <div
-                  ref={setHeaderSlot}
-                  className={cn(
-                    "mx-auto flex h-full w-full items-center justify-between gap-2 px-3",
-                    isChannelRoute ? "max-w-chat" : "max-w-content",
-                  )}
-                />
-              </div>
+              {/* Unified page-header bar: same height + bottom border as the
+                  sidebar's ContextualHeader so the two line up as one header
+                  row across the card. Home has no title and no actions, so the
+                  bar would be an empty ruled strip; it gets the bare card. */}
+              {!isHome && (
+                <div className="absolute inset-x-0 top-0 z-10 h-12 border-b border-sidebar-border bg-panel/80 backdrop-blur-xl supports-[backdrop-filter]:bg-panel/65">
+                  {/* Channel routes run the narrower chat column so the
+                      avatar/name aligns with the message column and the actions
+                      align with the composer's right edge; the full-width
+                      border + background above stay full-bleed. */}
+                  <div
+                    ref={setHeaderSlot}
+                    className={cn(
+                      "mx-auto flex h-full w-full items-center justify-between gap-2 px-3",
+                      isChannelRoute ? "max-w-chat" : "max-w-content",
+                    )}
+                  />
+                </div>
+              )}
               <div className="flex min-h-0 flex-1">
                 <main
                   id="main-content"
@@ -202,7 +201,7 @@ export function DesktopShell() {
                       <Outlet />
                     </div>
                   ) : (
-                    <div className={cn("mx-auto flex min-h-full w-full max-w-content flex-col px-2 pb-0", isHome ? "pt-12" : "pt-16")}>
+                    <div className={cn("mx-auto flex min-h-full w-full max-w-content flex-col px-2 pb-0", isHome ? "" : "pt-16")}>
                       <Outlet />
                     </div>
                   )}

@@ -17,6 +17,7 @@ import { UserPresenceProvider } from "./components/UserPresenceProvider";
 import { AgentPresenceProvider } from "./components/AgentPresenceProvider";
 import AppLayout from "./layouts/AppShell";
 import GuestOnly from "./components/GuestOnly";
+import RequireAuth from "./components/RequireAuth";
 import { ScrollToTop } from "./components/ScrollToTop";
 import { AgentShell } from "./components/agent/AgentShell";
 import { DesktopTitleBar } from "./components/DesktopTitleBar";
@@ -33,6 +34,7 @@ import { UpdateProvider } from "./context/UpdateContext";
 // the next one loads and the fallback is only ever seen on a cold load.
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
+const ReefSetupPage = lazy(() => import("./pages/ReefSetupPage"));
 const TermsPage = lazy(() => import("./pages/TermsPage"));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
 const ChangelogPage = lazy(() => import("./pages/ChangelogPage"));
@@ -113,6 +115,10 @@ function AppShell() {
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/changelog" element={<ChangelogPage />} />
+          {/* Full-screen setup: the app's identity, none of its chrome. */}
+          <Route element={<RequireAuth />}>
+            <Route path="/setup/reef" element={<ReefSetupPage />} />
+          </Route>
           <Route element={<AppLayout />}>
             <Route path="/home" element={<AgentHomePage />} />
             <Route path="/agents" element={<SettingsAgentsPage />} />

@@ -60,7 +60,6 @@ from clawbits.datastructures.org_models import (
     OrgMembersListResponse,
     OrgResponse,
     ReefAgentResponse,
-    ReefDeclaredResponse,
     ReefHostResponse,
     ReefResponse,
     ReefRoleResponse,
@@ -1878,39 +1877,42 @@ async def mark_org_visited(
 # Git is the bus. An org connects ONE private repository; clawbits writes a
 # fleet file per agent on the `fleet` branch and reads what each host pushes to
 # the `status` branch. clawbits never talks to a reef host, and nothing on the
-# network reaches it — the host pulls on a timer. See clawbits/reef_repo.py and
+# network reaches it: the host pulls on a timer. See clawbits/reef_repo.py and
 # reef/README.md for host setup.
 
-# Status is a handful of small files behind a token, read on every settings
-# poll by every member of the org. Fifteen seconds is under the reconciler's
-# thirty, so a host's push is never more than one tick stale.
+# Reading the status branch costs two GitHub calls per host and the settings
+# page polls it. Fifteen seconds is under the reconciler's thirty, so a host's
+# push is never more than one tick stale.
 _REEF_STATUS_TTL = 15.0
-_reef_status_cache: dict[str, tuple[float, dict[str, dict]]] = {}
+_reef_status_cache: dict[str, tuple[float, dict[str, tuple[dict, str | None]]]] = {}
 
 
-def _reef_repo(db, org_id: str) -> ReefRepo:
-    """The org's repository with its token unsealed. 409 when none is
-    connected, or when a rotated secrets key left the token unreadable —
-    reconnecting is the fix in both cases."""
+def _reef_repo(db, org_id: str, user: dict) -> ReefRepo:
+    """The org's repository, with its token unsealed, for a member of that org.
+    Membership is checked here so no route can reach the token without it. 409
+    when no repository is connected, or when a rotated secrets key left the
+    token unreadable: reconnecting is the fix in both cases."""
+    _verify_org_membership(db, org_id, user)
     stored = TableRead.get_org_reef(db, org_id)
     token = decrypt_secret(stored[1]) if stored else None
-    if stored is None or token is None:
-        raise HTTPException(status_code=409, detail="No reef repository connected")
+    if token is None:
+        raise HTTPException(status_code=409, detail="No Reef repository connected")
     return ReefRepo(repo=stored[0], token=token)
 
 
-async def _reef_hosts(org_id: str, repo: ReefRepo) -> dict[str, dict]:
-    """``{host: status}`` for every host that has pushed. A host exists exactly
-    when its status file does — hosts are never stored here."""
+async def _reef_hosts(org_id: str, repo: ReefRepo) -> dict[str, tuple[dict, str | None]]:
+    """``{host: (status, last_pushed)}`` for every host that has pushed. A host
+    exists exactly when its status file does: hosts are never stored here."""
     cached = _reef_status_cache.get(org_id)
     now = time.monotonic()
     if cached is not None and cached[0] > now:
         return cached[1]
-    names = [n for n in await repo.list("status", "status") if n.endswith(".json")]
-    files = await asyncio.gather(*(repo.read("status", f"status/{n}") for n in names))
+    paths = [f"status/{n}" for n in await repo.list("status", "status") if n.endswith(".json")]
+    files = await asyncio.gather(*(repo.read("status", p) for p in paths))
+    seen = await asyncio.gather(*(repo.last_commit("status", p) for p in paths))
     hosts = {
-        name.removesuffix(".json"): status
-        for name, found in zip(names, files, strict=True)
+        path.removeprefix("status/").removesuffix(".json"): (status, at)
+        for path, found, at in zip(paths, files, seen, strict=True)
         if found and (status := parse_status(found[1])) is not None
     }
     _reef_status_cache[org_id] = (now + _REEF_STATUS_TTL, hosts)
@@ -1931,17 +1933,12 @@ async def get_reef(
 ):
     """The org's reef repository and the hosts reporting into it. Any member."""
     with _get_db(request) as db:
-        if not TableRead.is_org_member(db, org_id, user["id"]):
-            raise HTTPException(status_code=403, detail="Not a member of this organization")
+        _verify_org_membership(db, org_id, user)
         stored = TableRead.get_org_reef(db, org_id)
     token = decrypt_secret(stored[1]) if stored else None
-    if stored is None or token is None:
+    if token is None:
         return ReefResponse(repo=stored[0] if stored else None, connected=False)
-    repo = ReefRepo(repo=stored[0], token=token)
-    hosts = sorted((await _reef_hosts(org_id, repo)).items())
-    seen = await asyncio.gather(
-        *(repo.last_commit("status", f"status/{host}.json") for host, _ in hosts)
-    )
+    hosts = await _reef_hosts(org_id, ReefRepo(repo=stored[0], token=token))
     return ReefResponse(
         repo=stored[0],
         connected=True,
@@ -1952,7 +1949,7 @@ async def get_reef(
                 agents=len(status.get("agents") or []),
                 last_seen=at,
             )
-            for (host, status), at in zip(hosts, seen, strict=True)
+            for host, (status, at) in sorted(hosts.items())
         ],
     )
 
@@ -1974,7 +1971,7 @@ async def set_reef(
     except EphemeralSecretsKeyError:
         raise HTTPException(
             status_code=503,
-            detail="This server has no durable secrets key configured, so a reef "
+            detail="This server has no durable secrets key configured, so a Reef "
             "token cannot be stored. Set CLAWBITS_ATTENTION_SECRETS_KEY.",
         )
     with _get_db(request) as db:
@@ -2015,8 +2012,7 @@ async def list_reef_roles(
     different clawbits are left out: an agent created from one would boot, run,
     and enrol somewhere else."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        repo = _reef_repo(db, org_id)
+        repo = _reef_repo(db, org_id, user)
     names = [n for n in await repo.list("main", "roles") if n.endswith(".toml")]
     files = await asyncio.gather(*(repo.read("main", f"roles/{n}") for n in names))
     endpoint = os.environ.get("CLAWBITS_BASE_URL", "http://localhost:8000")
@@ -2046,14 +2042,13 @@ async def get_reef_status(
     user: dict = Depends(get_current_human_user),
 ):
     """What every host last pushed, plus the agents declared but not yet
-    enrolled — an unspent signup token is exactly that state."""
+    enrolled: an unspent signup token is exactly that state."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        repo = _reef_repo(db, org_id)
+        repo = _reef_repo(db, org_id, user)
         declared = TableRead.list_declared_reef_agents(db, org_id, datetime.now(UTC))
     return ReefStatusResponse(
-        hosts=await _reef_hosts(org_id, repo),
-        declared=[ReefDeclaredResponse(**row) for row in declared],
+        hosts={host: status for host, (status, _) in (await _reef_hosts(org_id, repo)).items()},
+        declared=[ReefAgentResponse(**row) for row in declared],
     )
 
 
@@ -2073,13 +2068,12 @@ async def create_reef_agent(
     write takes the session back down with it, so a declared agent always has
     a file and a file always has a live token."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        repo = _reef_repo(db, org_id)
+        repo = _reef_repo(db, org_id, user)
     owner = body.owner or user["email"].split("@")[0]
     if not OWNER_RE.match(owner):
         raise HTTPException(status_code=422, detail="owner is required for this account")
     if body.host not in await _reef_hosts(org_id, repo):
-        raise HTTPException(status_code=422, detail=f"No reef host named '{body.host}'")
+        raise HTTPException(status_code=422, detail=f"No Reef host named '{body.host}'")
     endpoint = os.environ.get("CLAWBITS_BASE_URL", "http://localhost:8000")
     role_file = await repo.read("main", f"roles/{body.role}.toml")
     if role_file is None or parse_role(body.role, role_file[1], endpoint) is None:
@@ -2101,13 +2095,9 @@ async def create_reef_agent(
     if body.public_host:
         env["OPENCLAW_PUBLIC_HOST"] = body.public_host
     try:
-        await repo.write(
-            "fleet",
-            path,
-            fleet_toml(body.name, body.role, owner, env),
-            f"declare {body.name} on {body.host}",
-            _reef_author(user),
-        )
+        content = fleet_toml(body.name, body.role, owner, env)
+        message = f"declare {body.name} on {body.host}"
+        await repo.write("fleet", path, content, message, _reef_author(user))
     except ReefRepoError:
         with _get_db(request) as db:
             TableWrite.delete_challenge_session(db, token)
@@ -2130,22 +2120,16 @@ async def delete_reef_agent(
     its clawbits agent row survive, so re-declaring the same name brings the
     same agent back."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
+        repo = _reef_repo(db, org_id, user)
         operator = TableRead.get_org_reef_agent_operator(db, org_id, host, name)
-        if operator != user["id"] and TableRead.get_org_member_role(
-            db, org_id, user["id"]
-        ) != "owner":
+        role = TableRead.get_org_member_role(db, org_id, user["id"])
+        if operator != user["id"] and role != "owner":
             raise HTTPException(
                 status_code=403,
                 detail="Only the agent's operator or an organization admin can remove it",
             )
-        repo = _reef_repo(db, org_id)
-    await repo.delete(
-        "fleet",
-        f"fleet/{host}/{name}.toml",
-        f"remove {name} from {host}",
-        _reef_author(user),
-    )
+    message = f"remove {name} from {host}"
+    await repo.delete("fleet", f"fleet/{host}/{name}.toml", message, _reef_author(user))
     return None
 
 

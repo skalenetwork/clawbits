@@ -1180,6 +1180,9 @@ class TableRead:
             "created_by": o.created_by,
             "created_at": _iso(o.created_at),
             "attention_enabled": bool(o.attention_enabled),
+            # Whether a reef repository is usable, never which one: the repo
+            # and its token stay on the server.
+            "reef_connected": bool(o.reef_repo and o.reef_repo_token),
         }
 
     @staticmethod
@@ -1207,7 +1210,7 @@ class TableRead:
     @staticmethod
     def get_org_reef(session: Session, org_id: str) -> tuple[str, str] | None:
         """``(repo, sealed_token)`` for the org's reef repository, or ``None``
-        when the org has none. The token stays sealed here — only
+        when the org has none. The token stays sealed here: only
         :mod:`clawbits.reef_repo`'s caller unseals it, per request."""
         row = session.get(Organization, org_id)
         if row is None or not row.reef_repo or not row.reef_repo_token:

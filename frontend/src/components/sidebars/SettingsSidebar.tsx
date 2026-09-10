@@ -9,9 +9,9 @@ import {
     ChartHistogramIcon as UsageChart,
     Link01Icon as LinkIcon,
     Megaphone01Icon as Megaphone,
-    ServerStack01Icon as ServerStack,
 } from "@hugeicons/core-free-icons";
 import {Icon} from "@/components/Icon";
+import {ReefIcon} from "@/components/ReefIcon";
 import {useActiveOrg} from "@/hooks/useActiveOrg";
 import {SidebarMenuButton, SidebarMenuItem} from "@/components/ui/sidebar";
 import {CollapsibleGroup} from "./CollapsibleGroup";
@@ -80,7 +80,7 @@ export function SettingsSidebar() {
                                 isActive={pathname === "/settings/reef"}
                                 tooltip="Reef"
                             >
-                                <Icon icon={ServerStack}/>
+                                <ReefIcon/>
                                 <span>Reef</span>
                             </SidebarMenuButton>
                         </SidebarMenuItem>

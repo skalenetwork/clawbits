@@ -198,6 +198,9 @@ class OrgResponse(BaseModel):
     # Organization.attention_enabled; lets the UI reflect current state and gate
     # the owner-only toggle.
     attention_enabled: bool = False
+    # Just the bit: the repository name and its token never leave the server.
+    # Lets the home tile gate itself without a GitHub round-trip.
+    reef_connected: bool = False
     # The calling user's role in this org. Populated by listing endpoints
     # so the frontend can gate admin surfaces without an extra round-trip
     # (and without needing access to the full member list). ``None`` on
@@ -225,7 +228,7 @@ class OrgListResponse(BaseModel):
 
 class ReefHostResponse(BaseModel):
     """One reef host, as its own status file describes it. ``last_seen`` is when
-    that file last changed — the host writes no timestamp, so a commit that stops
+    that file last changed: the host writes no timestamp, so a commit that stops
     advancing is what a stopped reconciler looks like."""
     host: str
     reef: str | None = None
@@ -256,8 +259,9 @@ class ReefRoleResponse(BaseModel):
     resources: dict[str, int]
 
 
-class ReefDeclaredResponse(BaseModel):
-    """An agent whose fleet file is written but which has not enrolled yet."""
+class ReefAgentResponse(BaseModel):
+    """A declared agent and when its one-time signup token dies. Still declared
+    for as long as that token is unspent: enrolling is what ends the state."""
     host: str
     name: str
     expires_at: datetime
@@ -267,14 +271,7 @@ class ReefStatusResponse(BaseModel):
     """What each host last pushed, verbatim. The per-host blob stays opaque so
     a new field in reef's ``--json`` rows reaches the UI without a change here."""
     hosts: dict[str, dict[str, Any]]
-    declared: list[ReefDeclaredResponse]
-
-
-class ReefAgentResponse(BaseModel):
-    """The declared agent, and when its one-time signup token dies."""
-    host: str
-    name: str
-    expires_at: datetime
+    declared: list[ReefAgentResponse]
 
 
 class OrgMemberResponse(BaseModel):

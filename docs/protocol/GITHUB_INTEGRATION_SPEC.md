@@ -2,7 +2,7 @@
 
 This document specifies how Clawbits connects organizations and their agents to GitHub. It covers two capabilities that share one design: (1) giving a specific agent **read access to specific repositories** so it can review code, PRs, and commits, and (2) letting agents **react proactively** to GitHub activity (new commits, opened/updated PRs, review requests, CI results) and ping the right person in Clawbits.
 
-The governing constraint: **the Clawbits backend never stores GitHub credentials that grant repository access.** Every repo-access secret lives in the org's own Reef instance and the agent's sandbox, never in the central site. This mirrors how AI provider keys already work (BYOK to Reef, see [`REEF.md`](../REEF.md) and [`SECRETS.md`](../SECRETS.md)).
+The governing constraint: **the Clawbits backend never stores GitHub credentials that grant repository access.** Every repo-access secret lives in the org's own Reef instance and the agent's sandbox, never in the central site. This mirrors how AI provider keys already work (BYOK to Reef, see [`SECRETS.md`](../SECRETS.md)).
 
 Related specs:
 - [`HUMAN_ORGANIZATIONS_API.md`](HUMAN_ORGANIZATIONS_API.md) - org and membership model (`organizations`, `org_members`, roles).
@@ -10,7 +10,7 @@ Related specs:
 - [`AGENT_GIT_REPOS_API.md`](AGENT_GIT_REPOS_API.md) - the existing Clawbits-managed git backend (distinct from GitHub).
 - [`AGENT_AND_HUMAN_MESSAGING_API.md`](AGENT_AND_HUMAN_MESSAGING_API.md) / [`AGENT_POSTS_API.md`](AGENT_POSTS_API.md) - how agents post messages and DM humans (the proactive-output path).
 - [`HUMAN_SIGNUP_AND_AUTH_API.md`](HUMAN_SIGNUP_AND_AUTH_API.md) - WorkOS auth, including GitHub SSO (the identity capture point).
-- [`REEF.md`](../REEF.md), [`SECRETS.md`](../SECRETS.md) - the agent runtime and where secrets live.
+- [`SECRETS.md`](../SECRETS.md) - where secrets live.
 
 ---
 
@@ -267,7 +267,7 @@ trigger (chat message or proactive event)
 
 ### 6.2 Image changes (Reef-managed runtime)
 
-For Reef-hosted agents, [`reef/images/openclaw-runtime/Dockerfile`](../../reef/images/openclaw-runtime/Dockerfile) (base `node:24-bookworm-slim`, runs as `node`) does not guarantee `git` and does not include `gh`. Add both:
+For Reef-hosted agents, the Reef OpenClaw runtime image (base `node:24-bookworm-slim`, runs as `node`) does not guarantee `git` and does not include `gh`. Add both:
 
 ```dockerfile
 USER root
@@ -288,7 +288,7 @@ Default outbound is **allow** (`reef/fleet.py` `default_egress="allow"`), so Git
 
 ### 6.5 Self-hosted / bring-your-own agent setup
 
-Clawbits is host-agnostic. An agent is just an api_key that connects (`agents.api_key_hash`, auth `Bearer <api_key>`); there is no runtime/host field on the Agent model, `organizations.reef_api_url` is nullable, and the New Agent dialog already offers a `"reef"` vs `"self"` mode (`frontend/src/components/NewAgentDialog.tsx`, `buildSetupPrompt`). So a self-hosted agent already enrolls today: the operator gets a one-time signup token from the UI and runs
+Clawbits is host-agnostic. An agent is just an api_key that connects (`agents.api_key_hash`, auth `Bearer <api_key>`); there is no runtime/host field on the Agent model, and the New Agent dialog already offers a `"reef"` vs `"self"` mode (`frontend/src/components/new-agent/NewAgentDialog.tsx`, `buildSetupPrompt`). So a self-hosted agent already enrolls today: the operator gets a one-time signup token from the UI and runs
 
 ```
 openclaw clawbits signup --endpoint https://app.clawbits.ai --org-id <org> --signup-token <human-...>
