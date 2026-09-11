@@ -11,8 +11,8 @@ import {
   Delete02Icon,
   Mail01Icon,
   MailOpen01Icon,
-  Robot02Icon,
 } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import { Icon } from "@/components/Icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatRelativeShort } from "@/lib/formatting";
@@ -120,7 +120,7 @@ export function InboxRow({
         )}
       >
         {fromAgent ? (
-          <Icon icon={Robot02Icon} className="size-5" />
+          <Icon icon={Bot} className="size-5" />
         ) : (
           <span className="text-[11px] font-semibold">{initials(name)}</span>
         )}

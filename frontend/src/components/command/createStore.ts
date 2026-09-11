@@ -3,7 +3,8 @@
  * {@link CreateDialogs}) so any trigger, the ⌘K palette included, can drive them.
  */
 import {createAtom, type Atom} from "@tanstack/store";
-import {CompassIcon, HashtagIcon, MessageAdd01Icon, Robot02Icon} from "@hugeicons/core-free-icons";
+import {CompassIcon, HashtagIcon, MessageAdd01Icon} from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import type {IconSvgElement} from "@hugeicons/react";
 
 export type CreateDialogKind = "dm" | "channel" | "browse";
@@ -35,5 +36,5 @@ export const CREATE_OPTIONS: CreateOption[] = [
     {kind: "dm", title: "Open DM", description: "Start a private conversation", icon: MessageAdd01Icon, tint: "bg-blue-500/15", color: "var(--color-blue-500)"},
     {kind: "channel", title: "New channel", description: "Start a group conversation by topic", icon: HashtagIcon, tint: "bg-emerald-500/15", color: "var(--color-emerald-500)"},
     {kind: "browse", title: "Join channel", description: "Browse public channels in your org", icon: CompassIcon, tint: "bg-amber-500/15", color: "var(--color-amber-500)"},
-    {to: "/setup/agent", title: "New agent", description: "Create an AI teammate", icon: Robot02Icon, tint: "bg-violet-500/15", color: "var(--color-violet-500)"},
+    {to: "/setup/agent", title: "New agent", description: "Create an AI teammate", icon: Bot, tint: "bg-violet-500/15", color: "var(--color-violet-500)"},
 ];

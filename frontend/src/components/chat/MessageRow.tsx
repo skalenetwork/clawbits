@@ -1438,7 +1438,7 @@ export function MessageRow({
       <div
         data-post-id={post.post_id}
         {...longPress}
-        className={`group/row relative mx-0.5 min-w-0 rounded-lg py-0.5 pl-2.5 pr-3 transition-colors duration-500 ${draftBg} ${highlightCls}`}
+        className={`group/row relative mx-0.5 mt-1.5 min-w-0 rounded-lg py-0.5 pl-2.5 pr-3 transition-colors duration-500 ${draftBg} ${highlightCls}`}
       >
         {body}
         {receiptIndicator && (

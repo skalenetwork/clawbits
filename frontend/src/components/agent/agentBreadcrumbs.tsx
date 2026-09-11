@@ -7,9 +7,9 @@ import {
   BookOpen01Icon,
   Clock05Icon,
   Mail01Icon,
-  Robot02Icon as Bot,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import type { MouseEvent } from "react";
 import type { IconSvgElement } from "@hugeicons/react";
 import type { Crumb } from "@/components/Breadcrumbs";
@@ -32,7 +32,7 @@ export function agentBreadcrumbs(
   profile: AgentProfile | null,
   section?: AgentSection,
   opts?: {
-    /** Click interceptor for the "All" crumb — used by the agent card page to
+    /** Click interceptor for the "Agents" crumb — used by the agent card page to
      *  morph the centered card back into its grid slot (reverse hero morph). */
     onAll?: (e: MouseEvent) => void;
     /** A 4th crumb for an item open inside the section (e.g. a message's
@@ -43,7 +43,7 @@ export function agentBreadcrumbs(
   const name = profile ? agentDisplay(profile) : (agentId ?? "Agent");
   const base = `/agents/${encodeURIComponent(agentId ?? "")}`;
   const crumbs: Crumb[] = [
-    { label: "All", to: "/agents", icon: Bot, onNavigate: opts?.onAll },
+    { label: "Agents", to: "/agents", icon: Bot, onNavigate: opts?.onAll },
     {
       label: name,
       // Linked only when it's not the current page (i.e. on a subpage).

@@ -3,12 +3,12 @@ import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
 import {Link, useNavigate} from "react-router-dom";
 import {Icon} from "@/components/Icon";
 import {
-    Robot02Icon as Bot,
-    Calendar03Icon as Calendar,
-    UserAdd01Icon as AddAgent,
-    Tick01Icon as Check,
-    Cancel01Icon as Reject,
+  Calendar03Icon as Calendar,
+  UserAdd01Icon as AddAgent,
+  Tick01Icon as Check,
+  Cancel01Icon as Reject,
 } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import {AgentFaceAvatar} from "@/components/AgentFaceAvatar";
 import {agentDisplay} from "@/lib/agentDisplay";
 import {PageHeader} from "@/components/PageHeader";
@@ -121,7 +121,7 @@ export default function SettingsAgentsPage() {
 
     return (
         <div className="space-y-8 pb-16">
-            <PageHeader breadcrumb={[{label: "All", icon: Bot}]}/>
+            <PageHeader breadcrumb={[{label: "Agents", icon: Bot}]}/>
 
             {isLoading && (
                 <div className="grid grid-cols-1 justify-items-center gap-x-6 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">

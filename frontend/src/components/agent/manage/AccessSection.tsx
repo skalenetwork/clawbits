@@ -17,10 +17,10 @@ import {
   LockIcon,
   Mail01Icon,
   RefreshIcon,
-  Robot02Icon,
   UserIcon,
   UserMultiple02Icon,
 } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import {
   getAgents,
@@ -122,7 +122,7 @@ function TypeIcon({ type }: { type: ContactPrincipalType }) {
       <TooltipTrigger
         render={
           <span className="shrink-0 text-muted-foreground/60">
-            <Icon icon={human ? UserIcon : Robot02Icon} className="size-3.5" />
+            <Icon icon={human ? UserIcon : Bot} className="size-3.5" />
           </span>
         }
       />

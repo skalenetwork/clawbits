@@ -33,9 +33,9 @@ import {
   BubbleChatIcon,
   Copy01Icon,
   RefreshIcon,
-  Robot02Icon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 
 import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { Icon } from "@/components/Icon";
@@ -359,7 +359,7 @@ function SharedProfileMenuPopover({
           >
             {isAgent && (
               <Icon
-                icon={Robot02Icon}
+                icon={Bot}
                 aria-label="Agent"
                 className="pointer-events-none absolute right-3 top-3 size-3.5 text-muted-foreground/80"
               />

@@ -10,9 +10,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   PencilEdit02Icon,
   RefreshIcon,
-  Robot02Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import { setAgentDescription, type AgentProfile } from "@/lib/api";
 import { generateAgentDescription } from "@/lib/agentDescription";
 import { agentDisplay } from "@/lib/agentDisplay";
@@ -178,7 +178,7 @@ export function IdentitySection({
 
   return (
     <section className="space-y-3">
-      <SectionHeader icon={Robot02Icon}>Identity</SectionHeader>
+      <SectionHeader icon={Bot}>Identity</SectionHeader>
       <div className="space-y-3">
         {profile.is_operator && (
           <ManageTile

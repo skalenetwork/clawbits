@@ -11,7 +11,8 @@ import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { ChannelGlyph } from "@/components/ChannelGlyph";
 import { Icon } from "@/components/Icon";
 import { UserAvatar } from "@/components/UserAvatar";
-import { BotIcon, UserIcon, UserMultipleIcon } from "@hugeicons/core-free-icons";
+import { UserIcon, UserMultipleIcon } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import type { AdminCommandCategory, AdminCommandDefinition } from "@/lib/adminCommands";
 import { cn } from "@/lib/utils";
 import type { MmChannel, MmChannelMember } from "@/lib/api";
@@ -239,7 +240,7 @@ export function MentionPopover({
                 <span className="truncate text-xs text-muted-foreground">@{item.handle}</span>
               </span>
               <Icon
-                icon={isAgent ? BotIcon : UserIcon}
+                icon={isAgent ? Bot : UserIcon}
                 className="ml-2 size-3.5 shrink-0 text-muted-foreground/70"
                 aria-label={isAgent ? "Agent" : "Human"}
               />

@@ -12,8 +12,8 @@ import {
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
-  Robot02Icon,
 } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/button";
@@ -198,7 +198,7 @@ export function MessageView({
             )}
           >
             {fromAgent ? (
-              <Icon icon={Robot02Icon} className="size-5" />
+              <Icon icon={Bot} className="size-5" />
             ) : (
               <span className="text-xs font-semibold">{initials(name)}</span>
             )}

@@ -1,4 +1,4 @@
-import {BubbleChatIcon, Robot02Icon, UserCircleIcon} from "@hugeicons/core-free-icons";
+import {BubbleChatIcon, UserCircleIcon} from "@hugeicons/core-free-icons";
 import type {IconSvgElement} from "@hugeicons/react";
 import {Bot, House, type LucideIcon} from "lucide-react";
 
@@ -39,7 +39,7 @@ export const MOBILE_TABS: MobileTab[] = [
     {
         id: "agents",
         label: "Agents",
-        icon: Robot02Icon,
+        icon: Bot,
         path: "/agents",
         match: (p) => p.startsWith("/agents"),
     },

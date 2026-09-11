@@ -343,6 +343,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `human_id` | `INTEGER` | → `human_users.id` |
 | `reef_host` | `VARCHAR` | — |
 | `reef_name` | `VARCHAR` | — |
+| `agent_id` | `VARCHAR` | unique, index |
+| `nickname` | `VARCHAR` | — |
 
 ## human_api_tokens
 

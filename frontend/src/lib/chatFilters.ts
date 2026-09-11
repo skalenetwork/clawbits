@@ -1,10 +1,10 @@
 import {useCallback, useState} from "react";
 import {
-    BubbleChatIcon,
-    HashtagIcon,
-    Message01Icon,
-    Robot02Icon,
+  BubbleChatIcon,
+  HashtagIcon,
+  Message01Icon,
 } from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
 import type {IconSvgElement} from "@hugeicons/react";
 import type {MmChannel} from "@/lib/api";
 
@@ -16,7 +16,7 @@ export const CHAT_TABS: {id: ChatTab; label: string; icon: IconSvgElement}[] = [
     {id: "all", label: "All", icon: BubbleChatIcon},
     {id: "channels", label: "Channels", icon: HashtagIcon},
     {id: "dms", label: "DMs", icon: Message01Icon},
-    {id: "agents", label: "Agents", icon: Robot02Icon},
+    {id: "agents", label: "Agents", icon: Bot},
 ];
 
 /** Recency key — newest activity first. Falls back to ``created_at`` for
