@@ -429,7 +429,7 @@ export const MessageMarkdown = memo(function MessageMarkdown({
   }
 
   return (
-    <div className={cn("text-[15px] leading-relaxed text-foreground break-words", className)}>
+    <div className={cn("text-message text-pretty text-foreground break-words", className)}>
       <ReactMarkdown
         remarkPlugins={variant === "document" ? DOCUMENT_PLUGINS : CHAT_PLUGINS}
         components={components}

@@ -7,11 +7,11 @@
  * settles into is the page you were already looking at.
  */
 import { useEffect, useRef, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { Tick02Icon, Copy01Icon } from "@hugeicons/core-free-icons";
-import { Icon } from "@/components/Icon";
+import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Checks,
+  CommandBlock,
   SetupButton,
   SetupField,
   SetupMark,
@@ -64,6 +64,9 @@ export default function ReefSetupPage() {
   const { activeOrgId } = useAuth();
   const { org, isOwner, isLoading } = useActiveOrg();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [params] = useSearchParams();
+  const replacing = params.get("replace") === "1";
   const [step, setStep] = useState<Step>(0);
   const [repo, setRepo] = useState("");
   const [token, setToken] = useState("");
@@ -76,21 +79,22 @@ export default function ReefSetupPage() {
     queryKey: activeOrgId ? queryKeys.reef(activeOrgId) : ["org", "none", "reef"],
     queryFn: () => getReef(activeOrgId ?? ""),
     enabled: Boolean(activeOrgId) && (step > 0 || Boolean(org?.reef_connected)),
-    refetchInterval: step === 2 ? 5000 : false,
+    refetchInterval: step === 2 ? 15_000 : false,
   });
 
   // The server's `connected` is the authority on resume and the org flag is
   // not: a rotated secrets key leaves the flag true while the token can no
   // longer be unsealed, and that case has to land on step 0 with the repo
-  // already filled in, because a new token is the only fix.
+  // already filled in, because a new token is the only fix. `?replace=1` asks
+  // for that same screen on purpose.
   const resumed = useRef(false);
   useEffect(() => {
     if (resumed.current || step !== 0 || !reef.data) return;
     if (repo || token) return;
     resumed.current = true;
-    if (reef.data.connected) setStep(1);
+    if (reef.data.connected && !replacing) setStep(1);
     else if (reef.data.repo) setRepo(reef.data.repo);
-  }, [reef.data, step, repo, token]);
+  }, [reef.data, step, repo, token, replacing]);
 
   const trimmedRepo = repo.trim();
   const typed = normalizeRepo(repo);
@@ -106,7 +110,12 @@ export default function ReefSetupPage() {
   const connect = useMutation({
     mutationFn: () => setReef(activeOrgId ?? "", typed, token.trim()),
     onSuccess: () => {
-      setStep(1);
+      if (!replacing) {
+        setStep(1);
+        return;
+      }
+      if (activeOrgId) void queryClient.invalidateQueries({ queryKey: queryKeys.reef(activeOrgId) });
+      void navigate("/settings/reef", { replace: true });
     },
     onError: (e) => {
       toast.error(errMsg(e, "Couldn't connect that repository"));
@@ -130,7 +139,7 @@ export default function ReefSetupPage() {
       if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
       if (e.key === "Enter" && step === 2 && arrived) {
         e.preventDefault();
-        void navigate("/home");
+        void navigate("/setup/agent", { replace: true });
       } else if (e.key === "Escape" && back !== null) {
         e.preventDefault();
         setStep(back);
@@ -152,11 +161,19 @@ export default function ReefSetupPage() {
   ];
 
   return (
-    <SetupShell steps={steps} at={step} exitTo="/settings/reef">
+    <SetupShell
+      escExits={back === null}
+      unsaved={step === 0 && token.trim() ? "The token you entered isn't saved yet." : null}
+      steps={steps}
+      at={step}
+      onExit={() => {
+        void navigate("/settings/reef");
+      }}
+    >
       {step === 0 && (
         <SetupPanel
           icon={<SetupMark src={ICON.reef} size={84} />}
-          title={needsToken ? "Reconnect Reef store repo" : "Connect Reef store repo"}
+          title={needsToken || replacing ? "Reconnect Reef store repo" : "Connect Reef store repo"}
           line={
             needsToken ? "The stored token can no longer be read. Enter a new one." : undefined
           }
@@ -251,7 +268,12 @@ export default function ReefSetupPage() {
                   <p className="mb-2 px-1 text-[13px] text-muted-foreground">
                     Run this on {hostName}:
                   </p>
-                  <CommandBlock repo={repoPair} host={hostName} />
+                  <CommandBlock
+                    code={
+                      `curl -fsSL https://reef.clawbits.ai/install | sh\n` +
+                      `curl -fsSL ${BOOTSTRAP} |\n  REEF_HOST=${hostName} REEF_REPO=${repoPair} sh`
+                    }
+                  />
                   <p className="mt-2 px-1 text-[13px] text-muted-foreground">
                     The first run prints a deploy key to add to the repo.
                   </p>
@@ -278,15 +300,7 @@ export default function ReefSetupPage() {
 
       {step === 2 && (
         <SetupPanel
-          icon={
-            arrived ? (
-              <SetupMark src={ICON.reporting} size={84} />
-            ) : (
-              <span className="setup-pulse grid size-[90px] place-items-center">
-                <SetupMark src={ICON.waiting} size={72} />
-              </span>
-            )
-          }
+          icon={<SetupMark src={arrived ? ICON.reporting : ICON.waiting} size={84} />}
           title={arrived ? `${hostName} is reporting` : `Waiting for ${hostName}`}
           line={
             arrived ? "Agents you create now run on it." : "Your machine pulls every 30 seconds."
@@ -299,15 +313,17 @@ export default function ReefSetupPage() {
                 <span className="block text-[15px] font-semibold">{arrived.host}</span>
                 <span className="block text-[13px] text-muted-foreground">
                   {arrived.reef ? `reef ${arrived.reef} · ` : ""}
-                  {arrived.agents} agent{arrived.agents === 1 ? "" : "s"}
+                  {arrived.agents.length} agent{arrived.agents.length === 1 ? "" : "s"}
                 </span>
               </span>
             </div>
           ) : (
-            <div className="w-full text-[14px] text-muted-foreground">
-              <Check done>Repository connected</Check>
-              <Check>First report</Check>
-            </div>
+            <Checks
+              items={[
+                { label: "Repository connected", done: true },
+                { label: "First report", done: false },
+              ]}
+            />
           )}
           <div className="flex w-full gap-2">
             {!arrived && (
@@ -325,7 +341,7 @@ export default function ReefSetupPage() {
               disabled={!arrived}
               chip={arrived ? "Enter" : undefined}
               onClick={() => {
-                void navigate("/home");
+                void navigate("/setup/agent", { replace: true });
               }}
             >
               Create agent
@@ -334,63 +350,5 @@ export default function ReefSetupPage() {
         </SetupPanel>
       )}
     </SetupShell>
-  );
-}
-
-function Check({ done, children }: { done?: boolean; children: string }) {
-  return (
-    <div className="flex items-center gap-2.5 py-1.5">
-      <span
-        className={
-          done
-            ? "grid size-4 place-items-center rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-            : "size-4 rounded-full bg-foreground/8"
-        }
-      >
-        {done && <Icon icon={Tick02Icon} className="size-2.5" strokeWidth={4} />}
-      </span>
-      <span className={done ? "text-foreground" : ""}>{children}</span>
-      {!done && <span className="ml-auto text-[13px] opacity-70">watching</span>}
-    </div>
-  );
-}
-
-/** The whole host side in one block, with the name and the repo already in it.
- *  Wrapped rather than scrolled: this is a `curl | sh`, and the URL being piped
- *  is the one thing nobody should have to scroll to read. */
-function CommandBlock({ repo, host }: { repo: string; host: string }) {
-  const [copied, setCopied] = useState(false);
-  const code =
-    `curl -fsSL https://reef.clawbits.ai/install | sh\n` +
-    `curl -fsSL ${BOOTSTRAP} |\n  REEF_HOST=${host} REEF_REPO=${repo} sh`;
-
-  useEffect(() => {
-    if (!copied) return;
-    const t = setTimeout(() => {
-      setCopied(false);
-    }, 1600);
-    return () => {
-      clearTimeout(t);
-    };
-  }, [copied]);
-
-  return (
-    <div className="relative w-full overflow-hidden rounded-2xl border border-code-border bg-code text-left">
-      <button
-        type="button"
-        onClick={() => {
-          void navigator.clipboard.writeText(code).then(() => {
-            setCopied(true);
-          });
-        }}
-        className="absolute top-2 right-2 inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <Icon icon={copied ? Tick02Icon : Copy01Icon} className="size-3" />
-        {copied ? "Copied" : "Copy"}
-      </button>
-      <pre className="px-4 py-3.5 pr-16 font-mono text-[12.5px] leading-[1.8] [overflow-wrap:anywhere] whitespace-pre-wrap">
-        {code}
-      </pre>
-    </div>
   );
 }

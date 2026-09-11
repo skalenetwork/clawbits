@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Cancel01Icon, Download01Icon, UserMultiple02Icon } from "@hugeicons/core-free-icons";
-import { Icon } from "@/components/Icon";
+import { Download, Users } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useAgentPresence } from "@/hooks/useAgentPresence";
 import { useUserPresence } from "@/hooks/useUserPresence";
@@ -20,6 +19,9 @@ import ManageMembersDialog from "./AddMemberDialog";
 import { ProfileMenuProvider } from "@/components/ProfileMenu";
 import { useProfileMenuTrigger } from "@/components/profileMenuContext";
 import { mentionHandle } from "@/lib/messageHelpers";
+import { PanelNote, RightPanel } from "@/components/sidebars/RightPanel";
+import { CollapsibleGroup } from "@/components/sidebars/CollapsibleGroup";
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
 
 interface ChatInfoSidebarProps {
   channelId: string;
@@ -42,19 +44,7 @@ function memberName(m: MmChannelMember): string {
   return "Unknown";
 }
 
-function memberCaption(m: MmChannelMember, selfId: number | undefined): string | undefined {
-  if (m.human_id != null && m.human_id === selfId) return "You";
-  // Agents: leave undefined so ChannelMemberRow auto-fills the live status
-  // caption ("Agent · Available" / "Offline" / "Setting up…"), mirroring how
-  // humans get "Online" / "Idle" / "Last seen …".
-  return undefined;
-}
-
-/** Wrapping each member row in its own component lets us call the
- *  ``useProfileMenuTrigger`` hook per row without breaking the rules of
- *  hooks (hooks can't run inside a ``.map`` callback directly). The
- *  hook returns the click handler; we forward it as the row's onClick
- *  so the whole row becomes the trigger button. */
+/** One component per row so each can call ``useProfileMenuTrigger``. */
 function MemberRowTrigger({
   member,
   caption,
@@ -170,95 +160,56 @@ export default function ChatInfoSidebar({ channelId, open, onClose }: ChatInfoSi
 
   const canManage = channel?.channel_type !== "direct" && orgId !== null;
 
-  // Local provider so members in this sidebar can open the shared
-  // ProfileMenu without depending on a parent provider — ChatInfoSidebar
-  // is a sibling of ``Outlet`` in AppShell, so a provider rooted in
-  // ChannelPage doesn't reach it. ``onMentionInsert`` is intentionally
-  // omitted here (the sidebar isn't near a composer); the action just
-  // doesn't render.
+  // Own provider: this panel renders beside the routed page, outside
+  // ChannelPage's. No ``onMentionInsert``, as there is no composer here.
   return (
     <ProfileMenuProvider
       orgId={orgId}
       currentUserId={user?.id ?? null}
     >
-      <aside
-        data-state={open ? "expanded" : "collapsed"}
-        aria-hidden={!open}
-        className="hidden shrink-0 justify-end overflow-hidden pb-2 pt-[max(var(--titlebar-height),0.5rem)] transition-[width] duration-200 ease-linear md:flex data-[state=collapsed]:w-0 data-[state=expanded]:w-[calc(var(--sidebar-width)+3.5rem)]"
-      >
-        <div className="relative mr-2 flex h-full w-[calc(var(--sidebar-width)+3rem)] shrink-0 flex-col overflow-hidden rounded-xl border border-sidebar-border bg-panel text-sidebar-foreground">
-          {/* Overlaid header — the same h-12 frosted bar as the sidebar's
-              ContextualHeader and the content card's page-header, so all three
-              line up as one header row across the card. The member list scrolls
-              behind it; the scroll region below clears it with top padding. */}
-          <header className="absolute inset-x-0 top-0 z-10 flex h-12 items-center justify-between gap-2 border-b border-sidebar-border bg-panel/80 px-3 backdrop-blur-xl supports-[backdrop-filter]:bg-panel/65">
-            <h2 className="truncate text-sm font-semibold text-sidebar-foreground">Channel info</h2>
-            <div className="flex shrink-0 items-center gap-1.5">
-              {channel?.channel_type && (
-                <span className="rounded-full border border-sidebar-border bg-sidebar-accent/40 px-2 py-0.5 text-[11px] font-medium capitalize text-muted-foreground">
-                  {channel.channel_type}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={onClose}
-                aria-label="Close channel info"
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Icon icon={Cancel01Icon} className="size-4" />
-              </button>
-            </div>
-          </header>
-
-          <div className="no-scrollbar flex-1 overflow-y-auto px-2 pb-3 pt-14">
-            {membersQuery.isLoading && (
-              <p className="px-3 py-4 text-center text-xs text-muted-foreground">Loading…</p>
-            )}
-            {membersQuery.isError && (
-              <p className="px-3 py-4 text-center text-xs text-destructive">
-                {errMsg(membersQuery.error, "Couldn't load members")}
-              </p>
-            )}
-            {!membersQuery.isLoading && !membersQuery.isError && members.length === 0 && (
-              <p className="px-3 py-4 text-center text-xs text-muted-foreground">No members yet.</p>
-            )}
-
-            {sortedMembers.map(m => (
-              <MemberRowTrigger
-                key={`member:${memberKind(m)}:${memberRefId(m)}`}
-                member={m}
-                caption={memberCaption(m, user?.id)}
-              />
-            ))}
-          </div>
-
-          <div className="flex shrink-0 flex-col gap-1.5 p-2">
+      <RightPanel
+        open={open}
+        title="Channel info"
+        meta={channel?.channel_type && (
+          <span className="shrink-0 rounded-full bg-foreground/6 px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground capitalize">
+            {channel.channel_type}
+          </span>
+        )}
+        onClose={onClose}
+        footer={channel && (
+          <SidebarMenu>
             {canManage && (
-              <button
-                type="button"
-                onClick={() => { setManageOpen(true); }}
-                className="flex w-full items-center justify-center gap-1.5 rounded-md border border-sidebar-border bg-sidebar-accent/40 px-2.5 py-1 text-[12px] font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              >
-                <Icon icon={UserMultiple02Icon} className="size-3 text-muted-foreground" />
-                <span className="truncate">Manage members</span>
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={() => { setManageOpen(true); }} className="text-muted-foreground">
+                  <Users/>
+                  <span>Manage members</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             )}
-            {/* Export is the one action here a DM gets too: a DM has no
-                "Manage members", and the chat list's right-click menu isn't
-                reachable from inside the thread. */}
-            {channel && (
-              <button
-                type="button"
-                onClick={() => { channelActions.exportChat(channel); }}
-                className="flex w-full items-center justify-center gap-1.5 rounded-md border border-sidebar-border bg-sidebar-accent/40 px-2.5 py-1 text-[12px] font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              >
-                <Icon icon={Download01Icon} className="size-3 text-muted-foreground" />
-                <span className="truncate">Export chat</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </aside>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => { channelActions.exportChat(channel); }} className="text-muted-foreground">
+                <Download/>
+                <span>Export chat</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        )}
+      >
+        {membersQuery.isLoading && <PanelNote>Loading…</PanelNote>}
+        {membersQuery.isError && <PanelNote error>{errMsg(membersQuery.error, "Couldn't load members")}</PanelNote>}
+        {!membersQuery.isLoading && !membersQuery.isError && members.length === 0 && (
+          <PanelNote>No members yet.</PanelNote>
+        )}
+        {members.length > 0 && (
+          <CollapsibleGroup id="channel_members" label="Members">
+            {sortedMembers.map(m => (
+              <SidebarMenuItem key={`member:${memberKind(m)}:${memberRefId(m)}`}>
+                <MemberRowTrigger member={m} caption={m.human_id === user?.id ? "You" : undefined}/>
+              </SidebarMenuItem>
+            ))}
+          </CollapsibleGroup>
+        )}
+      </RightPanel>
 
       {canManage && orgId && (
         <ManageMembersDialog

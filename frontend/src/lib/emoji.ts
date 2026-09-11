@@ -65,26 +65,13 @@ export function extractShortcodeQuery(
   return { start, end: caret, query };
 }
 
-const SKIN_TONE_KEY = "fc_emoji_skin_tone";
-const VALID_SKIN_TONES = new Set(["none", "light", "medium-light", "medium", "medium-dark", "dark"]);
+const SKIN_TONES = ["none", "light", "medium-light", "medium", "medium-dark", "dark"] as const;
 
-export type SkinTone = "none" | "light" | "medium-light" | "medium" | "medium-dark" | "dark";
-
-export function loadSkinTone(): SkinTone {
-  if (typeof localStorage === "undefined") return "none";
+export function loadSkinTone(): (typeof SKIN_TONES)[number] {
   try {
-    const raw = localStorage.getItem(SKIN_TONE_KEY);
-    return raw && VALID_SKIN_TONES.has(raw) ? (raw as SkinTone) : "none";
+    const stored = localStorage.getItem("fc_emoji_skin_tone");
+    return SKIN_TONES.find((tone) => tone === stored) ?? "none";
   } catch {
     return "none";
-  }
-}
-
-export function saveSkinTone(tone: SkinTone): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(SKIN_TONE_KEY, tone);
-  } catch {
-    /* localStorage unavailable — ignore */
   }
 }

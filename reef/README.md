@@ -10,10 +10,24 @@ fleet   fleet/<host>/<name>.toml    clawbits, one file per agent
 status  status/<host>.json          each host, from this timer
 ```
 
-Every 30 seconds the host pulls all three, and when `main` or `fleet` has moved
+Every 30 seconds the host pulls `main` and `fleet`, and when either has moved
 it runs `reef role apply` and `reef fleet apply --prune`. Then it writes what
-`reef` observed to `status/<host>.json` and pushes, but only when the content
-changed: the commit is the timestamp.
+`reef` observed to `status/<host>.json`, and only when the content changed does
+it commit, rebase onto `status` and push. Each host touches only its own file,
+so the rebase never conflicts, and a push that loses a race goes out on the
+next tick. Besides the rows of `reef role list`, `reef agent list` and the last
+100 of `reef events`, the file carries:
+
+```text
+at       heartbeat: the current UTC time rounded down to ten minutes
+applied  {main, fleet}: the HEADs last applied in full, null until one lands
+result   ok, or failed when this tick's apply failed
+error    the cause reef printed when it failed, else null
+```
+
+`at` is what keeps an idle host committing, about every ten minutes and never
+on every tick. clawbits calls a host live while its heartbeat is under 25
+minutes old, stale after that, and failing whenever `result` is `failed`.
 
 A host that cannot reach the repository changes nothing. An apply that fails
 leaves the recorded HEADs alone, so the next tick retries it, and the status
@@ -40,11 +54,12 @@ curl -fsSL https://raw.githubusercontent.com/skalenetwork/clawbits/main/reef/boo
 ```
 
 It makes an ed25519 key, pins github.com's published host key, clones one tree
-per branch so `git pull --ff-only` is the only git the timer ever needs, and
-installs the script and the timer with a drop-in carrying this machine's
-account, paths and host name. It also writes `empty.toml`, which declares no
-agents and is passed to every `fleet apply`: reef bails when handed no files,
-and a partial list with `--prune` deletes every agent it cannot see.
+per branch so the timer only fast-forwards `main` and `fleet` and rebases its
+own commits onto `status`, and installs the script and the timer with a drop-in
+carrying this machine's account, paths and host name. It also writes
+`empty.toml`, which declares no agents and is passed to every `fleet apply`:
+reef bails when handed no files, and a partial list with `--prune` deletes
+every agent it cannot see.
 
 The first run stops after the key: nothing else is possible until that key is
 on the repository. Add it under **Settings → Deploy keys** with **Allow write
@@ -63,8 +78,8 @@ journalctl -u reef-reconcile -n 50
 git -C ~/agents/status log -1 --format='%cr'
 ```
 
-The last one is the liveness signal the org sees: when the status commit stops
-advancing, this timer stopped.
+The last one is the liveness signal the org sees: while the timer runs, the
+status commit advances at least every ten minutes.
 
 Once a status file lands, the host appears in clawbits under Settings → Reef and
 people can create agents on it. Nothing else on this host is ever contacted.

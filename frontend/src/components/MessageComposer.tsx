@@ -1,6 +1,6 @@
 import {
   useCallback,
-  useId,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -8,12 +8,9 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import {
-  AttachmentIcon,
-  ArrowDown02Icon,
-  ArrowUp02Icon,
-  Cancel01Icon,
-} from "@hugeicons/core-free-icons";
+import { flushSync } from "react-dom";
+import { ArrowDown, ArrowUp, Plus, Reply, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 
 import { AgentTargetChip } from "@/components/composer/AgentTargetChip";
@@ -27,8 +24,6 @@ import {
   type MentionItem,
 } from "@/components/composer/popovers";
 import { AttachmentChip } from "@/components/AttachmentChip";
-import { EmojiPickerButton } from "@/components/EmojiPicker";
-import { Icon } from "@/components/Icon";
 import type { MessageMentions } from "@/components/MessageMarkdown";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -37,7 +32,6 @@ import {
   type AdminCommandDefinition,
 } from "@/lib/adminCommands";
 import { extractClipboardFiles } from "@/lib/clipboardFiles";
-import { isDesktop } from "@/lib/desktop";
 import { modGlyph } from "@/lib/shortcuts/platform";
 import { isHereToken } from "@/lib/mentions";
 import { quotedBodyText } from "@/lib/messageHelpers";
@@ -96,10 +90,12 @@ function ShortcutsCheatsheet({
   open,
   onOpenChange,
   anchor,
+  agentShortcuts,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   anchor: RefObject<HTMLElement | null>;
+  agentShortcuts: boolean;
 }) {
   const items: { keys: string[]; label: string }[] = [
     { keys: ["↵"], label: "Send message" },
@@ -108,13 +104,12 @@ function ShortcutsCheatsheet({
     { keys: [modGlyph, "I"], label: "Italic" },
     { keys: [modGlyph, "J"], label: "Target agent" },
     { keys: [modGlyph, "⇧", "J"], label: "Cycle agent" },
-    { keys: [modGlyph, ";"], label: "Emoji picker" },
     { keys: ["/"], label: "Agent commands" },
     { keys: ["@"], label: "Mention someone" },
     { keys: [":"], label: "Emoji shortcode" },
     { keys: ["Esc"], label: "Close · cancel reply · clear target" },
     { keys: [modGlyph, "/"], label: "This cheatsheet" },
-  ];
+  ].filter((row) => agentShortcuts || !row.keys.includes("J"));
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <PopoverPrimitive.Portal>
@@ -126,7 +121,7 @@ function ShortcutsCheatsheet({
           className="isolate z-50"
         >
           <PopoverPrimitive.Popup className="z-50 w-72 origin-(--transform-origin) overflow-hidden rounded-xl border border-border/60 bg-background/95 shadow-lg ring-1 ring-foreground/5 backdrop-blur-xl data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
-            <div className="border-b border-border/40 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="border-b border-border/40 px-3 py-2 text-xs font-medium text-muted-foreground">
               Shortcuts
             </div>
             <div className="flex flex-col gap-0.5 p-1.5">
@@ -156,14 +151,6 @@ function ShortcutsCheatsheet({
   );
 }
 
-// ----------------------------------------------------------------------------
-// Send button - Claude-style. Idle (no content) is a muted ghost; the moment
-// there's send-able content the background morphs to `primary`. Upload state
-// swaps the icon for an inline spinner so the user knows we're waiting.
-// Anchored bottom-right of the capsule's action row - the single colour
-// accent on the surface.
-// ----------------------------------------------------------------------------
-
 function SendButton({
   canSend,
   sending,
@@ -173,28 +160,23 @@ function SendButton({
   sending: boolean;
   uploading: boolean;
 }) {
-  const disabled = !canSend || sending || uploading;
   const busy = sending || uploading;
+  const ready = canSend && !busy;
   return (
     <button
       type="submit"
-      disabled={disabled}
+      disabled={!ready}
       aria-label={uploading ? "Waiting for uploads" : "Send message"}
-      className={`flex size-8 shrink-0 items-center justify-center rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-        canSend && !busy
+      className={`grid size-7 shrink-0 place-items-center rounded-full transition-all disabled:cursor-not-allowed ${
+        ready
           ? "bg-primary text-primary-foreground hover:bg-primary/90 active:scale-95"
-          : busy
-            ? "bg-primary/60 text-primary-foreground"
-            : "bg-muted/60 text-muted-foreground"
+          : "bg-foreground/10 text-muted-foreground"
       }`}
     >
       {busy ? (
-        <span
-          aria-hidden
-          className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent"
-        />
+        <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"/>
       ) : (
-        <Icon icon={ArrowUp02Icon} className="size-[18px]"/>
+        <ArrowUp className="size-4"/>
       )}
     </button>
   );
@@ -218,6 +200,7 @@ export interface MessageComposerProps {
   /** Textarea ref — owned by parent so it can `.focus()` from outside (reply
    *  click, channel switch, jump-to-latest, etc.). */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  channelId: string;
 
   draft: string;
   onDraftChange: (v: string) => void;
@@ -247,7 +230,6 @@ export interface MessageComposerProps {
   onActiveEmojiIndexChange: (i: number) => void;
   onEmojiDismiss: () => void;
   onEmojiInsert: (emoji: string) => void;
-  onInsertAtCaret: (text: string) => void;
 
   // Context strips
   replyingTo: MmChannelPost | null;
@@ -280,9 +262,8 @@ export interface MessageComposerProps {
   onEditLast?: () => void;
   isSending: boolean;
 
-  // Jump-to-latest — when the chat is scrolled away from the bottom we
-  // render a compact icon button above the pill, aligned with the send
-  // button, so the user can snap back without hunting for a control.
+  // Jump-to-latest: when the chat is scrolled away from the bottom, a compact
+  // button centered above the composer snaps back to the latest message.
   isChatAtBottom: boolean;
   onScrollChatToBottom: () => void;
 
@@ -298,19 +279,25 @@ export interface MessageComposerProps {
     status: "typing" | "generating";
   }[];
 
-  // Misc
-  adminCommandsEnabled?: boolean;
+  /** A DM with an agent: slash commands on, and no agent picker since the
+   *  agent is already the target. */
+  agentDm: boolean;
   onTyping?: () => void;
   /** Contextual placeholder, e.g. "Message #general" / "Message Anna".
    *  Falls back to the generic prompt. */
   placeholder?: string;
 }
 
+/** The composer's translucent surface, shared with the jump-to-latest button. */
+const SURFACE =
+  "border border-border/60 bg-background/85 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-card/95 dark:supports-[backdrop-filter]:bg-card/85";
+
 export function MessageComposer(props: MessageComposerProps) {
   const {
     isMobile,
     wrapperRef,
     inputRef,
+    channelId,
     draft,
     onDraftChange,
     caretPos,
@@ -333,7 +320,6 @@ export function MessageComposer(props: MessageComposerProps) {
     onActiveEmojiIndexChange,
     onEmojiDismiss,
     onEmojiInsert,
-    onInsertAtCaret,
     replyingTo,
     replyPosterName,
     onCancelReply,
@@ -356,7 +342,7 @@ export function MessageComposer(props: MessageComposerProps) {
     onScrollChatToBottom,
     activityLabel,
     activityPeople,
-    adminCommandsEnabled = false,
+    agentDm,
     onTyping,
     placeholder,
   } = props;
@@ -367,12 +353,14 @@ export function MessageComposer(props: MessageComposerProps) {
   // each other, or long drafts clip the overlay while the textarea scrolls on.
   const sizerRef = useRef<HTMLDivElement | null>(null);
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [wrappedIn, setWrappedIn] = useState<string | null>(null);
   const [activeAdminCommand, setActiveAdminCommand] = useState({ key: "", index: 0 });
   const [dismissedAdminCommandKey, setDismissedAdminCommandKey] = useState<string | null>(null);
 
   const adminCommandMatch = useMemo(
-    () => (adminCommandsEnabled ? extractAdminCommandQuery(draft, caretPos) : null),
-    [adminCommandsEnabled, draft, caretPos],
+    () => (agentDm ? extractAdminCommandQuery(draft, caretPos) : null),
+    [agentDm, draft, caretPos],
   );
   const adminCommandOptions = useMemo(
     () => (adminCommandMatch ? getAdminCommandOptions(adminCommandMatch.query) : []),
@@ -386,7 +374,7 @@ export function MessageComposer(props: MessageComposerProps) {
     : 0;
   const adminCommandDismissed = adminCommandKey != null && dismissedAdminCommandKey === adminCommandKey;
   const adminCommandOpen = Boolean(
-    adminCommandsEnabled && !adminCommandDismissed && adminCommandMatch && adminCommandOptions.length > 0,
+    agentDm && !adminCommandDismissed && adminCommandMatch && adminCommandOptions.length > 0,
   );
 
   // Wrap the current textarea selection with markdown syntax. Empty-selection
@@ -461,6 +449,7 @@ export function MessageComposer(props: MessageComposerProps) {
   );
 
   const effectiveTargetHandle = manualTargetHandle ?? autoMention?.handle ?? null;
+  const agentPicker = !agentDm && agents.length > 0;
 
   const clearTarget = useCallback(() => {
     if (manualTargetHandle) {
@@ -636,36 +625,16 @@ export function MessageComposer(props: MessageComposerProps) {
       }
     }
 
-    // Agent target shortcuts
     if ((e.metaKey || e.ctrlKey) && (e.key === "J" || e.key === "j")) {
       e.preventDefault();
-      if (e.shiftKey) {
-        cycleAgent();
-      } else {
-        // Toggle the chip popover by clicking its trigger button. The span
-        // wrapper carries the data-attribute (so we can target it from the
-        // textarea), but it's `display: contents`, so the trigger button is
-        // a direct child.
-        const wrap = wrapperRef.current;
-        const btn = wrap?.querySelector<HTMLButtonElement>('[data-composer-agent-trigger] button');
-        btn?.click();
-      }
+      if (!agentPicker) return;
+      if (e.shiftKey) cycleAgent();
+      else setPickerOpen((v) => !v);
       return;
     }
 
-    // Emoji picker
-    if ((e.metaKey || e.ctrlKey) && e.key === ";") {
-      e.preventDefault();
-      const wrap = wrapperRef.current;
-      const btn = wrap?.querySelector<HTMLButtonElement>('[data-composer-emoji-trigger] button');
-      btn?.click();
-      return;
-    }
-
-    // Escape ladder: cheatsheet → reply → target. The "Esc to cancel"
-    // hint next to the agent chip promises the third rung regardless of
-    // draft content — clearing the target preserves the draft so the
-    // user doesn't lose what they were writing.
+    // Escape ladder: cheatsheet → reply → target. Clearing the target keeps
+    // the draft.
     if (e.key === "Escape") {
       if (cheatsheetOpen) {
         e.preventDefault();
@@ -693,7 +662,21 @@ export function MessageComposer(props: MessageComposerProps) {
 
   const remaining = MAX_LEN - draft.length;
   const showCounter = draft.length >= COUNTER_THRESHOLD;
-  const formId = useId();
+
+  const wrapped = wrappedIn === channelId;
+  if (wrapped && draft === "") setWrappedIn(null);
+  const stacked = wrapped || draft.includes("\n") || replyingTo != null || attachments.length > 0;
+
+  useEffect(() => {
+    const el = sizerRef.current;
+    if (!el) return;
+    const line = parseFloat(getComputedStyle(el).lineHeight);
+    const ro = new ResizeObserver(() => {
+      if (el.offsetHeight > line * 1.5) flushSync(() => { setWrappedIn(channelId); });
+    });
+    ro.observe(el);
+    return () => { ro.disconnect(); };
+  }, [channelId]);
 
   return (
     <div
@@ -708,7 +691,7 @@ export function MessageComposer(props: MessageComposerProps) {
       className={
         isMobile
           ? "pointer-events-none absolute inset-x-0 bottom-0 z-10 px-2 pb-[max(0.5rem,var(--safe-bottom))]"
-          : `pointer-events-none absolute inset-x-0 z-10 px-3 pb-[var(--safe-bottom)] max-md:px-2 ${isDesktop ? "bottom-2" : "bottom-1.5"}`
+          : "pointer-events-none absolute inset-x-0 bottom-2.5 z-10 px-3 pb-[var(--safe-bottom)] max-md:px-2"
       }
     >
       {/* Outer wrapper spans full width for the height-measurement observer
@@ -717,18 +700,17 @@ export function MessageComposer(props: MessageComposerProps) {
           message rows' ``mx-0.5`` inset so the pill's edges line up exactly
           with the rows rather than overhanging them by 2px each side. */}
       <div className="pointer-events-auto relative mx-auto max-w-chat px-0.5">
-        {/* Jump-to-latest — anchored above the pill, right-edge aligned
-            with the send button (`right-2` mirrors the row's `pr-2`) so it
-            reads as a control that's part of the composer rather than a
-            floating chip. `rounded-xl` echoes the pill's own corner radius. */}
         {!isChatAtBottom && (
           <button
             type="button"
             onClick={onScrollChatToBottom}
             aria-label="Jump to latest"
-            className="absolute bottom-full right-2 mb-2 flex size-8 items-center justify-center rounded-lg border border-border/60 bg-background/70 text-muted-foreground shadow-sm backdrop-blur-xl transition-all hover:border-border hover:bg-background hover:text-foreground supports-[backdrop-filter]:bg-background/55"
+            className={cn(
+              SURFACE,
+              "absolute bottom-full left-1/2 mb-1.5 flex size-8 -translate-x-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors animate-in fade-in slide-in-from-bottom-1 duration-200 hover:text-foreground",
+            )}
           >
-            <Icon icon={ArrowDown02Icon} className="size-3.5"/>
+            <ArrowDown className="size-4"/>
           </button>
         )}
         {adminCommandOpen && (
@@ -762,63 +744,41 @@ export function MessageComposer(props: MessageComposerProps) {
         )}
         <TypingRow people={activityPeople ?? []} label={activityLabel ?? null}/>
         <form
-          id={formId}
-          className="flex flex-col rounded-2xl border border-border/50 bg-background/95 backdrop-blur-xl backdrop-saturate-150 transition-colors focus-within:border-border supports-[backdrop-filter]:bg-background/85 max-md:rounded-3xl"
+          data-stacked={stacked ? "" : undefined}
+          className={cn(
+            SURFACE,
+            "group/composer flex flex-wrap items-center gap-1.5 rounded-[22px] p-[7px] transition-colors focus-within:border-border/80 data-stacked:rounded-[18px]",
+          )}
           onSubmit={(e) => {
             e.preventDefault();
             onSubmit();
           }}
-        >{/* One capsule holds everything (2026 AI-composer anatomy):
-              context strips on top, growing textarea in the middle, and a
-              pinned action row at the bottom - input sources (attach,
-              agent target) on the left, expression + send on the right.
-              Send is the only colour accent on the surface. */}
-          {/* Context strip: reply quote. No hairline — breathing room
-              and the small accent bar carry the visual separation. */}
+        >
           {replyingTo && (
-            <div className="flex items-center gap-2.5 px-4 pt-3 pb-1">
-              <span aria-hidden className="h-3.5 w-0.5 shrink-0 rounded-full bg-primary/60"/>
-              <span className="min-w-0 flex-1 truncate text-[12px] leading-tight">
-                <span className="text-muted-foreground">Replying to </span>
-                <span className="font-medium text-foreground/90">{replyPosterName(replyingTo)}</span>
-                <span className="text-muted-foreground"> · </span>
-                {/* Attachment-only parents have no text — label them from
-                    the file count instead of reading as blank. */}
-                <span className="text-muted-foreground">
-                  {quotedBodyText(replyingTo.message || "", replyingTo.files?.length ?? 0)}
-                </span>
+            <div className="order-first flex min-w-0 basis-full items-center gap-2 pt-0.5 pl-[7px] text-xs text-muted-foreground">
+              <Reply className="size-3.5 shrink-0"/>
+              <span className="min-w-0 flex-1 truncate">
+                Replying to <span className="font-medium text-foreground">{replyPosterName(replyingTo)}</span>
+                {" · "}
+                {quotedBodyText(replyingTo.message || "", replyingTo.files?.length ?? 0)}
               </span>
               <button
                 type="button"
                 onClick={onCancelReply}
                 aria-label="Cancel reply"
-                className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="grid size-5 shrink-0 place-items-center rounded-md transition-colors hover:bg-foreground/6 hover:text-foreground"
               >
-                <Icon icon={Cancel01Icon} className="size-3"/>
+                <X className="size-3"/>
               </button>
             </div>
           )}
-
-          {/* Context strip: attachments — chip row, no hairline. */}
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-2 pt-2 pb-0.5">
+            <div className="order-first flex basis-full flex-wrap gap-1.5">
               {attachments.map((a) => (
-                <AttachmentChip
-                  key={a.localId}
-                  attachment={{
-                    localId: a.localId,
-                    file: a.file,
-                    status: a.status,
-                    progress: a.progress,
-                    error: a.error,
-                  }}
-                  onRemove={onAttachmentRemove}
-                />
+                <AttachmentChip key={a.localId} attachment={a} onRemove={onAttachmentRemove}/>
               ))}
             </div>
           )}
-
-          {/* Hidden file input — triggered by the attach button. */}
           <input
             ref={fileInputRef}
             type="file"
@@ -832,26 +792,27 @@ export function MessageComposer(props: MessageComposerProps) {
               }
             }}
           />
-
-          {/* Writing surface - full-width now that send lives in the action
-              row below, so the textarea owns the whole line. */}
-          <div className="grid min-w-0 px-4 pt-3">
-            {/* Auto-grow sizer + highlight layer. This div sits in normal
-                flow as a grid cell, so it drives the row height; the
-                textarea is stacked in the SAME cell (`grid-area:1/1`) and
-                stretches to match. Replaces `field-sizing: content`, which
-                Firefox and Safari don't support - so the box now grows with
-                multi-line drafts in every browser. The trailing space
-                reserves height for a final empty line when the draft ends
-                in a newline (an empty last line has no box otherwise). */}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => fileInputRef.current?.click()}
+                  aria-label="Add attachment"
+                  className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground/6 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                >
+                  <Plus className="size-4"/>
+                </button>
+              }
+            />
+            <TooltipContent side="top" sideOffset={6} className="text-xs">Attach files</TooltipContent>
+          </Tooltip>
+          <div className="grid min-w-0 flex-1 px-1 group-data-stacked/composer:order-first group-data-stacked/composer:basis-full group-data-stacked/composer:px-[7px] group-data-stacked/composer:pt-1 group-data-stacked/composer:pb-0.5">
             <div
               ref={sizerRef}
               aria-hidden="true"
               data-composer-sizer=""
-              // Font-size MUST stay in lockstep with the textarea below (caret
-              // alignment). Both are bumped to 16px on touch by the single
-              // pointer:coarse rule in index.css — the textarea via its tag,
-              // this sizer via [data-composer-sizer] — to stop iOS focus-zoom.
               className="pointer-events-none [grid-area:1/1] min-h-5 max-h-[40vh] overflow-hidden whitespace-pre-wrap break-words text-[14px] leading-5 text-foreground"
             >
               <ComposerHighlightedText text={draft} mentions={mentions}/>{" "}
@@ -870,9 +831,6 @@ export function MessageComposer(props: MessageComposerProps) {
               onSelect={(e) => { onCaretPosChange(e.currentTarget.selectionStart ?? 0); }}
               onKeyDown={handleKeyDown}
               onScroll={(e) => {
-                // Keep the (transparent) textarea and the highlight overlay
-                // scrolled in lockstep. Without this, drafts taller than
-                // max-h-[40vh] scroll the caret but freeze the visible text.
                 const sizer = sizerRef.current;
                 if (sizer) sizer.scrollTop = e.currentTarget.scrollTop;
               }}
@@ -889,70 +847,40 @@ export function MessageComposer(props: MessageComposerProps) {
               className="[grid-area:1/1] block w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[14px] leading-5 text-transparent caret-foreground outline-none shadow-none placeholder:text-muted-foreground focus-visible:ring-0 selection:bg-primary/20 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
           </div>
-
-          {/* Action row - pinned inside the capsule's bottom edge. Left
-              cluster: controls that shape the outgoing message (attach,
-              agent target). Right cluster: expression + send, frequency
-              increasing toward the corner (shortcuts, format, emoji,
-              send). 28px targets on a 4px grid. */}
-          <div className="flex items-center gap-1 px-2 pb-2 pt-1.5">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    tabIndex={-1}
-                    onClick={() => fileInputRef.current?.click()}
-                    aria-label="Add attachment"
-                    className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
-                  >
-                    <Icon icon={AttachmentIcon} className="size-4"/>
-                  </button>
-                }
-              />
-              <TooltipContent side="top" sideOffset={6} className="text-xs">Attach files</TooltipContent>
-            </Tooltip>
-
-            <span data-composer-agent-trigger="" className="contents">
-              <AgentTargetChip
-                agents={agents}
-                manualHandle={manualTargetHandle}
-                autoMentionHandle={autoMention?.handle ?? null}
-                pulseKey={autoMention?.triggerKey ?? null}
-                onPick={(h) => { onSetManualTarget(h); refocusInput(); }}
-                onClear={() => { clearTarget(); refocusInput(); }}
-              />
-            </span>
-
-            <div className="ml-auto flex items-center gap-1">
-              {showCounter && (
-                <span
-                  aria-live="polite"
-                  className={`px-1 text-[10px] tabular-nums ${
-                    remaining <= 0
-                      ? "font-medium text-destructive"
-                      : remaining < 100
-                        ? "text-destructive/80"
-                        : "text-muted-foreground/70"
-                  }`}
-                >
-                  {remaining <= 0 ? `Max ${String(MAX_LEN)} reached` : remaining}
-                </span>
-              )}
-              {/* Keyboard-shortcuts cheatsheet — no visible button; opens via
-                  ⌘/ only, anchored to the composer. Renders nothing inline. */}
-              <ShortcutsCheatsheet
-                open={cheatsheetOpen}
-                onOpenChange={setCheatsheetOpen}
-                anchor={wrapperRef}
-              />
-              {/* Emoji picker — hidden on mobile (the OS keyboard has its own
-                  emoji input; the :shortcode: autocomplete still works). */}
-              <span data-composer-emoji-trigger="" className="contents max-md:hidden">
-                <EmojiPickerButton onSelect={onInsertAtCaret} compact/>
+          {agentPicker && (
+            <AgentTargetChip
+              agents={agents}
+              targetHandle={effectiveTargetHandle}
+              open={pickerOpen}
+              onOpenChange={(o, refocus) => {
+                setPickerOpen(o);
+                if (refocus) refocusInput();
+              }}
+              align={stacked ? "start" : "end"}
+              onPick={(h) => {
+                onSetManualTarget(h);
+                if (!h && autoMention) onDismissAutoMention();
+                setPickerOpen(false);
+                refocusInput();
+              }}
+            />
+          )}
+          <div className="ml-auto flex items-center gap-1.5">
+            {showCounter && (
+              <span
+                aria-live="polite"
+                className={`text-[11px] tabular-nums ${remaining < 100 ? "text-destructive" : "text-muted-foreground"}`}
+              >
+                {remaining} left
               </span>
-              <SendButton canSend={canSend} sending={isSending} uploading={isUploading}/>
-            </div>
+            )}
+            <ShortcutsCheatsheet
+              open={cheatsheetOpen}
+              onOpenChange={setCheatsheetOpen}
+              anchor={wrapperRef}
+              agentShortcuts={agentPicker}
+            />
+            <SendButton canSend={canSend} sending={isSending} uploading={isUploading}/>
           </div>
         </form>
       </div>
@@ -1013,25 +941,14 @@ function TypingRow({
       role="status"
       aria-live="polite"
       aria-label={label ?? `${nameText} ${auxiliary} ${verb}`}
-      className="flex h-4 min-w-0 items-center px-3"
+      className="animate-typing-row-in flex h-4 min-w-0 items-center gap-1.5 px-3.5 text-[11px] text-muted-foreground"
     >
-      {/* No chip / no fill / no halo — a subtle ``backdrop-blur`` on
-          the inline content softens whatever chat text scrolls behind,
-          which is enough to keep the indicator legible without the
-          harsh dark glow a text-shadow halo produces. The blur only
-          renders when the indicator is mounted (i.e. someone is
-          actively typing); the empty slot stays fully transparent. */}
-      <span className="animate-typing-row-in inline-flex min-w-0 items-center gap-1.5 rounded-full bg-background/70 px-1.5 py-0.5 backdrop-blur-sm supports-[backdrop-filter]:bg-background/50">
-        <span className="min-w-0 truncate text-[11px] leading-none text-muted-foreground/80">
-          <span className="text-foreground/75">{nameText}</span>{" "}
-          <span>{auxiliary} {verb}</span>
-        </span>
-        <span className="inline-flex shrink-0 items-center gap-[2px]" aria-hidden="true">
-          <span className="typing-dot block size-[3.5px] rounded-full bg-foreground/45"/>
-          <span className="typing-dot block size-[3.5px] rounded-full bg-foreground/45"/>
-          <span className="typing-dot block size-[3.5px] rounded-full bg-foreground/45"/>
-        </span>
+      <span className="inline-flex shrink-0 items-center gap-[2px]" aria-hidden="true">
+        <span className="typing-dot block size-[3.5px] rounded-full bg-muted-foreground"/>
+        <span className="typing-dot block size-[3.5px] rounded-full bg-muted-foreground"/>
+        <span className="typing-dot block size-[3.5px] rounded-full bg-muted-foreground"/>
       </span>
+      <span className="min-w-0 truncate">{nameText} {auxiliary} {verb}</span>
     </div>
   );
 }

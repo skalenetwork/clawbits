@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 
+import { CODE_BODY, CodeFrame } from "@/components/CodeBlock";
 import { MessageMarkdown, type MessageMentions } from "@/components/MessageMarkdown";
 import {
   classifyTail,
@@ -43,7 +44,11 @@ export function StreamingMarkdown({
 
   return (
     <>
-      {finished !== "" && <MessageMarkdown content={finished} mentions={mentions} />}
+      {/* The tail renders outside MessageMarkdown, so the blank-line gap comes from
+          here; greedy wrapping keeps finished text from re-breaking mid-stream. */}
+      {finished !== "" && (
+        <MessageMarkdown content={finished} mentions={mentions} className="text-wrap [&+*]:mt-6" />
+      )}
       <TailBlock block={tail} />
     </>
   );
@@ -65,8 +70,8 @@ function TailBlock({ block }: { block: string }) {
     // Momentary state: text ends exactly on a block boundary. Keep the caret
     // alive so the row never looks stalled.
     return (
-      <div className="text-[15px] leading-relaxed text-foreground">
-        <p className="my-1">
+      <div className="text-message text-foreground">
+        <p>
           <Caret />
         </p>
       </div>
@@ -89,8 +94,8 @@ function TailBlock({ block }: { block: string }) {
 const ProseTail = memo(function ProseTail({ text }: { text: string }) {
   const tokens = useMemo(() => text.match(/\s+|\S+/g) ?? [], [text]);
   return (
-    <div className="text-[15px] leading-relaxed text-foreground break-words">
-      <p className="my-1 whitespace-pre-wrap">
+    <div className="text-message text-foreground break-words">
+      <p className="whitespace-pre-wrap">
         {tokens.map((tok, i) => (
           <span key={i} className="stream-word-in">
             {tok}
@@ -106,19 +111,14 @@ const ProseTail = memo(function ProseTail({ text }: { text: string }) {
 function CodeTail({ block }: { block: string }) {
   const { lang, code } = useMemo(() => parseOpenFence(block), [block]);
   return (
-    <div className="code-block relative my-2 overflow-hidden rounded-md border border-border bg-muted/30">
-      <div className="flex items-center justify-between gap-2 border-b border-border/70 bg-muted/40 px-3 py-1">
-        <span className="font-mono text-[11px] capitalize tracking-wide text-muted-foreground/80">
-          {lang ?? "text"}
-        </span>
-      </div>
-      <pre className="overflow-x-auto px-3 py-2 font-mono text-[0.875em] leading-relaxed whitespace-pre">
+    <CodeFrame lang={lang}>
+      <pre className={CODE_BODY}>
         <code>
           {code}
           <Caret />
         </code>
       </pre>
-    </div>
+    </CodeFrame>
   );
 }
 
@@ -127,7 +127,8 @@ function StructuredTail({ block }: { block: string }) {
   const hardened = useMemo(() => hardenIncompleteMarkdown(block), [block]);
   return (
     <div className="relative">
-      <MessageMarkdown content={hardened} />
+      {/* Pretty wrapping would hop words between lines as the block grows. */}
+      <MessageMarkdown content={hardened} className="text-wrap" />
       <Caret />
     </div>
   );

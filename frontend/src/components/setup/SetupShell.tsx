@@ -1,15 +1,7 @@
-/**
- * The frame every full-screen setup flow shares: an edge-to-edge stage, one
- * centred panel, and a step indicator.
- *
- * The indicator is why this is a component rather than a layout. Each step is
- * a squircle that starts grey and, once answered, fills with that step's own
- * mark and the value you gave it, so it replaces both a progress bar and the
- * old wizard's SummaryRail.
- */
-import { useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
-import { ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
+/** The frame every full-screen setup flow shares: an edge-to-edge stage, one
+ *  centred panel, and a stepper whose answered steps wear their mark and value. */
+import { useEffect, useEffectEvent, useState, type ReactNode } from "react";
+import { Copy01Icon, Tick02Icon, ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 import { Icon } from "@/components/Icon";
 import { Squircle, SquircleDefs } from "@/components/home/tiles";
 import { cn } from "@/lib/utils";
@@ -24,12 +16,39 @@ interface SetupShellProps {
   steps: SetupStep[];
   /** Index of the step being answered now. */
   at: number;
-  exitTo: string;
+  onExit: () => void;
+  /** Esc presses Exit here, so the button wears the key chip. */
+  escExits: boolean;
+  /** What leaving now would lose; when set, leaving asks first. */
+  unsaved?: string | null;
   children: ReactNode;
 }
 
-export function SetupShell({ steps, at, exitTo, children }: SetupShellProps) {
-  const navigate = useNavigate();
+export function SetupShell({ steps, at, onExit, escExits, unsaved, children }: SetupShellProps) {
+  const [confirming, setConfirming] = useState(false);
+  const leave = () => {
+    if (unsaved) setConfirming(true);
+    else onExit();
+  };
+  const onKey = useEffectEvent((e: KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.isComposing || e.repeat) return;
+    const handled = confirming
+      ? e.key === "Escape" || e.key === "Enter" || /^[1-9]$/.test(e.key)
+      : e.key === "Escape" && escExits;
+    if (!handled) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!confirming) leave();
+    else if (e.key === "Escape") setConfirming(false);
+    else if (e.key === "Enter") onExit();
+  });
+  useEffect(() => {
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, []);
+
   return (
     <div className="relative flex min-h-svh flex-col items-center justify-center bg-background px-4 py-20">
       <SquircleDefs />
@@ -87,20 +106,43 @@ export function SetupShell({ steps, at, exitTo, children }: SetupShellProps) {
 
       <button
         type="button"
-        onClick={() => {
-          void navigate(exitTo);
-        }}
+        onClick={leave}
         className={cn(
-          "absolute top-5 right-5 grid h-8 place-items-center rounded-lg px-2.5",
+          "absolute top-5 right-5 flex h-8 items-center gap-2 rounded-lg",
+          escExits ? "pl-2.5 pr-1.5" : "px-2.5",
           "bg-foreground/6 text-[13px] font-medium text-muted-foreground transition-colors duration-200",
           "hover:bg-foreground/10 hover:text-foreground",
           "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
         )}
       >
         Exit
+        {escExits && (
+          <span aria-hidden="true" className="grid h-5 min-w-5 place-items-center rounded-md bg-foreground/10 px-1 text-[11px]">
+            Esc
+          </span>
+        )}
       </button>
 
-      {children}
+      {confirming ? (
+        <SetupPanel title="Leave setup?" line={unsaved ?? undefined}>
+          <div className="flex w-full gap-2">
+            <SetupButton
+              variant="ghost"
+              chip="Esc"
+              onClick={() => {
+                setConfirming(false);
+              }}
+            >
+              Keep going
+            </SetupButton>
+            <SetupButton chip="Enter" onClick={onExit}>
+              Leave
+            </SetupButton>
+          </div>
+        </SetupPanel>
+      ) : (
+        children
+      )}
     </div>
   );
 }
@@ -258,14 +300,6 @@ export function SetupButton({
   /** Key hint docked right: "Enter", "Esc". */
   chip?: string;
 }) {
-  const primary =
-    "bg-linear-to-b from-[color-mix(in_oklch,var(--foreground)_88%,var(--background))] to-foreground " +
-    "text-background shadow-[inset_0_1px_0_color-mix(in_oklch,var(--background)_24%,transparent),0_1px_2px_oklch(0_0_0/0.14)] " +
-    "hover:shadow-[inset_0_1px_0_color-mix(in_oklch,var(--background)_30%,transparent),0_2px_8px_oklch(0_0_0/0.16)] " +
-    "active:shadow-[inset_0_1px_2px_oklch(0_0_0/0.2)]";
-  const ghost =
-    "bg-foreground/6 text-muted-foreground hover:bg-foreground/10 hover:text-foreground";
-
   return (
     <button
       type={type}
@@ -277,11 +311,13 @@ export function SetupButton({
         "relative flex h-13 w-full items-center justify-start rounded-2xl pl-5",
         chip ? "pr-16" : "pr-5",
         "text-[15px] font-semibold",
-        "transition-[box-shadow,transform] duration-250 ease-[cubic-bezier(0.33,1,0.68,1)]",
+        "transition-[background-color,color,transform] duration-250 ease-[cubic-bezier(0.33,1,0.68,1)]",
         "active:scale-[0.99] motion-reduce:active:scale-100",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
         "disabled:pointer-events-none disabled:opacity-40",
-        variant === "primary" ? primary : ghost,
+        variant === "primary"
+          ? "bg-foreground text-background hover:bg-foreground/90"
+          : "bg-foreground/6 text-muted-foreground hover:bg-foreground/10 hover:text-foreground",
       )}
     >
       {children}
@@ -300,5 +336,61 @@ export function SetupButton({
         </span>
       )}
     </button>
+  );
+}
+
+/** Signals in the order they arrive. They lag each other (a host's status file
+ *  trails the agent's own join), so a later tick implies every earlier one and
+ *  the first open row is the one being waited on. */
+export function Checks({ items }: { items: { label: string; done: boolean }[] }) {
+  const reached = items.findLastIndex((c) => c.done);
+  return (
+    <div className="w-full text-[14px] text-muted-foreground">
+      {items.map(({ label }, i) => (
+        <div key={label} className="flex items-center gap-2.5 py-1.5">
+          {i <= reached ? (
+            <span className="grid size-4 place-items-center rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+              <Icon icon={Tick02Icon} className="size-2.5" strokeWidth={4} />
+            </span>
+          ) : i === reached + 1 ? (
+            <span className="size-4 animate-spin rounded-full border-2 border-foreground/10 border-t-muted-foreground motion-reduce:animate-none" />
+          ) : (
+            <span className="size-4 rounded-full bg-foreground/8" />
+          )}
+          <span className={i <= reached ? "text-foreground" : ""}>{label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Something to paste on another machine, with its own copy button. Wrapped
+ *  rather than scrolled sideways: in a `curl | sh` the piped URL is the one
+ *  thing nobody should have to scroll to read. A long prompt scrolls down. */
+export function CommandBlock({ code, copy = true }: { code: string; copy?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="relative w-full overflow-hidden rounded-2xl border border-code-border bg-code text-left">
+      {copy && (
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard.writeText(code).then(() => {
+              setCopied(true);
+              setTimeout(() => {
+                setCopied(false);
+              }, 1600);
+            });
+          }}
+          className="absolute top-2 right-2 inline-flex items-center gap-1 rounded-lg border border-border bg-card px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <Icon icon={copied ? Tick02Icon : Copy01Icon} className="size-3" />
+          {copied ? "Copied" : "Copy"}
+        </button>
+      )}
+      <pre className={cn("max-h-72 overflow-y-auto px-4 py-3.5 font-mono text-[12.5px] leading-[1.8] [overflow-wrap:anywhere] whitespace-pre-wrap", copy && "pr-16")}>
+        {code}
+      </pre>
+    </div>
   );
 }

@@ -517,18 +517,37 @@ export async function removeOrgMember(
   return res.json() as Promise<{ members: OrgMember[]; total: number }>;
 }
 
-/** The org's reef repository and the hosts reporting into it.
- *
- *  Git is the bus: Clawbits writes one file per agent to the repo's `fleet`
- *  branch and reads what each host pushes to `status`. It never talks to a reef
- *  host, and nothing on the network reaches one — the host pulls on a timer. */
+/** Git is the bus: Clawbits writes one file per agent to the repo's `fleet`
+ *  branch and reads what each host pushes to `status`. Nothing on the network
+ *  reaches a host: it pulls on a timer. */
 export interface ReefHost {
   host: string;
   reef: string | null;
-  agents: number;
-  /** When this host last pushed its status file. The host writes no timestamp
-   *  of its own, so a value that stops advancing is a stopped reconciler. */
+  /** The reconciler's heartbeat, rounded down to ten minutes. Null when the
+   *  host's reconciler predates it. */
   last_seen: string | null;
+  /** `failing` when the last apply failed, `live` within 25 minutes of a
+   *  heartbeat, else `stale`. */
+  health: "live" | "stale" | "failing";
+  error: string | null;
+  agents: ReefHostAgent[];
+  /** Newest first. */
+  events: ReefEvent[];
+}
+
+export interface ReefHostAgent {
+  name: string;
+  role: string;
+  state: string;
+  synced: boolean;
+  role_current: boolean;
+}
+
+export interface ReefEvent {
+  agent: string;
+  at: string;
+  kind: string;
+  detail: string;
 }
 
 export interface Reef {
@@ -537,6 +556,28 @@ export interface Reef {
    *  unsealed. Reconnecting is the fix either way. */
   connected: boolean;
   hosts: ReefHost[];
+  /** Agents whose fleet file is written and whose signup token is unspent. */
+  declared: ReefDeclaredAgent[];
+}
+
+export interface ReefDeclaredAgent {
+  host: string;
+  name: string;
+  /** When the one-time signup token dies. */
+  expires_at: string;
+}
+
+/** A just-declared agent. Its id and nickname are picked with its signup token,
+ *  and its fleet name is that id, lowercased. */
+export interface ReefCreatedAgent extends ReefDeclaredAgent {
+  agent_id: string;
+  nickname: string;
+}
+
+/** One reviewed role from `main:roles/`. */
+export interface ReefRole {
+  name: string;
+  resources: Record<string, number>;
 }
 
 export async function getReef(orgId: string): Promise<Reef> {
@@ -570,6 +611,44 @@ export async function deleteReef(orgId: string): Promise<void> {
     credentials: "include",
     method: "DELETE",
   });
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+}
+
+/** The role catalog. Roles pointing their agents at another Clawbits are left
+ *  out. */
+export async function listReefRoles(orgId: string): Promise<ReefRole[]> {
+  if (!orgId) throw new Error("orgId is required");
+  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/reef/roles`, {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<ReefRole[]>;
+}
+
+/** Declare an agent on a reef host: Clawbits writes its fleet file. */
+export async function createReefAgent(
+  orgId: string,
+  body: { host: string; role: string },
+): Promise<ReefCreatedAgent> {
+  if (!orgId) throw new Error("orgId is required");
+  const res = await fetch(`/api/human/orgs/${encodeURIComponent(orgId)}/reef/agents`, {
+    credentials: "include",
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json() as Promise<ReefCreatedAgent>;
+}
+
+/** Remove an agent's fleet file, revoking its signup token if it never
+ *  enrolled. */
+export async function deleteReefAgent(orgId: string, host: string, name: string): Promise<void> {
+  if (!orgId) throw new Error("orgId is required");
+  const res = await fetch(
+    `/api/human/orgs/${encodeURIComponent(orgId)}/reef/agents/${encodeURIComponent(host)}/${encodeURIComponent(name)}`,
+    { credentials: "include", method: "DELETE" },
+  );
   if (!res.ok) throw new Error(await readErrorDetail(res));
 }
 
@@ -695,6 +774,9 @@ export type AgentSignupStatus = "pending_approval" | "approved" | "rejected";
 export interface AgentSignupSession {
   session_token: string;
   challenge: string;
+  /** Picked at mint; commit creates the agent under both. */
+  agent_id: string;
+  nickname: string;
 }
 
 export interface AgentSignupRequest {
@@ -1128,6 +1210,9 @@ export interface MmChannel {
   // single-channel endpoints leave them at zero/false (frontend overlays
   // values from the unread store there).
   unread_count?: number;
+  /** An agent is producing a reply here right now. Never fetched: set from
+   *  the streaming placeholder's post.created and cleared when it finalises. */
+  working?: boolean;
   /** Subset of ``unread_count`` whose posts address the current user —
    *  directly (``@<handle>``) or channel-wide (``@here``). Drives the
    *  sidebar/rail accent "mentioned" badge, which shows even when muted.
@@ -1312,7 +1397,7 @@ export interface MmChannelPost {
   edited_at?: string | null;
   /** ISO timestamp of the moment this post was pinned, or null if the
    *  post is not currently pinned. Drives the small pin glyph next to
-   *  the message timestamp and inclusion in the pinned-messages popover. */
+   *  the message timestamp and inclusion in the Pinned panel. */
   pinned_at?: string | null;
   /** The human who pinned the post, or null if not pinned. */
   pinned_by_human_id?: number | null;
@@ -1504,22 +1589,22 @@ export interface MmSearchResponse {
   sort: string;
 }
 
-export interface SearchMessagesParams {
-  orgId: string | null;
-  query: string;
-  /** Restrict to one channel/DM (in-channel search; the ``in:`` operator). */
-  channelId?: string | null;
-  sort?: MmSearchSort;
-  cursor?: string | null;
-  limit?: number;
-  /** Operator filters, resolved to ids client-side. */
-  fromHumanId?: number | null;
-  fromAgentId?: string | null;
-  /** ``YYYY-MM-DD`` (or ISO) bounds on created_at. */
-  before?: string | null;
-  after?: string | null;
+export interface MmSearchFilters {
+  channelId?: string;
+  fromHumanId?: number;
+  fromAgentId?: string;
+  before?: string;
+  after?: string;
   hasLink?: boolean;
   hasFile?: boolean;
+}
+
+export interface SearchMessagesParams extends MmSearchFilters {
+  orgId: string | null;
+  query: string;
+  sort: MmSearchSort;
+  cursor: string | null;
+  limit: number;
 }
 
 /**
@@ -1535,9 +1620,9 @@ export async function searchMessages(
   qs.set("q", params.query);
   if (params.orgId) qs.set("org_id", params.orgId);
   if (params.channelId) qs.set("channel_id", params.channelId);
-  if (params.sort) qs.set("sort", params.sort);
+  qs.set("sort", params.sort);
+  qs.set("limit", String(params.limit));
   if (params.cursor) qs.set("cursor", params.cursor);
-  if (params.limit != null) qs.set("limit", String(params.limit));
   if (params.fromHumanId != null) qs.set("from_human_id", String(params.fromHumanId));
   if (params.fromAgentId) qs.set("from_agent_id", params.fromAgentId);
   if (params.before) qs.set("before", params.before);
@@ -2069,7 +2154,7 @@ export async function unpinMmPost(postId: number): Promise<MmChannelPost> {
 }
 
 /** List every pinned post in a channel, newest-pinned first. Returns the
- *  full set (no pagination) so the popover can display pins that are
+ *  full set (no pagination) so the Pinned panel can display pins that are
  *  outside the loaded scroll window. */
 export async function listPinnedMmPosts(
   channelId: string,

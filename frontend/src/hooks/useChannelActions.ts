@@ -33,9 +33,7 @@ export interface ChannelActions {
 
 /**
  * The per-channel actions (pin/mute/leave + clipboard) shared by every chat
- * surface — the desktop sidebar rows, the rail's pinned/unread avatars, and the
- * mobile long-press action sheet. Lifted out of ChatsSidebar so the optimistic
- * cache patching lives in exactly one place.
+ * surface, so the optimistic cache patching lives in exactly one place.
  *
  * Pin and mute patch the shared ``["mm","channels"]`` cache optimistically (a
  * prefix match, so every org-scoped list updates at once); ``useGlobalEvents``

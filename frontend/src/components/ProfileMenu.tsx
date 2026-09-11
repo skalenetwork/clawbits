@@ -83,7 +83,7 @@ export function ProfileMenuProvider({
   const [target, setTarget] = useState<ProfileMenuTarget | null>(null);
 
   const open = useCallback((next: ProfileMenuTarget) => {
-    setTarget(next);
+    setTarget((prev) => (prev?.anchor === next.anchor ? null : next));
   }, []);
   const close = useCallback(() => {
     setTarget(null);
@@ -317,7 +317,13 @@ function SharedProfileMenuPopover({
   // it the clicked element and keep ``open`` controlled at true while
   // this component is mounted — the parent unmounts on close.
   return (
-    <PopoverPrimitive.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <PopoverPrimitive.Root
+      open
+      onOpenChange={(o, { reason, event }) => {
+        if (o || (reason === "outside-press" && event.target instanceof Node && anchor.contains(event.target))) return;
+        onClose();
+      }}
+    >
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Positioner
           anchor={anchor}

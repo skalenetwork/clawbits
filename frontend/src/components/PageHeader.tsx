@@ -5,13 +5,10 @@ import {Icon} from "@/components/Icon";
 import {Breadcrumbs, type Crumb} from "@/components/Breadcrumbs";
 
 /**
- * The content card mounts a header-bar node (same bordered bar as the
- * sidebar's ContextualHeader) and shares it here. Each page renders
- * ``<PageHeader/>`` as before, but the content portals into that bar — so the
- * page header and the sidebar header line up as one header row across the card
- * (same height, same bottom border) instead of floating inside the scroll
- * area. When no slot is provided (e.g. the channel view, which owns its own
- * header) PageHeader renders nothing.
+ * The shell mounts a header-bar node over the content column and shares it
+ * here; pages render ``<PageHeader/>`` and portal their title and actions into
+ * it, so it lines up with the sidebar's first row. With no slot (the channel
+ * view owns its header) PageHeader renders nothing.
  */
 const PageHeaderSlotContext = createContext<HTMLElement | null>(null);
 
@@ -54,7 +51,7 @@ export function PageHeader({icon, leading, title, breadcrumb, count, actions}: P
             ) : (
                 <div className="flex min-w-0 items-center gap-2">
                     {leading ?? (icon && <Icon icon={icon} className="size-4 shrink-0 text-muted-foreground"/>)}
-                    <h1 className="flex min-w-0 items-center gap-2 text-sm font-semibold tracking-tight text-foreground">
+                    <h1 className="flex min-w-0 items-center gap-2 text-[13px] font-medium text-foreground">
                         {typeof title === "string" ? <span className="truncate">{title}</span> : title}
                         {typeof count === "number" && (
                             <span className="shrink-0 text-xs font-normal text-muted-foreground tabular-nums">

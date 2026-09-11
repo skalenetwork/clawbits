@@ -182,7 +182,7 @@ function TileGlyph({
     <>
       <Squircle className="bg-muted">{children}</Squircle>
       {status && (
-        <PresenceDot status={status} className="absolute -right-px -bottom-px ring-2 ring-card" />
+        <PresenceDot status={status} className="absolute -right-px -bottom-px ring-card" />
       )}
     </>
   );
@@ -206,9 +206,7 @@ function AgentTile({
       <HomeTile
         className={className}
         shortcut={shortcut}
-        onClick={() => {
-          openCreate("agent");
-        }}
+        to="/setup/agent"
         glyph={<AppIcon src="/plus.webp" />}
         label="Set up your agent"
         value="Create"
@@ -309,6 +307,7 @@ function SearchTile() {
       glyph={<AppIcon src="/cmd.webp" />}
       label="Agents, chats and actions"
       value="Find or do anything"
+      hotkey={IS_MAC ? "⌘K" : "Ctrl K"}
       trailing={
         <span className="flex gap-[3px]">
           {[IS_MAC ? "⌘" : "Ctrl", "K"].map((k) => (

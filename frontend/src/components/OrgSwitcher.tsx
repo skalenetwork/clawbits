@@ -1,12 +1,10 @@
 import {useState} from "react";
 import {useLocation, useNavigate} from "react-router-dom";
 import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
+import {Check} from "lucide-react";
 import {
-    Tick01Icon as Check,
-    ArrowDown01Icon as ArrowDown,
     Building03Icon as Building,
     PlusSignIcon as Plus,
-    Settings01Icon as SettingsIcon,
     Logout01Icon as LogOut,
     SparklesIcon as Sparkles,
 } from "@hugeicons/core-free-icons";
@@ -34,18 +32,7 @@ import {UserAvatar} from "@/components/UserAvatar";
 import {createOrg, getOrgs, markOrgVisited, type Org} from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
 import {useAuth} from "@/context/AuthContext";
-import {cn} from "@/lib/utils";
 import {toast} from "@/lib/toast";
-
-const TRIGGER_CLASS =
-    "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-muted-foreground outline-hidden transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground";
-
-// Sized to match the rail's icon buttons (see AppRail): size-9 square,
-// rounded-lg, with the same press-in animation. base-ui suppresses native
-// ``:active`` on the dropdown trigger and instead sets ``data-pressed`` while
-// the menu is open, so the press-in keys off that.
-const COMPACT_TRIGGER_CLASS =
-    "flex size-9 items-center justify-center rounded-lg text-muted-foreground outline-hidden transition duration-100 hover:bg-sidebar-foreground/5 hover:text-sidebar-foreground active:scale-90 data-[pressed]:scale-90 [-webkit-app-region:no-drag]";
 
 function orgLabel(org: Org): string {
     const base = org.display_name ?? org.name;
@@ -66,16 +53,10 @@ function orgIsNew(org: Org): boolean {
     return org.last_visited_at == null;
 }
 
-/**
- * Small rounded-square monogram for a workspace — matches the Linear/Slack
- * convention of giving each workspace a square-ish identity mark, visually
- * distinct from round user avatars so the workspace label can't be mistaken
- * for personal identity.
- */
 /** Monogram letters for a workspace: the first two characters of a
  *  single-word name, or the initials of the first two words. */
-function orgInitials(org: Org | null): string {
-    const raw = (org?.display_name ?? org?.name ?? "").trim();
+function orgInitials(org: Org): string {
+    const raw = (org.display_name ?? org.name).trim();
     if (!raw) return "?";
     const words = raw.split(/\s+/).filter(Boolean);
     const initials = words.length >= 2
@@ -84,12 +65,12 @@ function orgInitials(org: Org | null): string {
     return initials.toUpperCase();
 }
 
-function OrgMark({org, size = 20}: {org: Org | null; size?: number}) {
+/** A rounded-square monogram, so a workspace never reads as a round user avatar. */
+function OrgMark({org}: {org: Org}) {
     return (
         <div
             aria-hidden="true"
-            className="flex shrink-0 items-center justify-center rounded-md bg-sidebar-foreground/10 text-[10px] font-semibold uppercase tracking-tight text-sidebar-foreground"
-            style={{width: size, height: size}}
+            className="flex size-[18px] shrink-0 items-center justify-center rounded-md bg-sidebar-foreground/10 text-[10px] font-semibold uppercase tracking-tight text-sidebar-foreground"
         >
             {orgInitials(org)}
         </div>
@@ -111,7 +92,7 @@ function slugifyOrgName(raw: string): string {
  * appearance, sign out). This replaces what used to be two separate
  * controls (org switcher at top + user menu at bottom).
  */
-export function OrgSwitcher({compact = false}: {compact?: boolean} = {}) {
+export function OrgSwitcher() {
     const {user, activeOrgId, setActiveOrgId, logout} = useAuth();
     const queryClient = useQueryClient();
     const navigate = useNavigate();
@@ -196,54 +177,26 @@ export function OrgSwitcher({compact = false}: {compact?: boolean} = {}) {
     return (
         <>
             <DropdownMenu>
-                <DropdownMenuTrigger
-                    className={compact ? COMPACT_TRIGGER_CLASS : TRIGGER_CLASS}
-                    title={compact && activeOrg ? orgLabel(activeOrg) : undefined}
-                    aria-label={compact && activeOrg ? orgLabel(activeOrg) : undefined}
-                >
-                    <span className="relative shrink-0">
-                        <OrgMark org={activeOrg} size={compact ? 26 : 20}/>
+                <DropdownMenuTrigger className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left outline-hidden transition-colors hover:bg-[var(--sb-hover)]">
+                    <span className="relative flex shrink-0">
+                        <UserAvatar size={28} name={user?.display_name ?? user?.email ?? ""} src={user?.avatar?.url}/>
                         {hasOtherActivity && (
                             <span
-                                className={cn(
-                                    "absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-[#FF3B30] dark:bg-[#FF453A]",
-                                    compact ? "ring-2 ring-background" : "ring-2 ring-sidebar",
-                                )}
+                                className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-[#FF3B30] ring-2 ring-sidebar dark:bg-[#FF453A]"
                                 aria-label="Activity in another organization"
                             />
                         )}
                     </span>
-                    {!compact && (
-                        <>
-                            <span className="block min-w-0 flex-1 truncate">
-                                {activeOrg ? orgLabel(activeOrg) : "Loading…"}
-                            </span>
-                            <Icon icon={ArrowDown} className="size-3.5 shrink-0 text-muted-foreground"/>
-                        </>
-                    )}
+                    <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] leading-[15px] font-medium text-sidebar-foreground">
+                            {user?.display_name ?? user?.email}
+                        </span>
+                        <span className="block truncate text-[11px] leading-[13px] text-muted-foreground">
+                            {activeOrg ? orgLabel(activeOrg) : "Loading…"}
+                        </span>
+                    </span>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent side="bottom" align="start" sideOffset={6} className="min-w-64">
-                    {user && (
-                        <div className="flex items-center gap-3 px-2 py-2">
-                            <UserAvatar size={36} name={user.display_name ?? user.email} src={user.avatar?.url}/>
-                            <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm font-medium">
-                                    {user.display_name ?? "User"}
-                                </p>
-                                <p className="truncate text-xs text-muted-foreground">{user.email}</p>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={() => { void navigate("/settings/profile"); }}
-                                title="Profile settings"
-                                aria-label="Profile settings"
-                                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                            >
-                                <Icon icon={SettingsIcon} className="size-4"/>
-                            </button>
-                        </div>
-                    )}
-                    {user && <DropdownMenuSeparator/>}
+                <DropdownMenuContent side="top" align="start" sideOffset={6} className="min-w-64">
                     <DropdownMenuGroup>
                         <DropdownMenuLabel>Switch organization</DropdownMenuLabel>
                         {orgs.map(org => {
@@ -259,7 +212,7 @@ export function OrgSwitcher({compact = false}: {compact?: boolean} = {}) {
                                     key={org.org_id}
                                     onClick={() => { switchOrg(org.org_id); }}
                                 >
-                                    <OrgMark org={org} size={18}/>
+                                    <OrgMark org={org}/>
                                     <span className="min-w-0 flex-1 truncate">{orgLabel(org)}</span>
                                     {showUnread && (
                                         <span
@@ -278,7 +231,7 @@ export function OrgSwitcher({compact = false}: {compact?: boolean} = {}) {
                                         </span>
                                     )}
                                     {isActive && (
-                                        <Icon icon={Check} className={cn("ml-auto size-4 text-muted-foreground")}/>
+                                        <Check className="ml-auto size-4 text-muted-foreground"/>
                                     )}
                                 </DropdownMenuItem>
                             );

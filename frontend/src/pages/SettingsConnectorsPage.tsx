@@ -5,6 +5,7 @@ import { Link01Icon as LinkIcon } from "@hugeicons/core-free-icons";
 
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
+import { SettingsPage, SettingsRow, SettingsRowSkeleton, SettingsSection } from "@/components/settings/Settings";
 import {
   connectProvider,
   disconnectProvider,
@@ -14,7 +15,6 @@ import {
 import { confirm } from "@/lib/confirm";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
 
 const ERROR_MESSAGES: Record<string, string> = {
   oauth_state_mismatch: "The connection expired. Try Connect again.",
@@ -26,12 +26,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   github_oauth_access_denied: "GitHub authorization was cancelled.",
 };
 
-interface ConnectorBrand {
-  tile: string;
-  icon: ReactNode;
-}
+const TILE = "flex size-8 items-center justify-center rounded-lg";
 
-/** Primer Octicons mark-github-24 — GitHub 2026 Invertocat */
+/** Primer Octicons mark-github-24: GitHub 2026 Invertocat */
 function GithubGlyph() {
   return (
     <svg viewBox="0 0 24 24" className="size-4 fill-white" aria-hidden="true">
@@ -40,7 +37,7 @@ function GithubGlyph() {
   );
 }
 
-/** Simple Icons — Notion */
+/** Simple Icons: Notion */
 function NotionGlyph() {
   return (
     <svg viewBox="0 0 24 24" className="size-4 fill-white" aria-hidden="true">
@@ -49,7 +46,7 @@ function NotionGlyph() {
   );
 }
 
-/** Simple Icons — Gmail */
+/** Simple Icons: Gmail */
 function GmailGlyph() {
   return (
     <svg viewBox="0 0 24 24" className="size-4" aria-hidden="true">
@@ -61,103 +58,28 @@ function GmailGlyph() {
   );
 }
 
-const CONNECTOR_BRANDS: Record<string, ConnectorBrand> = {
-  github: {
-    tile: "#181717",
-    icon: <GithubGlyph />,
-  },
-  notion: {
-    tile: "#000000",
-    icon: <NotionGlyph />,
-  },
-  gmail: {
-    tile: "#FCE8E6",
-    icon: <GmailGlyph />,
-  },
+const CONNECTOR_BRANDS: Record<string, { tile: string; icon: ReactNode }> = {
+  github: { tile: "#181717", icon: <GithubGlyph /> },
+  notion: { tile: "#000000", icon: <NotionGlyph /> },
+  gmail: { tile: "#FCE8E6", icon: <GmailGlyph /> },
 };
 
-function ConnectorBrandIcon({ provider }: { provider: string }) {
+function BrandTile({ provider }: { provider: string }) {
   const brand = CONNECTOR_BRANDS[provider];
-  if (!brand) {
-    return (
-      <div
-        className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-xs font-semibold uppercase text-muted-foreground"
-        aria-hidden
-      >
-        {provider.slice(0, 1)}
-      </div>
-    );
-  }
-  return (
-    <div
-      className="flex size-9 shrink-0 items-center justify-center rounded-lg"
-      style={{ backgroundColor: brand.tile }}
-      aria-hidden
-    >
+  return brand ? (
+    <span aria-hidden className={TILE} style={{ backgroundColor: brand.tile }}>
       {brand.icon}
-    </div>
+    </span>
+  ) : (
+    <span aria-hidden className={`${TILE} bg-muted text-xs font-semibold text-muted-foreground`}>
+      {provider.charAt(0).toUpperCase()}
+    </span>
   );
 }
 
-function statusLabel(c: Connector): string {
-  if (c.status === "connected") {
-    return c.handle ? `@${c.handle.replace(/^@/, "")}` : "Connected";
-  }
-  if (c.status === "coming_soon") return "Coming soon";
-  return "Not connected";
-}
-
-function ConnectorRow({
-  connector,
-  busy,
-  onConnect,
-  onDisconnect,
-}: {
-  connector: Connector;
-  busy: boolean;
-  onConnect: () => void;
-  onDisconnect: () => void;
-}) {
-  const connected = connector.status === "connected";
-  const soon = connector.status === "coming_soon";
-
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-3 border-b px-4 py-3 last:border-b-0",
-        soon && "opacity-60",
-      )}
-    >
-      <ConnectorBrandIcon provider={connector.provider} />
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium">{connector.label}</div>
-        <div className="truncate text-xs text-muted-foreground">
-          {statusLabel(connector)}
-        </div>
-      </div>
-      {connected ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          onClick={() => { onDisconnect(); }}
-        >
-          Disconnect
-        </Button>
-      ) : (
-        <Button
-          type="button"
-          variant="default"
-          size="sm"
-          disabled={busy || soon}
-          onClick={() => { onConnect(); }}
-        >
-          Connect
-        </Button>
-      )}
-    </div>
-  );
+function handle(c: Connector): string {
+  if (c.status !== "connected") return "Not connected";
+  return c.handle ? `@${c.handle.replace(/^@/, "")}` : "Connected";
 }
 
 export default function SettingsConnectorsPage() {
@@ -194,7 +116,7 @@ export default function SettingsConnectorsPage() {
     mutationFn: (provider: string) => connectProvider(provider),
     onSuccess: (result) => {
       if (result.status === "redirect" && result.url) {
-        window.location.href = result.url;
+        window.location.assign(result.url);
         return;
       }
       void qc.invalidateQueries({ queryKey: queryKeys.connectors });
@@ -235,34 +157,51 @@ export default function SettingsConnectorsPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div>
       <PageHeader icon={LinkIcon} title="Connectors" />
 
-      <p className="text-sm text-muted-foreground">
-        Link accounts so Clawbits can recognize you on other services.
-        We only store your public profile (username, id) - never passwords
-        or access tokens.
-      </p>
-
-      <div className="overflow-hidden rounded-lg border">
-        {listQuery.isLoading ? (
-          <div className="px-4 py-6 text-sm text-muted-foreground">Loading…</div>
-        ) : connectors.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-muted-foreground">
-            No connectors available.
-          </div>
-        ) : (
-          connectors.map((c) => (
-            <ConnectorRow
-              key={c.provider}
-              connector={c}
-              busy={busy}
-              onConnect={() => { connectMutation.mutate(c.provider); }}
-              onDisconnect={() => { void handleDisconnect(c.provider, c.label); }}
-            />
-          ))
-        )}
-      </div>
+      <SettingsPage>
+        <SettingsSection footer="Link accounts so Clawbits recognizes you elsewhere. Only your public profile is stored, never passwords or tokens.">
+          {listQuery.isPending ? (
+            [0, 1, 2].map(i => <SettingsRowSkeleton key={i} description={false} />)
+          ) : listQuery.isError ? (
+            <SettingsRow title="Couldn't load connectors" error={errMsg(listQuery.error)} />
+          ) : connectors.length === 0 ? (
+            <SettingsRow title="No connectors available" />
+          ) : (
+            connectors.map(c => (
+              <SettingsRow
+                key={c.provider}
+                leading={<BrandTile provider={c.provider} />}
+                title={c.label}
+                description={c.status === "coming_soon" ? undefined : handle(c)}
+                control={
+                  c.status === "coming_soon" ? (
+                    <span className="text-[13px] text-muted-foreground">Coming soon</span>
+                  ) : c.status === "connected" ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => { void handleDisconnect(c.provider, c.label); }}
+                    >
+                      Disconnect
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => { connectMutation.mutate(c.provider); }}
+                    >
+                      Connect
+                    </Button>
+                  )
+                }
+              />
+            ))
+          )}
+        </SettingsSection>
+      </SettingsPage>
     </div>
   );
 }

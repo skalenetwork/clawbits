@@ -16,13 +16,29 @@ import base64
 import json
 import re
 import tomllib
+from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import httpx
 
 API = "https://api.github.com"
-TIMEOUT = httpx.Timeout(10.0)
 BRANCHES = ("main", "fleet", "status")
+LIVE_WITHIN = timedelta(minutes=25)
+
+type Health = Literal["live", "stale", "failing"]
+
+_client = httpx.AsyncClient(
+    timeout=10.0,
+    headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
+)
+# GitHub does not count a 304 against the rate limit, so status and role reads
+# send the ETag their URL last answered with and a 304 reuses that body. Fleet
+# files are never cached: each one carries a live signup token.
+CACHED_DIRS = ("status", "roles")
+ETAG_CACHE_SIZE = 256
+_etags: OrderedDict[str, tuple[str, dict | list]] = OrderedDict()
 
 REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]{0,99}/[A-Za-z0-9][\w.-]{0,99}$")
 # reef's own rule (crates/reef-core/src/name.rs ``is_name``), enforced here so
@@ -97,7 +113,7 @@ class ReefRepo:
 
     async def read(self, branch: str, path: str) -> tuple[str, bytes] | None:
         """``(sha, content)`` for a file, or ``None`` when it does not exist."""
-        found = await self._send("GET", self._url(path), params={"ref": branch})
+        found = await self._get(branch, path)
         if found is None or isinstance(found, list):
             return None
         return found["sha"], base64.b64decode(found["content"])
@@ -124,47 +140,49 @@ class ReefRepo:
         body = _commit(branch, message, author, sha=head[0])
         await self._send("DELETE", self._url(path), json=body)
 
-    async def last_commit(self, branch: str, path: str) -> str | None:
-        """When a path last changed, ISO-8601. A host's status file carries no
-        timestamp of its own: the commit is the timestamp, and one that stops
-        advancing is how a stopped reconciler looks."""
-        found = await self._send(
-            "GET",
-            f"{API}/repos/{self.repo}/commits",
-            params={"path": path, "sha": branch, "per_page": 1},
-        )
-        if not found or not isinstance(found, list):
-            return None
-        return found[0].get("commit", {}).get("committer", {}).get("date")
-
     async def list(self, branch: str, directory: str) -> list[str]:
         """File names directly under ``directory``; empty when it is absent."""
-        found = await self._send("GET", self._url(directory), params={"ref": branch})
+        found = await self._get(branch, directory)
         if not isinstance(found, list):
             return []
         return [e["name"] for e in found if e["type"] == "file"]
 
+    async def _get(self, branch: str, path: str) -> dict | list | None:
+        return await self._send(
+            "GET", self._url(path), cache=path.startswith(CACHED_DIRS), params={"ref": branch}
+        )
+
     def _url(self, path: str) -> str:
         return f"{API}/repos/{self.repo}/contents/{path.lstrip('/')}"
 
-    async def _send(self, method: str, url: str, **kw) -> dict | list | None:
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
+    async def _send(self, method: str, url: str, cache: bool = False, **kw) -> dict | list | None:
+        request = _client.build_request(
+            method, url, headers={"Authorization": f"Bearer {self.token}"}, **kw
+        )
+        key = str(request.url)
+        cached = _etags.get(key) if cache else None
+        if cached:
+            _etags.move_to_end(key)
+            request.headers["If-None-Match"] = cached[0]
         try:
-            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-                r = await client.request(method, url, headers=headers, **kw)
+            r = await _client.send(request)
         except httpx.HTTPError as e:
             raise ReefRepoError(f"github unreachable: {e}") from e
+        if cached and r.status_code == 304:
+            return cached[1]
         if r.status_code == 404:
             return None
         if r.status_code in (409, 422):
             raise ReefRepoConflict(_github_message(r))
         if r.status_code >= 400:
             raise ReefRepoError(_github_message(r))
-        return r.json() if r.content else None
+        body = r.json() if r.content else None
+        if cache and body is not None and (etag := r.headers.get("ETag")):
+            _etags[key] = (etag, body)
+            _etags.move_to_end(key)
+            if len(_etags) > ETAG_CACHE_SIZE:
+                _etags.popitem(last=False)
+        return body
 
 
 def _commit(branch: str, message: str, author: Author, **body: str) -> dict:
@@ -207,13 +225,29 @@ def parse_role(name: str, raw: bytes, endpoint: str) -> Role | None:
     )
 
 
-def parse_status(raw: bytes) -> dict | None:
-    """One ``status/<host>.json``, or ``None`` when a host wrote nonsense."""
+def parse_status(raw: bytes, now: datetime) -> dict | None:
+    """One ``status/<host>.json`` with ``last_seen`` and ``health`` derived,
+    or ``None`` when a host wrote nonsense. ``at`` is the reconciler's
+    ten-minute heartbeat, so twenty-five minutes without one is two missed
+    beats; a file with no ``at`` predates it and proves nothing alive."""
     try:
         found = json.loads(raw)
     except ValueError:
         return None
-    return found if isinstance(found, dict) else None
+    if not isinstance(found, dict):
+        return None
+    try:
+        seen = datetime.strptime(found["at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except (KeyError, TypeError, ValueError):
+        seen = None
+    health: Health = (
+        "failing"
+        if found.get("result") == "failed"
+        else "live"
+        if seen and now - seen <= LIVE_WITHIN
+        else "stale"
+    )
+    return found | {"last_seen": seen, "health": health}
 
 
 def fleet_toml(name: str, role: str, owner: str, env: dict[str, str]) -> bytes:
@@ -231,6 +265,13 @@ def fleet_toml(name: str, role: str, owner: str, env: dict[str, str]) -> bytes:
     width = max(len(k) for k in env)
     lines += [f'{k.ljust(width)} = "{v}"' for k, v in env.items()]
     return ("\n".join(lines) + "\n").encode()
+
+
+def fleet_name(agent_id: str) -> str:
+    """An agent id fitted to reef's name rule: lowercased, underscores to
+    hyphens, no trailing hyphen, and a letter first."""
+    name = agent_id.lower().replace("_", "-").rstrip("-")
+    return name if name[:1].isalpha() else f"a{name}"
 
 
 def _normalize(url: str | None) -> str:

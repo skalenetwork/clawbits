@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 
 /** Chat "bubble mode" — when on, the message timeline renders iMessage/Telegram
  *  style speech bubbles (own messages right-aligned + accent, others left);
- *  when off, the classic avatar + author-row layout. Enabled by default.
+ *  when off, the classic avatar + author-row layout. Off by default.
  *
  *  Persisted to localStorage under ``fc_bubble_mode`` (``fc_`` prefix matches
  *  {@link useTheme}). Exposed as a tiny external store rather than a context so
@@ -13,11 +13,9 @@ const STORAGE_KEY = "fc_bubble_mode";
 
 function read(): boolean {
   try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    // Absent → enabled by default. Only an explicit "0" turns it off.
-    return v === null ? true : v !== "0";
+    return localStorage.getItem(STORAGE_KEY) === "1";
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -58,5 +56,5 @@ function subscribe(cb: () => void): () => void {
 
 /** Reactive read of the current bubble-mode preference. */
 export function useBubbleMode(): boolean {
-  return useSyncExternalStore(subscribe, () => current, () => true);
+  return useSyncExternalStore(subscribe, () => current, () => false);
 }

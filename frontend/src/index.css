@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/inter";
+@import "@fontsource-variable/inter/opsz.css";
 /* Fraunces: the `opsz` cut. `full` adds SOFT and WONK axes nothing sets, for
  * ~98 KB of dead weight; `wght` is lighter still but kills the optical sizing
  * that is the whole reason to run a serif at 36px in the hero. */
@@ -18,27 +18,27 @@
    * desktop.ts → --app-bg-opacity). Light mode stays noticeably more opaque
    * than dark so content keeps its contrast over a bright desktop. */
   --app-bg-opacity-on: 0.72;
-  --background: oklch(0.9297 0.004 85 / var(--app-bg-opacity, 1));
+  --background: oklch(1 0 0 / var(--app-bg-opacity, 1));
   /* Always opaque, for places that paint the background colour as ink (tooltip
    * text on a --foreground surface) where the alpha would wash it out. */
-  --background-solid: oklch(0.9297 0.004 85);
+  --background-solid: oklch(1 0 0);
   --foreground: oklch(0.2350 0 0);
   /* Higher is brighter, in both themes. --panel (the sidebar plus content
    * shell) sits above the backdrop and --card above that, so light climbs to
    * white at the top and dark climbs out of black. Both take the desktop
    * translucency alpha. */
   --panel: oklch(0.9702 0.002 85 / var(--app-bg-opacity, 1));
-  --card: oklch(1 0 0 / var(--app-bg-opacity, 1));
+  --card: oklch(0.9702 0.002 85 / var(--app-bg-opacity, 1));
   --card-foreground: var(--foreground);
   /* Opaque twin of --card: a popover never takes the desktop alpha. */
-  --popover: oklch(1 0 0);
+  --popover: oklch(0.9702 0.002 85);
   --popover-foreground: var(--foreground);
   --primary: oklch(0.3012 0 0);
   --primary-foreground: oklch(0.9753 0.0080 98.8778);
   --secondary: var(--muted);
   --secondary-foreground: oklch(0.3012 0 0);
   --muted: oklch(0.8768 0.006 85);
-  --muted-foreground: oklch(0.4688 0.0136 84.5932);
+  --muted-foreground: oklch(0.5000 0.0136 84.5932);
   /* MENU FOCUS, not a general "accent": only ui/dropdown-menu.tsx and
    * ui/context-menu.tsx read these, to paint the focused row. The same ink wash
    * the nav rows use, so the highlight always runs toward the ink and never
@@ -79,9 +79,8 @@
    * wash, so a block reads the same on --card, on --panel, and inside a message
    * bubble instead of picking up whatever is underneath it. The fill is the bare
    * backdrop in both themes, so a block reads as a hole back to the page ground. */
-  --code-bg: var(--background-solid);
-  --code-header-bg: oklch(0.9702 0.002 85);
-  --code-border: var(--border);
+  --code-bg: color-mix(in oklch, var(--foreground) 2.5%, var(--background-solid));
+  --code-border: color-mix(in oklch, var(--foreground) 8%, transparent);
   --sidebar: var(--panel);
   --sidebar-foreground: var(--foreground);
   --sidebar-accent: var(--muted);
@@ -118,11 +117,11 @@
 
   --radius: 0.625rem;
   /* ── Elevation ────────────────────────────────────────────────────────────
-   * FOUR real steps behind the Tailwind names, modelled on `.cmdk-panel`
-   * further down this file: a tight dark CONTACT layer plus a wide, soft,
-   * low-alpha DIFFUSE layer, both warm-tinted rather than pure black so they
-   * sit in the warm-paper palette instead of greying it out. The names stay as
-   * aliases so no call site changes and relative ordering is preserved. */
+   * FOUR real steps behind the Tailwind names: a tight dark CONTACT layer
+   * plus a wide, soft, low-alpha DIFFUSE layer, both warm-tinted rather than
+   * pure black so they sit in the warm-paper palette instead of greying it
+   * out. The names stay as aliases so no call site changes and relative
+   * ordering is preserved. */
   --elevation-0: 0 1px 2px -1px oklch(0.28 0.03 60 / 0.08);
   --elevation-1:
     0 1px 2px -1px oklch(0.28 0.03 60 / 0.10),
@@ -152,11 +151,6 @@
    * and rail (mention pills, DM counts). iOS system red; --mention blue stays
    * reserved for in-message mention text. */
   --unread: #FF3B30;
-
-  /* Home tile rest and hover lift. The gap between them is deliberately small:
-   * a grid of tiles that all jump on hover reads as busy. */
-  --tile-shadow: 0 1px 1.5px oklch(0 0 0 / 0.045), 0 3px 8px oklch(0 0 0 / 0.035);
-  --tile-shadow-hover: 0 1px 2px oklch(0 0 0 / 0.05), 0 5px 12px oklch(0 0 0 / 0.05);
 
   /* Nav row state fills, derived from --foreground (ink) rather than a grey
    * literal so one definition adapts to both themes. Restraint over colour:
@@ -226,17 +220,17 @@ html[data-tauri-platform="linux"] body {
 .dark {
   /* Dark mode keeps the airier original translucency (see :root note). */
   --app-bg-opacity-on: 0.4;
-  --background: oklch(0 0 0 / var(--app-bg-opacity, 1));
-  --background-solid: oklch(0 0 0);
+  --background: oklch(0.1400 0.001 85 / var(--app-bg-opacity, 1));
+  --background-solid: oklch(0.1400 0.001 85);
   --foreground: oklch(0.9173 0.0133 82.4015);
-  --panel: oklch(0.1518 0.002 85 / var(--app-bg-opacity, 1));
+  --panel: oklch(0.1750 0.002 85 / var(--app-bg-opacity, 1));
   --card: oklch(0.1957 0.004 85 / var(--app-bg-opacity, 1));
   --popover: oklch(0.1957 0.004 85);
   --primary: oklch(0.8769 0.0190 100.1578);
   --primary-foreground: oklch(0.2264 0 0);
   --secondary-foreground: var(--foreground);
   --muted: oklch(0.2351 0.006 85);
-  --muted-foreground: oklch(0.6348 0.0113 81.7875);
+  --muted-foreground: oklch(0.6100 0.0113 81.7875);
   /* --signal holds the same H15.6 spoke as light so it reads as one colour
    * across themes; only L and the glyph invert, and --signal-deep goes LIGHTER
    * here because on ink "firmer" means brighter. 5.09:1 on --card, with a warm
@@ -248,9 +242,8 @@ html[data-tauri-platform="linux"] body {
   --destructive: oklch(0.6720 0.1808 36.91);
   --border: oklch(0.2924 0.008 85);
   --ring: oklch(0.8520 0.0205 100.6306);
-  --code-header-bg: oklch(0.1518 0.002 85);
   --sidebar-accent-foreground: oklch(0.8520 0.0205 100.6306);
-  /* Dark elevation: the same four steps, mirroring `.dark .cmdk-panel`. Pure
+  /* Dark elevation: the same four steps. Pure
    * black rather than warm-tinted (a warm tint over a near-black ground reads
    * as mud) and at higher alpha, because a dark surface separates from a dark
    * background by shadow density, not by hue. */
@@ -276,9 +269,6 @@ html[data-tauri-platform="linux"] body {
   --mention: oklch(0.72 0.10 254);
   --unread: #FF453A;
 
-  --tile-shadow: 0 1px 2px oklch(0 0 0 / 0.45);
-  --tile-shadow-hover: 0 2px 5px oklch(0 0 0 / 0.45);
-
   --trace-quiet: color-mix(in oklch, var(--foreground) 80%, transparent);
   --trace-faint: color-mix(in oklch, var(--foreground) 57%, transparent);
   --trace-error: oklch(0.665 0.198 25);
@@ -299,9 +289,10 @@ html[data-tauri-platform="linux"] body {
   /* Shared reading column (``max-w-content``): the home page and the app chrome
    * cap their centered content at 1024px. */
   --container-content: 64rem;
-  /* The chat column nests inside that cap but runs narrower: after the ~46px
-   * avatar gutter, 832px is a ~75-char line with room for code and attachments. */
-  --container-chat: 52rem;
+  /* The chat column is sized as a reading measure: less the message rows'
+   * padding it holds about 95 characters of 15px text. Code, attachments and
+   * the composer share its edges. */
+  --container-chat: 42rem;
   --color-background: var(--background);
   --color-background-solid: var(--background-solid);
   --color-foreground: var(--foreground);
@@ -320,7 +311,6 @@ html[data-tauri-platform="linux"] body {
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-code: var(--code-bg);
-  --color-code-header: var(--code-header-bg);
   --color-code-border: var(--code-border);
   --color-border: var(--border);
   --color-input: var(--input);
@@ -384,6 +374,12 @@ html[data-tauri-platform="linux"] body {
   --text-caption--line-height: 1rem;
   --text-body: 0.875rem;
   --text-body--line-height: 1.25rem;
+  /* Chat reading text: tracking eases the UI's tight -0.025em toward Inter's
+   * own spacing at 15px. Unitless leading, so smaller nested text keeps a
+   * line box sized to itself. */
+  --text-message: 0.9375rem;
+  --text-message--line-height: 1.6;
+  --text-message--letter-spacing: -0.01em;
 }
 
 #root {
@@ -451,7 +447,6 @@ html[data-tauri-platform="linux"] body {
     border-radius: var(--radius);
     background-color: var(--popover);
     color: var(--popover-foreground);
-    box-shadow: var(--shadow-lg);
     font-size: 0.875rem;
     font-weight: 500;
     transform: translateY(-100%);
@@ -459,6 +454,7 @@ html[data-tauri-platform="linux"] body {
   }
   .skip-link:focus-visible {
     transform: translateY(calc(var(--titlebar-height) + 0.5rem));
+    box-shadow: var(--shadow-lg);
   }
 
   /* Remove the legacy 300ms tap delay + double-tap zoom on controls while
@@ -683,11 +679,7 @@ html[data-tauri-platform="linux"] body {
   background-color: rgb(0 0 0 / 0.26);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.13);
 }
-.msg-on-accent .code-block-header {
-  background-color: rgb(255 255 255 / 0.06);
-  border-color: rgb(255 255 255 / 0.11);
-}
-.msg-on-accent .code-block-header .code-block-lang {
+.msg-on-accent .code-block-lang {
   color: rgb(255 255 255 / 0.6);
 }
 .msg-on-accent .code-block-shiki .shiki,
@@ -719,19 +711,8 @@ html[data-tauri-platform="linux"] body {
     opacity: 0;
   }
 }
-/* Persistent chrome needs a stable name or it joins the root fade and flickers
- * on every route change. */
-[data-vt-sidebar] {
-  view-transition-name: vt-sidebar;
-}
-::view-transition-old(vt-sidebar),
-::view-transition-new(vt-sidebar) {
-  animation: none;
-  mix-blend-mode: normal;
-}
-/* The attribute sits on the SCROLL CONTAINER, not the whole pane: a
- * view-transition-name makes the element a backdrop root, which would stop the
- * overlaid ContextualHeader's backdrop-filter blurring content behind it. */
+/* The sidebar aside is persistent chrome: without a stable name it joins the
+ * root fade and flickers on every route change. */
 [data-vt-contextual] {
   view-transition-name: vt-contextual;
 }
@@ -821,11 +802,10 @@ html[data-tauri-platform="linux"] body {
 html[data-media-viewer] #root {
   filter: blur(12px);
 }
-/* Their stable names lift the rail and contextual sidebar into separate
- * snapshots the #root filter cannot reach, so they would stay sharp while the
- * chat content blurs. Drop the names for the morph: there is no route change
- * mid-morph, so nothing needs them here. */
-html[data-media-viewer] [data-vt-sidebar],
+/* The sidebar's stable name lifts it into a separate snapshot the #root filter
+ * cannot reach, so it would stay sharp while the chat content blurs. Drop the
+ * name for the morph: there is no route change mid-morph, so nothing needs it
+ * here. */
 html[data-media-viewer] [data-vt-contextual] {
   view-transition-name: none;
 }
@@ -872,18 +852,6 @@ html[data-media-viewer] [data-vt-contextual] {
 }
 .typing-dot:nth-child(3) {
   animation-delay: 0.28s;
-}
-
-/* One-shot pulse when an auto-mention attaches, so the user notices the next
- * send is now addressed to an agent. Here, not in Tailwind, because the
- * keyframe needs a colour stop derived from a theme variable. */
-@keyframes composer-target-pulse {
-  0%   { box-shadow: 0 0 0 0   color-mix(in oklab, var(--color-mention) 35%, transparent); }
-  70%  { box-shadow: 0 0 0 6px transparent; }
-  100% { box-shadow: 0 0 0 0   transparent; }
-}
-.animate-target-pulse {
-  animation: composer-target-pulse 1.2s ease-out;
 }
 
 /* Entrance only. The exit is instant on purpose: the row unmounts the moment
@@ -1059,128 +1027,6 @@ html[data-media-viewer] [data-vt-contextual] {
   color: var(--foreground);
 }
 
-/* Command palette (components/command/CommandPalette.tsx). Depth comes from one
- * specular top edge, a warm hairline rim and a soft shadow, never heavy blur.
- * This is the surface --elevation-0..3 above are modelled on. */
-.cmdk-panel {
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.6),                       /* specular top edge */
-    inset 0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent), /* hairline rim */
-    0 2px 4px -2px oklch(0.28 0.03 60 / 0.12),              /* contact shadow */
-    0 24px 56px -16px oklch(0.24 0.035 55 / 0.30),          /* large soft diffuse */
-    0 8px 20px -8px oklch(0.24 0.035 55 / 0.16);            /* mid lift */
-}
-.dark .cmdk-panel {
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.08),
-    inset 0 0 0 1px oklch(1 0 0 / 0.08),
-    0 2px 6px -2px oklch(0 0 0 / 0.5),
-    0 28px 64px -16px oklch(0 0 0 / 0.7),
-    0 10px 24px -10px oklch(0 0 0 / 0.5);
-}
-
-/* Top + bottom fade so rows dissolve into the panel instead of hard-clipping. */
-.cmdk-scroller {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-}
-
-/* Icon "well": a tile so glyphs sit slightly inset rather than floating. */
-.cmdk-tile {
-  background: color-mix(in oklch, var(--muted) 55%, transparent);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in oklch, var(--foreground) 7%, transparent),
-    inset 0 1px 0 oklch(1 0 0 / 0.35);
-}
-.dark .cmdk-tile {
-  box-shadow:
-    inset 0 0 0 1px oklch(1 0 0 / 0.07),
-    inset 0 1px 0 oklch(1 0 0 / 0.05);
-}
-
-/* Quiet active row: warm tint + barely-there inset ring (no gradient/glow). */
-.cmdk-row {
-  transition: background-color 150ms ease, box-shadow 150ms ease;
-}
-.cmdk-row[data-active="true"] {
-  background: color-mix(in oklch, var(--muted) 85%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 7%, transparent);
-}
-
-/* "verb ↵" action hint — revealed only on the active row. */
-.cmdk-hint {
-  opacity: 0;
-  transform: translateX(4px);
-  transition: opacity 130ms ease, transform 130ms ease;
-}
-.cmdk-row[data-active="true"] .cmdk-hint {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-/* Keycap chip — subtly raised. */
-.cmdk-kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.25rem;
-  height: 1.25rem;
-  padding: 0 0.3rem;
-  border-radius: 5px;
-  font-size: 10px;
-  line-height: 1;
-  font-weight: 500;
-  font-family: inherit;
-  color: var(--muted-foreground);
-  background: color-mix(in oklch, var(--muted) 60%, transparent);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent),
-    inset 0 1px 0 oklch(1 0 0 / 0.4),
-    0 1px 1px oklch(0.28 0.03 60 / 0.06);
-}
-.dark .cmdk-kbd {
-  box-shadow:
-    inset 0 0 0 1px oklch(1 0 0 / 0.08),
-    inset 0 1px 0 oklch(1 0 0 / 0.05);
-}
-
-/* Input shimmer — a 1px sweep that only animates after a 1s delay, so fast
- * queries never flash a loader. */
-.cmdk-loader {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -0.5px;
-  height: 1.5px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in oklch, var(--primary) 70%, transparent) 50%,
-    transparent
-  );
-  background-size: 45% 100%;
-  background-repeat: no-repeat;
-  animation: cmdk-loader-sweep 1.3s ease-in-out 1s infinite;
-}
-@keyframes cmdk-loader-sweep {
-  0% { background-position: -45% 0; }
-  100% { background-position: 145% 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cmdk-row,
-  .cmdk-hint { transition: none; }
-  .cmdk-loader { animation: none; opacity: 0.5; }
-}
-
-/* Touch press feedback for rows (no hover on coarse pointers, so the hover/
- * keyboard active tint never fires from a tap). */
-@media (hover: none) {
-  .cmdk-row:active {
-    background: color-mix(in oklch, var(--muted) 90%, transparent);
-  }
-}
-
 /* 3D hover tilt for the collectible AgentCard. Two elements: the OUTER .t-tilt
  * is the flat hit area and never transforms, so a tilting card cannot pull its
  * own edges out from under the pointer; the INNER .t-tilt-card carries the
@@ -1330,28 +1176,4 @@ html[data-media-viewer] [data-vt-contextual] {
 
 @media (prefers-reduced-motion: reduce) {
   .home-tiles > * { animation: none; }
-}
-
-/* Two rings out of the mark, half a cycle apart. The one moment in setup where
- * nothing is being asked of you, so the one place that earns motion. */
-.setup-pulse { position: relative; }
-.setup-pulse::before,
-.setup-pulse::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 999px;
-  border: 1px solid color-mix(in oklch, var(--foreground) 20%, transparent);
-  animation: setup-ping 2.6s cubic-bezier(0, 0, 0.2, 1) infinite;
-}
-.setup-pulse::after { animation-delay: 1.3s; }
-
-@keyframes setup-ping {
-  from { transform: scale(0.66); opacity: 0.9; }
-  to   { transform: scale(1.34); opacity: 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .setup-pulse::before,
-  .setup-pulse::after { animation: none; opacity: 0.28; }
 }

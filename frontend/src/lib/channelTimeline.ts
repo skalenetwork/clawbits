@@ -33,7 +33,6 @@ export type DecoratedRow =
       /** Last post of a consecutive same-author run — the row that carries the
        *  avatar in bubble mode (Telegram anchors it to the bottom of a group). */
       isGroupEnd: boolean;
-      isLatest: boolean;
       newDay: boolean;
       showUnreadDivider: boolean;
       queued: boolean;
@@ -41,7 +40,6 @@ export type DecoratedRow =
   | {
       kind: "event";
       event: MmChannelEvent;
-      isLatest: boolean;
       newDay: boolean;
     }
   | ({ kind: "generating" } & GeneratingAgent);
@@ -248,9 +246,8 @@ export function decorateRows({
     const prev = timeline[i - 1] ?? null;
     const currTs = tsOf(row);
     const newDay = !prev || !isSameDay(tsOf(prev), currTs);
-    const isLatest = i === timeline.length - 1;
     if (row.kind === "event") {
-      return { kind: "event", event: row.event, isLatest, newDay };
+      return { kind: "event", event: row.event, newDay };
     }
     const post = row.post;
     // Events break post grouping — sameAuthor only fires when the previous
@@ -264,9 +261,10 @@ export function decorateRows({
     return {
       kind: "post",
       post,
-      isGroupStart: !prev || newDay || !sameAuthor || !withinWindow || isReply,
+      // Pinned and edited posts open their own header: their markers live in that line.
+      isGroupStart:
+        !prev || newDay || !sameAuthor || !withinWindow || isReply || post.pinned_at != null || post.edited_at != null,
       isGroupEnd: true, // provisional; resolved by the look-ahead pass below
-      isLatest,
       newDay,
       showUnreadDivider: i === unreadDividerIndex,
       queued: queuedOwnPostIds.has(post.post_id),

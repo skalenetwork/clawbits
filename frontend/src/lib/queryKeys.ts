@@ -1,3 +1,5 @@
+import type {MmSearchFilters} from "@/lib/api";
+
 export const queryKeys = {
   /** Caller's per-signal privacy flags (last seen, online status, read
    *  receipts, typing). One global entry — the row belongs to the
@@ -55,6 +57,8 @@ export const queryKeys = {
   orgLobstertalk: (orgId: string) => ["org", orgId, "lobstertalk"] as const,
   /** The org's reef repository, plus the hosts reporting into it. */
   reef: (orgId: string) => ["org", orgId, "reef"] as const,
+  /** The role catalog in the org's reef repository. */
+  reefRoles: (orgId: string) => ["org", orgId, "reef", "roles"] as const,
   /** Operator-only agent email inbox (Stalwart). */
   agentInbox: {
     /** Prefix to invalidate every cache for one agent's inbox at once. */
@@ -95,13 +99,7 @@ export const queryKeys = {
     channelPinnedPosts: (channelId: string) =>
       ["mm", "channel", channelId, "pinned-posts"] as const,
     linkPreview: (url: string) => ["mm", "link-preview", url] as const,
-    /** Message content search results (Tier 2). Keyed on the full query
-     *  shape so different sorts/scopes cache independently. */
-    search: (
-      orgId: string | null,
-      query: string,
-      sort: string,
-      channelId: string | null,
-    ) => ["mm", "search", orgId, query, sort, channelId] as const,
+    search: (orgId: string | null, query: string, sort: string, filters: MmSearchFilters) =>
+      ["mm", "search", orgId, query, sort, filters] as const,
   },
 } as const;

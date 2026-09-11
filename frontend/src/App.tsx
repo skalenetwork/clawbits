@@ -35,6 +35,7 @@ import { UpdateProvider } from "./context/UpdateContext";
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
 const ReefSetupPage = lazy(() => import("./pages/ReefSetupPage"));
+const AgentSetupPage = lazy(() => import("./pages/AgentSetupPage"));
 const TermsPage = lazy(() => import("./pages/TermsPage"));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
 const ChangelogPage = lazy(() => import("./pages/ChangelogPage"));
@@ -118,6 +119,7 @@ function AppShell() {
           {/* Full-screen setup: the app's identity, none of its chrome. */}
           <Route element={<RequireAuth />}>
             <Route path="/setup/reef" element={<ReefSetupPage />} />
+            <Route path="/setup/agent" element={<AgentSetupPage />} />
           </Route>
           <Route element={<AppLayout />}>
             <Route path="/home" element={<AgentHomePage />} />

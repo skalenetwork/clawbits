@@ -5,13 +5,7 @@ import {
     CLAWBITS_OPTIONAL_TOOLS,
     COMPANION_PLUGIN_SLUG,
     PLUGIN_SLUG,
-} from "./prompts";
-
-if (typeof window === "undefined") {
-    Object.defineProperty(globalThis, "window", {
-        value: {location: {origin: "https://app.clawbits.test"}},
-    });
-}
+} from "./agentPrompts";
 
 describe("OpenClaw onboarding prompt", () => {
     it("installs and activates the channel and companion in safe order", () => {
@@ -28,10 +22,7 @@ describe("OpenClaw onboarding prompt", () => {
         expect(prompt.indexOf(signup)).toBeLessThan(prompt.indexOf(ownership));
         expect(prompt.match(/openclaw clawbits signup/g)).toHaveLength(1);
         expect(prompt).not.toContain("--acknowledge-clawhub-risk");
-        // OpenClaw 2026.8 fails install preflight with "--pin is only supported
-        // with npm registry installs." for any `clawhub:` ref, so the runnable
-        // command must never carry it. The comment block above the command
-        // mentions `--pin` as the pre-2026.8 fallback; the command itself cannot.
+        // OpenClaw 2026.8 refuses `--pin` for a `clawhub:` ref; only the comment may mention it.
         expect(channelInstall).not.toContain("--pin");
         expect(companionInstall).not.toContain("--pin");
     });

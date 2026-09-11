@@ -7,8 +7,9 @@
  * continuous-corner curve Apple's icon shape approximates), generated once
  * into a `clipPath` in objectBoundingBox units so one definition fits any size.
  */
-import {useEffect, useRef, type CSSProperties, type ReactNode} from "react";
+import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from "react";
 import {Link, useNavigate} from "react-router-dom";
+import {Tooltip, TooltipContent, TooltipTrigger} from "@/components/ui/tooltip";
 import {cn} from "@/lib/utils";
 
 const CLIP_ID = "cb-squircle";
@@ -116,9 +117,9 @@ export function Squircle({
 
 const TILE_CLASS =
     "group flex min-h-16 min-w-0 items-center gap-3 rounded-[18px] border border-border/60 bg-card " +
-    "px-3 py-2 text-left shadow-(--tile-shadow) transition-[box-shadow,transform,border-color] " +
+    "px-3 py-2 text-left transition-[transform,border-color] " +
     "duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] hover:border-border " +
-    "hover:shadow-(--tile-shadow-hover) active:scale-[0.99] focus-visible:outline-2 " +
+    "active:scale-[0.99] focus-visible:outline-2 " +
     "focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 /** Keycap chrome: a real key in the command tile (`<kbd>`), a decorative hint
@@ -128,8 +129,8 @@ export const KEYCAP_CLASS =
     "bg-linear-to-b from-card to-background px-2 font-sans text-[15.5px] font-medium " +
     "text-muted-foreground transition-colors group-hover:text-foreground";
 
-/** Fires the tile on an unmodified digit press. The rail already owns
- *  Cmd-number for pinned chats, so plain digits are free. Stays out of the way
+/** Fires the tile on an unmodified digit press. Cmd-number already jumps to
+ *  the nav and pinned chats, so plain digits are free. Stays out of the way
  *  of anything that owns the keyboard, so it can never eat a real shortcut. */
 function useDigitShortcut(digit: number | undefined, run: () => void) {
     const latest = useRef(run);
@@ -145,8 +146,7 @@ function useDigitShortcut(digit: number | undefined, run: () => void) {
             const el = e.target as HTMLElement | null;
             if (el?.isContentEditable) return;
             if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
-            // The wizard keeps its dialog mounted so a dirty draft survives, so
-            // only a rendered one owns keys.
+            // Only a rendered dialog owns keys, not one kept mounted while hidden.
             const dialogs = document.querySelectorAll('[role="dialog"],[role="alertdialog"]');
             if ([...dialogs].some((d) => d.getBoundingClientRect().width > 0)) return;
             e.preventDefault();
@@ -167,6 +167,8 @@ interface HomeTileProps {
     onClick?: () => void;
     trailing?: ReactNode;
     shortcut?: number;
+    /** Key label for the hover hint when the tile has no digit shortcut. */
+    hotkey?: string;
     className?: string;
 }
 
@@ -178,10 +180,12 @@ export function HomeTile({
     onClick,
     trailing,
     shortcut,
+    hotkey,
     className,
 }: HomeTileProps) {
     const navigate = useNavigate();
     const actionable = Boolean(to || onClick);
+    const [side, setSide] = useState<"left" | "right">("right");
     const digit = actionable ? shortcut : undefined;
     useDigitShortcut(digit, () => {
         if (to) void navigate(to);
@@ -212,25 +216,35 @@ export function HomeTile({
         </>
     );
 
-    if (to) {
-        return (
-            <Link to={to} className={cn(TILE_CLASS, className)}>
-                {body}
-            </Link>
-        );
-    }
-    if (onClick) {
-        return (
-            <button
-                type="button"
-                onClick={onClick}
-                className={cn(TILE_CLASS, className)}
-            >
-                {body}
-            </button>
-        );
-    }
-    // A tile that only reports is a div, not a button that lies about being
-    // actionable.
-    return <div className={cn(TILE_CLASS, "cursor-default", className)}>{body}</div>;
+    const cls = cn(TILE_CLASS, !actionable && "cursor-default", className);
+    const tile = to ? (
+        <Link to={to} className={cls}>{body}</Link>
+    ) : onClick ? (
+        <button type="button" onClick={onClick} className={cls}>{body}</button>
+    ) : (
+        <div className={cls}>{body}</div>
+    );
+    const hint = digit !== undefined ? String(digit) : hotkey;
+    if (!hint) return tile;
+
+    return (
+        <Tooltip>
+            <TooltipTrigger
+                delay={1200}
+                render={tile}
+                onPointerEnter={(e) => {
+                    const grid = e.currentTarget.parentElement?.getBoundingClientRect();
+                    setSide(grid && e.currentTarget.getBoundingClientRect().right < grid.right - 1 ? "left" : "right");
+                }}
+            />
+            <TooltipContent side={side} sideOffset={12} collisionAvoidance={{side: "none"}} className="whitespace-nowrap">
+                <span>
+                    Tip: just press{" "}
+                    <kbd className="inline-grid min-w-5 place-items-center rounded-md bg-background-solid/20 px-1 font-sans font-medium">
+                        {hint}
+                    </kbd>
+                </span>
+            </TooltipContent>
+        </Tooltip>
+    );
 }

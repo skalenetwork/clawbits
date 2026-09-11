@@ -1,30 +1,33 @@
-import { useState } from "react";
-import { Outlet, useLocation } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import {FOOTER_SCRIM, HeaderScrim} from "@/components/ProgressiveBlur";
+import {RailNavShortcuts} from "@/components/RailNavShortcuts";
+import {isDesktop} from "@/lib/desktop";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
+import { Settings01Icon } from "@hugeicons/core-free-icons";
 import ChatInfoSidebar from "@/components/ChatInfoSidebar";
 import AttachmentsSidebar from "@/components/AttachmentsSidebar";
+import PinnedSidebar from "@/components/PinnedSidebar";
 import { useShortcut } from "@/lib/shortcuts";
-import { SidebarProvider, useSidebar } from "../components/ui/sidebar";
-import { AppRail } from "@/components/AppRail";
-import { PageHeaderSlotProvider } from "@/components/PageHeader";
-import { ChatsSidebar } from "@/components/sidebars/ChatsSidebar";
-import { AgentsSidebar } from "@/components/sidebars/AgentsSidebar";
-import { SettingsSidebar } from "@/components/sidebars/SettingsSidebar";
-import { SkillsSidebar } from "@/components/sidebars/SkillsSidebar";
-import { UpdateBanner } from "@/components/UpdateBanner";
-import { WizardDockChip } from "@/components/new-agent/WizardDockChip";
 import {
-  deriveSection,
-  sectionHasSidebar,
-  type SectionId,
-} from "@/lib/navSections";
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  useSidebar,
+} from "../components/ui/sidebar";
+import { PageHeaderSlotProvider } from "@/components/PageHeader";
+import { Icon } from "@/components/Icon";
+import { OrgSwitcher } from "@/components/OrgSwitcher";
+import { MainSidebar } from "@/components/sidebars/MainSidebar";
+import { SettingsSidebar } from "@/components/sidebars/SettingsSidebar";
+import { UpdateBanner } from "@/components/UpdateBanner";
+import { SETTINGS_PATH } from "@/lib/navSections";
+import { SidebarToggle } from "@/components/sidebars/SidebarToggle";
 import { cn } from "@/lib/utils";
-import type { ChannelOutletContext } from "./AppShell";
+import type { ChannelOutletContext, ChannelPanel } from "./AppShell";
 
-/**
- * Registers ⌘/Ctrl+B with the central ShortcutProvider. Lives inside
- * SidebarProvider so `useSidebar()` works. Toggles the *contextual* sidebar
- * (the list pane inside the card) — the rail is always present.
- */
+/** Registers ⌘/Ctrl+B to toggle the sidebar; lives inside SidebarProvider. */
 function SidebarShortcutBinding() {
   const { toggleSidebar } = useSidebar();
   useShortcut({
@@ -38,53 +41,43 @@ function SidebarShortcutBinding() {
   return null;
 }
 
-/** Picks the contextual sidebar for the active section. Home is the merged
- *  chats hub, so it shows the channel/DM list. */
-function ContextualSidebar({ section }: { section: SectionId }) {
-  if (section === "agents") return <AgentsSidebar />;
-  if (section === "skills") return <SkillsSidebar />;
-  if (section === "settings") return <SettingsSidebar />;
-  return <ChatsSidebar />;
-}
-
 const SIDEBAR_OPEN_KEY = "fc_sidebar_open";
 
 /**
- * The desktop app shell: a thin icon rail (always present) + a single floating
- * card that holds the section's contextual sidebar and the routed content, plus
- * the right-edge ChatInfoSidebar on channel routes. This is the original
- * AppShell layout, extracted verbatim so the orchestrator can branch
- * desktop/mobile. The rail + gaps show ``--background``; the ``bg-panel``
- * surface floats on top with smaller ``bg-card`` cards a tier above inside.
+ * The desktop shell: the sidebar and the routed content as two flat panes, plus
+ * the right-edge panels on channel routes. In the desktop app the sidebar
+ * reaches the window's top edge so its first row shares the title bar with the
+ * traffic lights.
  */
 export function DesktopShell() {
   const location = useLocation();
+  const navigate = useNavigate();
 
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     const stored = localStorage.getItem(SIDEBAR_OPEN_KEY);
     return stored !== "false";
   });
-  // Always closed at session start — the in-header pills keep them one click
-  // away. Not persisted: the chat column reclaims full width each time. A
-  // single enum so the two right-edge panels (channel info / attachments) are
-  // mutually exclusive — opening one closes the other.
-  const [rightPanel, setRightPanel] = useState<"info" | "attachments" | null>(null);
+  // Always closed at session start and not persisted, so the chat column
+  // reclaims full width each time. One enum keeps the panels mutually exclusive.
+  const [rightPanel, setRightPanel] = useState<ChannelPanel | null>(null);
   const chatInfoOpen = rightPanel === "info";
   const attachmentsOpen = rightPanel === "attachments";
-  const toggleRightPanel = (panel: "info" | "attachments") => {
+  const pinnedOpen = rightPanel === "pinned";
+  const toggle = (panel: ChannelPanel) => () => {
     setRightPanel((cur) => (cur === panel ? null : panel));
   };
-  // The content card's unified page-header bar; pages portal their title +
+  // The content column's page-header bar; pages portal their title +
   // actions into this node via <PageHeader/>.
   const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
 
-  const section = deriveSection(location.pathname);
-  const showContextual = sectionHasSidebar(section);
+  const inSettings = location.pathname.startsWith("/settings");
+  const backTo = useRef("/home");
+  useEffect(() => {
+    if (!inSettings) backTo.current = location.pathname;
+  }, [inSettings, location.pathname]);
   const isHome = location.pathname === "/home";
 
-  const channelRouteMatch = /^\/channels\/([^/]+)/.exec(location.pathname);
-  const activeChannelId = channelRouteMatch?.[1] ?? null;
-  const isChannelRoute = activeChannelId !== null;
+  const activeChannelId = /^\/channels\/([^/]+)/.exec(location.pathname)?.[1] ?? null;
   // The agent inbox is a bounded-height split view (list column + reading
   // pane, each with its own scroller) — it needs the channel-style full-height
   // branch, not the scrolling max-w-content document.
@@ -103,120 +96,122 @@ export function DesktopShell() {
     >
       <SidebarShortcutBinding />
       {/* Skip link - first focusable thing in the tree, so one Tab from a fresh
-          page load jumps past the rail and the contextual sidebar straight to
-          the content. Hidden off-screen until focused (see .skip-link). */}
+          page load jumps past the sidebar straight to the content. Hidden
+          off-screen until focused (see .skip-link). */}
       <a href="#main-content" className="skip-link">
         Skip to content
       </a>
-      <AppRail activeSection={section} />
-
-      {/* Content region — the p-2-style inset around the card. ``pt`` clears
-                the macOS title-bar pill / traffic lights (0 on web). ``pl-0`` so
-                the card abuts the rail: the rail's centered icons then sit with
-                equal space on each side (window edge ↔ icon ↔ card). */}
-      <div className="min-w-0 flex-1 pb-2 pl-0 pr-2 pt-[max(var(--titlebar-height),0.5rem)]">
-        <div className="relative flex h-full overflow-hidden rounded-xl border border-sidebar-border bg-panel shadow-sm">
-          {/* Contextual sidebar — the card's left pane. Desktop/tablet
-                        only for now (mobile navigation lands in a later phase). */}
-          {showContextual && sidebarOpen && (
-            <aside className="relative hidden w-(--sidebar-width) shrink-0 flex-col border-r border-sidebar-border md:flex">
-              <ContextualSidebar section={section} />
-              {/* Sidebar footer: the minimized Add-Agent chip + the desktop
-                                auto-update banner, floating OVER the list's
-                                bottom edge - their frosted backgrounds blur
-                                whatever scrolls beneath. pointer-events-none
-                                here (restored per card) so the gap between
-                                them never blocks a row behind it. */}
-              <div className="pointer-events-none absolute inset-x-2 bottom-2 z-20 flex flex-col gap-2 empty:hidden">
-                <WizardDockChip />
-                <UpdateBanner />
+      {/* Two flat panes, edge to edge. The fill difference is the only
+          separation: no hairline, nothing inset, rounded or raised. */}
+      <div className="relative flex min-w-0 flex-1 overflow-hidden pt-(--titlebar-height)">
+        {sidebarOpen && (
+          <aside data-vt-contextual="" className="relative z-[45] -mt-(--titlebar-height) hidden w-(--sidebar-width) shrink-0 flex-col bg-sidebar md:flex">
+            {isDesktop && (
+              <div
+                data-tauri-drag-region
+                className="flex h-(--titlebar-height) shrink-0 items-center justify-end pr-2 [-webkit-app-region:drag]"
+              >
+                <SidebarToggle />
               </div>
-            </aside>
-          )}
-
-          {/* Footer fallback for when the sidebar pane is hidden (collapsed
-                        via ⌘B or a sidebar-less section) - the minimized-wizard
-                        chip and update banner float bottom-left over the content
-                        so both stay actionable. Rendered only when the in-sidebar
-                        footer above is not, so each mounts once. The wizard chip
-                        frosts the content behind it (translucent + blur), so no
-                        backdrop; the banner's tinted translucent background gets
-                        a solid bg-card one. */}
-          {!(showContextual && sidebarOpen) && (
-            <div className="absolute bottom-2 left-2 z-30 flex w-(--sidebar-width) flex-col gap-2">
-              <div className="rounded-xl shadow-md empty:hidden">
-                <WizardDockChip />
-              </div>
-              <div className="rounded-xl bg-card shadow-md empty:hidden">
+            )}
+            <div className="no-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto px-2">
+              {inSettings ? <SettingsSidebar /> : <MainSidebar />}
+              <div className={cn(FOOTER_SCRIM, "flex flex-col gap-2")}>
                 <UpdateBanner />
+                {inSettings ? (
+                  <SidebarMenu>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        onClick={() => {
+                          void navigate(backTo.current);
+                        }}
+                        className="text-muted-foreground"
+                      >
+                        <ArrowLeft />
+                        <span>Back</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  </SidebarMenu>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    <OrgSwitcher />
+                    <NavLink
+                      to={SETTINGS_PATH}
+                      title="Settings"
+                      aria-label="Settings"
+                      className="grid size-[34px] shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--sb-hover)] hover:text-sidebar-foreground"
+                    >
+                      <Icon icon={Settings01Icon} className="size-4" />
+                    </NavLink>
+                  </div>
+                )}
               </div>
             </div>
-          )}
+          </aside>
+        )}
 
-          {/* Content column. */}
-          <PageHeaderSlotProvider value={headerSlot}>
-            <div className="relative flex min-w-0 flex-1 flex-col">
-              {/* Unified page-header bar: same height + bottom border as the
-                  sidebar's ContextualHeader so the two line up as one header
-                  row across the card. Home has no title and no actions, so the
-                  bar would be an empty ruled strip; it gets the bare card. */}
-              {!isHome && (
-                <div className="absolute inset-x-0 top-0 z-10 h-12 border-b border-sidebar-border bg-panel/80 backdrop-blur-xl supports-[backdrop-filter]:bg-panel/65">
-                  {/* Channel routes run the narrower chat column so the
-                      avatar/name aligns with the message column and the actions
-                      align with the composer's right edge; the full-width
-                      border + background above stay full-bleed. */}
-                  <div
-                    ref={setHeaderSlot}
-                    className={cn(
-                      "mx-auto flex h-full w-full items-center justify-between gap-2 px-3",
-                      isChannelRoute ? "max-w-chat" : "max-w-content",
-                    )}
-                  />
-                </div>
-              )}
-              <div className="flex min-h-0 flex-1">
-                <main
-                  id="main-content"
-                  tabIndex={-1}
-                  className={`min-w-0 flex-1 overflow-y-auto outline-none ${isChannelRoute || isInboxRoute ? "" : "gutter-stable-both"}`}
-                >
-                  {isChannelRoute ? (
-                    <div className="flex h-full w-full flex-col">
-                      <Outlet
-                        context={
-                          {
-                            chatInfoOpen,
-                            toggleChatInfo: () => { toggleRightPanel("info"); },
-                            attachmentsOpen,
-                            toggleAttachments: () => { toggleRightPanel("attachments"); },
-                          } satisfies ChannelOutletContext
-                        }
-                      />
-                    </div>
-                  ) : isInboxRoute ? (
-                    // Full-bleed like channels; the page provides its own
-                    // pt-12 header clearance and per-column scrollers.
-                    <div className="flex h-full w-full flex-col">
-                      <Outlet />
-                    </div>
-                  ) : (
-                    <div className={cn("mx-auto flex min-h-full w-full max-w-content flex-col px-2 pb-0", isHome ? "" : "pt-16")}>
-                      <Outlet />
-                    </div>
-                  )}
-                </main>
+        {/* With the sidebar collapsed (⌘B) the update banner floats bottom-left
+            over the content so it stays actionable, on a solid bg-card
+            backdrop behind its translucent tint. */}
+        {!sidebarOpen && (
+          <div className="absolute bottom-2 left-2 z-30 w-(--sidebar-width) rounded-xl bg-card shadow-md empty:hidden">
+            <UpdateBanner />
+          </div>
+        )}
+
+        <PageHeaderSlotProvider value={headerSlot}>
+          <div className="relative flex min-w-0 flex-1 flex-col">
+            {/* Pages portal their title and actions into this bar. Home has
+                neither, so there it only appears to hold the sidebar toggle. */}
+            {(!isHome || !sidebarOpen) && (
+              <div className="absolute inset-x-0 top-0 z-10 flex h-12 items-center gap-2 px-3">
+                <HeaderScrim color="background"/>
+                {!sidebarOpen && <SidebarToggle />}
+                <div ref={setHeaderSlot} className="flex h-full min-w-0 flex-1 items-center justify-between gap-2" />
               </div>
+            )}
+            <div className="flex min-h-0 flex-1">
+              <main
+                id="main-content"
+                tabIndex={-1}
+                className={`min-w-0 flex-1 overflow-y-auto outline-none ${activeChannelId || isInboxRoute ? "" : "gutter-stable-both"}`}
+              >
+                {activeChannelId ? (
+                  <div className="flex h-full w-full flex-col">
+                    <Outlet
+                      context={
+                        {
+                          chatInfoOpen,
+                          toggleChatInfo: toggle("info"),
+                          attachmentsOpen,
+                          toggleAttachments: toggle("attachments"),
+                          pinnedOpen,
+                          togglePinned: toggle("pinned"),
+                        } satisfies ChannelOutletContext
+                      }
+                    />
+                  </div>
+                ) : isInboxRoute ? (
+                  // Full-bleed like channels; the page provides its own
+                  // pt-12 header clearance and per-column scrollers.
+                  <div className="flex h-full w-full flex-col">
+                    <Outlet />
+                  </div>
+                ) : (
+                  <div className={cn("mx-auto flex min-h-full w-full max-w-content flex-col px-2 pb-0", isHome ? "" : "pt-16")}>
+                    <Outlet />
+                  </div>
+                )}
+              </main>
             </div>
-          </PageHeaderSlotProvider>
-        </div>
+          </div>
+        </PageHeaderSlotProvider>
       </div>
 
-      {/* Right-edge panels — flex siblings *outside* the content card
-                (mirroring the rail on the left). Mutually exclusive via
-                ``rightPanel``; both stay mounted and animate width so the chat
-                column reclaims space when neither is open. */}
-      {isChannelRoute && activeChannelId && (
+      {isDesktop && <RailNavShortcuts/>}
+      {/* Right-edge panels, flex siblings of the panes; all stay mounted and
+          animate width so the chat column reclaims space when none is open. */}
+      {activeChannelId && (
         <>
           <ChatInfoSidebar
             channelId={activeChannelId}
@@ -226,6 +221,11 @@ export function DesktopShell() {
           <AttachmentsSidebar
             channelId={activeChannelId}
             open={attachmentsOpen}
+            onClose={() => { setRightPanel(null); }}
+          />
+          <PinnedSidebar
+            channelId={activeChannelId}
+            open={pinnedOpen}
             onClose={() => { setRightPanel(null); }}
           />
         </>

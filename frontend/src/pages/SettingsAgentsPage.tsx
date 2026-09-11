@@ -13,7 +13,6 @@ import {AgentFaceAvatar} from "@/components/AgentFaceAvatar";
 import {agentDisplay} from "@/lib/agentDisplay";
 import {PageHeader} from "@/components/PageHeader";
 import {Button} from "@/components/ui/button";
-import {openCreate} from "@/components/command/createStore";
 import {useAuth} from "@/context/AuthContext";
 import {
     approveAgentSignupRequest,
@@ -42,6 +41,7 @@ function tiltFor(id: string): string {
 }
 
 export default function SettingsAgentsPage() {
+    const navigate = useNavigate();
     const {activeOrgId} = useAuth();
     const queryClient = useQueryClient();
 
@@ -154,7 +154,7 @@ export default function SettingsAgentsPage() {
                             Agents registered to this organization will appear here as collectible cards.
                         </p>
                     </div>
-                    <Button size="sm" className="mt-1" onClick={() => { openCreate("agent"); }}>
+                    <Button size="sm" className="mt-1" onClick={() => { void navigate("/setup/agent"); }}>
                         <Icon icon={AddAgent} className="size-4"/>
                         New agent
                     </Button>
@@ -197,13 +197,14 @@ export default function SettingsAgentsPage() {
 }
 
 /** The "Add new agent" CTA — a sibling collectible card that closes the binder;
- *  clicking it opens the create-agent dialog. Mirrors BinderCard's resting tilt
+ *  clicking it opens the setup wizard. Mirrors BinderCard's resting tilt
  *  + hover lift so it sits in the grid like every other card. */
 function AddAgentBinderCard() {
+    const navigate = useNavigate();
     return (
         <button
             type="button"
-            onClick={() => { openCreate("agent"); }}
+            onClick={() => { void navigate("/setup/agent"); }}
             aria-label="Add new agent"
             className={cn(
                 "group relative block w-full max-w-[360px] cursor-pointer outline-none transition-transform duration-300 ease-out will-change-transform hover:z-10 focus-visible:z-10 focus-visible:-translate-y-1 focus-visible:scale-[1.02]",

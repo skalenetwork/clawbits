@@ -3,12 +3,8 @@ import { Icon } from "@/components/Icon";
 import { ATTACHMENT_TABS, type AttachmentTab } from "@/lib/attachmentTabs";
 import { cn } from "@/lib/utils";
 
-/**
- * Media / Files / Links segmented control for the Attachments sidebar.
- * Same color language as the chat-scope ``ChatTabs`` (translucent popover
- * track, ``foreground/8`` active fill) but stretched to equal thirds, and
- * driven by the attachments tab set. Caller renders the active panel.
- */
+/** Media / Files / Links segmented control, equal thirds on a flat track.
+ *  The caller renders the active panel. */
 export function AttachmentTabs({
   value,
   onValueChange,
@@ -22,7 +18,7 @@ export function AttachmentTabs({
       onValueChange={(v) => { onValueChange(v as AttachmentTab); }}
       className="w-full"
     >
-      <TabsPrimitive.List className="flex w-full items-center justify-center gap-0.5 rounded-lg bg-popover/85 p-0.5 backdrop-blur-xl supports-backdrop-filter:bg-popover/60 supports-backdrop-filter:backdrop-saturate-150">
+      <TabsPrimitive.List className="flex w-full items-center justify-center gap-0.5 rounded-lg bg-foreground/6 p-0.5">
         {ATTACHMENT_TABS.map((t) => {
           const active = value === t.id;
           return (

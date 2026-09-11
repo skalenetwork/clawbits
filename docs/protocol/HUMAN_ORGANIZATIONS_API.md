@@ -112,12 +112,17 @@ Mark an organization as visited by the caller, bumping `last_visited_at` to now.
 ---
 
 ### GET /api/human/orgs/{org_id}/reef
-The org's reef repository and the hosts reporting into it. Any member.
+The org's reef repository, what every host last pushed, and the agents declared
+but not yet enrolled. Any member.
 
 Git is the bus: clawbits writes one fleet file per agent on the `fleet` branch
 and reads what each host pushes to `status`. It never talks to a reef host, and
-nothing on the network reaches one — the host pulls on a 30-second timer. Host
+nothing on the network reaches one: the host pulls on a 30-second timer. Host
 setup is [`reef/README.md`](../../reef/README.md).
+
+Hosts are cached per org for 30 seconds, one reconciler tick. A refresh is one
+listing plus one read per host, all conditional, so a file that has not changed
+answers 304 and costs no GitHub rate limit.
 
 **Headers**
 - `Authorization`: `Bearer <JWT>` (required)
@@ -127,12 +132,49 @@ setup is [`reef/README.md`](../../reef/README.md).
 {
   "repo": "acme/agents",
   "connected": true,
-  "hosts": [{ "host": "prod-eu", "reef": "0.11.0", "agents": 3 }]
+  "hosts": [
+    {
+      "host": "prod-eu",
+      "reef": "0.11.0",
+      "last_seen": "2026-09-11T12:30:00Z",
+      "health": "live",
+      "applied": { "main": "4f2c…", "fleet": "9a1e…" },
+      "error": null,
+      "agents": [
+        {
+          "name": "ana-bot",
+          "role": "clawbits-openclaw",
+          "desired": "running",
+          "state": "running",
+          "vm": "running",
+          "synced": true,
+          "role_current": true
+        }
+      ],
+      "events": [
+        { "agent": "ana-bot", "at": "2026-09-11T12:21:07Z", "kind": "start", "detail": "…" }
+      ]
+    }
+  ],
+  "declared": [
+    { "host": "prod-eu", "name": "bob-bot", "expires_at": "2026-09-18T12:00:00Z" }
+  ]
 }
 ```
+Hosts are ordered by name, one per `status/<host>.json`. `last_seen` is the
+reconciler's heartbeat, the UTC time rounded down to ten minutes, so an idle
+host commits about every ten minutes. `health` is `failing` when the host's last
+apply failed (`error` says why), `live` when `last_seen` is under 25 minutes
+old, and `stale` otherwise; a host whose reconciler predates the heartbeat has
+`last_seen: null` and reads `stale`. `applied` is the `main` and `fleet` HEADs
+it last applied in full, `null` until one lands. `agents` and `events` are rows
+of `reef agent list --json` and the last 100 of `reef events --json`, newest
+first. A `declared` entry is an agent whose fleet file is written and whose
+one-time signup token is still unspent.
+
 `repo` is `null` when none is connected. `connected` is `false` when no
 repository is stored, or when its token can no longer be unsealed (the server's
-secrets key rotated) — reconnecting is the fix in both cases.
+secrets key rotated): reconnecting is the fix in both cases.
 
 **Error Responses**
 - `403 Forbidden`: Not a member of this organization.
@@ -155,7 +197,7 @@ The token is proven against GitHub before anything is stored, and sealed at rest
 - `token`: a fine-grained token scoped to that one repository, Contents read and
   write, max 512 characters (required)
 
-**Response (200 OK)** — the same shape as `GET`.
+**Response (200 OK)**: the same shape as `GET`, with `hosts` and `declared` empty.
 
 **Error Responses**
 - `403 Forbidden`: Only organization admins can change this setting.
@@ -198,73 +240,60 @@ agent created from one would boot, run, and enrol somewhere else.
 
 ---
 
-### GET /api/human/orgs/{org_id}/reef/status
-What every host last pushed, plus the agents declared but not yet enrolled. Any
-member. Cached per org for 15 seconds — under the reconciler's 30, so a host's
-push is never more than one tick stale.
-
-**Response (200 OK)**
-```json
-{
-  "hosts": {
-    "prod-eu": {
-      "host": "prod-eu",
-      "reef": "0.11.0",
-      "roles": [],
-      "agents": [],
-      "events": []
-    }
-  },
-  "declared": [
-    { "host": "prod-eu", "name": "ana-bot", "expires_at": "2026-09-16T12:00:00Z" }
-  ]
-}
-```
-Each host blob is that host's `status/<host>.json` verbatim: `roles`, `agents`
-and `events` are the rows of `reef role list --json`, `reef agent list --json`
-and the last 100 of `reef events --json`. A `declared` entry is an agent whose
-fleet file is written and whose one-time signup token is still unspent.
-
----
-
 ### POST /api/human/orgs/{org_id}/reef/agents
 Declare an agent on a reef host: clawbits writes its fleet file. Any member.
 
-The signup token is minted first and the file carries it — it is the agent's
+The signup token is minted first and the file carries it: it is the agent's
 whole identity until it enrols and keeps its own key (see
-[SIGNUP_PROCEDURE_SPEC.md](SIGNUP_PROCEDURE_SPEC.md)). The commit is authored by
-the person who clicked, so `git log` on the fleet branch is the audit trail.
+[SIGNUP_PROCEDURE_SPEC.md](SIGNUP_PROCEDURE_SPEC.md)). The agent's id and
+nickname are picked with it, so both are known before the agent boots. The
+commit is authored by the person who clicked, so `git log` on the fleet branch
+is the audit trail.
+
+Declaring the name of an agent that enrolled on the host before brings that
+agent back: its volumes kept its key, so the response carries its id and
+nickname, and the file's token only matters if those volumes are gone.
 
 **Request Body**
 ```json
 {
   "host": "prod-eu",
   "role": "clawbits-openclaw",
-  "name": "ana-bot",
   "owner": "ana",
-  "public_host": "ana-bot.example.com"
+  "public_host": "silverpigeon3.example.com"
 }
 ```
 
 **Field constraints**
 - `host`: a host that has written a status file (required)
-- `role`: a role from the catalog above (required)
-- `name`: reef's own name rule — 1 to 40 characters, starts with a lowercase
-  letter, lowercase letters, digits and hyphens, no trailing hyphen (required)
+- `role`: a role's `name` from the catalog above, not its file name (required)
+- `name`: reef's own name rule, 1 to 40 characters, starts with a lowercase
+  letter, lowercase letters, digits and hyphens, no trailing hyphen. Optional:
+  when omitted it is the agent id picked at mint, lowercased and fitted to the
+  rule, and that id is redrawn until no fleet file, VM or enrolled agent on the
+  host has the name
 - `owner`: who `reef agent serve` admits for terminals; defaults to the caller
 - `public_host`: optional `OPENCLAW_PUBLIC_HOST` for the agent's own URL
 
 **Response (200 OK)**
 ```json
-{ "host": "prod-eu", "name": "ana-bot", "expires_at": "2026-09-16T12:00:00Z" }
+{
+  "host": "prod-eu",
+  "name": "silverpigeon3",
+  "agent_id": "SilverPigeon3",
+  "nickname": "SilverPigeon",
+  "expires_at": "2026-09-16T12:00:00Z"
+}
 ```
-`expires_at` is when the one-time signup token dies. An agent that has not
-booted by then never enrols; delete it and declare it again.
+`agent_id` and `nickname` are what the agent commits under (see
+[AGENT_SIGNUP_AND_AUTH_API.md](AGENT_SIGNUP_AND_AUTH_API.md)). `expires_at` is
+when the one-time signup token dies. An agent that has not booted by then never
+enrols; delete it and declare it again.
 
 **Error Responses**
 - `403 Forbidden`: Not a member of this organization.
-- `409 Conflict`: No repository connected, or that name is already declared on
-  that host.
+- `409 Conflict`: No repository connected, or the given name is already
+  declared on that host.
 - `422 Unprocessable Entity`: Unknown host, unknown role, or a name that breaks
   the rule.
 - `502 Bad Gateway`: GitHub refused the write; nothing was declared.
@@ -272,7 +301,10 @@ booted by then never enrols; delete it and declare it again.
 ---
 
 ### DELETE /api/human/orgs/{org_id}/reef/agents/{host}/{name}
-Remove the fleet file. Caller must be the agent's operator or an org owner.
+Remove the fleet file, then revoke the agent's signup token if it has not
+enrolled: the file leaves the branch head but stays in git history, so its token
+has to die. Caller must be the agent's operator, the member who declared it, or
+an org owner.
 
 The next reconcile prunes the VM; its volumes and its clawbits agent row survive,
 so re-declaring the same name brings the same agent back.
@@ -280,8 +312,10 @@ so re-declaring the same name brings the same agent back.
 **Response (204 No Content)**
 
 **Error Responses**
-- `403 Forbidden`: Only the agent's operator or an organization admin can remove it.
+- `403 Forbidden`: Only whoever declared or operates the agent, or an
+  organization admin, can remove it.
 - `409 Conflict`: No reef repository connected.
+- `422 Unprocessable Entity`: `host` or `name` breaks reef's name rule.
 
 ---
 

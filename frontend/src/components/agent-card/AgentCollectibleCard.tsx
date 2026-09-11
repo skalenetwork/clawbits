@@ -184,14 +184,11 @@ function copyToClipboard(text: string, label: string) {
 const ICON_CLS = "h-full w-auto block";
 
 // Runtime-kind → logo asset (served from `frontend/public`). The type sticker is
-// just this logo (no background); unknown kinds render nothing. A `tint` marks
-// a monochrome silhouette that must be mask-rendered in a controlled ink (an
-// <img> can't be recoloured). Constant near-black, not a theme token: the card
-// art is seed-keyed and doesn't flip with the UI theme.
-const TYPE_LOGO: Record<string, { src: string; alt: string; tint?: string }> = {
+// just this logo (no background); unknown kinds render nothing.
+const TYPE_LOGO: Record<string, { src: string; alt: string }> = {
   openclaw: { src: "/openclaw.png", alt: "OpenClaw" },
-  ironclaw: { src: "/ironclaw.webp", alt: "IronClaw" },
-  hermes: { src: "/hermes.svg", alt: "Hermes", tint: "#111111" },
+  ironclaw: { src: "/ironclaw.png", alt: "IronClaw" },
+  hermes: { src: "/hermes.png", alt: "Hermes" },
 };
 
 // Top-left "spec" sticker (the runtime-kind logo), in the card's full-viewBox
@@ -507,23 +504,7 @@ export function AgentCollectibleCard({
         {/* ── Frosted-glass stickers (HTML overlay, for a real backdrop blur) ── */}
         <div className="pointer-events-none absolute inset-0">
           {/* Top-left: runtime-kind logo (logo only, no background). */}
-          {typeLogo && (typeLogo.tint ? (
-            <span
-              role="img"
-              aria-label={`${typeLogo.alt} agent`}
-              className="absolute block h-[13cqw] w-[13cqw] drop-shadow-[0_1.5px_3px_rgba(0,0,0,0.4)]"
-              style={{
-                left: `${f(TYPE_LEFT_PCT)}%`,
-                top: `${f(SPEC_TOP_PCT)}%`,
-                transform: "translate(-50%, -50%) rotate(-7deg)",
-                backgroundColor: typeLogo.tint,
-                maskImage: `url(${typeLogo.src})`,
-                maskRepeat: "no-repeat",
-                maskPosition: "center",
-                maskSize: "contain",
-              }}
-            />
-          ) : (
+          {typeLogo && (
             <img
               src={typeLogo.src}
               alt={typeLogo.alt}
@@ -535,7 +516,7 @@ export function AgentCollectibleCard({
                 transform: "translate(-50%, -50%) rotate(-7deg)",
               }}
             />
-          ))}
+          )}
           {/* Description snippet (grid variant): bottom-anchored, equal margins. */}
           {descSticker && (
             <GlassSticker

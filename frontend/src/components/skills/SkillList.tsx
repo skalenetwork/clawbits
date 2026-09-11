@@ -12,26 +12,19 @@ import {cn} from "@/lib/utils";
 
 /**
  * The library list: two-line rows, emoji first, one state mark on the right.
- *
- * Shared by the desktop contextual sidebar and the mobile library screen, so it
- * is plain markup rather than the sidebar primitives — those need a
- * SidebarProvider the mobile shell doesn't mount, and they are single-line by
- * construction.
+ * Plain markup, not the sidebar primitives: those need a SidebarProvider the
+ * mobile shell doesn't mount.
  *
  * Groups are real recency ("edited this week" vs not), not an arbitrary top-N,
  * and their labels only appear when there is more than one group to tell apart.
  */
 export function SkillList({
     skills,
-    activeSkillId,
-    grouped = true,
-    className,
+    grouped,
 }: {
     skills: Skill[];
-    activeSkillId?: string | null;
     /** Off while searching: results are ranked by the query, not by age. */
-    grouped?: boolean;
-    className?: string;
+    grouped: boolean;
 }) {
     const groups = grouped
         ? groupSkillsByRecency(skills)
@@ -39,7 +32,7 @@ export function SkillList({
     const showLabels = grouped && groups.length > 1;
 
     return (
-        <div className={cn("flex flex-col", className)}>
+        <div className="flex flex-col">
             {groups.map(group => (
                 <div key={group.id} className="flex flex-col">
                     {showLabels && (
@@ -50,10 +43,7 @@ export function SkillList({
                     <ul className="flex w-full min-w-0 flex-col gap-0.5">
                         {group.skills.map(skill => (
                             <li key={skill.skill_id}>
-                                <SkillRow
-                                    skill={skill}
-                                    isActive={skill.skill_id === activeSkillId}
-                                />
+                                <SkillRow skill={skill}/>
                             </li>
                         ))}
                     </ul>
@@ -63,23 +53,16 @@ export function SkillList({
     );
 }
 
-function SkillRow({skill, isActive}: {skill: Skill; isActive: boolean}) {
+function SkillRow({skill}: {skill: Skill}) {
     const mark = skillRowMark(skill);
     return (
         <NavLink
             to={skillDetailPath(skill)}
             viewTransition
-            className={cn(
-                "flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left",
-                "outline-hidden transition-colors hover:bg-[var(--sb-hover)]",
-                "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-                isActive && "bg-sidebar-foreground/10",
-            )}
+            className="flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left outline-hidden transition-colors hover:bg-[var(--sb-hover)] focus-visible:ring-2 focus-visible:ring-sidebar-ring"
         >
             <SkillGlyph skill={skill} size="md"/>
             <span className="min-w-0 flex-1">
-                {/* Weight stays put across selection: the row's fill already
-                    marks it, and reflowing the name on click reads as a jump. */}
                 <span className="block truncate text-[13px] font-medium leading-tight text-sidebar-foreground">
                     {skill.display_name}
                 </span>

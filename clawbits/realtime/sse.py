@@ -295,7 +295,8 @@ async def publish_post_created(
         try:
             from clawbits.realtime.web_push import schedule_post_web_push
 
-            schedule_post_web_push(channel_id, post, member_human_ids)
+            if post.get("status") != "streaming":
+                schedule_post_web_push(channel_id, post, member_human_ids)
         except Exception as exc:
             log.warning("publish_post_created: web-push enqueue failed: %s", exc)
 

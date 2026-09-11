@@ -8,15 +8,17 @@ import {
     UserMinus01Icon as UserMinus,
     UserMultiple02Icon as MembersIcon,
     LockIcon as Lock,
-    MoreVerticalIcon as More,
+    MoreHorizontalIcon as More,
     Logout01Icon as LogOut,
     ShieldKeyIcon as Shield,
     UserIcon as UserSingle,
 } from "@hugeicons/core-free-icons";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
+import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/select";
 import {PageHeader} from "@/components/PageHeader";
 import {EmptyState} from "@/components/EmptyState";
+import {SettingsPage, SettingsRow, SettingsRowSkeleton, SettingsSection} from "@/components/settings/Settings";
 import {
     Dialog,
     DialogContent,
@@ -39,32 +41,17 @@ import {
     type OrgMember, type OrgRole,
 } from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
-import {formatRelativeShort} from "@/lib/formatting";
-import {toast} from "@/lib/toast";
+import {formatRelativeAgo} from "@/lib/formatting";
+import {errMsg, toast} from "@/lib/toast";
 
-function RoleBadge({role}: {role: OrgRole}) {
-    const isAdmin = role === "owner";
-    return (
-        <span
-            className={
-                isAdmin
-                    ? "inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400"
-                    : "inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-            }
-        >
-            {orgRoleLabel(role)}
-        </span>
-    );
-}
+const ROLE_ITEMS = (["member", "owner"] as const).map(value => ({value, label: orgRoleLabel(value)}));
 
 export default function OrgMembersPage() {
     const { user, activeOrgId} = useAuth();
     const queryClient = useQueryClient();
 
-    // Role comes from the active org's ``my_role`` (cheap, cached) so we
-    // don't have to fetch the full members list just to find out whether
-    // the caller can see the page. The members endpoint is owner-only on
-    // the server, so we gate the request on ``canManage`` too.
+    // The members endpoint is admin-only on the server, so the fetch waits on
+    // the cheap cached role check and non-admins never trigger a 403.
     const {isOwner: canManage, isLoading: roleLoading} = useActiveOrg();
 
     const membersQuery = useQuery({
@@ -74,7 +61,11 @@ export default function OrgMembersPage() {
     });
 
     const members = membersQuery.data?.members ?? [];
-    const ownerCount = members.filter(m => m.role === "owner").length;
+    const admins = members.filter(m => m.role === "owner");
+    const sections = [
+        {label: "Admins", members: admins},
+        {label: "Members", members: members.filter(m => m.role === "member")},
+    ].filter(s => s.members.length > 0);
 
     const [inviteOpen, setInviteOpen] = useState(false);
     const [email, setEmail] = useState("");
@@ -106,7 +97,7 @@ export default function OrgMembersPage() {
                 void queryClient.invalidateQueries({queryKey: queryKeys.orgMembers(activeOrgId)});
             }
             // ``my_role`` lives on the orgs query, and an admin can demote
-            // themselves — refetch so this tab's own admin surfaces settle.
+            // themselves: refetch so this tab's own admin surfaces settle.
             void queryClient.invalidateQueries({queryKey: queryKeys.orgs});
             toast.success(
                 vars.role === "owner" ? "Now an admin" : "Now a member",
@@ -143,29 +134,87 @@ export default function OrgMembersPage() {
         return <div className="text-sm text-muted-foreground">Select an organization.</div>;
     }
 
-    // Owner-only page. Role check first (cheap), then gate the members
-    // fetch on it — the members endpoint itself is admin-only on the
-    // server, so non-owners never trigger a 403.
     if (roleLoading) {
         return <div className="py-16 text-center text-sm text-muted-foreground">Loading…</div>;
     }
     if (!canManage) {
         return (
-            <div className="space-y-6">
+            <>
                 <PageHeader icon={MembersIcon} title="Members"/>
                 <EmptyState
                     icon={Lock}
                     title="Admins only"
                     description="Member management is restricted to organization admins. Ask an admin if you need to invite or remove people."
                 />
-            </div>
+            </>
         );
     }
 
     const removingSelf = memberToRemove?.human_id === user?.id;
 
+    const memberRow = (m: OrgMember) => {
+        const isMe = m.human_id === user?.id;
+        const name = m.display_name ?? m.email;
+        // The last admin is frozen: the server refuses to demote or remove
+        // them, since nobody would be left to manage the org.
+        const isLastAdmin = m.role === "owner" && admins.length <= 1;
+        const nextRole: OrgRole = m.role === "owner" ? "member" : "owner";
+        return (
+            <SettingsRow
+                key={m.human_id}
+                leading={<UserAvatar size={32} name={name} src={m.avatar?.url}/>}
+                title={
+                    <>
+                        {name}
+                        {isMe && (
+                            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 align-middle text-[11px] font-medium text-muted-foreground">
+                                You
+                            </span>
+                        )}
+                    </>
+                }
+                description={
+                    [name !== m.email && m.email, m.joined_at && `joined ${formatRelativeAgo(m.joined_at)}`]
+                        .filter(Boolean)
+                        .join(", ") || undefined
+                }
+                control={isLastAdmin ? undefined : (
+                    <DropdownMenu>
+                        <DropdownMenuTrigger
+                            aria-label={`Actions for ${isMe ? "you" : name}`}
+                            render={<Button variant="ghost" size="icon-sm"/>}
+                        >
+                            <Icon icon={More}/>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                                disabled={roleMutation.isPending}
+                                onClick={() => {
+                                    roleMutation.mutate({memberId: m.human_id, role: nextRole});
+                                }}
+                            >
+                                <Icon icon={nextRole === "owner" ? Shield : UserSingle}/>
+                                {nextRole === "owner"
+                                    ? "Make admin"
+                                    : (isMe ? "Step down to member" : "Change to member")}
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator/>
+                            <DropdownMenuItem
+                                variant="destructive"
+                                onClick={() => { setMemberToRemove(m); }}
+                            >
+                                <Icon icon={isMe ? LogOut : Trash}/>
+                                {isMe ? "Leave organization" : "Remove member"}
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                )}
+            />
+        );
+    };
+
     return (
-        <div className="space-y-6">
+        <>
             <PageHeader
                 icon={MembersIcon}
                 title="Members"
@@ -178,103 +227,37 @@ export default function OrgMembersPage() {
                 }
             />
 
-            {membersQuery.isLoading && (
-                <ul className="space-y-0.5">
-                    {Array.from({length: 5}).map((_, i) => (
-                        <li key={i} className="flex items-center gap-3 px-2 py-3">
-                            <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted"/>
-                            <div className="flex-1 space-y-2">
-                                <div className="h-3.5 w-40 animate-pulse rounded bg-muted"/>
-                                <div className="h-3 w-56 animate-pulse rounded bg-muted"/>
-                            </div>
-                        </li>
-                    ))}
-                </ul>
-            )}
-            {membersQuery.isError && (
-                <p className="py-16 text-center text-sm text-destructive">
-                    {membersQuery.error instanceof Error ? membersQuery.error.message : "Failed to load members"}
-                </p>
-            )}
-            {!membersQuery.isLoading && !membersQuery.isError && members.length === 0 && (
-                <EmptyState
-                    icon={MembersIcon}
-                    title="No members yet"
-                    description="People you invite to this organization will appear here."
-                />
-            )}
+            <SettingsPage>
+                {membersQuery.isLoading && (
+                    <SettingsSection>
+                        {Array.from({length: 3}, (_, i) => <SettingsRowSkeleton key={i}/>)}
+                    </SettingsSection>
+                )}
+                {membersQuery.isError && (
+                    <SettingsSection>
+                        <SettingsRow
+                            title="Couldn't load members"
+                            error={errMsg(membersQuery.error, "Failed to load members")}
+                        />
+                    </SettingsSection>
+                )}
+                {membersQuery.isSuccess && members.length === 0 && (
+                    <SettingsSection>
+                        <EmptyState
+                            icon={MembersIcon}
+                            title="No members yet"
+                            description="People you invite to this organization will appear here."
+                            className="py-10"
+                        />
+                    </SettingsSection>
+                )}
+                {sections.map(s => (
+                    <SettingsSection key={s.label} label={s.label}>
+                        {s.members.map(memberRow)}
+                    </SettingsSection>
+                ))}
+            </SettingsPage>
 
-            {members.length > 0 && (
-                <ul className="space-y-0.5">
-                    {members.map((m: OrgMember) => {
-                        const isMe = m.human_id === user?.id;
-                        // The last admin is frozen: demoting or removing them
-                        // would leave the org with nobody who can manage it,
-                        // and the server refuses both. No menu, no dead items.
-                        const isLastAdmin = m.role === "owner" && ownerCount <= 1;
-                        const hasActions = canManage && !isLastAdmin;
-                        const nextRole: OrgRole = m.role === "owner" ? "member" : "owner";
-                        return (
-                            <li
-                                key={m.human_id}
-                                className="flex items-center gap-3 rounded-lg px-2 py-3 transition-colors hover:bg-muted/40"
-                            >
-                                <UserAvatar size={36} name={m.display_name ?? m.email} src={m.avatar?.url}/>
-                                <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-2">
-                                        <p className="truncate text-sm font-medium">
-                                            {m.display_name ?? m.email}
-                                        </p>
-                                        {isMe && (
-                                            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                                you
-                                            </span>
-                                        )}
-                                    </div>
-                                    <p className="truncate text-xs text-muted-foreground">
-                                        {m.email}
-                                        {m.joined_at ? ` · joined ${formatRelativeShort(m.joined_at)}` : ""}
-                                    </p>
-                                </div>
-                                <RoleBadge role={m.role}/>
-                                {hasActions && (
-                                    <DropdownMenu>
-                                        <DropdownMenuTrigger
-                                            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                                            aria-label={`Actions for ${isMe ? "you" : (m.display_name ?? m.email)}`}
-                                        >
-                                            <Icon icon={More} className="size-4"/>
-                                        </DropdownMenuTrigger>
-                                        <DropdownMenuContent align="end">
-                                            <DropdownMenuItem
-                                                disabled={roleMutation.isPending}
-                                                onClick={() => {
-                                                    roleMutation.mutate({memberId: m.human_id, role: nextRole});
-                                                }}
-                                            >
-                                                <Icon icon={nextRole === "owner" ? Shield : UserSingle}/>
-                                                {nextRole === "owner"
-                                                    ? "Make admin"
-                                                    : (isMe ? "Step down to member" : "Change to member")}
-                                            </DropdownMenuItem>
-                                            <DropdownMenuSeparator/>
-                                            <DropdownMenuItem
-                                                variant="destructive"
-                                                onClick={() => { setMemberToRemove(m); }}
-                                            >
-                                                <Icon icon={isMe ? LogOut : Trash}/>
-                                                {isMe ? "Leave organization" : "Remove member"}
-                                            </DropdownMenuItem>
-                                        </DropdownMenuContent>
-                                    </DropdownMenu>
-                                )}
-                            </li>
-                        );
-                    })}
-                </ul>
-            )}
-
-            {/* Invite dialog — opened from the header action. */}
             <Dialog open={inviteOpen} onOpenChange={(next) => { if (!addMutation.isPending) setInviteOpen(next); }}>
                 <DialogContent className="sm:max-w-md">
                     <DialogHeader>
@@ -305,16 +288,21 @@ export default function OrgMembersPage() {
                             <label htmlFor="invite-role" className="text-xs font-medium text-muted-foreground">
                                 Role
                             </label>
-                            <select
-                                id="invite-role"
+                            <Select
                                 value={role}
-                                onChange={e => { setRole(e.target.value as OrgRole); }}
+                                items={ROLE_ITEMS}
+                                onValueChange={(next) => { if (next) setRole(next); }}
                                 disabled={addMutation.isPending}
-                                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
                             >
-                                <option value="member">Member</option>
-                                <option value="owner">Admin</option>
-                            </select>
+                                <SelectTrigger id="invite-role">
+                                    <SelectValue/>
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {ROLE_ITEMS.map(({value, label}) => (
+                                        <SelectItem key={value} value={value}>{label}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                         <DialogFooter>
                             <Button
@@ -333,7 +321,6 @@ export default function OrgMembersPage() {
                 </DialogContent>
             </Dialog>
 
-            {/* Remove / leave confirmation. */}
             <Dialog
                 open={memberToRemove !== null}
                 onOpenChange={(next) => { if (!next && !removeMutation.isPending) setMemberToRemove(null); }}
@@ -381,6 +368,6 @@ export default function OrgMembersPage() {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
-        </div>
+        </>
     );
 }

@@ -101,7 +101,7 @@ base64url({"session_token":"agentic-aBcDeFgHiJkLmNoP","challenge_response":"PARI
 
 | Field | Description |
 | :--- | :--- |
-| `agent_id` | Generated agent identifier |
+| `agent_id` | Agent identifier: the one picked when a human minted the session (`POST /api/human/agent_signup`, or declaring the agent on a reef host), else generated now. A picked id another agent took meanwhile is regenerated. |
 | `api_key` | Issued API key for the agent |
 | `signup_request_id` | Unique ID for the signup request (null for approved signups) |
 | `status` | `pending_approval` or `approved` |

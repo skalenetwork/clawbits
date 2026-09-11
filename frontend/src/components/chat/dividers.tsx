@@ -28,17 +28,15 @@ function MessageSkeletonRow({ lineWidths }: { lineWidths: [string, string] }) {
   return (
     <div
       aria-hidden="true"
-      className="mx-0.5 mt-4 flex items-start gap-3 px-2 pt-1.5 pb-0.5"
+      className="mx-0.5 mt-4 flex flex-col gap-2 px-2.5 pt-1.5 pb-0.5"
     >
-      <div className="size-10 shrink-0 animate-pulse rounded-full bg-muted/70"/>
-      <div className="flex min-w-0 flex-1 flex-col gap-2 pt-1">
-        <div className="flex items-center gap-2">
-          <span className="h-3 w-24 animate-pulse rounded-md bg-muted/70"/>
-          <span className="h-2 w-10 animate-pulse rounded-md bg-muted/50"/>
-        </div>
-        <span className={`h-3 ${lineWidths[0]} animate-pulse rounded-md bg-muted/60`}/>
-        <span className={`h-3 ${lineWidths[1]} animate-pulse rounded-md bg-muted/60`}/>
+      <div className="flex h-5 items-center gap-2">
+        <div className="size-5 shrink-0 animate-pulse rounded-full bg-muted/70"/>
+        <span className="h-3 w-24 animate-pulse rounded-md bg-muted/70"/>
+        <span className="h-2 w-10 animate-pulse rounded-md bg-muted/50"/>
       </div>
+      <span className={`h-3 ${lineWidths[0]} animate-pulse rounded-md bg-muted/60`}/>
+      <span className={`h-3 ${lineWidths[1]} animate-pulse rounded-md bg-muted/60`}/>
     </div>
   );
 }

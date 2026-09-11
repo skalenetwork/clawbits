@@ -1,15 +1,14 @@
 /**
- * The composer's agent-target chip: who the next message is addressed to.
- * A manual pick wins over the implicit auto-mention; both surface here so the
- * user can see and change the target before sending.
+ * Who the next message goes to: a quiet label in the composer toolbar that
+ * opens a short agent list. A manual pick wins over the auto-mention.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
+import { Ban, Check, ChevronDown } from "lucide-react";
 
 import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
-import { Icon } from "@/components/Icon";
-import { Cancel01Icon, Robot02Icon } from "@hugeicons/core-free-icons";
-import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import type { MmChannelMember } from "@/lib/api";
+
+const ROW = "flex h-[34px] w-full items-center gap-2.5 rounded-lg px-2 text-left text-[13px] transition-colors hover:bg-foreground/6";
 
 function agentLabel(m: MmChannelMember): string {
   return m.display_name?.trim() || m.agent_id || "Agent";
@@ -17,173 +16,78 @@ function agentLabel(m: MmChannelMember): string {
 
 export function AgentTargetChip({
   agents,
-  manualHandle,
-  autoMentionHandle,
-  pulseKey,
+  targetHandle,
+  open,
+  onOpenChange,
   onPick,
-  onClear,
+  align,
 }: {
   agents: (MmChannelMember & { agent_id: string })[];
-  manualHandle: string | null;
-  autoMentionHandle: string | null;
-  pulseKey: string | null;
-  onPick: (handle: string) => void;
-  onClear: () => void;
+  targetHandle: string | null;
+  open: boolean;
+  onOpenChange: (open: boolean, refocus: boolean) => void;
+  onPick: (handle: string | null) => void;
+  align: "start" | "end";
 }) {
-  const [open, setOpen] = useState(false);
-  const [pulsing, setPulsing] = useState(false);
-  const lastPulseKeyRef = useRef<string | null>(null);
-
-  // Brief background flash when an auto-mention trigger first appears so the
-  // user notices that the next send is now addressed to an agent.
-  useEffect(() => {
-    if (!pulseKey) return;
-    if (pulseKey === lastPulseKeyRef.current) return;
-    lastPulseKeyRef.current = pulseKey;
-    setPulsing(true);
-    const t = window.setTimeout(() => { setPulsing(false); }, 1400);
-    return () => { window.clearTimeout(t); };
-  }, [pulseKey]);
-
-  const targetHandle = manualHandle ?? autoMentionHandle ?? null;
-  const targetAgent = useMemo(
-    () => (targetHandle ? agents.find((a) => a.agent_id === targetHandle) ?? null : null),
-    [agents, targetHandle],
-  );
-
-  if (agents.length === 0) return null;
-
-  const idle = targetAgent == null;
-  const baseClass =
-    "group flex h-7 max-w-[12rem] shrink-0 items-center gap-1.5 rounded-full pl-1.5 pr-2 text-xs leading-none transition-colors";
-  const stateClass = idle
-    ? "border border-dashed border-border/60 px-2 text-muted-foreground hover:border-border hover:text-foreground"
-    : "bg-mention/12 text-mention ring-1 ring-mention/25 hover:bg-mention/20";
-  const pulseClass = pulsing && !idle ? "animate-target-pulse" : "";
-
-  const seed = targetAgent
-    ? (targetAgent.display_name ?? targetAgent.agent_id)
-    : null;
+  const target = agents.find((a) => a.agent_id === targetHandle) ?? null;
 
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+    <PopoverPrimitive.Root open={open} onOpenChange={(o, { reason }) => { onOpenChange(o, reason === "escape-key"); }}>
       <PopoverPrimitive.Trigger
         render={
           <button
             type="button"
             tabIndex={-1}
-            aria-label={
-              idle
-                ? "Target an agent"
-                : `Targeting @${targetAgent?.agent_id ?? ""} - click to change or clear`
-            }
-            className={`${baseClass} ${stateClass} ${pulseClass}`}
+            aria-label={target ? `Sending to ${agentLabel(target)}` : "Send to an agent"}
+            className={`flex h-7 min-w-0 max-w-48 items-center gap-1.5 rounded-lg px-1.5 text-[13px] font-medium transition-colors hover:bg-foreground/6 data-popup-open:bg-foreground/6 ${target ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
           >
-            {targetAgent ? (
-              <AgentFaceAvatar size={18} name={seed ?? ""} src={targetAgent.avatar?.url} framed={false}/>
-            ) : (
-              <Icon icon={Robot02Icon} className="size-4 shrink-0"/>
-            )}
-            <span className="truncate font-medium">
-              {targetAgent ? `@${targetAgent.agent_id}` : "Agent"}
-            </span>
-            {!idle && (
-              <span
-                role="button"
-                tabIndex={-1}
-                aria-label="Clear target"
-                onMouseDown={(e) => {
-                  // mousedown so the parent popover doesn't toggle.
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onClear();
-                }}
-                className="-mr-1 flex size-4 items-center justify-center rounded-full text-mention/70 transition-colors hover:bg-mention/20 hover:text-mention"
-              >
-                <Icon icon={Cancel01Icon} className="size-2.5"/>
-              </span>
-            )}
+            {target && <AgentFaceAvatar size={16} name={agentLabel(target)} src={target.avatar?.url} framed={false}/>}
+            <span className="truncate">{target ? agentLabel(target) : "Agent"}</span>
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground"/>
           </button>
         }
       />
       <PopoverPrimitive.Portal>
-        <PopoverPrimitive.Positioner
-          align="start"
-          side="top"
-          sideOffset={8}
-          className="isolate z-50"
-        >
-          <PopoverPrimitive.Popup className="z-50 w-64 origin-(--transform-origin) overflow-hidden rounded-xl border border-border/60 bg-background/95 shadow-lg ring-1 ring-foreground/5 backdrop-blur-xl data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
-            <div className="flex items-center justify-between border-b border-border/40 px-3 py-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Target agent
-              </span>
-              <span className="text-[10px] tabular-nums text-muted-foreground/70">
-                ⌘J
-              </span>
-            </div>
-            <div className="max-h-64 overflow-y-auto p-1">
+        <PopoverPrimitive.Positioner align={align} side="top" sideOffset={8} className="isolate z-50">
+          <PopoverPrimitive.Popup
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
+                e.preventDefault();
+                onOpenChange(false, true);
+              }
+            }}
+            className="z-50 w-64 origin-(--transform-origin) rounded-xl border border-border/60 bg-popover p-1 shadow-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
+            <div className="px-2 pt-1.5 pb-1 text-xs font-medium text-muted-foreground">Send to</div>
+            <div className="max-h-64 overflow-y-auto">
+              <button
+                type="button"
+                onClick={() => { onPick(null); }}
+                className={`${ROW} text-muted-foreground hover:text-foreground`}
+              >
+                <span className="grid size-5 shrink-0 place-items-center rounded-md bg-foreground/6"><Ban className="size-3"/></span>
+                <span className="font-medium">No agent</span>
+                {!target && <Check className="ml-auto size-3.5 shrink-0"/>}
+              </button>
               {agents.map((a) => {
                 const active = a.agent_id === targetHandle;
                 return (
                   <button
                     key={a.agent_id}
                     type="button"
-                    onClick={() => {
-                      onPick(a.agent_id);
-                      setOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
-                      active
-                        ? "bg-mention/10 text-foreground"
-                        : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                    }`}
+                    onClick={() => { onPick(active ? null : a.agent_id); }}
+                    className={ROW}
                   >
-                    <AgentFaceAvatar
-                      size={24}
-                      name={a.display_name ?? a.agent_id}
-                      src={a.avatar?.url}
-                      framed={false}
-                    />
-                    <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-                      <span className="truncate text-sm font-medium text-foreground">
-                        {agentLabel(a)}
-                      </span>
-                      <span className="truncate text-xs text-muted-foreground">
-                        @{a.agent_id}
-                      </span>
-                    </span>
-                    {active && (
-                      <span className="ml-2 size-1.5 shrink-0 rounded-full bg-mention"/>
-                    )}
+                    <AgentFaceAvatar size={20} name={agentLabel(a)} src={a.avatar?.url} framed={false}/>
+                    <span className="truncate font-medium">{agentLabel(a)}</span>
+                    <span className="truncate text-xs text-muted-foreground">@{a.agent_id}</span>
+                    {active && <Check className="ml-auto size-3.5 shrink-0 text-muted-foreground"/>}
                   </button>
                 );
               })}
             </div>
-            {!idle && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClear();
-                  setOpen(false);
-                }}
-                className="flex w-full items-center justify-center gap-1.5 border-t border-border/40 px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
-              >
-                <Icon icon={Cancel01Icon} className="size-3"/>
-                Clear target
-              </button>
-            )}
           </PopoverPrimitive.Popup>
         </PopoverPrimitive.Positioner>
       </PopoverPrimitive.Portal>
     </PopoverPrimitive.Root>
   );
 }
-
-// ----------------------------------------------------------------------------
-// Keyboard cheatsheet — no longer a visible button on the action row (that
-// row is kept to its load-bearing controls). Opened only via ⌘/, and anchored
-// to the composer wrapper so it still positions correctly without a trigger.
-// Markdown bold/italic stay on ⌘B / ⌘I (see ``handleKeyDown``); the other GFM
-// formats are typed as literal markdown, which the renderer supports.
-// ----------------------------------------------------------------------------

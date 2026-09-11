@@ -19,6 +19,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 import { SectionHeader } from "@/components/automations/SectionHeader";
 import { Icon } from "@/components/Icon";
+import { Stepper } from "@/components/ui/stepper";
 import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
@@ -31,66 +32,6 @@ const LIMIT_MIN = 1;
 const LIMIT_MAX = 50;
 
 type SettingsPatch = Parameters<typeof updateAgentSettings>[2];
-
-/** Instant-apply −/+ stepper for a small bounded integer. Steps are disabled
- *  at the bounds and while its mutation is in flight (which also throttles
- *  clicks); the value pops once per change. */
-function Stepper({
-  value,
-  min,
-  max,
-  disabled = false,
-  onChange,
-}: {
-  value: number;
-  min: number;
-  max: number;
-  disabled?: boolean;
-  onChange: (next: number) => void;
-}) {
-  const step = (delta: number) => {
-    const next = Math.min(max, Math.max(min, value + delta));
-    if (next !== value) onChange(next);
-  };
-  const btn =
-    "flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
-  return (
-    <div className="flex items-center gap-0.5 rounded-lg border border-border/60 p-0.5">
-      <button
-        type="button"
-        aria-label="Decrease"
-        className={btn}
-        disabled={disabled || value <= min}
-        onClick={() => {
-          step(-1);
-        }}
-      >
-        <span aria-hidden className="text-base leading-none">
-          −
-        </span>
-      </button>
-      <span
-        key={value}
-        className="w-7 text-center text-body font-medium tabular-nums text-foreground animate-in zoom-in-75 fade-in duration-200 motion-reduce:animate-none"
-      >
-        {value}
-      </span>
-      <button
-        type="button"
-        aria-label="Increase"
-        className={btn}
-        disabled={disabled || value >= max}
-        onClick={() => {
-          step(1);
-        }}
-      >
-        <span aria-hidden className="text-base leading-none">
-          +
-        </span>
-      </button>
-    </div>
-  );
-}
 
 export function BehaviorSection({
   orgId,
@@ -201,6 +142,7 @@ export function BehaviorSection({
             }
             control={
               <Stepper
+                aria-label="Agent-to-agent limit"
                 value={limit}
                 min={LIMIT_MIN}
                 max={LIMIT_MAX}

@@ -31,7 +31,8 @@ if ! ssh -o BatchMode=yes -T git@github.com 2>&1 | grep -q 'successfully authent
   exit 1
 fi
 
-# One clone per branch, so 'git pull --ff-only' is the only git the timer needs.
+# One clone per branch: the timer fast-forwards main and fleet, and rebases its
+# own commits onto status.
 for branch in main fleet status; do
   [ -d "$DIR/$branch/.git" ] ||
     git clone --quiet --branch "$branch" --single-branch "git@github.com:$REEF_REPO.git" "$DIR/$branch"

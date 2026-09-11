@@ -76,7 +76,7 @@ function EmailBody({ detail }: { detail: EmailDetail }) {
   const text = detail.body_text?.trim();
   if (text) {
     return (
-      <div className="max-w-[72ch] whitespace-pre-wrap break-words text-[15px] leading-relaxed text-foreground/90">
+      <div className="max-w-chat whitespace-pre-wrap break-words text-message text-pretty text-foreground/90">
         {text}
       </div>
     );

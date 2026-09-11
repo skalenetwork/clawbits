@@ -205,7 +205,18 @@ class TableRead:
             "human_id": row.human_id,
             "reef_host": row.reef_host,
             "reef_name": row.reef_name,
+            "agent_id": row.agent_id,
+            "nickname": row.nickname,
         }
+
+    @staticmethod
+    def is_agent_id_taken(session: Session, agent_id: str) -> bool:
+        """Held by an agent or by any signup session still on file: the rule the
+        unique index on ``challenge_sessions.agent_id`` enforces, so an id that
+        passes can only lose to a concurrent mint."""
+        return session.get(Agent, agent_id) is not None or session.exec(
+            select(ChallengeSession.session_token).where(ChallengeSession.agent_id == agent_id)
+        ).first() is not None
 
     @staticmethod
     def validate_challenge_response(
@@ -1218,13 +1229,15 @@ class TableRead:
         return row.reef_repo, row.reef_repo_token
 
     @staticmethod
-    def get_org_reef_agent_operator(
+    def get_org_reef_agent_operators(
         session: Session, org_id: str, host: str, name: str
-    ) -> int | None:
-        """The operator of the org's agent declared as ``host``/``name``, or
-        ``None`` when no agent has enrolled under that pair yet."""
-        row = session.exec(
-            select(Agent)
+    ) -> set[int]:
+        """Who operates the org's agent declared as ``host``/``name``: the
+        operator of the agent that enrolled under that pair, plus whoever
+        declared it while its signup token is unspent, since enrolling makes
+        that person its operator."""
+        enrolled = session.exec(
+            select(Agent.operator_id)
             .where(
                 Agent.org_id == org_id,
                 Agent.reef_host == host,
@@ -1232,7 +1245,30 @@ class TableRead:
             )
             .order_by(Agent.creation_time.desc())
         ).first()
-        return row.operator_id if row else None
+        declared = session.exec(
+            select(ChallengeSession.human_id).where(
+                ChallengeSession.org_id == org_id,
+                ChallengeSession.reef_host == host,
+                ChallengeSession.reef_name == name,
+                ChallengeSession.used == False,  # noqa: E712
+            )
+        ).all()
+        return {human for human in (enrolled, *declared) if human is not None}
+
+    @staticmethod
+    def get_org_reef_agents(
+        session: Session, org_id: str, host: str
+    ) -> dict[str, tuple[str, str]]:
+        """``{fleet name: (agent_id, nickname)}`` for the org's agents that
+        enrolled on ``host``, the newest under each name. Removing a fleet file
+        keeps the VM's volumes and so its key: declaring that name again brings
+        this agent back."""
+        rows = session.exec(
+            select(Agent.reef_name, Agent.agent_id, Agent.nickname)
+            .where(Agent.org_id == org_id, Agent.reef_host == host)
+            .order_by(Agent.creation_time)
+        ).all()
+        return {name: (agent_id, nickname) for name, agent_id, nickname in rows if name}
 
     @staticmethod
     def list_declared_reef_agents(

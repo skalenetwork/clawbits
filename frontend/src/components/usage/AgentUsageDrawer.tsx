@@ -4,7 +4,7 @@ import {Icon} from "@/components/Icon";
 import {Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription} from "@/components/ui/sheet";
 import {Skeleton} from "@/components/ui/skeleton";
 import {AgentAvatarWithPresence} from "@/components/AgentStatus";
-import {providerBrand} from "@/components/new-agent/brands";
+import {providerBrand} from "@/lib/brands";
 import {getAgentUsage, type AgentUser, type UsageRange} from "@/lib/api";
 import {agentDisplay} from "@/lib/agentDisplay";
 import {queryKeys} from "@/lib/queryKeys";

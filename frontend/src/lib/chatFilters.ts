@@ -3,18 +3,20 @@ import {
     BubbleChatIcon,
     HashtagIcon,
     Message01Icon,
+    Robot02Icon,
 } from "@hugeicons/core-free-icons";
 import type {IconSvgElement} from "@hugeicons/react";
 import type {MmChannel} from "@/lib/api";
 
 /** The scope filter shown as tabs at the top of the chat list. */
-export type ChatTab = "all" | "channels" | "dms";
+export type ChatTab = "all" | "channels" | "dms" | "agents";
 
 /** Tab descriptors in display order — drives the segmented control. */
 export const CHAT_TABS: {id: ChatTab; label: string; icon: IconSvgElement}[] = [
     {id: "all", label: "All", icon: BubbleChatIcon},
     {id: "channels", label: "Channels", icon: HashtagIcon},
     {id: "dms", label: "DMs", icon: Message01Icon},
+    {id: "agents", label: "Agents", icon: Robot02Icon},
 ];
 
 /** Recency key — newest activity first. Falls back to ``created_at`` for
@@ -25,10 +27,12 @@ export function activityTime(c: MmChannel): number {
 }
 
 /** The channels matching a scope tab. ``all`` is the full set; ``channels``
- *  is everything that isn't a DM; ``dms`` is the direct channels. */
+ *  is everything that isn't a DM; ``dms`` is the direct channels; ``agents``
+ *  is the DMs with an agent. */
 export function filterChannelsByTab(channels: MmChannel[], tab: ChatTab): MmChannel[] {
     if (tab === "channels") return channels.filter((c) => c.channel_type !== "direct");
     if (tab === "dms") return channels.filter((c) => c.channel_type === "direct");
+    if (tab === "agents") return channels.filter((c) => c.channel_type === "direct" && c.dm_peer_agent_id != null);
     return channels;
 }
 
@@ -40,7 +44,7 @@ export function sortByRecency(channels: MmChannel[]): MmChannel[] {
 const CHAT_TAB_STORAGE_KEY = "fc_chats_tab";
 
 function isChatTab(v: string | null): v is ChatTab {
-    return v === "all" || v === "channels" || v === "dms";
+    return CHAT_TABS.some((t) => t.id === v);
 }
 
 /**

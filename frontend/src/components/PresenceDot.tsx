@@ -53,7 +53,7 @@ export function PresenceDot({
       aria-label={`Status: ${text}`}
       title={text}
       className={cn(
-        "block rounded-full ring-2",
+        "block rounded-full ring-[1.5px]",
         color,
         status === "setup" && "animate-pulse",
         ringClassName ?? "ring-background",

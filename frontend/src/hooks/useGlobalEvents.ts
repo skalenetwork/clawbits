@@ -179,6 +179,13 @@ export function useGlobalEvents({
         const post = evt.data;
         // Drafts / rejected posts have visibility constraints — skip.
         if (post.status === "draft" || post.status === "rejected") return;
+        // A streaming placeholder only flags the agent as working (no unread,
+        // preview or sort); the finalised post's own post.created clears it.
+        if (post.status === "streaming") {
+          patchChannel(qc, evt.channel_id, (c) => ({ ...c, working: true }));
+          return;
+        }
+        patchChannel(qc, evt.channel_id, (c) => (c.working ? { ...c, working: false } : c));
         // Don't count own posts or posts in the channel currently open.
         const isOwnPost =
           currentUserIdRef.current != null && post.human_id === currentUserIdRef.current;

@@ -19,23 +19,26 @@ import { DesktopShell } from "./DesktopShell";
 import { MobileShell } from "./MobileShell";
 import { captureReturnPath, loginPathFor } from "@/lib/returnPath";
 
-/** Outlet context delivered to channel routes — lets the channel-page header
- *  pill toggle the right-rail details panel. Provided only by the desktop
- *  shell for now; the mobile members/pins drawer is a later phase, and
- *  ChannelPage reads this context optionally so its absence is safe. */
+/** The channel panels: right-edge panels on desktop, bottom sheets on
+ *  mobile. One is open at a time. */
+export type ChannelPanel = "info" | "attachments" | "pinned";
+
+/** Outlet context delivered to channel routes: lets the channel-page header
+ *  pills toggle the channel panels. ChannelPage reads it optionally. */
 export interface ChannelOutletContext {
   chatInfoOpen: boolean;
   toggleChatInfo: () => void;
-  /** Right-edge Attachments panel — mutually exclusive with chat-info. */
   attachmentsOpen: boolean;
   toggleAttachments: () => void;
+  pinnedOpen: boolean;
+  togglePinned: () => void;
 }
 
 /**
  * The app shell ORCHESTRATOR. It owns the concerns shared by every viewport —
  * auth gating, the channels query that drives the tab-title counter + macOS
  * dock badge, presence heartbeat, and web-push registration — then branches the
- * LAYOUT on viewport size: the desktop rail+card shell, or the mobile
+ * LAYOUT on viewport size: the desktop sidebar shell, or the mobile
  * edge-to-edge stack with a floating bottom nav. ``useIsMobile()`` is seeded
  * pre-paint from ``html[data-viewport]`` (see lib/viewport.ts), so the first
  * render already picks the right shell — no flash, no double-mount.

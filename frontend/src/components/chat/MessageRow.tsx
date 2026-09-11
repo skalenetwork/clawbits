@@ -23,18 +23,17 @@ import {
 } from "@hugeicons/core-free-icons";
 
 import { AdminCommandGlyph } from "@/components/AdminCommandGlyph";
-import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { Icon } from "@/components/Icon";
 import { LinkPreviewCard } from "@/components/LinkPreviewCard";
 import { MessageAttachments } from "@/components/MessageAttachments";
 import { MessageMarkdown, type MessageMentions } from "@/components/MessageMarkdown";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { GeneratingIndicator } from "@/components/chat/GeneratingIndicator";
+import { PostAvatar } from "@/components/chat/PostAvatar";
 import { TurnTrace } from "@/components/chat/TurnTrace";
 import { StreamingMarkdown } from "@/components/chat/StreamingMarkdown";
 import { SettleBody } from "@/components/chat/SettleBody";
 import { useSmoothedText } from "@/hooks/useSmoothedText";
-import { UserAvatar } from "@/components/UserAvatar";
 import { EmojiGrid, ReactionEmojiPicker } from "@/components/chat/ReactionEmojiPicker";
 import { Button } from "@/components/ui/button";
 import {
@@ -53,7 +52,6 @@ import {
   memberKey,
   type ActivityMap,
   type AgentActivity,
-  type PresenceMap,
   type ThinkingStep,
   type ThinkingTimelineMap,
   type ToolStep,
@@ -74,55 +72,6 @@ import { mentionHandle, messageLink, posterName, quotedBodyText } from "@/lib/me
 import { formatReactors } from "@/lib/reactionTooltip";
 import { toast } from "@/lib/toast";
 
-function PostAvatar({
-  post,
-  size = 32,
-  presence,
-  isLatest = false,
-}: {
-  post: MmChannelPost;
-  size?: number;
-  presence?: PresenceMap;
-  /** Only the latest post picks up "typing/generating" animation from
-      presence - otherwise every old message from the same agent would
-      animate whenever they're currently active. */
-  isLatest?: boolean;
-}) {
-  const status = presence
-    ? post.agent_id
-      ? presence[memberKey("agent", post.agent_id)]
-      : post.human_id != null
-        ? presence[memberKey("human", post.human_id)]
-        : undefined
-    : undefined;
-  const wrap = (child: React.ReactNode) => (
-    <span className="relative inline-flex shrink-0">{child}</span>
-  );
-  if (post.agent_id) {
-    const isActive = isLatest && (status === "typing" || status === "generating");
-    return wrap(
-      <AgentFaceAvatar
-        size={size}
-        name={post.poster_display_name ?? post.agent_id}
-        src={post.avatar?.url}
-        animated={post.status === "streaming" || isActive}
-      />,
-    );
-  }
-  if (post.human_id != null) {
-    // ``name`` doubles as the seed for the initial-letter fallback, so
-    // we prefer the display name over the raw id — "A" for Ada
-    // reads better than "3". The glass DiceBear SVG has its own
-    // background so we render at the full slot size — no inset.
-    const fallbackName = post.poster_display_name ?? String(post.human_id);
-    return wrap(
-      <UserAvatar size={size} name={fallbackName} src={post.avatar?.url} />,
-    );
-  }
-  return wrap(<AgentFaceAvatar size={size} name={posterName(post)} src={post.avatar?.url} />);
-}
-
-
 interface MessageAction {
   key: string;
   icon: typeof Copy01Icon;
@@ -133,6 +82,8 @@ interface MessageAction {
 // Slack-canonical quick reactions. Six tap-to-react options that cover the
 // most common sentiments. Custom emoji come later via the full picker.
 const QUICK_REACTIONS = ["👍", "👎", "❤️", "😂", "😮", "😢"] as const;
+const ACTION_BUTTON =
+  "flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
 
 /** Viewport centre of an element — used to anchor the full emoji picker (and
  *  the reaction burst) to whichever control the user just clicked. */
@@ -302,7 +253,7 @@ function ReactionQuickPickerButton({
               aria-label="React"
               aria-expanded={open}
               onClick={() => { setOpen((v) => !v); }}
-              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              className={ACTION_BUTTON}
             >
               <Icon icon={SmilePlusIcon} className="size-3.5"/>
             </button>
@@ -360,7 +311,7 @@ function InlineMessageEditor({
         }}
         maxLength={4000}
         spellCheck
-        className="min-h-9 max-h-40 w-full resize-none border-0 bg-transparent px-3 pt-2.5 pb-1 text-[15px] leading-6 outline-none focus-visible:ring-0 [field-sizing:content]"
+        className="min-h-9 max-h-40 w-full resize-none border-0 bg-transparent px-3 pt-2.5 pb-1 text-message outline-none focus-visible:ring-0 [field-sizing:content]"
       />
       <div className="flex items-center gap-2 px-2.5 pt-0.5 pb-2 text-[11px] text-muted-foreground">
         <span>
@@ -569,20 +520,24 @@ function EditedIndicator({
   );
 }
 
-/** Slack-style floating action pill — one rounded container, all message
- *  actions inline. ``leading`` slots in custom content (e.g. the reaction
- *  picker) before the standard action icons. Hover-only at row level. */
+/** Hover-revealed message actions; ``leading`` slots the reaction picker in
+ *  before the standard icons. The caller positions it. */
 function MessageActionsBar({
   actions,
   leading,
+  className,
 }: {
   actions: MessageAction[];
   leading?: ReactNode;
+  className: string;
 }) {
   if (actions.length === 0 && !leading) return null;
   return (
     <div
-      className="absolute -top-3 right-3 z-10 flex items-center gap-0.5 rounded-lg border border-border/60 bg-background/95 p-0.5 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover/row:opacity-100"
+      className={cn(
+        "invisible flex items-center gap-0.5 opacity-0 transition-[opacity,visibility] group-hover/row:visible group-hover/row:opacity-100 group-hover/row:delay-400",
+        className,
+      )}
       role="toolbar"
       aria-label="Message actions"
     >
@@ -595,7 +550,7 @@ function MessageActionsBar({
                 type="button"
                 onClick={a.onClick}
                 aria-label={a.label}
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className={ACTION_BUTTON}
               >
                 <Icon icon={a.icon} className="size-3.5"/>
               </button>
@@ -769,7 +724,7 @@ function DraftBody({
   // is seamless.
   if (!smoothed) {
     return (
-      <div className="text-[15px] leading-relaxed text-muted-foreground">
+      <div className="text-message text-muted-foreground">
         <GeneratingIndicator
           activity={activity}
           toolSteps={toolSteps}
@@ -902,10 +857,8 @@ export interface MessageRowProps {
   /** Last post of a same-author run. In bubble mode the avatar (group chats)
    *  anchors to this row, Telegram-style. */
   isGroupEnd?: boolean;
-  isLatest: boolean;
-  presence: PresenceMap;
-  /** Live per-agent activity (same "agent:<id>" keys as ``presence``);
-   *  feeds the empty streaming draft's indicator label. */
+  /** Live per-agent activity keyed "agent:<id>"; feeds the empty streaming
+   *  draft's indicator label. */
   activity?: ActivityMap;
   /** Ordered per-agent tool timeline for the current turn (same keys as
    *  ``activity``); feeds the streaming draft's tool-timeline card. */
@@ -944,17 +897,16 @@ export interface MessageRowProps {
 /** A single message row in the chat timeline. Switches between three
  *  visual modes:
  *
- *  - Grouped continuation (``!isGroupStart``): no avatar, no author chip,
- *    timestamp surfaces only on hover. Reads as a continuation of the
- *    previous row.
+ *  - Grouped continuation (``!isGroupStart``): no header line. Reads as a
+ *    continuation of the previous row.
  *  - Group start: avatar + author + timestamp on the header line.
  *  - Editing: avatar + author header are kept, but the body is
  *    replaced with the inline editor.
  *
  *  The row body composes the markdown body, parent-quote, link preview
  *  (embedded server-side or async client fetch), attachments, reactions
- *  strip, and (for drafts) the approval bar. Hover surfaces the action
- *  pill (react / reply / edit / pin / copy / delete).
+ *  strip, and (for drafts) the approval bar. Hover surfaces the actions
+ *  (react / reply / edit / pin / copy / delete).
  *
  *  All cross-row side effects are forwarded as callbacks — this
  *  component itself owns no mutation state; it's safe to memo by
@@ -965,8 +917,6 @@ export function MessageRow({
   isChannelCreator,
   isGroupStart,
   isGroupEnd = true,
-  isLatest,
-  presence,
   activity,
   toolTimelines,
   thinkingTimelines,
@@ -1009,10 +959,6 @@ export function MessageRow({
   const canDelete = (isOwnHumanPost || isChannelCreator)
     && (post.status === "published" || post.status === "rejected");
   const parentPreview = post.parent_preview ?? null;
-  // An edited post gets a small pencil affordance (see EditedIndicator)
-  // rather than an inline "(edited)" string: the old CSS ::after couldn't
-  // carry a tooltip and, being a pseudo-element, slipped past the own-bubble
-  // ``!text-white`` override to render muted-grey on the blue fill.
   const isEdited = Boolean(post.edited_at) && !isEditing;
   const isAgentDirect = channelType === "direct" && members.some((m) => m.agent_id != null);
   const adminCommand = isOwnHumanPost && isAgentDirect
@@ -1130,11 +1076,6 @@ export function MessageRow({
     <>
       {quoteBlock}
       {bodyText}
-      {isEdited && (
-        <div className="mt-0.5 flex">
-          <EditedIndicator editedAt={post.edited_at ?? ""} className="text-muted-foreground/70" />
-        </div>
-      )}
       {queuedMarker}
       {previewCards}
       {attachmentsBlock}
@@ -1235,18 +1176,6 @@ export function MessageRow({
   // Lower visual weight than a hard ring; matches the taste guide's
   // "flat with subtle depth" stance.
   const highlightCls = highlighted ? "bg-primary/10" : "";
-  // "Pinned" label shown *above* a pinned message — the Slack/Discord pattern.
-  // A quiet muted metadata line (not a saturated amber glyph crowding the
-  // text) that still lets readers spot a pinned message at a glance while
-  // scrolling. Rendered at each call site aligned with the message content:
-  // above the author header for a group start, above the body for a
-  // continuation.
-  const pinnedLabel = isPinned ? (
-    <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground/80">
-      <Icon icon={PinIcon} className="size-3 shrink-0" />
-      <span>Pinned</span>
-    </div>
-  ) : null;
   const receiptState = computeReceiptState(post, channelType, currentUser, members);
   const receiptIndicator = receiptState ? <ReadReceiptIndicator state={receiptState}/> : null;
 
@@ -1408,7 +1337,7 @@ export function MessageRow({
     const bubble = (
       <div
         className={cn(
-          "relative flex min-w-0 max-w-full flex-col rounded-2xl px-3 py-2 text-[15px] leading-relaxed",
+          "relative flex min-w-0 max-w-full flex-col rounded-2xl px-3 py-2 text-message",
           own
             ? "rounded-br-md bg-[#2f6bf6] text-white [&_a]:text-white [&_a]:underline"
             : "rounded-bl-md bg-black/[0.055] text-foreground dark:bg-white/[0.09]",
@@ -1459,7 +1388,7 @@ export function MessageRow({
                 className="block cursor-pointer rounded-full outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-ring/40"
                 ariaLabel={`Open profile for ${posterName(post)}`}
               >
-                <PostAvatar post={post} size={28} presence={presence} isLatest={isLatest} />
+                <PostAvatar post={post} size={28} />
               </ProfileMenuTrigger>
             )}
           </div>
@@ -1470,7 +1399,13 @@ export function MessageRow({
             own ? "items-end" : "items-start",
           )}
         >
-          {pinnedLabel}
+          {/* No header line in bubble mode, so a pin gets a label above the bubble. */}
+          {isPinned && (
+            <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground/80">
+              <Icon icon={PinIcon} className="size-3 shrink-0" />
+              <span>Pinned</span>
+            </div>
+          )}
           {/* Suppress the empty text pill for an attachment-only message; keep it
               otherwise (incl. weird no-media/no-text edges, so nothing vanishes). */}
           {(hasBubbleBody || !hasMedia) && bubble}
@@ -1503,19 +1438,19 @@ export function MessageRow({
       <div
         data-post-id={post.post_id}
         {...longPress}
-        className={`group/row relative mx-0.5 min-w-0 rounded-lg py-0.5 pl-[60px] pr-3 transition-colors duration-500 hover:bg-muted/15 has-[a[data-link-preview]:hover]:bg-transparent ${draftBg} ${highlightCls}`}
+        className={`group/row relative mx-0.5 min-w-0 rounded-lg py-0.5 pl-2.5 pr-3 transition-colors duration-500 ${draftBg} ${highlightCls}`}
       >
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[10px] tabular-nums text-muted-foreground opacity-0 transition-opacity group-hover/row:opacity-100">
-          {formatTimeOnly(post.created_at)}
-        </span>
-        {pinnedLabel}
         {body}
         {receiptIndicator && (
           <span className="pointer-events-none absolute bottom-1 right-3">
             {receiptIndicator}
           </span>
         )}
-        <MessageActionsBar actions={actions} leading={reactionLeading}/>
+        <MessageActionsBar
+          actions={actions}
+          leading={reactionLeading}
+          className="absolute top-0.5 right-3 z-10 rounded-md bg-background-solid"
+        />
         {overlays}
       </div>
     );
@@ -1524,37 +1459,33 @@ export function MessageRow({
     <div
       data-post-id={post.post_id}
       {...longPress}
-      className={`group/row relative mx-0.5 mt-4 flex items-start gap-3 rounded-lg pl-2 pr-3 pt-1.5 pb-0.5 transition-colors duration-500 hover:bg-muted/15 has-[a[data-link-preview]:hover]:bg-transparent ${draftBg} ${highlightCls}`}
+      className={`group/row relative mx-0.5 mt-4 rounded-lg pl-2.5 pr-3 pt-1.5 pb-0.5 transition-colors duration-500 ${draftBg} ${highlightCls}`}
     >
-      <ProfileMenuTrigger
-        member={authorMember}
-        handleText={authorHandle}
-        className="mt-0.5 shrink-0 cursor-pointer rounded-full outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-ring/40"
-        ariaLabel={`Open profile for ${posterName(post)}`}
-      >
-        <PostAvatar post={post} size={34} presence={presence} isLatest={isLatest}/>
-      </ProfileMenuTrigger>
-      <div className="min-w-0 flex-1">
-        {pinnedLabel}
-        <div className="flex items-baseline gap-2">
-          <ProfileMenuTrigger
-            member={authorMember}
-            handleText={authorHandle}
-            className="truncate cursor-pointer rounded text-sm font-semibold tracking-tight outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
-            ariaLabel={`Open profile for ${posterName(post)}`}
-          >
-            {posterName(post)}
-          </ProfileMenuTrigger>
-          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{formatTimeOnly(post.created_at)}</span>
-        </div>
-        {body}
+      <div className="mb-1 flex h-5 items-center gap-2 text-[13px]">
+        <ProfileMenuTrigger
+          member={authorMember}
+          handleText={authorHandle}
+          className="group/author flex min-w-0 cursor-pointer items-center gap-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          ariaLabel={`Open profile for ${posterName(post)}`}
+        >
+          <PostAvatar post={post} size={20}/>
+          <span className="relative -top-px truncate font-medium text-muted-foreground group-hover/author:underline">{posterName(post)}</span>
+        </ProfileMenuTrigger>
+        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{formatTimeOnly(post.created_at)}</span>
+        {isEdited && <EditedIndicator editedAt={post.edited_at ?? ""} className="text-muted-foreground opacity-100" />}
+        {isPinned && (
+          <span role="img" aria-label="Pinned" title="Pinned" className="shrink-0 text-muted-foreground">
+            <Icon icon={PinIcon} className="size-3"/>
+          </span>
+        )}
+        <MessageActionsBar actions={actions} leading={reactionLeading} className="ml-auto -my-0.5"/>
       </div>
+      {body}
       {receiptIndicator && (
         <span className="pointer-events-none absolute bottom-1 right-3">
           {receiptIndicator}
         </span>
       )}
-      <MessageActionsBar actions={actions} leading={reactionLeading}/>
       {overlays}
     </div>
   );

@@ -288,7 +288,7 @@ Default outbound is **allow** (`reef/fleet.py` `default_egress="allow"`), so Git
 
 ### 6.5 Self-hosted / bring-your-own agent setup
 
-Clawbits is host-agnostic. An agent is just an api_key that connects (`agents.api_key_hash`, auth `Bearer <api_key>`); there is no runtime/host field on the Agent model, and the New Agent dialog already offers a `"reef"` vs `"self"` mode (`frontend/src/components/new-agent/NewAgentDialog.tsx`, `buildSetupPrompt`). So a self-hosted agent already enrolls today: the operator gets a one-time signup token from the UI and runs
+Clawbits is host-agnostic. An agent is just an api_key that connects (`agents.api_key_hash`, auth `Bearer <api_key>`); there is no runtime/host field on the Agent model, and the agent setup wizard already offers a `"reef"` vs `"self"` mode (`frontend/src/pages/AgentSetupPage.tsx`, `frontend/src/lib/agentPrompts.ts`). So a self-hosted agent already enrolls today: the operator gets a one-time signup token from the UI and runs
 
 ```
 openclaw clawbits signup --endpoint https://app.clawbits.ai --org-id <org> --signup-token <human-...>

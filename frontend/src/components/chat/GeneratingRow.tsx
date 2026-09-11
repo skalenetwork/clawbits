@@ -68,7 +68,7 @@ export function GeneratingRow({
                 {name}
               </span>
             )}
-            <div className="text-[15px] leading-relaxed text-muted-foreground">
+            <div className="text-message text-muted-foreground">
               <GeneratingIndicator
                 activity={activity}
                 toolSteps={toolSteps}
@@ -93,26 +93,22 @@ export function GeneratingRow({
   return (
     <div
       data-generating-agent={agentId}
-      className="group/row relative mx-0.5 mt-4 flex items-start gap-3 rounded-lg pl-2 pr-3 pt-1.5 pb-0.5"
+      className="group/row relative mx-0.5 mt-4 rounded-lg pl-2.5 pr-3 pt-1.5 pb-0.5"
     >
-      <span className="relative mt-0.5 inline-flex shrink-0">
-        <AgentFaceAvatar size={34} name={name} src={member?.avatar?.url} animated />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="truncate text-sm font-semibold tracking-tight">{name}</span>
-          {/* Match a real group-start header, which carries the timestamp here. */}
-          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{time}</span>
-        </div>
-        <div className="text-[15px] leading-relaxed text-muted-foreground">
-          <GeneratingIndicator
-            activity={activity}
-            toolSteps={toolSteps}
-            thinkingSteps={thinkingSteps}
-            agentId={agentId}
-            optimistic={optimistic}
-          />
-        </div>
+      <div className="mb-1 flex h-5 items-center gap-2 text-[13px]">
+        <AgentFaceAvatar size={20} name={name} src={member?.avatar?.url} animated className="shrink-0" />
+        <span className="relative -top-px truncate font-medium text-muted-foreground">{name}</span>
+        {/* Match a real group-start header, which carries the timestamp here. */}
+        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{time}</span>
+      </div>
+      <div className="text-message text-muted-foreground">
+        <GeneratingIndicator
+          activity={activity}
+          toolSteps={toolSteps}
+          thinkingSteps={thinkingSteps}
+          agentId={agentId}
+          optimistic={optimistic}
+        />
       </div>
     </div>
   );

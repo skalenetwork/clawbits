@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils"
 import { MENU_SURFACE } from "@/lib/menuSurface"
 import { Icon } from "@/components/Icon"
 import { ArrowDown01Icon, Tick01Icon } from "@hugeicons/core-free-icons"
+import { ChevronsUpDown } from "lucide-react"
 
 /**
  * Base UI Select styled to match the house form field (see ui/input.tsx) with
@@ -18,24 +19,32 @@ function Select<Value>(props: SelectPrimitive.Root.Props<Value>) {
 function SelectTrigger({
   className,
   children,
+  size = "default",
   ...props
-}: SelectPrimitive.Trigger.Props) {
+}: SelectPrimitive.Trigger.Props & { size?: "default" | "sm" }) {
+  const sm = size === "sm"
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       className={cn(
-        "flex h-9 w-full min-w-0 cursor-pointer items-center justify-between gap-2 rounded-md",
-        "border border-transparent bg-input/50 px-3 py-1 text-left text-sm text-foreground",
+        "flex min-w-0 cursor-pointer items-center justify-between gap-2 border text-left text-foreground",
         "transition-[color,box-shadow,background-color] outline-none",
         "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30",
         "data-disabled:pointer-events-none data-disabled:opacity-50",
+        sm
+          ? "h-[30px] w-auto rounded-lg border-border bg-background px-2.5 text-[13px] font-medium"
+          : "h-9 w-full rounded-md border-transparent bg-input/50 px-3 py-1 text-sm",
         className,
       )}
       {...props}
     >
       {children}
       <SelectPrimitive.Icon className="flex shrink-0">
-        <Icon icon={ArrowDown01Icon} className="size-4 text-muted-foreground"/>
+        {sm ? (
+          <ChevronsUpDown className="size-3 text-muted-foreground" />
+        ) : (
+          <Icon icon={ArrowDown01Icon} className="size-4 text-muted-foreground"/>
+        )}
       </SelectPrimitive.Icon>
     </SelectPrimitive.Trigger>
   )

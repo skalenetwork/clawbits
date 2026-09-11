@@ -138,6 +138,16 @@ describe("decorateRows", () => {
     expect(rows.map((r) => r.kind === "post" && r.isGroupStart)).toEqual([true, true, true, true]);
   });
 
+  it("gives pinned and edited posts their own header", () => {
+    const rows = decorate(
+      buildTimeline(
+        [post(1), post(2, { created_at: at(1), pinned_at: at(2) }), post(3, { created_at: at(2), edited_at: at(3) })],
+        [],
+      ),
+    );
+    expect(rows.map((r) => r.kind === "post" && r.isGroupStart)).toEqual([true, true, true]);
+  });
+
   it("marks the last post of a run as the group end", () => {
     const rows = decorate(buildTimeline([post(1), post(2, { created_at: at(1) })], []));
     expect(rows.map((r) => r.kind === "post" && r.isGroupEnd)).toEqual([false, true]);

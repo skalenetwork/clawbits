@@ -7,8 +7,9 @@ import { PageHeaderSlotProvider } from "@/components/PageHeader";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { MobileChannelInfoDrawer } from "@/components/MobileChannelInfoDrawer";
 import { MobileAttachmentsDrawer } from "@/components/MobileAttachmentsDrawer";
+import { MobilePinnedDrawer } from "@/components/MobilePinnedDrawer";
 import { isPushedMobileRoute } from "@/lib/navSections";
-import type { ChannelOutletContext } from "./AppShell";
+import type { ChannelOutletContext, ChannelPanel } from "./AppShell";
 
 /**
  * The mobile app shell: an edge-to-edge, full-height stack sized to the VISUAL
@@ -23,20 +24,22 @@ import type { ChannelOutletContext } from "./AppShell";
  * chevron and the bottom nav hides itself (full-screen conversation/detail).
  *
  * Channel routes get the outlet context that drives ChannelPage's header pills
- * (channel info + attachments). A single ``rightPanel`` enum keeps the two
+ * (channel info, attachments, pinned). A single ``rightPanel`` enum keeps the
  * bottom sheets mutually exclusive, mirroring the desktop shell.
  */
 export function MobileShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
-  const [rightPanel, setRightPanel] = useState<"info" | "attachments" | null>(null);
+  const [rightPanel, setRightPanel] = useState<ChannelPanel | null>(null);
   const chatInfoOpen = rightPanel === "info";
   const attachmentsOpen = rightPanel === "attachments";
+  const pinnedOpen = rightPanel === "pinned";
+  const toggle = (panel: ChannelPanel) => () => {
+    setRightPanel((p) => (p === panel ? null : panel));
+  };
 
-  const channelMatch = /^\/channels\/([^/]+)/.exec(location.pathname);
-  const activeChannelId = channelMatch?.[1] ?? null;
-  const isChannel = activeChannelId !== null;
+  const activeChannelId = /^\/channels\/([^/]+)/.exec(location.pathname)?.[1] ?? null;
   const pushed = isPushedMobileRoute(location.pathname);
 
   // Close the members sheet whenever the channel changes (or we leave the
@@ -81,7 +84,7 @@ export function MobileShell() {
           message list's safe-area-aware top padding + the fixed composer).
           ``pt`` = safe-top + bar lift (0.5rem) + bar height (3rem) + gap. */}
       <PageHeaderSlotProvider value={headerSlot}>
-        {isChannel ? (
+        {activeChannelId ? (
           // Channel fills the shell; ChannelPage's column owns the inner scroll
           // and the absolute composer. flex-1 + min-h-0 give it a bounded height.
           <main className="flex min-h-0 w-full flex-1 flex-col">
@@ -89,13 +92,11 @@ export function MobileShell() {
               context={
                 {
                   chatInfoOpen,
-                  toggleChatInfo: () => {
-                    setRightPanel((p) => (p === "info" ? null : "info"));
-                  },
+                  toggleChatInfo: toggle("info"),
                   attachmentsOpen,
-                  toggleAttachments: () => {
-                    setRightPanel((p) => (p === "attachments" ? null : "attachments"));
-                  },
+                  toggleAttachments: toggle("attachments"),
+                  pinnedOpen,
+                  togglePinned: toggle("pinned"),
                 } satisfies ChannelOutletContext
               }
             />
@@ -143,7 +144,7 @@ export function MobileShell() {
 
       <MobileBottomNav />
 
-      {isChannel && activeChannelId && (
+      {activeChannelId && (
         <>
           <MobileChannelInfoDrawer
             channelId={activeChannelId}
@@ -154,6 +155,11 @@ export function MobileShell() {
             channelId={activeChannelId}
             open={attachmentsOpen}
             onOpenChange={(o) => { setRightPanel(o ? "attachments" : null); }}
+          />
+          <MobilePinnedDrawer
+            channelId={activeChannelId}
+            open={pinnedOpen}
+            onOpenChange={(o) => { setRightPanel(o ? "pinned" : null); }}
           />
         </>
       )}

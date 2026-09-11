@@ -141,9 +141,9 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
       data-slot="dialog-title"
       className={cn(
         // Title owns its leading icon's size so every dialog matches the
-        // PageHeader/ContextualHeader rhythm: a `size-4` glyph optically the
-        // same height as the `text-base` title beside it (call sites just set
-        // the icon's colour). `shrink-0` keeps it from squishing on overflow.
+        // PageHeader rhythm: a `size-4` glyph optically the same height as the
+        // `text-base` title beside it (call sites just set the icon's colour).
+        // `shrink-0` keeps it from squishing on overflow.
         "flex items-center gap-2 font-heading text-base font-semibold tracking-tight [&>svg]:size-4 [&>svg]:shrink-0",
         className
       )}

@@ -172,6 +172,10 @@ class ChallengeSession(SQLModel, table=True):
     # both onto the agent row. NULL for every other signup.
     reef_host: str | None = None
     reef_name: str | None = None
+    # Picked when a human mints the session, so it is known before the agent
+    # boots. NULL on agentic sessions; unique, so two mints never hold one id.
+    agent_id: str | None = Field(default=None, index=True, unique=True)
+    nickname: str | None = None
 
 
 class HumanUser(SQLModel, table=True):

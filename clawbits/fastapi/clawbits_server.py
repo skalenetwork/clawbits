@@ -2723,7 +2723,7 @@ class ClawBitsServer(FastAPI):
                 # their global SSE streams (sidebar unread badges).
                 member_human_ids = (
                     TableRead.get_mm_channel_human_member_ids(db, channel_id)
-                    if (row and row.status == "published")
+                    if (row and row.status in ("published", "streaming"))
                     else []
                 )
                 # Snapshot channel agents for the server-side attention pass

@@ -381,6 +381,8 @@ class TableWrite:
         human_id: int | None = None,
         reef_host: str | None = None,
         reef_name: str | None = None,
+        agent_id: str | None = None,
+        nickname: str | None = None,
     ) -> None:
         session.add(
             ChallengeSession(
@@ -394,6 +396,8 @@ class TableWrite:
                 human_id=human_id,
                 reef_host=reef_host,
                 reef_name=reef_name,
+                agent_id=agent_id,
+                nickname=nickname,
             )
         )
         session.flush()
@@ -418,6 +422,20 @@ class TableWrite:
         if row is not None:
             session.delete(row)
             session.flush()
+
+    @staticmethod
+    def revoke_reef_signup(session: Session, org_id: str, host: str, name: str) -> None:
+        """Delete the unspent signup sessions minted for ``host``/``name``, so the
+        token its fleet file carried is dead in git history too."""
+        session.exec(
+            delete(ChallengeSession).where(
+                ChallengeSession.org_id == org_id,
+                ChallengeSession.reef_host == host,
+                ChallengeSession.reef_name == name,
+                ChallengeSession.used == False,  # noqa: E712
+            )
+        )
+        session.flush()
 
     # ---------------- human users ----------------
 

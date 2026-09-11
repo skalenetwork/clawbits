@@ -1,12 +1,12 @@
 """Organization data models (GitHub-style orgs)."""
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from clawbits.datastructures.avatar_models import AvatarRef
-from clawbits.reef_repo import NAME_RE, OWNER_RE, PUBLIC_HOST_RE, REPO_RE
+from clawbits.reef_repo import NAME_RE, OWNER_RE, PUBLIC_HOST_RE, REPO_RE, Health
 
 # ---------------------------------------------------------------------------
 # Requests
@@ -52,7 +52,10 @@ class CreateReefAgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     host: str = Field(pattern=NAME_RE.pattern, description="A host that has written a status file")
     role: str = Field(pattern=NAME_RE.pattern, description="A role from the org's catalog")
-    name: str = Field(pattern=NAME_RE.pattern, description="The agent's name on that host")
+    name: str | None = Field(
+        default=None, pattern=NAME_RE.pattern,
+        description="The agent's name on that host; defaults to its agent id, lowercased",
+    )
     owner: str | None = Field(
         default=None, pattern=OWNER_RE.pattern,
         description="Who `reef agent serve` admits for terminals; defaults to the caller",
@@ -226,22 +229,69 @@ class OrgListResponse(BaseModel):
     total: int
 
 
+class ReefApplied(BaseModel):
+    """The ``main`` and ``fleet`` HEADs a host last applied in full."""
+    main: str
+    fleet: str
+
+
+class ReefHostAgent(BaseModel):
+    """One row of the host's ``reef agent list --json``."""
+    name: str
+    role: str
+    desired: str
+    state: str
+    vm: str | None = None
+    synced: bool
+    role_current: bool
+
+
+class ReefEvent(BaseModel):
+    """One row of the host's ``reef events --json``."""
+    agent: str
+    at: datetime
+    kind: str
+    detail: str
+
+
 class ReefHostResponse(BaseModel):
-    """One reef host, as its own status file describes it. ``last_seen`` is when
-    that file last changed: the host writes no timestamp, so a commit that stops
-    advancing is what a stopped reconciler looks like."""
+    """One reef host, as its own status file describes it. ``last_seen`` is the
+    reconciler's coarse heartbeat and ``health`` is read off it and the last
+    apply (:func:`clawbits.reef_repo.parse_status`). ``applied`` is null until
+    an apply lands; ``error`` is why the last one failed."""
     host: str
     reef: str | None = None
-    agents: int
     last_seen: datetime | None = None
+    health: Health
+    applied: ReefApplied | None = None
+    error: str | None = None
+    agents: list[ReefHostAgent] = []
+    events: list[ReefEvent] = []
+
+
+class ReefAgentResponse(BaseModel):
+    """A declared agent and when its one-time signup token dies. Still declared
+    for as long as that token is unspent: enrolling is what ends the state."""
+    host: str
+    name: str
+    expires_at: datetime
+
+
+class CreateReefAgentResponse(ReefAgentResponse):
+    """A declared agent with the id and nickname picked for it at mint."""
+    agent_id: str
+    nickname: str
 
 
 class ReefResponse(BaseModel):
-    """The org's reef repository. ``connected`` is false when no repository is
-    stored, or when its token cannot be unsealed (the secrets key rotated)."""
+    """The org's reef repository, every host reporting into it by name, and
+    the agents declared but not yet enrolled. ``connected`` is false when no
+    repository is stored, or when its token cannot be unsealed (the secrets
+    key rotated)."""
     repo: str | None = None
     connected: bool
     hosts: list[ReefHostResponse] = []
+    declared: list[ReefAgentResponse] = []
 
 
 class ReefSecretResponse(BaseModel):
@@ -257,21 +307,6 @@ class ReefRoleResponse(BaseModel):
     egress: list[str]
     secrets: list[ReefSecretResponse]
     resources: dict[str, int]
-
-
-class ReefAgentResponse(BaseModel):
-    """A declared agent and when its one-time signup token dies. Still declared
-    for as long as that token is unspent: enrolling is what ends the state."""
-    host: str
-    name: str
-    expires_at: datetime
-
-
-class ReefStatusResponse(BaseModel):
-    """What each host last pushed, verbatim. The per-host blob stays opaque so
-    a new field in reef's ``--json`` rows reaches the UI without a change here."""
-    hosts: dict[str, dict[str, Any]]
-    declared: list[ReefAgentResponse]
 
 
 class OrgMemberResponse(BaseModel):

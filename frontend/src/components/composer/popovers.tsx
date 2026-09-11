@@ -362,11 +362,3 @@ export function ChannelPopover({
     </ComposerPopoverFrame>
   );
 }
-
-// ----------------------------------------------------------------------------
-// Agent target chip — the "who am I addressing" surface. When the channel has
-// agents, the chip lives in the action row. It reflects either the user's
-// manual pick or the auto-mention (in that order). Dismissing the chip either
-// clears the manual pick OR dismisses the auto-mention, depending on which is
-// driving the current target.
-// ----------------------------------------------------------------------------

@@ -182,16 +182,28 @@ Until MLS ships, step 2 is a no-op and federation is a pass-through to the serve
 
 One palette, both tiers in a single result list - no separate results page. This is the unified entry point and the home of Tier 1. (Earlier drafts escalated message search to a dedicated `/search` page; that was dropped in favour of showing message hits inline, the Linear/Raycast/Notion model.)
 
-**Contents, in priority order:**
-1. **Before typing:** recent/frecent conversations + top quick-actions (Home, Agents, Members, Settings).
-2. **As you type (instant, client-side):** channels / people / agents grouped by kind, fuzzy+frecency ranked; quick-actions by name.
-3. **A "Messages" group, streamed in:** the debounced server content search (Tier 2) appears as its own group below the name groups. It never blocks the name tier - names render instantly; message hits fill in a moment later. Each row shows author + channel context + a `<mark>`-highlighted snippet.
+**Tabs.** Pill tabs All, Chats, Agents, Messages, Actions, defined by one const table in `CommandPalette.tsx` (`TABS`: id, label, and a per-provider cap record). `Cmd/Ctrl+[` and `Cmd/Ctrl+]` cycle them with wrap-around; they are handled in the input's `onKeyDown` (by `e.code`, so non-US layouts work), never registered app-wide. Switching keeps the query and resets the active row; opening resets to All. Typing any operator in All switches to Messages, since operators only filter messages.
+
+| Tab | Empty query | Typing |
+|---|---|---|
+| All | "Recent": 6 chats and agents by frecency, then activity. "Actions": New agent, New channel, Invite people, Settings | Chats 5, Agents 5, Actions 3, sections ordered by best match score, then Messages 5 with a last "All message results" row that opens the Messages tab |
+| Chats | Channels, DMs and people by frecency, then activity | The same, fuzzy ranked. A person without a DM is a chat not yet started (meta "New chat", Enter opens the DM) |
+| Agents | Every agent, including ones you already DM (Enter opens its chat; agents you may not DM are left out unless a DM exists) | The same, fuzzy ranked |
+| Messages | Operator rows (`from:` `in:` `before:` `after:` `has:link` `has:file`), also while the query holds only operators; Enter appends the token, and a trailing operator with no value yet is never searched | Full results under a "Messages" header with Relevant/Recent pills, kept above the list (outside the listbox) so it stays put while scrolling, cursor-paged on scroll (`useInfiniteQuery`, 25 per page; the server caps a page at 50) |
+| Actions | "Create", "Go to" (Home, Agents, Skills, Automations), "Settings" (Settings plus every `/settings/*` page) | Fuzzy over labels |
+
+Agent DMs live under Agents, not Chats, so one agent never shows twice. Opening an agent's chat records both its `agent:` and `channel:` frecency keys, which keeps the Home page's agent ordering current.
+
+**Rows.** One 34px single-line row (44px on mobile): a 20px leading glyph (channel glyph, avatar, or icon), the label, and right meta (relative last activity, "New chat", or keycaps where a binding exists: `⌘,` Settings, `⌘1`/`⌘2` Home/Agents in the desktop app only). The message row is the one two-line row: author, chat and time, then the `<mark>`-highlighted snippet.
+
+**Operators** show as chips under the input. An unresolved `from:`/`in:` name stays visible as a dashed "no match" chip instead of vanishing.
 
 **Interaction model:**
-- `Cmd/Ctrl+K` toggles open/close; arrows navigate the whole flat list (names + messages, wrap); `Enter` activates; `Esc` closes and restores prior focus.
-- Selecting a channel/person/action = instant navigation/execution, never a network wait.
-- Selecting a message hit = navigate to its channel (deep-link scroll-to-message is Phase 2, via the `around` endpoint).
-- The Messages group is capped (top ~8 by relevance). A "load more" affordance / in-channel scoping / operators land in Phase 2, inline in the palette.
+- `Cmd/Ctrl+K` toggles open/close; arrows move through every visible row (wrap); `Enter` activates; hover sets the active row; `Esc` closes and restores prior focus. Focus stays in the input: a `combobox` owning a `listbox` through `aria-activedescendant`, with sections as `group`s and an `aria-live` status for searching, empty and error states.
+- Selecting a chat/person/agent/action = instant navigation/execution, never a network wait (a person or agent without a DM gets one created first).
+- Selecting a message hit deep-links to it (`/channels/:id?msg=<post>`).
+- Message states: "Searching…", "No messages found", and a real error row when the search fails. `keepPreviousData` keeps the list steady while sorting or paging.
+- Operators are parsed once per keystroke and the parsed value is debounced; the debounced value starts empty on every open, so a reopen never refetches the previous search.
 
 **Performance budget:** sub-50ms for the instant tier (Slack renders its switcher in ~7-12ms doing exactly this). Only the remote content query is debounced (~180ms); the in-memory name list is never debounced.
 
@@ -200,14 +212,14 @@ One palette, both tiers in a single result list - no separate results page. This
 ## 6. Frontend Surfaces
 
 **Desktop:**
-- Register `Cmd/Ctrl+K` in the existing `ShortcutProvider` (`tinykeys`). Render the palette as a portal overlay reusing the Base UI `Dialog` primitive. A Search button in the `ChatsSidebar` header also opens it (`openCommandPalette()`).
-- Message hits render inline in the palette's "Messages" group (`ts_headline` snippets with `<mark>` highlights). Operator chips, Recent/Relevant toggle, and "load more" are Phase 2 - inline in the palette.
+- Register `Cmd/Ctrl+K` in the existing `ShortcutProvider` (`tinykeys`). Render the palette as a portal overlay reusing the Base UI `Dialog` primitive: a flat opaque panel with a hairline border, a 48px borderless input, the pill tabs, and a keycap footer. A Search button in the sidebar also opens it (`openCommandPalette()`).
+- Message hits render inline in the palette's "Messages" section (`ts_headline` snippets with `<mark>` highlights).
 - **In-channel search** (scope = current channel, `channel_id` filter) is a Phase 2 affordance.
 
 **Mobile** (per the mobile shell: fixed-viewport inner-scroll, floating top bar, 4-tab pill + compose FAB):
-- A Search button in the floating top bar opens the same palette (the Base UI `Dialog` centers fine on a phone viewport). Same unified menu - instant names + a streamed-in Messages group.
+- A Search button opens the same palette as a keyboard-aware bottom sheet: a Base UI `Drawer` sized to the visual viewport (`--vvh`) and lifted above the keyboard. Same tabs as a horizontally scrolling pill row, 44px rows, no footer.
 
-> **Open-then-dismiss gotcha:** a button *outside* the Base UI `Dialog` that imperatively opens it can have its opening pointer event caught by the dialog's outside-press dismissal, closing it instantly (the keyboard path is unaffected). Guarded two ways: `openCommandPalette()` defers the state flip a tick, and the palette ignores an `onOpenChange(false)` fired within 300ms of opening.
+> **Open-then-dismiss gotcha:** a button *outside* the Base UI `Dialog` that imperatively opens it can have its opening pointer event caught by the dialog's outside-press dismissal, closing it instantly (the keyboard path is unaffected). `openCommandPalette()` defers the state flip a tick. That alone holds: with a backdrop, Base UI dismisses only on a click (`outsidePressEvent: 'intentional'`), and its listeners mount after the opening click has finished.
 
 ---
 
@@ -300,7 +312,7 @@ membership gate, statuses `streaming`+`published`).
 
 ### Frontend client function
 
-`searchMessages(query, filters)` in `lib/api.ts` (plain `fetch`, `credentials:"include"`, query key `["mm","search",orgId,query,filters]`). It is the federation point described in 4.3.
+`searchMessages(params)` in `lib/api.ts` (plain `fetch`, `credentials:"include"`, cursor-paged, query key `queryKeys.mm.search(orgId, query, sort, filters)`). It is the federation point described in 4.3.
 
 ---
 
@@ -346,7 +358,7 @@ Per the product decisions taken for this design:
 
 - **Phase 0 - server foundation.** Migration (generated `tsvector` + GIN + `pg_trgm`); `GET /api/human/mm/search` with full ACL; `around_post_id` read path. Verifiable with API tests.
 - **Phase 1 - unified palette (DONE).** `Cmd/Ctrl+K` palette + desktop/mobile triggers, Tier-1 fuzzy+frecency over channels/DMs/people/agents, quick-actions, AND Tier-2 message hits streamed inline as a "Messages" group. Click-through opens the channel.
-- **Phase 2 - content search UX (inline).** Operators (`from:`/`in:`/`before:`), filter chips, Recent/Relevant toggle, "load more", in-channel scoping, and deep-link scroll-to-message (via the `around` endpoint) - all inside the palette.
+- **Phase 2 - content search UX (inline).** Done: operators with filter chips, Recent/Relevant, cursor paging and deep-link scroll-to-message (via the `around` endpoint), all inside the palette. Remaining: in-channel scoping.
 - **Phase 3 - federation (with MLS).** Client-side encrypted-channel index co-located with MLS browser state; plug into `searchMessages()`; merged results. No palette/results changes.
 - **Phase 4 - optional.** Meilisearch (only if typo-tolerant instant content search is required) and/or `pgvector` hybrid semantic (only if find-by-meaning is wanted).
 

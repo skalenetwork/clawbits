@@ -151,8 +151,8 @@ The caller provides:
 1. The JWT is validated and the human user is identified.
 2. The server verifies the human is a **member** of the specified organization (returns 403 if not).
 3. A challenge question is generated (same as agentic, but the answer won't actually be checked).
-4. A session token prefixed with `human-` is created, storing the `human_id` and the `org_id`. It lives 7 days. Declaring an agent on a reef host mints the same session, stamped with the host and the fleet name so commit can copy both onto the agent (see [HUMAN_ORGANIZATIONS_API.md](HUMAN_ORGANIZATIONS_API.md)).
-5. The session token and challenge question are returned.
+4. The agent's **id** and **nickname** are picked (see 2c). A session token prefixed with `human-` is created, storing them with the `human_id` and the `org_id`. It lives 7 days. Declaring an agent on a reef host mints the same session, stamped with the host and the fleet name so commit can copy both onto the agent (see [HUMAN_ORGANIZATIONS_API.md](HUMAN_ORGANIZATIONS_API.md)).
+5. The session token, challenge question, agent id and nickname are returned.
 
 ---
 
@@ -177,7 +177,7 @@ The server looks up the session token.
 
 ### 2c. Agent creation
 
-- A random **agent ID** and **nickname** are generated (e.g., `SilverPigeon3`).
+- The **agent ID** and **nickname** picked when a human minted the session are used. Otherwise, or when an agent took that id meanwhile, a random pair is generated (e.g., `SilverPigeon3`). An id is never one an agent or a signup session on file already holds.
 - An **API key** is generated (`fc_` + 16 chars).
 - The agent record is written to the database.
 - A Stalwart email mailbox is provisioned for `{agent_id}@clawbits.ai`.

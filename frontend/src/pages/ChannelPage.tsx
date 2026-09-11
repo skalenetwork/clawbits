@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AttachmentIcon,
   Delete02Icon,
+  PinIcon,
   UserMultiple02Icon,
 } from "@hugeicons/core-free-icons";
 
@@ -24,13 +25,10 @@ import {
   listMmChannelPosts,
   listMmChannelMembers,
   listMmChannels,
-  listPinnedMmPosts,
   createMmChannelPost,
   editMmChannelPost,
   markMmChannelRead,
-  pinMmPost,
   toggleMmPostReaction,
-  unpinMmPost,
   type MmChannel,
   type MmChannelMember,
   type MmChannelPost,
@@ -52,7 +50,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChannelDropOverlay } from "@/components/ChannelDropOverlay";
 import { ChannelGlyph } from "@/components/ChannelGlyph";
 import { type MessageMentions } from "@/components/MessageMarkdown";
@@ -89,7 +86,8 @@ import {
   queuedOwnPostIdsOf,
 } from "@/lib/channelTimeline";
 import { DaySeparator, MessageSkeletons } from "@/components/chat/dividers";
-import { DmPillStatus, PinnedPill } from "@/components/chat/ChannelHeaderPills";
+import { DmPillStatus, PanelToggle } from "@/components/chat/ChannelHeaderPills";
+import { usePinToggle, usePinnedPosts } from "@/hooks/usePinnedPosts";
 import { MessageRow } from "@/components/chat/MessageRow";
 import { GeneratingRow } from "@/components/chat/GeneratingRow";
 import { SystemMessage } from "@/components/chat/SystemMessage";
@@ -139,6 +137,8 @@ function ChannelView({ channelId }: { channelId: string }) {
   const toggleChatInfo = outletCtx?.toggleChatInfo;
   const attachmentsOpen = outletCtx?.attachmentsOpen ?? false;
   const toggleAttachments = outletCtx?.toggleAttachments;
+  const pinnedOpen = outletCtx?.pinnedOpen ?? false;
+  const togglePinned = outletCtx?.togglePinned;
   const [draft, setDraft] = useState("");
   const [caretPos, setCaretPos] = useState(0);
   // Which channel the composer state (draft/reply/target) currently belongs
@@ -175,7 +175,7 @@ function ChannelView({ channelId }: { channelId: string }) {
   // Single scroll authority. The MessageList component owns the
   // scroll element, the virtualizer, and stick-to-bottom logic; we
   // hold a ref for imperative triggers (send → jump-to-bottom, image
-  // load → re-pin when at bottom, jump-to-message popover, etc.) and
+  // load → re-pin when at bottom, jump-to-message, etc.) and
   // a state mirror of "at bottom" for the composer's jump-to-latest
   // pill. The ref's ``getIsAtBottom()`` reads the canonical value
   // from inside the list synchronously.
@@ -215,14 +215,12 @@ function ChannelView({ channelId }: { channelId: string }) {
   const remeasureComposer = useCallback(() => {
     const el = composerWrapRef.current;
     if (!el) return;
-    // ``composerHeight`` must equal the wrapper's *top* offset from the column
-    // bottom so the message list reserves exactly the right bottom padding. The
-    // measured border-box height already includes the wrapper's own padding, so
-    // we add only its bottom *offset* from the edge: 0 on mobile (the wrapper is
-    // ``absolute bottom-0``) vs 6px on desktop (``bottom-1.5``). The visible
-    // breathing room is owned by ``MessageList``'s ``COMPOSER_BREATHING_ROOM_PX``.
-    const bottomOffsetPx = isMobile ? 0 : 6;
-    const h = Math.ceil(el.getBoundingClientRect().height) + bottomOffsetPx;
+    // ``composerHeight`` is the wrapper's top offset from the bottom of the
+    // column it is positioned in, so the list reserves exactly that much. The
+    // visible breathing room is owned by ``MessageList``'s
+    // ``COMPOSER_BREATHING_ROOM_PX``.
+    const column = (el.offsetParent ?? el).getBoundingClientRect();
+    const h = Math.ceil(column.bottom - el.getBoundingClientRect().top);
     setComposerHeight(h);
     // Re-pin if the user was at the bottom when the composer grew (attachments,
     // reply quote, multi-line draft). DESKTOP ONLY: on mobile, MessageList's
@@ -347,14 +345,7 @@ function ChannelView({ channelId }: { channelId: string }) {
     staleTime: 60_000,
   });
 
-  // Pinned-message list — drives both the header pill (count + visibility)
-  // and the popover contents. Cached for a short window so toggling the
-  // popover stays snappy without a fresh request each time.
-  const pinnedQuery = useQuery({
-    queryKey: queryKeys.mm.channelPinnedPosts(channelId),
-    queryFn: () => listPinnedMmPosts(channelId),
-    staleTime: 30_000,
-  });
+  const pinnedCount = usePinnedPosts(channelId).data?.posts.length ?? 0;
 
   const mentionMatch = useMemo(
     () => extractMentionQuery(draft, caretPos),
@@ -950,75 +941,7 @@ function ChannelView({ channelId }: { channelId: string }) {
     },
   });
 
-  /** Toggle pin/unpin on a channel post. Optimistically flips ``pinned_at``
-   *  in the local cache so the header pill count + per-message glyph
-   *  update instantly. The pinned-list popover is invalidated on success
-   *  so it refetches the next time it opens. */
-  const pinMutation = useMutation({
-    mutationFn: (post: MmChannelPost) =>
-      post.pinned_at != null
-        ? unpinMmPost(post.post_id)
-        : pinMmPost(post.post_id),
-    onMutate: async (post) => {
-      const key = queryKeys.mm.channelPosts(channelId, 50, 0);
-      await queryClient.cancelQueries({ queryKey: key });
-      const prev = queryClient.getQueryData<{
-        posts: MmChannelPost[];
-        total: number;
-        limit: number;
-        offset: number;
-      }>(key);
-      if (!prev || user == null) return { prev };
-      const willPin = post.pinned_at == null;
-      const stamp = willPin ? new Date().toISOString() : null;
-      queryClient.setQueryData(key, {
-        ...prev,
-        posts: prev.posts.map((p) =>
-          p.post_id === post.post_id
-            ? {
-                ...p,
-                pinned_at: stamp,
-                pinned_by_human_id: willPin ? user.id : null,
-              }
-            : p,
-        ),
-      });
-      return { prev };
-    },
-    onError: (err, _post, ctx) => {
-      if (ctx?.prev) {
-        queryClient.setQueryData(
-          queryKeys.mm.channelPosts(channelId, 50, 0),
-          ctx.prev,
-        );
-      }
-      toast.error(errMsg(err, "Couldn't update pin"));
-    },
-    onSuccess: (updated) => {
-      // The optimistic update already reflects the new state; this
-      // reconciles the server's canonical ``pinned_at`` value (which may
-      // differ by milliseconds) and re-syncs against any concurrent
-      // changes. The popover list is invalidated so the next open
-      // refetches from scratch.
-      queryClient.setQueryData<{
-        posts: MmChannelPost[];
-        total: number;
-        limit: number;
-        offset: number;
-      }>(
-        queryKeys.mm.channelPosts(channelId, 50, 0),
-        (prev) => prev ? {
-          ...prev,
-          posts: prev.posts.map((p) => p.post_id === updated.post_id ? updated : p),
-        } : prev,
-      );
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.mm.channelPinnedPosts(channelId),
-      });
-      toast.success(updated.pinned_at != null ? "Pinned to channel" : "Unpinned");
-    },
-  });
-
+  const pinMutation = usePinToggle(channelId);
 
   useEffect(() => {
     setActiveMentionIndex(0);
@@ -1066,7 +989,7 @@ function ChannelView({ channelId }: { channelId: string }) {
   };
 
   /** Insert ``text`` at the current selection (or append if no caret yet).
-   *  Used by the emoji picker button. */
+   *  Used by the mention inserts. */
   const insertAtCaret = (text: string) => {
     const el = inputRef.current;
     const start = el?.selectionStart ?? caretPos ?? draft.length;
@@ -1446,11 +1369,16 @@ function ChannelView({ channelId }: { channelId: string }) {
 
   // Read ``?msg=<post_id>`` and jump to that message once this channel's
   // first page has loaded. Strip the param afterwards so reloads / back-nav
-  // don't re-trigger and the URL stays clean. Runs once per (channel, msg).
+  // don't re-trigger and the URL stays clean. Runs once per (channel, msg);
+  // the stripped param resets that, so the same message can be jumped to again.
   const handledMsgRef = useRef<string | null>(null);
   useEffect(() => {
     const raw = searchParams.get("msg");
-    if (!raw || !postsQuery.data) return;
+    if (!raw) {
+      handledMsgRef.current = null;
+      return;
+    }
+    if (!postsQuery.data) return;
     const token = `${channelId}:${raw}`;
     if (handledMsgRef.current === token) return;
     const postId = Number(raw);
@@ -1714,7 +1642,7 @@ function ChannelView({ channelId }: { channelId: string }) {
     <div
       className={
         // Height-bounded on both: the column fills the fixed-viewport shell
-        // (mobile) or the content card (desktop) so MessageList's inner scroller
+        // (mobile) or the main pane (desktop) so MessageList's inner scroller
         // gets a real ``viewportSize``. ``min-h-0`` lets it shrink below the
         // natural content height instead of expanding the page.
         `relative isolate flex h-full min-h-0 flex-1 flex-col ${isDesktop ? "pb-2" : ""}`
@@ -1726,11 +1654,11 @@ function ChannelView({ channelId }: { channelId: string }) {
       {/* Top fade scrim - a progressive blur (stacked backdrop-filter
           layers, see ProgressiveBlur) plus a background→transparent tint at
           the top edge of the chat column. ``absolute`` (scoped to this
-          ``relative isolate`` column) so it stays inside the content card and
+          ``relative isolate`` column) so it stays inside the chat pane and
           aligned with the message column - not ``fixed``, which used to span
-          the whole window and now spills across the rail + contextual sidebar.
+          the whole window and now spills across the sidebar.
           ``-z-10`` parks it behind all content (messages, header pills,
-          composer) but above the card background, thanks to the column's
+          composer) but above the pane background, thanks to the column's
           ``isolate``; pointer-events-none keeps scrolling unobstructed. */}
       {/* Channel header — avatar + name on the left, pins + members on the
           right - portaled into the unified header bar (see PageHeader) so it
@@ -1745,13 +1673,13 @@ function ChannelView({ channelId }: { channelId: string }) {
                 aria-label={`Open ${channelTitle}'s profile`}
                 className="shrink-0 rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring/40"
               >
-                <ChannelGlyph channel={channel} size={22} showPresenceDot={false}/>
+                <ChannelGlyph channel={channel} size={20} showPresenceDot={false}/>
               </Link>
             ) : (
-              <ChannelGlyph channel={channel} size={22} showPresenceDot={false}/>
+              <ChannelGlyph channel={channel} size={20} showPresenceDot={false}/>
             )
           ) : (
-            <span className="size-[22px] shrink-0 rounded-md bg-muted"/>
+            <span className="size-5 shrink-0 rounded-md bg-muted"/>
           )
         }
         title={
@@ -1759,83 +1687,39 @@ function ChannelView({ channelId }: { channelId: string }) {
             <Link
               to={headerAgentHref}
               viewTransition
-              className="min-w-0 truncate rounded outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring/40"
+              className="min-w-0 truncate rounded text-muted-foreground outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring/40"
             >
               {channelTitle}
             </Link>
           ) : channel?.channel_type === "direct" && channel.dm_peer_human_id != null ? (
             <span className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate">{channelTitle}</span>
+              <span className="truncate text-muted-foreground">{channelTitle}</span>
               <DmPillStatus humanId={channel.dm_peer_human_id} />
             </span>
           ) : (
-            channelTitle
+            <span className="truncate text-muted-foreground">{channelTitle}</span>
           )
         }
         actions={
           <>
-            {(pinnedQuery.data?.posts.length ?? 0) > 0 && (
-              <PinnedPill
-                pins={pinnedQuery.data?.posts ?? []}
-                loading={pinnedQuery.isLoading}
-                error={pinnedQuery.isError}
-                currentUserId={user?.id ?? null}
-                members={membersQuery.data?.members ?? []}
-                onJump={(postId) => { void jumpToPost(postId); }}
-                onUnpin={(p) => { pinMutation.mutate(p); }}
-                pinning={pinMutation.isPending}
-              />
+            {togglePinned && pinnedCount > 0 && (
+              <PanelToggle open={pinnedOpen} onToggle={togglePinned} noun="pinned messages">
+                <span className="tabular-nums">{pinnedCount}</span>
+                <Icon icon={PinIcon} className="size-3.5 shrink-0"/>
+              </PanelToggle>
             )}
             {toggleChatInfo && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      onClick={toggleChatInfo}
-                      aria-pressed={chatInfoOpen}
-                      aria-label={chatInfoOpen ? "Hide channel details" : "Show channel details"}
-                      className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors ${
-                        chatInfoOpen
-                          ? "bg-sidebar-foreground/10 text-foreground"
-                          : "text-muted-foreground hover:bg-sidebar-foreground/5 hover:text-foreground"
-                      }`}
-                    >
-                      {channel?.channel_type !== "direct" && memberCount > 0 && (
-                        <span className="tabular-nums">{memberCount}</span>
-                      )}
-                      <Icon icon={UserMultiple02Icon} className="size-3.5 shrink-0"/>
-                    </button>
-                  }
-                />
-                <TooltipContent side="bottom" align="end">
-                  {chatInfoOpen ? "Hide channel details" : "Show channel details"}
-                </TooltipContent>
-              </Tooltip>
+              <PanelToggle open={chatInfoOpen} onToggle={toggleChatInfo} noun="channel details">
+                {channel?.channel_type !== "direct" && memberCount > 0 && (
+                  <span className="tabular-nums">{memberCount}</span>
+                )}
+                <Icon icon={UserMultiple02Icon} className="size-3.5 shrink-0"/>
+              </PanelToggle>
             )}
             {toggleAttachments && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      onClick={toggleAttachments}
-                      aria-pressed={attachmentsOpen}
-                      aria-label={attachmentsOpen ? "Hide attachments" : "Show attachments"}
-                      className={`flex h-8 shrink-0 items-center justify-center rounded-lg px-2 text-xs font-medium transition-colors ${
-                        attachmentsOpen
-                          ? "bg-sidebar-foreground/10 text-foreground"
-                          : "text-muted-foreground hover:bg-sidebar-foreground/5 hover:text-foreground"
-                      }`}
-                    >
-                      <Icon icon={AttachmentIcon} className="size-3.5 shrink-0"/>
-                    </button>
-                  }
-                />
-                <TooltipContent side="bottom" align="end">
-                  {attachmentsOpen ? "Hide attachments" : "Show attachments"}
-                </TooltipContent>
-              </Tooltip>
+              <PanelToggle open={attachmentsOpen} onToggle={toggleAttachments} noun="attachments">
+                <Icon icon={AttachmentIcon} className="size-3.5 shrink-0"/>
+              </PanelToggle>
             )}
           </>
         }
@@ -1960,7 +1844,7 @@ function ChannelView({ channelId }: { channelId: string }) {
                   </>
                 );
               }
-              const { post, isGroupStart, isGroupEnd, isLatest, showUnreadDivider } = row;
+              const { post, isGroupStart, isGroupEnd, showUnreadDivider } = row;
               return (
                 <>
                   {showUnreadDivider && <UnreadDivider count={enteredAtUnread} />}
@@ -1973,8 +1857,6 @@ function ChannelView({ channelId }: { channelId: string }) {
                     }
                     isGroupStart={isGroupStart}
                     isGroupEnd={isGroupEnd}
-                    isLatest={isLatest}
-                    presence={presence}
                     activity={activity}
                     toolTimelines={toolTimelines}
                     thinkingTimelines={thinkingTimelines}
@@ -2005,7 +1887,7 @@ function ChannelView({ channelId }: { channelId: string }) {
 
       {/* Bottom fade scrim — mirrors the top one. ``absolute`` (scoped to the
           chat column) + ``-z-10`` so it sits behind the composer and messages
-          but above the card background; pointer-events-none keeps the gaps
+          but above the pane background; pointer-events-none keeps the gaps
           clickable. Desktop only: on mobile the column is the full document
           height, so ``absolute bottom-0`` would float far below the fold instead
           of hugging the viewport bottom; the composer's own glass covers it. */}
@@ -2017,13 +1899,14 @@ function ChannelView({ channelId }: { channelId: string }) {
         />
       )}
 
-      {/* Floating two-row composer pill. Owns its own popovers, agent
-          target chip, attachment row, and keyboard ladder; the parent just
-          feeds it state and handlers. Wrapper ref is forwarded so the
-          height-measurement effect still works. */}
+      {/* Floating composer: one row until the draft needs more. Owns its
+          popovers, agent picker, attachments and keyboard ladder; the parent
+          feeds it state and handlers. The wrapper ref drives the list's
+          bottom reservation. */}
       <MessageComposer
         isMobile={isMobile}
         wrapperRef={composerWrapRef}
+        channelId={channelId}
         inputRef={inputRef}
         draft={draft}
         onDraftChange={setDraft}
@@ -2047,7 +1930,6 @@ function ChannelView({ channelId }: { channelId: string }) {
         onActiveEmojiIndexChange={setActiveEmojiIndex}
         onEmojiDismiss={() => { setEmojiDismissed(true); }}
         onEmojiInsert={insertEmoji}
-        onInsertAtCaret={insertAtCaret}
         replyingTo={replyingTo}
         replyPosterName={posterName}
         onCancelReply={cancelReply}
@@ -2074,7 +1956,7 @@ function ChannelView({ channelId }: { channelId: string }) {
         }
         activityLabel={activityLabel}
         activityPeople={activityPeople}
-        adminCommandsEnabled={
+        agentDm={
           channel?.channel_type === "direct" &&
           (membersQuery.data?.members ?? []).some((m) => m.agent_id != null)
         }

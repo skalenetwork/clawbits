@@ -1,7 +1,4 @@
-/** Prompt builders + URL/env constants for the "Add agent" wizard (non-
- *  component module so the component files stay fast-refresh friendly). The
- *  prompt builders and URL derivation moved verbatim from the pre-wizard
- *  dialog. */
+/** The onboarding prompt a self-hosted agent is given, one per runtime. */
 import {type Org} from "@/lib/api";
 
 export const PLUGIN_SLUG = "clawhub:clawbits-openclaw-plugin";
@@ -20,30 +17,12 @@ export const CLAWBITS_OPTIONAL_TOOLS = [
     "clawbits_channel_posts",
 ] as const;
 
-function mergeToolAllowlistCommands(): string[] {
-    const tools = JSON.stringify(CLAWBITS_OPTIONAL_TOOLS);
-    return [
-        "EXISTING_TOOLS=$(openclaw config get tools.alsoAllow --json 2>/dev/null || printf '[]')",
-        `MERGED_TOOLS=$(printf '%s' "$EXISTING_TOOLS" | node -e 'const fs=require("node:fs");const current=JSON.parse(fs.readFileSync(0,"utf8"));const add=${tools};process.stdout.write(JSON.stringify([...new Set([...(Array.isArray(current)?current:[]),...add])]));')`,
-        "openclaw config set tools.alsoAllow \"$MERGED_TOOLS\" --json",
-    ];
-}
-
-/** POSIX env-var name; mirrors reef's server-side rule (which stays the
- *  source of truth — reserved keys etc. come back as a readable 422). */
-export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-export function deriveSelfHostClawbitsUrl(): string {
-    const baked = (import.meta.env.VITE_CLAWBITS_API_URL as string | undefined)?.trim();
-    return baked && baked.length > 0 ? baked : window.location.origin;
-}
-
 function setupContext(org: Org | null) {
-    const apiBase = deriveSelfHostClawbitsUrl();
-    const orgId = org?.org_id ?? "(unknown)";
-    const display = org?.display_name?.trim();
-    const orgLabel = display && display.length > 0 ? display : (org?.name ?? "your organization");
-    return {apiBase, orgId, orgLabel};
+    return {
+        apiBase: (import.meta.env.VITE_CLAWBITS_API_URL as string | undefined)?.trim() || window.location.origin,
+        orgId: org?.org_id ?? "(unknown)",
+        orgLabel: org?.display_name?.trim() || (org?.name ?? "your organization"),
+    };
 }
 
 export function buildOpenClawSetupPrompt(org: Org | null, signupToken: string): string {
@@ -74,7 +53,9 @@ export function buildOpenClawSetupPrompt(org: Org | null, signupToken: string): 
         "",
         "# 6. Merge all optional Clawbits tools into tools.alsoAllow without removing",
         "#    existing entries:",
-        ...mergeToolAllowlistCommands(),
+        "EXISTING_TOOLS=$(openclaw config get tools.alsoAllow --json 2>/dev/null || printf '[]')",
+        `MERGED_TOOLS=$(printf '%s' "$EXISTING_TOOLS" | node -e 'const fs=require("node:fs");const current=JSON.parse(fs.readFileSync(0,"utf8"));const add=${JSON.stringify(CLAWBITS_OPTIONAL_TOOLS)};process.stdout.write(JSON.stringify([...new Set([...(Array.isArray(current)?current:[]),...add])]));')`,
+        "openclaw config set tools.alsoAllow \"$MERGED_TOOLS\" --json",
         "",
         "# 7. Restart the Gateway to activate the ownership handoff. This may end the",
         "#    current turn; continue with verification after reconnecting:",

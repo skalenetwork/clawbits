@@ -73,3 +73,38 @@ export function ProgressiveBlur({
     </div>
   );
 }
+
+const mix = (color: string, pct: number) => `color-mix(in oklab, var(--${color}) ${String(pct)}%, transparent)`;
+
+/** A fade over the last `fade` of the box on an ease-out curve, so it thins out
+ *  gently instead of ending on a visible line. */
+const easedFade = (stop: (pct: number) => string, fade: string) =>
+  `linear-gradient(to bottom, ${stop(100)} calc(100% - ${fade}), ${stop(60)} calc(100% - ${fade} * 0.6), ${stop(25)} calc(100% - ${fade} * 0.3), ${stop(8)} calc(100% - ${fade} * 0.1), transparent)`;
+
+/** The sidebar's sticky blurred footer, the bottom counterpart to `HeaderScrim`. */
+export const FOOTER_SCRIM =
+  "sticky bottom-0 z-10 -mx-2 mt-auto bg-sidebar/80 px-2 pt-3 pb-2 backdrop-blur-sm [mask-image:linear-gradient(to_top,#000_calc(100%_-_0.75rem),transparent)] supports-[backdrop-filter]:bg-sidebar/65";
+
+/** The tinted, blurred scrim behind a header. By default it blurs
+ *  progressively and eases out over 2rem of the content below; `inset` keeps a
+ *  uniform blur inside the header and eases out in its bottom 0.75rem, so
+ *  nothing at rest is covered. */
+export function HeaderScrim({ color, inset }: { color: "background" | "sidebar"; inset?: boolean }) {
+  if (inset) {
+    const mask = easedFade((pct) => `rgb(0 0 0 / ${String(pct / 100)})`, "0.75rem");
+    return (
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -z-10 backdrop-blur-md"
+        style={{ background: mix(color, 80), maskImage: mask, WebkitMaskImage: mask }}
+      />
+    );
+  }
+  return (
+    <ProgressiveBlur
+      blur={8}
+      className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[calc(100%+2rem)]"
+      style={{ background: easedFade((pct) => mix(color, Math.round(0.85 * pct)), "2.5rem") }}
+    />
+  );
+}

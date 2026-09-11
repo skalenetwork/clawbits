@@ -22,7 +22,7 @@ describe("StreamingMarkdown", () => {
   it("renders a growing code fence as a plain block with its language", () => {
     const { container } = render(<StreamingMarkdown text={"```ts\nconst a = 1;"} />);
     expect(container.textContent).toContain("const a = 1;");
-    expect(container.textContent).toContain("ts");
+    expect(container.textContent).toContain("TypeScript");
   });
 
   it("renders a structured (list) tail without crashing", () => {

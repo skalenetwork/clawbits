@@ -4,9 +4,12 @@ import random
 import secrets
 import urllib.parse
 import uuid as _uuid
+from collections.abc import Set
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from clawbits.datastructures.agent_id import AgentId
@@ -18,6 +21,7 @@ from clawbits.datastructures.nickname import NickName
 from clawbits.datastructures.signup_request import SignupRequest
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
+from clawbits.reef_repo import fleet_name
 
 logger = logging.getLogger(__name__)
 
@@ -29,39 +33,63 @@ logger = logging.getLogger(__name__)
 SIGNUP_TOKEN_TTL = timedelta(days=7)
 
 
-def _reef_pair(session: dict) -> tuple[str, str] | None:
-    """``(host, name)`` when this signup session was minted by declaring an
-    agent on a reef host, else ``None``. Both columns move together."""
-    host, name = session.get("reef_host"), session.get("reef_name")
-    return (host, name) if host and name else None
+@dataclass(frozen=True, slots=True)
+class HumanSession:
+    token: str
+    challenge: str
+    expires_at: datetime
+    agent_id: str
+    nickname: str
 
 
 class AgentSignup:
     @staticmethod
     def mint_human_session(
         db: Session,
+        server,
         org_id: str,
         human_id: int,
-        reef: tuple[str, str] | None = None,
-    ) -> tuple[str, str, datetime]:
-        """``(session_token, challenge, expires_at)`` for a human-initiated
-        signup. The ``human-`` prefix is what lets commit skip the challenge,
-        so the answer is stored and never checked. Does not commit."""
+        reef: tuple[str, str | None] | None = None,
+        taken: Set[str] = frozenset(),
+        returning: tuple[str, str] | None = None,
+    ) -> HumanSession:
+        """A human-initiated signup session, with the agent's id and nickname
+        picked now so both are known before it boots. Declared on a reef host
+        without a name, the agent is named after its id, drawn outside
+        ``taken``. ``returning`` is the id and nickname of an agent that
+        enrolled under the name before and kept its key: nothing is held for it.
+
+        A concurrent mint of the same id loses on the unique index and draws
+        again. The ``human-`` prefix lets commit skip the challenge, so the
+        answer is stored and never checked. Does not commit."""
         question, answer = get_random_question_answer()
         session_token = "human-" + secrets.token_urlsafe(32)
         expires_at = datetime.now(UTC) + SIGNUP_TOKEN_TTL
-        TableWrite.create_challenge_session(
-            db,
-            session_token=session_token,
-            question=question,
-            answer=answer,
-            expires_at=expires_at,
-            org_id=org_id,
-            human_id=human_id,
-            reef_host=reef[0] if reef else None,
-            reef_name=reef[1] if reef else None,
-        )
-        return session_token, question, expires_at
+        for _ in range(8):
+            if returning:
+                agent_id, nickname = returning
+            else:
+                drawn = AgentSignup.generate_random_id_and_nickname(db, server, taken)
+                agent_id, nickname = drawn[0].value, drawn[1].value
+            try:
+                with db.begin_nested():
+                    TableWrite.create_challenge_session(
+                        db,
+                        session_token=session_token,
+                        question=question,
+                        answer=answer,
+                        expires_at=expires_at,
+                        org_id=org_id,
+                        human_id=human_id,
+                        reef_host=reef[0] if reef else None,
+                        reef_name=(reef[1] or fleet_name(agent_id)) if reef else None,
+                        agent_id=None if returning else agent_id,
+                        nickname=None if returning else nickname,
+                    )
+            except IntegrityError:
+                continue
+            return HumanSession(session_token, question, expires_at, agent_id, nickname)
+        raise HTTPException(status_code=503, detail="Couldn't reserve an agent name, try again")
 
     @staticmethod
     def agents_signup_impl(
@@ -183,11 +211,9 @@ class AgentSignup:
                     )
 
             signup_token = challenge.get("owner_email")
-            # Declaring an agent on a reef host stamps the host and fleet name
-            # onto the human signup session (which is ``challenge`` for a direct
-            # human-commit, or the ``signup_session`` looked up below for the
-            # agentic path). None for self-hosted signups.
-            reef: tuple[str, str] | None = _reef_pair(challenge)
+            # The human signup session, which carries what was fixed at mint: the
+            # ``signup_session`` below on the agentic path, else ``challenge``.
+            minted = challenge
             if human_id is not None and signup_token:
                 signup_session = TableRead.get_challenge_session(db, signup_token)
                 if signup_session is None:
@@ -197,7 +223,7 @@ class AgentSignup:
                 if datetime.now(UTC) > signup_session["expires_at"]:
                     TableWrite.delete_challenge_session(db, signup_token)
                     raise HTTPException(status_code=401, detail="Signup token expired")
-                reef = _reef_pair(signup_session) or reef
+                minted = signup_session
                 TableWrite.mark_challenge_session_used(db, signup_token)
             TableWrite.mark_challenge_session_used(db, session_token)
 
@@ -205,7 +231,11 @@ class AgentSignup:
             if org is None:
                 raise HTTPException(status_code=404, detail=f"Organization '{org_id}' not found")
 
-            agent_id, nickname = AgentSignup.generate_random_id_and_nickname(db, server)
+            preminted = minted["agent_id"]
+            if preminted and TableRead.get_agent_by_agentid(db, AgentId(preminted)) is None:
+                agent_id, nickname = AgentId(preminted), NickName(minted["nickname"])
+            else:
+                agent_id, nickname = AgentSignup.generate_random_id_and_nickname(db, server)
 
             # Provision the Stalwart mailbox best-effort. Agent creation must NOT
             # be blocked by the mail server being down/misconfigured - the mailbox
@@ -220,9 +250,10 @@ class AgentSignup:
                 )
 
             api_key_str = TableWrite.create_agent(db, agent_id, nickname)
-            if reef is not None:
-                # Declared on a reef host: carry the pair onto the agent row.
-                TableWrite.set_agent_reef(db, agent_id.value, *reef)
+            if minted["reef_host"]:
+                TableWrite.set_agent_reef(
+                    db, agent_id.value, minted["reef_host"], minted["reef_name"]
+                )
 
             if human_id is not None:
                 # Human/token-initiated: bind org + operator + DM immediately.
@@ -337,12 +368,14 @@ class AgentSignup:
 
     @staticmethod
     def generate_random_id_and_nickname(
-        db: Session, server
+        db: Session, server, taken: Set[str] = frozenset()
     ) -> tuple[AgentId, NickName]:
+        """An id no agent and no signup session holds, whose reef name is not
+        in ``taken``."""
         _, nickname = random.choice(list(server._bot_names.items()))
         candidate_id = base_id = nickname
         counter = 0
-        while TableRead.get_agent_by_agentid(db, AgentId(candidate_id)) is not None:
+        while fleet_name(candidate_id) in taken or TableRead.is_agent_id_taken(db, candidate_id):
             counter += 1
             if counter % 3 == 0:
                 base_id = candidate_id

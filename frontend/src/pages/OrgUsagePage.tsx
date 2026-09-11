@@ -1,13 +1,11 @@
 import {useMemo, useRef, useState, useEffect} from "react";
 import {useQuery} from "@tanstack/react-query";
-import {
-    ChartHistogramIcon as UsageIcon,
-    InformationCircleIcon as Info,
-    CpuIcon as Cpu,
-} from "@hugeicons/core-free-icons";
+import {ChartHistogramIcon as UsageIcon, CpuIcon as Cpu} from "@hugeicons/core-free-icons";
 import {Icon} from "@/components/Icon";
 import {PageHeader} from "@/components/PageHeader";
 import {EmptyState} from "@/components/EmptyState";
+import {SettingsPage, SettingsRow, SettingsRowSkeleton, SettingsSection} from "@/components/settings/Settings";
+import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/select";
 import {Skeleton} from "@/components/ui/skeleton";
 import {AgentAvatarWithPresence} from "@/components/AgentStatus";
 import {useAuth} from "@/context/AuthContext";
@@ -17,7 +15,7 @@ import {
     type AgentUser, type OrgUsageAgentRow, type UsageDay, type UsageRange, type UsageTotals,
 } from "@/lib/api";
 import {agentDisplay} from "@/lib/agentDisplay";
-import {providerBrand} from "@/components/new-agent/brands";
+import {providerBrand} from "@/lib/brands";
 import {queryKeys} from "@/lib/queryKeys";
 import {cn} from "@/lib/utils";
 import {
@@ -25,24 +23,16 @@ import {
 } from "@/lib/usageFormat";
 import {AgentUsageDrawer} from "@/components/usage/AgentUsageDrawer";
 
-// ---------------------------------------------------------------------------
-// The usage ledger. Calm, editorial take on a usage dashboard: serif KPI
-// numerals (the app's hero signature), one hairline-divided stat band, a
-// stacked daily trend, and two ledgers (agents / models). All charts are
-// hand-rolled SVG — no chart lib — and every categorical color below was
-// validated (CVD + contrast) against the app's real light/dark surfaces.
-// ---------------------------------------------------------------------------
+const RANGES: Record<UsageRange, {label: string; days: number | null}> = {
+    day: {label: "Today", days: 1},
+    week: {label: "Last 7 days", days: 7},
+    month: {label: "Last 30 days", days: 30},
+    all: {label: "All time", days: null},
+};
 
-const RANGES: {key: UsageRange; label: string; days: number | null}[] = [
-    {key: "day", label: "Today", days: 1},
-    {key: "week", label: "7 days", days: 7},
-    {key: "month", label: "30 days", days: 30},
-    {key: "all", label: "All time", days: null},
-];
-
-// Validated categorical slots (dataviz six-checks, run against --card in both
-// modes). Assigned to agents in stable roster order — color follows the
-// entity, never its rank. "Other" is a reserved neutral, not a 6th hue.
+// Validated categorical slots (CVD and contrast against --card in both modes).
+// Assigned in stable roster order so color follows the agent, never its rank;
+// "Other" is a reserved neutral, not a sixth hue.
 const SERIES_LIGHT = ["#2a78d6", "#008300", "#e87ba4", "#eda100", "#1baf7a"];
 const SERIES_DARK = ["#3987e5", "#008300", "#d55181", "#c98500", "#199e70"];
 const OTHER_LIGHT = "#a8a29e";
@@ -61,15 +51,13 @@ function useIsDark(): boolean {
     return dark;
 }
 
-// Trailing-window helpers for period-over-period deltas + run-rate. Dates are
-// UTC calendar days, matching the server's daily buckets and `fillDays`.
+// UTC calendar days, matching the server's daily buckets.
 function utcDayOffset(offset: number): string {
     const today = new Date();
     const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - offset));
     return d.toISOString().slice(0, 10);
 }
 
-/** `n` ISO day strings ending `endOffset` days before today (oldest first). */
 function trailingDates(n: number, endOffset: number): string[] {
     return Array.from({length: n}, (_, i) => utcDayOffset(endOffset + (n - 1 - i)));
 }
@@ -92,15 +80,13 @@ function sumWindow(byDate: Map<string, UsageDay>, dates: string[]): UsageTotals 
     return acc;
 }
 
-/** Percent change vs the prior window; null when there's no baseline. */
 function pctDelta(cur: number, prev: number): number | null {
     if (prev <= 0) return null;
     return ((cur - prev) / prev) * 100;
 }
 
-/** Zero-filled UTC day window for the chart. `daily` only carries days that
- *  have data; the window is derived from the range (or the data span on
- *  "all") so quiet days render as honest gaps, not missing columns. */
+// `daily` only carries days with data; zero-fill the window so quiet days
+// render as honest gaps instead of missing columns.
 function fillDays(daily: UsageDay[], range: UsageRange): UsageDay[] {
     const byDate = new Map(daily.map((d) => [d.date, d]));
     const zero = (date: string): UsageDay => ({
@@ -108,16 +94,14 @@ function fillDays(daily: UsageDay[], range: UsageRange): UsageDay[] {
         input_tokens: 0, output_tokens: 0, cache_read_tokens: 0,
         cache_write_tokens: 0, cost_usd: null, call_count: 0,
     });
-    const utcDay = utcDayOffset;
-    const windowDays = RANGES.find((r) => r.key === range)?.days ?? null;
+    const windowDays = RANGES[range].days;
     let dates: string[];
     if (windowDays != null) {
-        dates = Array.from({length: windowDays}, (_, i) => utcDay(windowDays - 1 - i));
+        dates = Array.from({length: windowDays}, (_, i) => utcDayOffset(windowDays - 1 - i));
     } else {
-        // All time: span from the first recorded day through today.
-        const first = daily[0]?.date ?? utcDay(0);
+        const first = daily[0]?.date ?? utcDayOffset(0);
         const start = new Date(`${first}T00:00:00Z`).getTime();
-        const end = new Date(`${utcDay(0)}T00:00:00Z`).getTime();
+        const end = new Date(`${utcDayOffset(0)}T00:00:00Z`).getTime();
         const n = Math.min(365, Math.round((end - start) / 86_400_000) + 1);
         dates = Array.from({length: n}, (_, i) =>
             new Date(end - (n - 1 - i) * 86_400_000).toISOString().slice(0, 10));
@@ -130,12 +114,11 @@ function dayLabel(date: string): string {
     return d.toLocaleDateString("en", {month: "short", day: "numeric", timeZone: "UTC"});
 }
 
-// ---------------------------------------------------------------------------
-// Stat band — one card, hairline dividers, serif numerals.
-// ---------------------------------------------------------------------------
+function callsLabel(n: number): string {
+    return `${exactFmt.format(n)} ${n === 1 ? "call" : "calls"}`;
+}
 
-/** Period-over-period change pill. Up is tinted warm (more spend = mild
- *  caution), down cool — advisory only, never a judgement of "good/bad". */
+// Up is tinted warm (more spend, mild caution), down cool: advisory, not a verdict.
 function DeltaChip({pct, title}: {pct: number; title: string}) {
     const up = pct >= 0;
     return (
@@ -159,7 +142,7 @@ function Stat({label, value, sub, delta, deltaTitle}: {
     delta?: number | null; deltaTitle?: string;
 }) {
     return (
-        <div className="flex min-w-0 flex-col gap-0.5 px-4 py-3.5">
+        <div className="flex min-w-0 flex-col gap-0.5">
             <span className="text-xs font-medium text-muted-foreground">{label}</span>
             <span className="flex min-w-0 items-baseline gap-2">
                 <span className="truncate text-[1.6rem] font-semibold leading-9 tabular-nums tracking-tight text-foreground">
@@ -172,42 +155,13 @@ function Stat({label, value, sub, delta, deltaTitle}: {
     );
 }
 
-/** One thin stacked share strip per card (the "referral visits" pattern) —
- *  rows below stay quiet because the distribution is told exactly once. */
-function DistributionBar({segments}: {segments: {key: string; color: string; value: number}[]}) {
-    const visible = segments.filter((s) => s.value > 0);
-    const total = visible.reduce((acc, s) => acc + s.value, 0);
-    if (total <= 0 || visible.length === 0) return null;
+function TokenShare({tokens, total}: {tokens: number; total: number}) {
     return (
-        <div className="flex h-1.5 w-full gap-0.5 overflow-hidden rounded-full">
-            {visible.map((s) => (
-                <div
-                    key={s.key}
-                    className="h-full rounded-full"
-                    style={{width: `${String((s.value / total) * 100)}%`, minWidth: 3, background: s.color}}
-                />
-            ))}
-        </div>
+        <span className="text-[13px] tabular-nums text-muted-foreground">
+            {formatTokens(tokens)} · {total > 0 ? ((tokens / total) * 100).toFixed(0) : 0}%
+        </span>
     );
 }
-
-// Solid accents for the models strip, keyed by provider (brand hues from the
-// tile gradients). Fixed brand colors, valid on both surfaces.
-const PROVIDER_ACCENT: Record<string, string> = {
-    anthropic: "#D97757",
-    openai: "#10A37F",
-    google: "#4285F4",
-    gemini: "#4285F4",
-};
-
-// Shared column template for the agents table: name | trend | calls | cost |
-// share | tokens. Declared once so the header row and data rows can't drift.
-const AGENT_GRID =
-    "grid grid-cols-[minmax(0,1fr)_5rem_3.25rem_3.75rem_2.75rem_5rem] items-center gap-x-3";
-
-// ---------------------------------------------------------------------------
-// Trend chart — stacked daily bars (owner: top agents + Other), SVG.
-// ---------------------------------------------------------------------------
 
 interface TrendSeries {
     key: string;
@@ -217,7 +171,6 @@ interface TrendSeries {
 
 interface TrendDatum {
     day: UsageDay;
-    /** Per-series headline tokens, in series order. */
     values: number[];
 }
 
@@ -236,7 +189,6 @@ function useElementWidth<T extends HTMLElement>(): [React.RefObject<T | null>, n
     return [ref, width];
 }
 
-/** Rounded-top column path (4px data-end, square baseline). */
 function topRoundedRect(x: number, y: number, w: number, h: number, r: number): string {
     const rr = Math.min(r, w / 2, h);
     const f = (v: number) => v.toFixed(2);
@@ -268,18 +220,14 @@ function TrendChart({data, series, isDark}: {
     const barW = n > 0 ? Math.max(2, (plotW - gap * (n - 1)) / n) : 0;
     const x = (i: number) => pad.left + i * (barW + gap);
     const yScale = (v: number) => (v / maxTotal) * plotH;
-
-    // Sparse x labels: first, last, and evenly spaced ticks in between.
     const tickEvery = n <= 8 ? 1 : Math.ceil(n / 6);
     const gridColor = isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.06)";
-    const hoverIdx = hover;
-    const hovered = hoverIdx != null ? data[hoverIdx] : null;
+    const hovered = hover != null ? data[hover] : null;
 
     return (
         <div ref={wrapRef} className="relative">
             {width > 0 && (
                 <svg width={width} height={height} role="img" aria-label="Daily token usage">
-                    {/* Recessive gridlines at 1/2 and full max, with value labels. */}
                     {[0.5, 1].map((f) => (
                         <g key={f}>
                             <line
@@ -300,7 +248,6 @@ function TrendChart({data, series, isDark}: {
                     {data.map((d, i) => {
                         const total = d.values.reduce((a, b) => a + b, 0);
                         if (total === 0) {
-                            // Honest empty day: a faint 2px baseline stub.
                             return (
                                 <rect
                                     key={d.day.date}
@@ -310,10 +257,8 @@ function TrendChart({data, series, isDark}: {
                                 />
                             );
                         }
-                        // Exact value heights, stacked bottom-up; the 2px surface
-                        // gaps are painted OVER the boundaries afterwards so small
-                        // values never lose height to the spacer. Top segment gets
-                        // the rounded data-end.
+                        // Segments stack at exact heights; the 2px gaps are painted over
+                        // the boundaries afterwards so small values never lose height.
                         const segments = d.values
                             .map((v, si) => ({v, si}))
                             .filter((s) => s.v > 0);
@@ -341,12 +286,7 @@ function TrendChart({data, series, isDark}: {
                             return el;
                         });
                         return (
-                            <g
-                                key={d.day.date}
-                                className="usage-grow"
-                                style={{transformOrigin: `0 ${String(pad.top + plotH)}px`}}
-                                opacity={hover == null || hover === i ? 1 : 0.35}
-                            >
+                            <g key={d.day.date} opacity={hover == null || hover === i ? 1 : 0.35}>
                                 {marks}
                                 {boundaries.map((by) => (
                                     <rect
@@ -360,7 +300,6 @@ function TrendChart({data, series, isDark}: {
                         );
                     })}
 
-                    {/* X labels — sparse, recessive. */}
                     {data.map((d, i) =>
                         i % tickEvery === 0 || i === n - 1 ? (
                             <text
@@ -374,7 +313,6 @@ function TrendChart({data, series, isDark}: {
                         ) : null,
                     )}
 
-                    {/* Hover hit targets — full column height, wider than the mark. */}
                     {data.map((d, i) => (
                         <rect
                             key={`h-${d.day.date}`}
@@ -388,12 +326,11 @@ function TrendChart({data, series, isDark}: {
                 </svg>
             )}
 
-            {/* Tooltip: date, total, per-series breakdown, cost. */}
-            {hovered && hoverIdx != null && (
+            {hovered && hover != null && (
                 <div
                     className="pointer-events-none absolute z-10 w-52 rounded-xl border border-border/70 bg-popover p-3 shadow-lg"
                     style={{
-                        left: Math.min(Math.max(0, x(hoverIdx) + barW / 2 - 104), Math.max(0, width - 208)),
+                        left: Math.min(Math.max(0, x(hover) + barW / 2 - 104), Math.max(0, width - 208)),
                         top: -8,
                         transform: "translateY(-100%)",
                     }}
@@ -420,18 +357,14 @@ function TrendChart({data, series, isDark}: {
                         </div>
                     )}
                     <div className="mt-2 flex items-center justify-between border-t border-border/50 pt-1.5 text-[11px] text-muted-foreground">
-                        <span>{exactFmt.format(hovered.day.call_count)} {hovered.day.call_count === 1 ? "call" : "calls"}</span>
-                        <span className="tabular-nums">{formatCost(hovered.day.cost_usd) ?? "—"}</span>
+                        <span>{callsLabel(hovered.day.call_count)}</span>
+                        <span className="tabular-nums">{formatCost(hovered.day.cost_usd)}</span>
                     </div>
                 </div>
             )}
         </div>
     );
 }
-
-// ---------------------------------------------------------------------------
-// Sparkline — 2px line + soft area, one hue per agent row.
-// ---------------------------------------------------------------------------
 
 function Sparkline({points, color, w = 80, h = 24}: {
     points: number[]; color: string; w?: number; h?: number;
@@ -453,35 +386,54 @@ function Sparkline({points, color, w = 80, h = 24}: {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Segmented range control.
-// ---------------------------------------------------------------------------
-
-function RangeControl({value, onChange}: {value: UsageRange; onChange: (v: UsageRange) => void}) {
+function AgentRow({row, agent, spark, color, total, onOpen}: {
+    row: OrgUsageAgentRow;
+    agent?: AgentUser;
+    spark: number[];
+    color: string;
+    total: number;
+    onOpen: () => void;
+}) {
+    const name = agentDisplay(agent ?? row);
+    const avatar = <AgentAvatarWithPresence agentId={row.agent_id} name={name} src={agent?.avatar?.url} size={28}/>;
+    if (!row.reporting && row.call_count === 0) {
+        return <SettingsRow leading={avatar} title={name} description="Not reporting yet"/>;
+    }
     return (
-        <div className="inline-flex items-center gap-0.5 rounded-full border border-border/60 bg-muted/40 p-0.5">
-            {RANGES.map((o) => (
-                <button
-                    key={o.key}
-                    type="button"
-                    onClick={() => { onChange(o.key); }}
-                    className={cn(
-                        "rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors",
-                        o.key === value
-                            ? "bg-background text-foreground shadow-sm"
-                            : "text-muted-foreground hover:text-foreground",
-                    )}
-                >
-                    {o.label}
-                </button>
-            ))}
-        </div>
+        <SettingsRow
+            leading={avatar}
+            title={name}
+            description={[
+                callsLabel(row.call_count),
+                formatCost(row.cost_usd),
+                row.top_models.slice(0, 2).map(shortModel).join(", "),
+            ].filter(Boolean).join(" · ")}
+            control={
+                <>
+                    <Sparkline points={spark} color={color}/>
+                    <TokenShare tokens={headlineTokens(row)} total={total}/>
+                </>
+            }
+            onClick={onOpen}
+        />
     );
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+function UsageSkeleton() {
+    return (
+        <>
+            <SettingsSection>
+                <div className="p-4"><Skeleton className="h-[4.5rem] rounded-lg"/></div>
+            </SettingsSection>
+            <SettingsSection>
+                <div className="p-4"><Skeleton className="h-52 rounded-lg"/></div>
+            </SettingsSection>
+            <SettingsSection>
+                {[0, 1, 2].map((i) => <SettingsRowSkeleton key={i}/>)}
+            </SettingsSection>
+        </>
+    );
+}
 
 export default function OrgUsagePage() {
     const {activeOrgId} = useAuth();
@@ -497,9 +449,8 @@ export default function OrgUsagePage() {
         queryFn: () => getOrgUsage(activeOrgId ?? "", {range, groupBy: "model"}),
         enabled: Boolean(activeOrgId),
     });
-    // Full-history fetch backing the period deltas + recent run-rate. One
-    // cached query; skipped on the All tab (no prior period to compare, and the
-    // main query already carries the full daily series there).
+    // Full history backs the period deltas and run rate; skipped on All, where
+    // there is no prior period and the main query already carries every day.
     const allUsageQuery = useQuery({
         queryKey: activeOrgId
             ? queryKeys.orgUsage(activeOrgId, "all", "agent")
@@ -528,16 +479,13 @@ export default function OrgUsagePage() {
         [data],
     );
 
-    // Chart series: the window's top agents by headline tokens, hue-assigned
-    // in roster (creation) order so an agent keeps its color across ranges;
-    // everything else folds into a neutral "Other".
+    // Top agents get hues in roster order so each keeps its color across ranges.
     const palette = isDark ? SERIES_DARK : SERIES_LIGHT;
     const otherColor = isDark ? OTHER_DARK : OTHER_LIGHT;
     const {series, trend, colorByAgent} = useMemo(() => {
         const paletteAt = (i: number): string => palette[i % palette.length] ?? otherColor;
         const perAgent = data?.per_agent ?? [];
         if (!data || perAgent.length === 0) {
-            // Member view (or no per-agent data): one recessive series.
             const single: TrendSeries[] = [{key: "total", name: "Tokens", color: paletteAt(0)}];
             return {
                 series: single,
@@ -593,9 +541,7 @@ export default function OrgUsagePage() {
     const costPerCall = total?.cost_usd != null && total.call_count > 0
         ? total.cost_usd / total.call_count : null;
 
-    // Period-over-period deltas + run-rate, off the full-history daily series
-    // (cheap: n ≤ ~365). On the All tab the main query carries `daily`.
-    const windowDays = RANGES.find((r) => r.key === range)?.days ?? null;
+    const windowDays = RANGES[range].days;
     const allDaily = range === "all" ? (data?.daily ?? []) : (allUsageQuery.data?.daily ?? []);
     const allByDate = new Map(allDaily.map((d) => [d.date, d]));
 
@@ -603,6 +549,7 @@ export default function OrgUsagePage() {
         ? (() => {
             const prev = sumWindow(allByDate, trailingDates(windowDays, windowDays));
             return {
+                title: windowDays === 1 ? "vs yesterday" : `vs prior ${windowDays} days`,
                 tokens: pctDelta(headlineTokens(total), headlineTokens(prev)),
                 cache: pctDelta(total.cache_read_tokens, prev.cache_read_tokens),
                 calls: pctDelta(total.call_count, prev.call_count),
@@ -628,339 +575,186 @@ export default function OrgUsagePage() {
     })();
 
     const activeAgents = perAgent.filter((a) => a.call_count > 0).length;
-    const deltaTitle = range === "day"
-        ? "vs yesterday"
-        : `vs prior ${RANGES.find((r) => r.key === range)?.label.toLowerCase() ?? "period"}`;
-
     const sparkFor = (agentId: string): number[] =>
         days.map((d) => d.by_agent?.[agentId] ?? 0);
+    const disclaimer = `Self-reported by agents and never used for billing. Turns without a reply may not be counted yet.${
+        data?.role === "member" ? " Org admins see per-agent detail." : ""}`;
 
     return (
-        <div className="space-y-4">
-            <style>{`
-                @keyframes usage-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-                @keyframes usage-scale { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-                .usage-section { animation: usage-rise 0.45s cubic-bezier(0.22,1,0.36,1) both; }
-                .usage-grow { animation: usage-scale 0.5s cubic-bezier(0.22,1,0.36,1) both; }
-                @media (prefers-reduced-motion: reduce) {
-                    .usage-section, .usage-grow { animation: none; }
+        <>
+            <PageHeader
+                icon={UsageIcon}
+                title="Usage"
+                actions={
+                    <Select value={range} onValueChange={(v) => { if (v) setRange(v); }}>
+                        <SelectTrigger size="sm" aria-label="Usage range">
+                            <SelectValue>{(v: UsageRange) => RANGES[v].label}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                            {Object.entries(RANGES).map(([value, r]) => (
+                                <SelectItem key={value} value={value}>{r.label}</SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                 }
-            `}</style>
+            />
 
-            <PageHeader icon={UsageIcon} title="Usage" actions={<RangeControl value={range} onChange={setRange}/>}/>
-
-            {usageQuery.isLoading ? (
-                <div className="space-y-4">
-                    <Skeleton className="h-24 rounded-2xl"/>
-                    <Skeleton className="h-64 rounded-2xl"/>
-                    <div className="grid gap-4 lg:grid-cols-2">
-                        <Skeleton className="h-56 rounded-2xl"/>
-                        <Skeleton className="h-56 rounded-2xl"/>
-                    </div>
-                </div>
-            ) : usageQuery.isError ? (
-                <EmptyState
-                    icon={UsageIcon}
-                    title="Couldn't load usage"
-                    description={usageQuery.error instanceof Error ? usageQuery.error.message : "Try again shortly."}
-                />
-            ) : total && (
-                <>
-                    {/* Stat band — one card, hairline dividers, serif numerals. */}
-                    <section className="usage-section grid grid-cols-2 divide-border/50 overflow-hidden rounded-2xl border border-border/60 bg-card max-sm:divide-y sm:grid-cols-4 sm:divide-x">
-                        <Stat
-                            label="Tokens"
-                            value={formatTokens(orgHeadline)}
-                            sub={`${formatTokens(total.input_tokens)} in · ${formatTokens(total.output_tokens)} out`}
-                            delta={deltas?.tokens}
-                            deltaTitle={deltaTitle}
+            <SettingsPage>
+                {usageQuery.isLoading ? (
+                    <UsageSkeleton/>
+                ) : usageQuery.isError ? (
+                    <SettingsSection>
+                        <SettingsRow
+                            title="Couldn't load usage"
+                            description="Try again shortly"
+                            error={usageQuery.error.message}
                         />
-                        <Stat
-                            label="Cache reads"
-                            value={formatTokens(total.cache_read_tokens)}
-                            sub={cacheHitRate != null
-                                ? `${(cacheHitRate * 100).toFixed(0)}% from cache · ${formatTokens(total.cache_write_tokens)} written`
-                                : (total.cache_write_tokens > 0 ? `${formatTokens(total.cache_write_tokens)} written` : null)}
-                            delta={deltas?.cache}
-                            deltaTitle={deltaTitle}
-                        />
-                        <Stat
-                            label="Model calls"
-                            value={exactFmt.format(total.call_count)}
-                            delta={deltas?.calls}
-                            deltaTitle={deltaTitle}
-                        />
-                        <Stat
-                            label="Cost"
-                            value={formatCost(total.cost_usd) ?? "—"}
-                            sub={total.cost_usd == null
-                                ? "no cost reported"
-                                : (costPerCall != null ? `${formatCost(costPerCall) ?? ""}/call` : "as reported by agents")}
-                            delta={deltas?.cost}
-                            deltaTitle={deltaTitle}
-                        />
-                    </section>
-
-                    {/* Run rate + adoption — one quiet line under the KPIs. */}
-                    {anyUsage && (Boolean(runRate) || (isOwner && perAgent.length > 0)) && (
-                        <div
-                            className="usage-section flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-xs text-muted-foreground/80"
-                            style={{animationDelay: "30ms"}}
-                        >
-                            {runRate ? (
-                                <span className="tabular-nums">
+                    </SettingsSection>
+                ) : total && (
+                    <>
+                        <SettingsSection
+                            label={RANGES[range].label}
+                            aside={anyUsage && runRate ? (
+                                <span className="tabular-nums" title="From the last 7 days">
                                     Run rate ≈ {formatTokens(runRate.tokensPerMonth)} tokens/mo
                                     {runRate.costPerMonth != null ? ` · ${formatCost(runRate.costPerMonth) ?? ""}/mo` : ""}
-                                    <span className="text-muted-foreground/50"> · last 7 days</span>
                                 </span>
-                            ) : <span/>}
-                            {isOwner && perAgent.length > 0 && (
-                                <span className="tabular-nums">{activeAgents} of {perAgent.length} agents active</span>
-                            )}
-                        </div>
-                    )}
+                            ) : null}
+                        >
+                            <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+                                <Stat
+                                    label="Tokens"
+                                    value={formatTokens(orgHeadline)}
+                                    sub={`${formatTokens(total.input_tokens)} in · ${formatTokens(total.output_tokens)} out`}
+                                    delta={deltas?.tokens}
+                                    deltaTitle={deltas?.title}
+                                />
+                                <Stat
+                                    label="Cache reads"
+                                    value={formatTokens(total.cache_read_tokens)}
+                                    sub={[
+                                        cacheHitRate != null && `${(cacheHitRate * 100).toFixed(0)}% hit`,
+                                        total.cache_write_tokens > 0 && `${formatTokens(total.cache_write_tokens)} written`,
+                                    ].filter(Boolean).join(" · ")}
+                                    delta={deltas?.cache}
+                                    deltaTitle={deltas?.title}
+                                />
+                                <Stat
+                                    label="Model calls"
+                                    value={exactFmt.format(total.call_count)}
+                                    delta={deltas?.calls}
+                                    deltaTitle={deltas?.title}
+                                />
+                                <Stat
+                                    label="Cost"
+                                    value={formatCost(total.cost_usd) ?? "-"}
+                                    sub={total.cost_usd == null
+                                        ? "Not reported"
+                                        : costPerCall != null ? `${formatCost(costPerCall) ?? ""}/call` : null}
+                                    delta={deltas?.cost}
+                                    deltaTitle={deltas?.title}
+                                />
+                            </div>
+                        </SettingsSection>
 
-                    {!anyUsage && perAgent.every((a) => !a.reporting) ? (
-                        <div className="usage-section" style={{animationDelay: "60ms"}}>
-                            <EmptyState
-                                icon={UsageIcon}
-                                title="No usage reported yet"
-                                description="Each agent's plugin reports its own token usage automatically once it's online - numbers land here within a minute of the first model call."
-                            />
-                        </div>
-                    ) : (
-                        <>
-                            {/* Trend — stacked daily bars. */}
-                            <section
-                                className="usage-section rounded-2xl border border-border/60 bg-card px-4 pb-3 pt-3.5"
-                                style={{animationDelay: "60ms"}}
-                            >
-                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                                    <h2 className="text-sm font-medium">Daily tokens</h2>
-                                    {series.length > 1 && (
-                                        <div className="flex flex-wrap items-center gap-3">
+                        {!anyUsage && perAgent.every((a) => !a.reporting) ? (
+                            <SettingsSection footer={disclaimer}>
+                                <EmptyState
+                                    icon={UsageIcon}
+                                    title="No usage reported yet"
+                                    description="Agents report their own token usage once online, within a minute of the first model call."
+                                />
+                            </SettingsSection>
+                        ) : (
+                            <>
+                                <SettingsSection
+                                    label="Daily tokens"
+                                    aside={series.length > 1 ? (
+                                        <span className="flex flex-wrap justify-end gap-x-3 gap-y-1 text-xs">
                                             {series.map((s) => (
-                                                <span key={s.key} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                                <span key={s.key} className="flex items-center gap-1.5">
                                                     <span className="size-2 rounded-full" style={{background: s.color}}/>
                                                     {s.name}
                                                 </span>
                                             ))}
-                                        </div>
-                                    )}
-                                </div>
-                                <TrendChart data={trend} series={series} isDark={isDark}/>
-                            </section>
+                                        </span>
+                                    ) : null}
+                                >
+                                    <div className="px-4 pb-3 pt-4">
+                                        <TrendChart data={trend} series={series} isDark={isDark}/>
+                                    </div>
+                                </SettingsSection>
 
-                            <div className="grid items-start gap-4 lg:grid-cols-5">
-                                {/* Agents table: one distribution strip, then quiet
-                                    labeled columns - name | trend | calls | cost |
-                                    share | tokens. */}
-                                {isOwner && (
-                                    <section
-                                        className="usage-section rounded-2xl border border-border/60 bg-card lg:col-span-3"
-                                        style={{animationDelay: "120ms"}}
+                                {isOwner && perAgent.length > 0 && (
+                                    <SettingsSection
+                                        label="Agents"
+                                        aside={<span className="tabular-nums">{activeAgents} of {perAgent.length} active</span>}
                                     >
-                                        <h2 className="border-b border-border/50 px-4 py-2.5 text-sm font-medium">Agents</h2>
-                                        <div className="px-4 pt-3">
-                                            <DistributionBar
-                                                segments={perAgent.map((a) => ({
-                                                    key: a.agent_id,
-                                                    color: colorByAgent.get(a.agent_id) ?? otherColor,
-                                                    value: headlineTokens(a),
-                                                }))}
+                                        {perAgent.map((row) => (
+                                            <AgentRow
+                                                key={row.agent_id}
+                                                row={row}
+                                                agent={agentsById.get(row.agent_id)}
+                                                spark={sparkFor(row.agent_id)}
+                                                color={colorByAgent.get(row.agent_id) ?? otherColor}
+                                                total={orgHeadline}
+                                                onOpen={() => { setSelectedAgentId(row.agent_id); }}
                                             />
-                                        </div>
-                                        <div className={cn(AGENT_GRID, "px-4 pb-1 pt-3 text-[10px] font-medium text-muted-foreground/60")}>
-                                            <span>Agent</span>
-                                            <span>Trend</span>
-                                            <span className="text-right">Calls</span>
-                                            <span className="text-right">Cost</span>
-                                            <span className="text-right">Share</span>
-                                            <span className="text-right">Tokens</span>
-                                        </div>
-                                        <div className="divide-y divide-border/40 pb-1">
-                                            {perAgent.map((row) => (
-                                                <AgentTableRow
-                                                    key={row.agent_id}
-                                                    row={row}
-                                                    agent={agentsById.get(row.agent_id)}
-                                                    spark={sparkFor(row.agent_id)}
-                                                    color={colorByAgent.get(row.agent_id) ?? otherColor}
-                                                    share={orgHeadline > 0 ? headlineTokens(row) / orgHeadline : 0}
-                                                    onOpen={() => { setSelectedAgentId(row.agent_id); }}
-                                                />
-                                            ))}
-                                        </div>
-                                    </section>
+                                        ))}
+                                    </SettingsSection>
                                 )}
 
-                                {/* Models ledger. */}
-                                <section
-                                    className={cn(
-                                        "usage-section rounded-2xl border border-border/60 bg-card",
-                                        isOwner ? "lg:col-span-2" : "lg:col-span-5",
-                                    )}
-                                    style={{animationDelay: "180ms"}}
-                                >
-                                    <h2 className="border-b border-border/50 px-4 py-2.5 text-sm font-medium">Models</h2>
-                                    {perModel.length > 0 && (
-                                        <div className="px-4 pt-3">
-                                            <DistributionBar
-                                                segments={perModel.map((m) => ({
-                                                    key: `${m.model}:${m.provider ?? ""}`,
-                                                    color: PROVIDER_ACCENT[m.provider ?? ""] ?? otherColor,
-                                                    value: headlineTokens(m),
-                                                }))}
+                                <SettingsSection label="Models" footer={disclaimer}>
+                                    {perModel.length === 0 ? (
+                                        <p className="px-4 py-4 text-[13px] text-muted-foreground">
+                                            No model calls in this period
+                                        </p>
+                                    ) : perModel.map((m) => {
+                                        const brand = providerBrand(m.provider ?? "");
+                                        return (
+                                            <SettingsRow
+                                                key={`${m.model}:${m.provider ?? ""}`}
+                                                leading={
+                                                    <span
+                                                        className="flex size-8 items-center justify-center rounded-lg text-white"
+                                                        style={{background: brand.tile}}
+                                                    >
+                                                        {brand.Glyph
+                                                            ? <brand.Glyph className="size-4"/>
+                                                            : <Icon icon={Cpu} className="size-4 opacity-90"/>}
+                                                    </span>
+                                                }
+                                                title={m.model}
+                                                description={[
+                                                    m.provider ?? "unknown",
+                                                    callsLabel(m.call_count),
+                                                    formatCost(m.cost_usd),
+                                                ].filter(Boolean).join(" · ")}
+                                                control={<TokenShare tokens={headlineTokens(m)} total={orgHeadline}/>}
                                             />
-                                        </div>
-                                    )}
-                                    <div className="divide-y divide-border/40 pb-1 pt-1.5">
-                                        {perModel.length === 0 ? (
-                                            <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-                                                No model calls in this period.
-                                            </p>
-                                        ) : perModel.map((m) => {
-                                            const modelCost = formatCost(m.cost_usd);
-                                            // Usage derives gemini-prefix models as provider
-                                            // "google"; the brand registry keys it "gemini".
-                                            const brand = providerBrand(
-                                                m.provider === "google" ? "gemini" : (m.provider ?? ""),
-                                            );
-                                            const modelShare = orgHeadline > 0 ? headlineTokens(m) / orgHeadline : 0;
-                                            return (
-                                            <div key={`${m.model}:${m.provider ?? ""}`} className="flex items-center gap-3 px-4 py-2.5">
-                                                <span
-                                                    className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white"
-                                                    style={{background: brand.tile}}
-                                                >
-                                                    {brand.Glyph
-                                                        ? <brand.Glyph className="size-4"/>
-                                                        : <Icon icon={Cpu} className="size-4 opacity-90"/>}
-                                                </span>
-                                                <div className="min-w-0 flex-1">
-                                                    <div className="truncate text-sm font-medium">{m.model}</div>
-                                                    <div className="truncate text-[11px] text-muted-foreground/70">{m.provider ?? "unknown"}</div>
-                                                </div>
-                                                <div className="shrink-0 text-right">
-                                                    <div className="text-sm font-semibold tabular-nums">
-                                                        {formatTokens(headlineTokens(m))}
-                                                        <span className="ml-1 font-normal text-muted-foreground/70">
-                                                            ({(modelShare * 100).toFixed(0)}%)
-                                                        </span>
-                                                    </div>
-                                                    <div className="text-[11px] tabular-nums text-muted-foreground/70">
-                                                        {exactFmt.format(m.call_count)} {m.call_count === 1 ? "call" : "calls"}
-                                                        {modelCost ? ` · ${modelCost}` : ""}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            );
-                                        })}
-                                    </div>
-                                </section>
-                            </div>
-                        </>
-                    )}
+                                        );
+                                    })}
+                                </SettingsSection>
+                            </>
+                        )}
+                    </>
+                )}
+            </SettingsPage>
 
-                    <p className="usage-section flex items-start gap-1.5 text-xs text-muted-foreground/80" style={{animationDelay: "240ms"}}>
-                        <Icon icon={Info} className="mt-0.5 size-3.5 shrink-0"/>
-                        <span>
-                            Self-reported by each agent&apos;s plugin - informational only, never used for
-                            billing. Turns that deliver no reply may not be counted yet
-                            {data.role === "member" ? "; per-agent detail is visible to org admins" : ""}.
-                        </span>
-                    </p>
-
-                    {isOwner && (
-                        <AgentUsageDrawer
-                            open={selectedAgentId != null}
-                            onOpenChange={(open) => { if (!open) setSelectedAgentId(null); }}
-                            orgId={activeOrgId}
-                            agentId={selectedAgentId}
-                            agent={selectedAgentId ? agentsById.get(selectedAgentId) : undefined}
-                            range={range}
-                            rangeLabel={RANGES.find((r) => r.key === range)?.label ?? ""}
-                            color={selectedAgentId ? (colorByAgent.get(selectedAgentId) ?? otherColor) : otherColor}
-                            trend={selectedAgentId ? sparkFor(selectedAgentId) : []}
-                            trendLabels={days.map((d) => dayLabel(d.date))}
-                        />
-                    )}
-                </>
-            )}
-        </div>
-    );
-}
-
-function AgentTableRow({row, agent, spark, color, share, onOpen}: {
-    row: OrgUsageAgentRow;
-    agent?: AgentUser;
-    spark: number[];
-    color: string;
-    share: number;
-    onOpen?: () => void;
-}) {
-    const name = agentDisplay(agent ?? row);
-    const silent = !row.reporting && row.call_count === 0;
-    const cost = formatCost(row.cost_usd);
-    const models = row.top_models.slice(0, 2).map(shortModel).join(" · ");
-
-    if (silent) {
-        return (
-            <div className={cn(AGENT_GRID, "px-4 py-2.5 opacity-55")}>
-                <div className="flex min-w-0 items-center gap-2.5">
-                    <AgentAvatarWithPresence
-                        agentId={row.agent_id}
-                        name={name}
-                        src={agent?.avatar?.url}
-                        size={28}
-                        ringClassName="ring-card"
-                    />
-                    <span className="truncate text-sm font-medium">{name}</span>
-                </div>
-                <span className="col-span-5 text-right text-xs text-muted-foreground/70">
-                    not reporting yet
-                </span>
-            </div>
-        );
-    }
-
-    return (
-        <button
-            type="button"
-            onClick={onOpen}
-            className={cn(
-                AGENT_GRID,
-                "w-full px-4 py-2.5 text-left transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none",
-            )}
-        >
-            <div className="flex min-w-0 items-center gap-2.5">
-                <AgentAvatarWithPresence
-                    agentId={row.agent_id}
-                    name={name}
-                    src={agent?.avatar?.url}
-                    size={28}
-                    ringClassName="ring-card"
+            {isOwner && (
+                <AgentUsageDrawer
+                    open={selectedAgentId != null}
+                    onOpenChange={(open) => { if (!open) setSelectedAgentId(null); }}
+                    orgId={activeOrgId}
+                    agentId={selectedAgentId}
+                    agent={selectedAgentId ? agentsById.get(selectedAgentId) : undefined}
+                    range={range}
+                    rangeLabel={RANGES[range].label}
+                    color={selectedAgentId ? (colorByAgent.get(selectedAgentId) ?? otherColor) : otherColor}
+                    trend={selectedAgentId ? sparkFor(selectedAgentId) : []}
+                    trendLabels={days.map((d) => dayLabel(d.date))}
                 />
-                <div className="flex min-w-0 flex-col">
-                    <span className="truncate text-sm font-medium leading-tight">{name}</span>
-                    {models && (
-                        <span className="truncate text-[11px] leading-tight text-muted-foreground/70">{models}</span>
-                    )}
-                </div>
-            </div>
-            <Sparkline points={spark} color={color}/>
-            <span className="text-right text-xs tabular-nums text-muted-foreground">
-                {exactFmt.format(row.call_count)}
-            </span>
-            <span className="text-right text-xs tabular-nums text-muted-foreground">
-                {cost ?? "—"}
-            </span>
-            <span className="text-right text-xs tabular-nums text-muted-foreground">
-                {(share * 100).toFixed(0)}%
-            </span>
-            <span className="text-right text-sm font-semibold tabular-nums">
-                {formatTokens(headlineTokens(row))}
-            </span>
-        </button>
+            )}
+        </>
     );
 }
