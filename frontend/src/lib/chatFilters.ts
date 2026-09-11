@@ -5,14 +5,14 @@ import {
   Message01Icon,
 } from "@hugeicons/core-free-icons";
 import { Bot } from "lucide-react";
-import type {IconSvgElement} from "@hugeicons/react";
+import type {AppIcon} from "@/components/Icon";
 import type {MmChannel} from "@/lib/api";
 
 /** The scope filter shown as tabs at the top of the chat list. */
 export type ChatTab = "all" | "channels" | "dms" | "agents";
 
 /** Tab descriptors in display order — drives the segmented control. */
-export const CHAT_TABS: {id: ChatTab; label: string; icon: IconSvgElement}[] = [
+export const CHAT_TABS: {id: ChatTab; label: string; icon: AppIcon}[] = [
     {id: "all", label: "All", icon: BubbleChatIcon},
     {id: "channels", label: "Channels", icon: HashtagIcon},
     {id: "dms", label: "DMs", icon: Message01Icon},

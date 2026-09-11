@@ -5,7 +5,7 @@
 import {createAtom, type Atom} from "@tanstack/store";
 import {CompassIcon, HashtagIcon, MessageAdd01Icon} from "@hugeicons/core-free-icons";
 import { Bot } from "lucide-react";
-import type {IconSvgElement} from "@hugeicons/react";
+import type {AppIcon} from "@/components/Icon";
 
 export type CreateDialogKind = "dm" | "channel" | "browse";
 
@@ -27,7 +27,7 @@ export function closeCreate(): void {
 export type CreateOption = ({kind: CreateDialogKind} | {to: string}) & {
     title: string;
     description: string;
-    icon: IconSvgElement;
+    icon: AppIcon;
     tint: string;
     color: string;
 };

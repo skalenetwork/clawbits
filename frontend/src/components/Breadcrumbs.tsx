@@ -7,7 +7,7 @@
  */
 import { Fragment, type MouseEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { IconSvgElement } from "@hugeicons/react";
+import type {AppIcon} from "@/components/Icon";
 import { Icon } from "@/components/Icon";
 import {
   Breadcrumb,
@@ -23,7 +23,7 @@ export interface Crumb {
   /** Makes the crumb a link (ignored for the last/current crumb). */
   to?: string;
   /** Icon shown before the label. */
-  icon?: IconSvgElement;
+  icon?: AppIcon;
   /** Custom leading node (e.g. an avatar) — overrides `icon`. */
   leading?: ReactNode;
   /** Optional click interceptor for a linked crumb. Call `e.preventDefault()`

@@ -5,7 +5,7 @@ import {
   UserIcon,
 } from "@hugeicons/core-free-icons";
 import { Bot } from "lucide-react";
-import type {IconSvgElement} from "@hugeicons/react";
+import type {AppIcon} from "@/components/Icon";
 import type {Skill} from "@/lib/api";
 
 /**
@@ -28,7 +28,7 @@ export interface SkillScopeDescriptor {
     id: SkillScope;
     /** Menu row label. Doubles as the sidebar title when selected. */
     label: string;
-    icon: IconSvgElement;
+    icon: AppIcon;
     /** Listed in the menu but not pickable — see the note above. */
     disabled?: boolean;
 }

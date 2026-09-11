@@ -1,6 +1,6 @@
 import {createContext, useContext, type ReactNode} from "react";
 import {createPortal} from "react-dom";
-import type {IconSvgElement} from "@hugeicons/react";
+import type {AppIcon} from "@/components/Icon";
 import {Icon} from "@/components/Icon";
 import {Breadcrumbs, type Crumb} from "@/components/Breadcrumbs";
 
@@ -20,7 +20,7 @@ export function PageHeaderSlotProvider(
 
 interface PageHeaderProps {
     /** Hugeicons glyph before the title. Ignored when ``leading`` is set. */
-    icon?: IconSvgElement;
+    icon?: AppIcon;
     /** Custom leading element (e.g. a channel avatar) — overrides ``icon``. */
     leading?: ReactNode;
     /** Title — a plain string (truncated) or a custom node (e.g. name + a

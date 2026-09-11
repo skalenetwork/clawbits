@@ -1,5 +1,5 @@
 import {BubbleChatIcon, UserCircleIcon} from "@hugeicons/core-free-icons";
-import type {IconSvgElement} from "@hugeicons/react";
+import type {AppIcon} from "@/components/Icon";
 import {Bot, House, type LucideIcon} from "lucide-react";
 
 /** The sidebar's primary nav, top to bottom, numbered from ⌘1 on desktop.
@@ -21,7 +21,7 @@ export const SETTINGS_PATH = "/settings/profile";
 export interface MobileTab {
     id: string;
     label: string;
-    icon: IconSvgElement;
+    icon: AppIcon;
     /** Where tapping the tab lands. */
     path: string;
     /** Whether this tab is the active one for the given route. */
