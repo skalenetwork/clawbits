@@ -826,15 +826,12 @@ function computeReceiptState(
   // Optimistic insert (negative id) or token stream → still in flight.
   if (post.post_id < 0 || post.status === "streaming") return "sending";
   if (post.status !== "published") return null;
-  // Find the DM peer (any other human in the members list). Agents are
-  // ignored — they never advance a read pointer.
-  let peerLastRead: number | null = null;
-  for (const m of members) {
-    if (m.human_id != null && m.human_id !== currentUser.id) {
-      peerLastRead = m.last_read_post_id ?? null;
-      break;
-    }
-  }
+  // The DM peer, human or agent: an agent acks its read pointer when a turn
+  // settles, so its replies mark the conversation read the way a person does.
+  const peer = members.find(
+    (m) => (m.human_id != null && m.human_id !== currentUser.id) || m.agent_id != null,
+  );
+  const peerLastRead = peer?.last_read_post_id ?? null;
   if (peerLastRead != null && peerLastRead >= post.post_id) return "read";
   return "delivered";
 }
@@ -1461,7 +1458,7 @@ export function MessageRow({
       {...longPress}
       className={`group/row relative mx-0.5 mt-4 rounded-lg pl-2.5 pr-3 pt-1.5 pb-0.5 transition-colors duration-500 ${draftBg} ${highlightCls}`}
     >
-      <div className="mb-1 flex h-5 items-center gap-2 text-[13px]">
+      <div className="mb-1.5 flex h-5 items-center gap-2 text-[13px]">
         <ProfileMenuTrigger
           member={authorMember}
           handleText={authorHandle}

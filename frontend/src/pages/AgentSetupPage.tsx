@@ -2,6 +2,7 @@
  *  the prompt to paste (self-hosted). Each screen is one View that the render
  *  and the keyboard both read. The agent's id and nickname are minted up front,
  *  so each waiting screen watches for exactly that agent. */
+import { useAgentStatus } from "@/hooks/useAgentPresence";
 import { useEffect, useEffectEvent, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -184,7 +185,13 @@ export default function AgentSetupPage() {
     queryKey: queryKeys.reef(orgId),
     queryFn: () => getReef(orgId),
     enabled: Boolean(activeOrgId),
-    refetchInterval: created ? 10_000 : false,
+    refetchInterval: (q) => {
+      if (!created) return false;
+      const row = q.state.data?.hosts
+        .find((h) => h.host === created.host)?.agents
+        .find((x) => x.name === created.name);
+      return row?.state === "running" ? false : 4_000;
+    },
   });
   const roles = useQuery({
     queryKey: queryKeys.reefRoles(orgId),
@@ -195,14 +202,26 @@ export default function AgentSetupPage() {
     queryKey: queryKeys.agents(orgId),
     queryFn: () => getAgents(orgId),
     enabled: Boolean(minted),
-    refetchInterval: minted ? 10_000 : false,
+    refetchInterval: (q) => {
+      if (!minted) return false;
+      const found = q.state.data?.agents.find((x) => x.agent_id === minted.agent_id);
+      if (!found) return 3_000;
+      return a.where === "reef" && !found.last_alive_at ? 3_000 : false;
+    },
   });
 
   const hosts = reef.data?.hosts ?? [];
   const status = created && hosts.find((h) => h.host === created.host);
   const onHost = created && status?.agents.find((x) => x.name === created.name);
   const agent = minted && agents.data?.agents.find((x) => x.agent_id === minted.agent_id);
-  const arrived = a.where === "reef" ? Boolean(agent?.last_alive_at) : Boolean(agent);
+  // The agent's own ping reaches us over SSE, ahead of the host's next status push.
+  const live = useAgentStatus(minted ? minted.agent_id : null, agent ? agent.last_alive_at ?? null : undefined);
+  const arrived = a.where === "reef" ? live === "available" || Boolean(agent?.last_alive_at) : Boolean(agent);
+  // These land out of order: an agent can sign up and say hi before its host
+  // reports, so every check implies the ones above it.
+  const hasJoined = arrived || Boolean(agent);
+  const isRunning = hasJoined || onHost?.state === "running";
+  const pickedUp = isRunning || Boolean(onHost);
   const runtime: Runtime | undefined =
     a.where === "self" ? a.runtime : a.where === "reef" && a.role ? "openclaw" : undefined;
 
@@ -373,14 +392,14 @@ export default function AgentSetupPage() {
         at: 3,
         icon: <SetupMark src={ICON.waiting} size={84} />,
         title: `Starting ${created?.nickname ?? "your agent"}`,
-        line: `On ${host}. The first start pulls the image, which can take a few minutes. You can leave; it keeps going.`,
+        line: `On ${host}. The first start takes a few minutes; you can leave.`,
         body: (
           <Checks
             items={[
               { label: "Declared", done: Boolean(created) },
-              { label: `Picked up by ${host}`, done: Boolean(onHost) },
-              { label: "Running", done: onHost?.state === "running" },
-              { label: "Joined Clawbits", done: Boolean(agent) },
+              { label: `Picked up by ${host}`, done: pickedUp },
+              { label: "Running", done: isRunning },
+              { label: "Joined Clawbits", done: hasJoined },
               { label: "First ping", done: arrived },
             ]}
           />

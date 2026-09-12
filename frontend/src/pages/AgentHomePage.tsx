@@ -101,6 +101,11 @@ function DesktopHome() {
             <ReefTile
               connected={Boolean(org?.reef_connected)}
               hosts={reefQuery.data?.hosts.length ?? null}
+              agents={
+                reefQuery.data
+                  ? reefQuery.data.hosts.reduce((n, h) => n + h.agents.length, 0)
+                  : null
+              }
               shortcut={1}
             />
           )}
@@ -130,10 +135,12 @@ function DesktopHome() {
 function ReefTile({
   connected,
   hosts,
+  agents,
   shortcut,
 }: {
   connected: boolean;
   hosts: number | null;
+  agents: number | null;
   shortcut: number;
 }) {
   const unfinished = connected && hosts === 0;
@@ -149,9 +156,9 @@ function ReefTile({
           ? "Connect now"
           : unfinished
             ? "Add a machine"
-            : hosts === null
+            : agents === null
               ? "Connected"
-              : `${String(hosts)} machine${hosts === 1 ? "" : "s"}`
+              : `${String(agents)} agent${agents === 1 ? "" : "s"}`
       }
     />
   );

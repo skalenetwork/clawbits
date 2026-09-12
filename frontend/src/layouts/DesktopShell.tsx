@@ -75,6 +75,15 @@ export function DesktopShell() {
   useEffect(() => {
     if (!inSettings) backTo.current = location.pathname;
   }, [inSettings, location.pathname]);
+  // Esc leaves settings, matching the setup wizards. Dialogs and the palette
+  // own the key while they are open, and typing keeps it.
+  useShortcut({
+    id: "settings-back",
+    keys: "Escape",
+    when: ({ inEditable }) =>
+      inSettings && !inEditable && document.querySelector('[role="dialog"]') === null,
+    run: () => { void navigate(backTo.current); },
+  });
   const isHome = location.pathname === "/home";
 
   const activeChannelId = /^\/channels\/([^/]+)/.exec(location.pathname)?.[1] ?? null;
@@ -129,6 +138,12 @@ export function DesktopShell() {
                       >
                         <ArrowLeft />
                         <span>Back</span>
+                        <span
+                          aria-hidden="true"
+                          className="ml-auto grid h-5 min-w-5 place-items-center rounded-md bg-foreground/10 px-1 text-[11px]"
+                        >
+                          Esc
+                        </span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   </SidebarMenu>

@@ -7,6 +7,11 @@ set -eu
 : "${REEF_DIR:=$HOME/agents}"
 REEF="${REEF:-$HOME/.local/bin/reef}"
 
+# A TCP connection GitHub silently dropped (laptop slept, network changed)
+# otherwise hangs a tick forever and the loop never ticks again: keepalives
+# turn it into a failure the next tick retries.
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3}"
+
 # A host that cannot see the repo changes nothing.
 for tree in main fleet; do
   git -C "$REEF_DIR/$tree" pull --quiet --ff-only

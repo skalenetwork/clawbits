@@ -1885,8 +1885,9 @@ async def mark_org_visited(
 
 # A status refresh costs one listing plus one read per host, and the settings
 # page polls it. Every read is conditional, so a file that has not changed
-# answers 304 and costs no rate limit. Thirty seconds is one reconciler tick.
-_REEF_STATUS_TTL = 30.0
+# answers 304 and costs no rate limit, so the window stays short: a new agent
+# shows up in the setup wizard within seconds of its host reporting.
+_REEF_STATUS_TTL = 5.0
 _reef_status_cache: dict[str, tuple[float, list[ReefHostResponse]]] = {}
 
 

@@ -224,7 +224,7 @@ function RowSignal({signal}: {signal: Signal}) {
         case "working":
             return (
                 <span role="img" aria-label="Replying" className="grid w-5 place-items-center">
-                    <span className="size-[9px] animate-spin rounded-full border-[1.5px] border-muted-foreground border-r-transparent motion-reduce:animate-none"/>
+                    <span className="size-[10px] animate-spin rounded-full border-[1.5px] border-signal border-r-transparent motion-reduce:animate-none"/>
                 </span>
             );
         case "pinned":

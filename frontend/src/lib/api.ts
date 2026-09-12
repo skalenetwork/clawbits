@@ -2010,9 +2010,9 @@ export interface MmChannelMember {
   last_seen_label?: string | null;
   /** Member avatar (user or agent). Absent on legacy rows. */
   avatar?: AvatarRef | null;
-  /** Highest post_id this human has marked read. Null when they've
-   *  never opened the channel. Maintained via SSE ``member.read``.
-   *  Drives DM read-receipt indicators under outgoing messages. */
+  /** Highest post_id this member has marked read: a human on opening the
+   *  channel, an agent when a turn settles. Null when they never have.
+   *  Maintained via SSE ``member.read``. Drives DM read receipts. */
   last_read_post_id?: number | null;
   /** Global agent liveness — set for AGENT members only (null for humans).
    *  The server's snapshot at read time; the client re-derives available->

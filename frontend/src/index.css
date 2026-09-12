@@ -51,8 +51,9 @@
    * measures 3.84:1 and 4.73:1. --signal-deep is the hover/pressed step.
    *
    * THE FENCE, and it is the whole reason this is safe to ship: --signal marks
-   * NAVIGATION INTENT. It never marks status, and it never fills a control that
-   * performs an action. It sits 18 deg from --destructive, which is separation
+   * NAVIGATION INTENT, and it never fills a control that performs an action.
+   * The one status it marks is the sidebar's replying spinner, by Dmytro's
+   * call: a moving ring reads as activity, not as an error. It sits 18 deg from --destructive, which is separation
    * enough only because the two can never appear in the same role. Specifically
    * it does NOT take: --primary (the send button, the compose FAB - the landing
    * keeps its accent off every button too), --ring (see the focus floor below;
