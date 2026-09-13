@@ -84,42 +84,39 @@ export default function SettingsPrivacyPage() {
   const settings = settingsQuery.data;
 
   return (
-    <div>
+    <SettingsPage>
       <PageHeader icon={LockShieldIcon} title="Privacy" />
-
-      <SettingsPage>
-        {settingsQuery.isError ? (
-          <SettingsSection>
-            <SettingsRow
-              title="Couldn't load privacy settings"
-              error={errMsg(settingsQuery.error)}
-            />
+      {settingsQuery.isError ? (
+        <SettingsSection>
+          <SettingsRow
+            title="Couldn't load privacy settings"
+            error={errMsg(settingsQuery.error)}
+          />
+        </SettingsSection>
+      ) : (
+        SECTIONS.map(section => (
+          <SettingsSection key={section.label} label={section.label} footer={section.footer}>
+            {section.rows.map(row => (
+              <SettingsRow
+                key={row.key}
+                title={row.title}
+                description={row.description}
+                htmlFor={`privacy-${row.key}`}
+                control={
+                  <Switch
+                    id={`privacy-${row.key}`}
+                    checked={settings?.[row.key] ?? true}
+                    disabled={!settings || mutation.isPending}
+                    onCheckedChange={(next) => {
+                      mutation.mutate({ [row.key]: next });
+                    }}
+                  />
+                }
+              />
+            ))}
           </SettingsSection>
-        ) : (
-          SECTIONS.map(section => (
-            <SettingsSection key={section.label} label={section.label} footer={section.footer}>
-              {section.rows.map(row => (
-                <SettingsRow
-                  key={row.key}
-                  title={row.title}
-                  description={row.description}
-                  htmlFor={`privacy-${row.key}`}
-                  control={
-                    <Switch
-                      id={`privacy-${row.key}`}
-                      checked={settings ? settings[row.key] : true}
-                      disabled={!settings || mutation.isPending}
-                      onCheckedChange={(next: boolean) => {
-                        mutation.mutate({ [row.key]: next });
-                      }}
-                    />
-                  }
-                />
-              ))}
-            </SettingsSection>
-          ))
-        )}
-      </SettingsPage>
-    </div>
+        ))
+      )}
+    </SettingsPage>
   );
 }

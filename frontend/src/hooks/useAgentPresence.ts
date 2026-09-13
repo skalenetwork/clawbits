@@ -1,65 +1,60 @@
-import { createContext, useContext } from "react";
+import { useSyncExternalStore } from "react";
 import { agentLivenessStatus } from "@/lib/agentLiveness";
 import type { AgentLivenessStatus } from "@/lib/api";
 
-/**
- * Global liveness for every agent this session has heard about.
- *
- * Keyed by ``agent_id`` -> the agent's raw ``last_alive_at`` (ISO string) or
- * ``null`` (known but never pinged => "setup"). A *missing* key means "unknown"
- * and renders as offline. Updated by ``AgentPresenceProvider`` from:
- *
- *   - the ``agent.status`` SSE event (channel + per-user fan-out), and
- *   - member-list payloads, which carry ``last_alive_at`` per agent member.
- *
- * Unlike human presence, an agent's available/offline split is *time-derived*:
- * the provider ticks a clock so the dot flips to offline when the window
- * elapses, with no server event for the negative transition.
- */
-export interface AgentPresenceState {
-  byAgentId: Map<string, string | null>;
-  /** Clock (ms) bumped on an interval so time-derived statuses re-evaluate. */
-  now: number;
+const CLOCK_MS = 30_000;
+
+export interface AgentPresence {
+  agentId: string;
+  lastAliveAt: string | null;
 }
 
-export interface AgentPresenceContextValue {
-  state: AgentPresenceState;
-  /** Insert/replace one agent's last_alive_at. Called by the SSE handler. */
-  set: (agentId: string, lastAliveAt: string | null) => void;
-  /** Bulk-seed from a member-list payload. */
-  seed: (entries: { agentId: string; lastAliveAt: string | null }[]) => void;
+let aliveByAgent: ReadonlyMap<string, string | null> = new Map();
+let now = Date.now();
+let clock: number | undefined;
+const listeners = new Set<() => void>();
+
+function notify(): void {
+  for (const listener of listeners) listener();
 }
 
-export const AgentPresenceContext = createContext<AgentPresenceContextValue | null>(null);
-
-export function useAgentPresence(): AgentPresenceContextValue {
-  const ctx = useContext(AgentPresenceContext);
-  if (!ctx) {
-    throw new Error("useAgentPresence must be used within an AgentPresenceProvider");
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  if (clock === undefined) {
+    now = Date.now();
+    clock = window.setInterval(() => {
+      now = Date.now();
+      notify();
+    }, CLOCK_MS);
   }
-  return ctx;
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size > 0) return;
+    window.clearInterval(clock);
+    clock = undefined;
+  };
 }
 
-/**
- * One agent's derived global liveness. Returns "offline" when the agent is
- * unknown (no entry yet). Re-derives on the provider's clock tick, so an
- * "available" agent flips to "offline" once its last ping ages past the window.
- *
- * ``fallbackLastAliveAt`` is a snapshot from an already-fetched payload (agent
- * list / profile). It's used only while the provider has no entry for this
- * agent — the seeding effect runs after render, so without it a cold load
- * would flash the dot offline for a frame. Once seeded (or updated over SSE),
- * the provider's value wins.
- */
+export function updateAgentPresence(entries: readonly AgentPresence[]): void {
+  let next: Map<string, string | null> | null = null;
+  for (const { agentId, lastAliveAt } of entries) {
+    const current = next ?? aliveByAgent;
+    if (current.has(agentId) && current.get(agentId) === lastAliveAt) continue;
+    next ??= new Map(aliveByAgent);
+    next.set(agentId, lastAliveAt);
+  }
+  if (!next) return;
+  aliveByAgent = next;
+  notify();
+}
+
 export function useAgentStatus(
   agentId: string | null | undefined,
   fallbackLastAliveAt?: string | null,
 ): AgentLivenessStatus {
-  const ctx = useContext(AgentPresenceContext);
-  if (!ctx || agentId == null) return "offline";
-  if (ctx.state.byAgentId.has(agentId)) {
-    return agentLivenessStatus(ctx.state.byAgentId.get(agentId) ?? null, ctx.state.now);
-  }
-  if (fallbackLastAliveAt === undefined) return "offline";
-  return agentLivenessStatus(fallbackLastAliveAt, ctx.state.now);
+  return useSyncExternalStore(subscribe, () => {
+    if (agentId == null) return "offline";
+    if (aliveByAgent.has(agentId)) return agentLivenessStatus(aliveByAgent.get(agentId) ?? null, now);
+    return fallbackLastAliveAt === undefined ? "offline" : agentLivenessStatus(fallbackLastAliveAt, now);
+  });
 }

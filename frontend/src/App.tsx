@@ -1,20 +1,17 @@
-import { lazy, Suspense, useMemo } from "react";
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { lazy, Suspense } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { Loading02Icon } from "@hugeicons/core-free-icons";
 import { Icon } from "./components/Icon";
 import { queryClient } from "./lib/queryClient";
-import { AuthProvider, useAuth } from "./context/AuthContext";
+import { AuthProvider } from "./context/AuthContext";
 import { useGlobalEvents } from "./hooks/useGlobalEvents";
-import { selfMentionTokens } from "./lib/mentions";
 import { useViewportVars } from "./hooks/useViewportVars";
 import { ThemeProvider } from "./hooks/useTheme";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { Toaster } from "./components/ui/sonner";
 import { ConfirmHost } from "./lib/ConfirmHost";
-import { UserPresenceProvider } from "./components/UserPresenceProvider";
-import { AgentPresenceProvider } from "./components/AgentPresenceProvider";
 import AppLayout from "./layouts/AppShell";
 import GuestOnly from "./components/GuestOnly";
 import RequireAuth from "./components/RequireAuth";
@@ -28,10 +25,8 @@ import { CommandPalette } from "./components/command/CommandPalette";
 import { CreateDialogs } from "./components/command/CreateDialogs";
 import { UpdateProvider } from "./context/UpdateContext";
 
-// One chunk per route: the entry bundle carries the shell, the providers and
-// the shared libraries, and a page's code arrives when it is first visited.
-// Navigations run inside a transition, so the current screen stays put while
-// the next one loads and the fallback is only ever seen on a cold load.
+const loadAgentHomePage = () => import("./pages/AgentHomePage");
+const loadChannelPage = () => import("./pages/ChannelPage");
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
 const ReefSetupPage = lazy(() => import("./pages/ReefSetupPage"));
@@ -44,8 +39,8 @@ const AgentInboxPage = lazy(() => import("./pages/AgentInboxPage"));
 const AgentAutomationsPage = lazy(() => import("./pages/AgentAutomationsPage"));
 const AgentAutomationDetailPage = lazy(() => import("./pages/AgentAutomationDetailPage"));
 const AgentManagePage = lazy(() => import("./pages/AgentManagePage"));
-const AgentHomePage = lazy(() => import("./pages/AgentHomePage"));
-const ChannelPage = lazy(() => import("./pages/ChannelPage"));
+const AgentHomePage = lazy(loadAgentHomePage);
+const ChannelPage = lazy(loadChannelPage);
 const OrgMembersPage = lazy(() => import("./pages/OrgMembersPage"));
 const OrgUsagePage = lazy(() => import("./pages/OrgUsagePage"));
 const SettingsMenuPage = lazy(() => import("./pages/SettingsMenuPage"));
@@ -64,50 +59,27 @@ const SkillDetailPage = lazy(() => import("./pages/SkillDetailPage"));
 const SkillsPage = lazy(() => import("./pages/SkillsPage"));
 const AutomationDetailPage = lazy(() => import("./pages/AutomationDetailPage"));
 
-/**
- * App-level realtime subscription. Mounted once inside the router (above every
- * route) so the per-user SSE stream — new-message events, sidebar unread
- * counts, cross-tab read/mute sync, channel add/remove — stays connected on
- * EVERY page (home, social, settings, agent profiles…), not just inside
- * the app shell. Gated on auth, so it stays idle on the login/public routes.
- */
-function GlobalRealtime() {
-  const { user } = useAuth();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const activeChannelId = /^\/channels\/([^/]+)/.exec(location.pathname)?.[1] ?? null;
-  // Stable per-user token set so the SSE handler can flag posts that mention
-  // the viewer (or @here) and bump the sidebar's mention badge live.
-  const selfTokens = useMemo(() => selfMentionTokens(user), [user]);
-  useGlobalEvents({
-    currentUserId: user?.id ?? null,
-    selfMentionTokens: selfTokens,
-    activeChannelId,
-    enabled: Boolean(user),
-    onChannelRemoved: () => { void navigate("/home"); },
-  });
-  return null;
-}
-
-function RouteFallback() {
-  return (
-    <div className="flex min-h-dvh items-center justify-center">
-      <Icon icon={Loading02Icon} className="size-5 animate-spin text-muted-foreground" />
-    </div>
-  );
-}
+// A cold load starts its landing page's chunk alongside the auth check, so the page is ready when the shell mounts.
+if (window.location.pathname.startsWith("/channels/")) void loadChannelPage();
+else if (["/", "/home"].includes(window.location.pathname)) void loadAgentHomePage();
 
 function AppShell() {
   useDesktopNav();
+  useGlobalEvents();
   return (
     <>
       <Analytics />
       <DesktopTitleBar />
       <ScrollToTop />
-      <GlobalRealtime />
       <CommandPalette />
       <CreateDialogs />
-      <Suspense fallback={<RouteFallback />}>
+      <Suspense
+        fallback={
+          <div className="flex min-h-dvh items-center justify-center">
+            <Icon icon={Loading02Icon} className="size-5 animate-spin text-muted-foreground" />
+          </div>
+        }
+      >
         <Routes>
           <Route element={<GuestOnly />}>
             <Route path="/login" element={<LoginPage />} />
@@ -116,7 +88,6 @@ function AppShell() {
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/changelog" element={<ChangelogPage />} />
-          {/* Full-screen setup: the app's identity, none of its chrome. */}
           <Route element={<RequireAuth />}>
             <Route path="/setup/reef" element={<ReefSetupPage />} />
             <Route path="/setup/agent" element={<AgentSetupPage />} />
@@ -124,13 +95,8 @@ function AppShell() {
           <Route element={<AppLayout />}>
             <Route path="/home" element={<AgentHomePage />} />
             <Route path="/agents" element={<SettingsAgentsPage />} />
-            {/* One layout route fetches the agent profile once + shares it with
-                every subpage; the four pages keep their own URLs (deep links) but
-                shed the per-page sanitize/query/guard boilerplate. */}
             <Route path="/agents/:agentId" element={<AgentShell />}>
               <Route index element={<AgentCardPage />} />
-              {/* Optional :uid — the open message lives in the URL; one route
-                  object means selection changes never remount the page. */}
               <Route path="inbox/:uid?" element={<AgentInboxPage />} />
               <Route path="automations" element={<AgentAutomationsPage />} />
               <Route path="automations/:automationId" element={<AgentAutomationDetailPage />} />
@@ -153,9 +119,7 @@ function AppShell() {
             <Route path="/settings/channels" element={<SettingsChannelsPage />} />
             <Route path="/settings/lobstertalk" element={<SettingsLobstertalkPage />} />
             <Route path="/settings/reef" element={<SettingsReefPage />} />
-            {/* NOT dead: agent_signup.py mints this exact path into every
-                approval_url. Remove only after the backend mints /agents
-                and no in-flight approval links remain. */}
+            {/* agent_signup.py mints this path into every approval_url. */}
             <Route path="/settings/agents" element={<Navigate to="/agents" replace />} />
           </Route>
           <Route path="*" element={<Navigate to="/home" replace />} />
@@ -169,28 +133,22 @@ export default function App() {
   useViewportVars();
   return (
     <ThemeProvider>
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <UserPresenceProvider>
-        <AgentPresenceProvider>
-        <TooltipProvider>
-          <Toaster />
-          <ConfirmHost />
-          <BrowserRouter>
-            <ShortcutProvider>
-              <UpdateProvider>
-                <AppShell />
-              </UpdateProvider>
-            </ShortcutProvider>
-          </BrowserRouter>
-        </TooltipProvider>
-        </AgentPresenceProvider>
-        </UserPresenceProvider>
-      </AuthProvider>
-      {/* Explicit DEV literal so the bundler drops this from production: the
-          devtools panel renders the whole query cache. */}
-      {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
-    </QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <TooltipProvider>
+            <Toaster />
+            <ConfirmHost />
+            <BrowserRouter>
+              <ShortcutProvider>
+                <UpdateProvider>
+                  <AppShell />
+                </UpdateProvider>
+              </ShortcutProvider>
+            </BrowserRouter>
+          </TooltipProvider>
+        </AuthProvider>
+        {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
+      </QueryClientProvider>
     </ThemeProvider>
   );
 }

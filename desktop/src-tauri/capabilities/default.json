@@ -8,12 +8,9 @@
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "deep-link:default",
+    "core:window:allow-set-theme",
     "shell:allow-open",
-    "notification:default",
-    "global-shortcut:default",
     "updater:default",
-    "process:default",
-    "autostart:default"
+    "process:default"
   ]
 }

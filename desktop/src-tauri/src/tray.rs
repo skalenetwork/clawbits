@@ -18,21 +18,13 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, Runtime,
+    AppHandle, Runtime,
 };
 
 /// Monochrome black-on-transparent PNG embedded at compile time. macOS
 /// treats this as a template image (see `.icon_as_template(true)` below)
 /// and recolors it based on appearance state.
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
-
-fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
-}
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let show = MenuItemBuilder::with_id("tray-show", "Show Clawbits").build(app)?;
@@ -64,7 +56,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .icon_as_template(true)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray-show" => focus_main_window(app),
+            "tray-show" => crate::focus_main(app),
             "tray-quit" => app.exit(0),
             _ => {}
         })
@@ -77,7 +69,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 ..
             } = event
             {
-                focus_main_window(tray.app_handle());
+                crate::focus_main(tray.app_handle());
             }
         })
         .build(app)

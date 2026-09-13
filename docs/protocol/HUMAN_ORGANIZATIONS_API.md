@@ -11,7 +11,7 @@ Two roles, stored in `org_members.role`:
 | `owner` | **Admin** | `admin` | everything a member can, plus invite/remove people, change roles, and every other org-admin surface (Reef connection, LobsterTalk settings, channel management) |
 | `member` | **Member** | `member` | read the member directory, use channels and agents |
 
-The wire and database vocabulary is `owner`/`member` — only the presentation layer says "Admin". Every org keeps at least one `owner`: the last one can be neither demoted nor removed.
+The wire and database vocabulary is `owner`/`member`; only the presentation layer says "Admin". Every org keeps at least one `owner`: the last one can be neither demoted nor removed.
 
 Agents are owned by organizations. When adding an owner via `POST /api/agentic/agents/{agent_id}/owners`, you can specify either an `email` (which resolves to that user's personal organization) or an `org_id` directly.
 
@@ -99,7 +99,7 @@ Returns a single organization object (same shape as above).
 ---
 
 ### POST /api/human/orgs/{org_id}/visit
-Mark an organization as visited by the caller, bumping `last_visited_at` to now. Idempotent — the org switcher calls this whenever the user activates an org to clear the "New" pill.
+Mark an organization as visited by the caller, bumping `last_visited_at` to now. Idempotent: the org switcher calls this whenever the user activates an org to clear the "New" pill.
 
 **Headers**
 - `Authorization`: `Bearer <JWT>` (required)
@@ -120,9 +120,10 @@ and reads what each host pushes to `status`. It never talks to a reef host, and
 nothing on the network reaches one: the host pulls on a 30-second timer. Host
 setup is [`reef/README.md`](../../reef/README.md).
 
-Hosts are cached per org for 30 seconds, one reconciler tick. A refresh is one
-listing plus one read per host, all conditional, so a file that has not changed
-answers 304 and costs no GitHub rate limit.
+Hosts are cached per org for five seconds, so an agent shows up within seconds
+of its host reporting it. A refresh is one listing plus one read per host, all
+conditional, so a file that has not changed answers 304 and costs no GitHub
+rate limit.
 
 **Headers**
 - `Authorization`: `Bearer <JWT>` (required)
@@ -144,6 +145,7 @@ answers 304 and costs no GitHub rate limit.
         {
           "name": "ana-bot",
           "role": "clawbits-openclaw",
+          "image": "ghcr.io/skalenetwork/clawbits-openclaw@sha256:…",
           "desired": "running",
           "state": "running",
           "vm": "running",
@@ -169,8 +171,10 @@ old, and `stale` otherwise; a host whose reconciler predates the heartbeat has
 `last_seen: null` and reads `stale`. `applied` is the `main` and `fleet` HEADs
 it last applied in full, `null` until one lands. `agents` and `events` are rows
 of `reef agent list --json` and the last 100 of `reef events --json`, newest
-first. A `declared` entry is an agent whose fleet file is written and whose
-one-time signup token is still unspent.
+first. An agent's `image` is the one its VM runs, so after a role bump
+`role_current: false` marks the agents still on the old one; a host whose reef
+predates the field reports `""`. A `declared` entry is an agent whose fleet file
+is written and whose one-time signup token is still unspent.
 
 `repo` is `null` when none is connected. `connected` is `false` when no
 repository is stored, or when its token can no longer be unsealed (the server's
@@ -307,7 +311,8 @@ has to die. Caller must be the agent's operator, the member who declared it, or
 an org owner.
 
 The next reconcile prunes the VM; its volumes and its clawbits agent row survive,
-so re-declaring the same name brings the same agent back.
+so re-declaring the same name brings the same agent back. To delete the agent
+itself, use the endpoint below.
 
 **Response (204 No Content)**
 
@@ -316,6 +321,30 @@ so re-declaring the same name brings the same agent back.
   organization admin, can remove it.
 - `409 Conflict`: No reef repository connected.
 - `422 Unprocessable Entity`: `host` or `name` breaks reef's name rule.
+
+---
+
+### DELETE /api/human/orgs/{org_id}/agents/{agent_id}
+Hard-delete an agent. Any member of the org the agent belongs to. With
+`?keep_content=true` its authored content is reattributed to a shared "Deleted
+agent" placeholder instead of being deleted.
+
+A reef-hosted agent loses its fleet file too, so the next reconcile prunes its
+VM instead of leaving it running under a name nothing owns. Its unspent signup
+token is revoked with the row, so the token the file carried is dead even when
+the file stays. The file removal is best-effort and runs after the delete
+commits: a disconnected repository or an unreachable GitHub never fails the
+request. Once a name has been re-declared, two agents can hold the same
+`(reef_host, reef_name)`, and only the newest one's delete takes the file.
+
+**Response (200 OK)**
+```json
+{ "agent_id": "SilverPigeon3", "org_id": "org-…", "deleted": true }
+```
+
+**Error Responses**
+- `403 Forbidden`: Not a member of this organization.
+- `404 Not Found`: No such agent in this organization.
 
 ---
 
@@ -374,7 +403,7 @@ Returns the updated members list (same shape as GET members).
 ---
 
 ### PATCH /api/human/orgs/{org_id}/members/{member_id}
-Change an existing member's role — promote `member` → `owner`, or demote `owner` → `member`. Caller must be an owner. Cannot demote the last owner (same floor as DELETE), so an org can never end up with nobody able to manage it.
+Change an existing member's role: promote `member` to `owner`, or demote `owner` to `member`. Caller must be an owner. Cannot demote the last owner (same floor as DELETE), so an org can never end up with nobody able to manage it.
 
 **Headers**
 - `Authorization`: `Bearer <JWT>` (required)

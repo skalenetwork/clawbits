@@ -40,22 +40,17 @@ function normalizeLang(raw: string | null): SupportedLang | null {
   return lower in LANG_LABELS ? (lower as SupportedLang) : (LANG_ALIASES[lower] ?? null);
 }
 
-function labelFor(raw: string | null, lang: SupportedLang | null): string {
-  if (lang) return LANG_LABELS[lang];
-  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : "Text";
-}
-
-// Fine-grained shiki core, so the bundle carries only these grammars and
-// themes; the first code block of the session loads it.
+// Fine-grained shiki core, so the bundle carries only these grammars and themes.
 type ShikiHighlighter = Awaited<ReturnType<typeof import("shiki/core").createHighlighterCore>>;
 let highlighterPromise: Promise<ShikiHighlighter> | null = null;
+let highlighterReady: ShikiHighlighter | null = null;
 function getHighlighter(): Promise<ShikiHighlighter> {
   highlighterPromise ??= (async () => {
     const [{ createHighlighterCore }, { createOnigurumaEngine }] = await Promise.all([
       import("shiki/core"),
       import("shiki/engine/oniguruma"),
     ]);
-    return createHighlighterCore({
+    highlighterReady = await createHighlighterCore({
       themes: [import("@shikijs/themes/vitesse-light"), import("@shikijs/themes/vitesse-dark")],
       langs: [
         import("@shikijs/langs/javascript"),
@@ -77,16 +72,11 @@ function getHighlighter(): Promise<ShikiHighlighter> {
       ],
       engine: createOnigurumaEngine(import("shiki/wasm")),
     });
+    return highlighterReady;
   })();
   return highlighterPromise;
 }
 
-// Once loaded, later blocks highlight synchronously on first paint.
-let highlighterReady: ShikiHighlighter | null = null;
-void getHighlighter().then((h) => { highlighterReady = h; });
-
-/** Vitesse light recolored to crimson keywords, orange functions, plum
- *  numbers and ink punctuation; dark stays stock. */
 const RECOLOR = {
   "vitesse-light": {
     "#ab5959": "#9d1f3f",
@@ -97,59 +87,33 @@ const RECOLOR = {
   },
 };
 
-// defaultColor:false emits --shiki-light/--shiki-dark per token, switched by the .dark class in index.css.
-const highlight = (h: ShikiHighlighter, code: string, lang: SupportedLang) =>
-  h.codeToHtml(code, {
-    lang,
-    themes: { light: "vitesse-light", dark: "vitesse-dark" },
-    defaultColor: false,
-    colorReplacements: RECOLOR,
-  });
-
 export const CODE_BODY = "overflow-x-auto px-4 pb-3 font-mono text-[13px] leading-[1.7]";
 const LINE_PX = 13 * 1.7;
-const HEADER_PX = 32;
-const PAD_BOTTOM_PX = 12;
+const CHROME_PX = 32 + 12;
 
-// The plain <pre> and the highlighted html share metrics, so reserving the
-// final height keeps the async highlight swap from shifting the chat.
-function reservedHeight(code: string): number {
-  const lines = code === "" ? 1 : code.split("\n").length;
-  return Math.ceil(HEADER_PX + PAD_BOTTOM_PX + lines * LINE_PX);
-}
-
-export function CodeBlock({
-  code,
-  lang,
-  bare = false,
-}: {
-  code: string;
-  /** Raw language hint from the markdown fence (e.g. "ts", "python"). */
-  lang: string | null;
-  /** Just the highlighted code, no card chrome: the attachment viewer's reading surface. */
-  bare?: boolean;
-}) {
+export function CodeBlock({ code, lang, bare = false }: { code: string; lang: string | null; bare?: boolean }) {
   const normalized = normalizeLang(lang);
   const [highlighter, setHighlighter] = useState(highlighterReady);
   const [copied, setCopied] = useState(false);
-  const html = highlighter && normalized ? highlight(highlighter, code, normalized) : null;
+  // defaultColor:false emits --shiki-light/--shiki-dark per token, switched by the .dark class in index.css.
+  const html = highlighter && normalized
+    ? highlighter.codeToHtml(code, {
+        lang: normalized,
+        themes: { light: "vitesse-light", dark: "vitesse-dark" },
+        defaultColor: false,
+        colorReplacements: RECOLOR,
+      })
+    : null;
 
   useEffect(() => {
-    if (highlighter || !normalized) return;
-    let cancelled = false;
-    void getHighlighter().then((h) => {
-      if (!cancelled) setHighlighter(h);
-    });
-    return () => {
-      cancelled = true;
-    };
+    if (!highlighter && normalized) void getHighlighter().then(setHighlighter);
   }, [highlighter, normalized]);
 
   const onCopy = async () => {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
-      window.setTimeout(() => { setCopied(false); }, 1600);
+      setTimeout(() => { setCopied(false); }, 1600);
     } catch {
       // Clipboard blocked (insecure context or denied): the text stays selectable.
     }
@@ -165,20 +129,21 @@ export function CodeBlock({
     );
   }
 
+  const copyLabel = copied ? "Copied" : "Copy code";
   return (
     <CodeFrame
       lang={lang}
-      minHeight={reservedHeight(code)}
+      minHeight={Math.ceil(CHROME_PX + code.split("\n").length * LINE_PX)}
       action={
-    <button
-      type="button"
-      onClick={() => { void onCopy(); }}
-      title={copied ? "Copied" : "Copy code"}
-      aria-label={copied ? "Copied" : "Copy code"}
-      className="flex size-6 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[color,opacity,background-color] hover:bg-foreground/[0.07] hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none group-hover/code:opacity-100 max-md:opacity-100"
-    >
-      <Icon icon={copied ? Tick02Icon : Copy01Icon} className="size-3.5" />
-    </button>
+        <button
+          type="button"
+          onClick={() => { void onCopy(); }}
+          title={copyLabel}
+          aria-label={copyLabel}
+          className="flex size-6 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[color,opacity,background-color] hover:bg-foreground/[0.07] hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none group-hover/code:opacity-100 max-md:opacity-100"
+        >
+          <Icon icon={copied ? Tick02Icon : Copy01Icon} className="size-3.5" />
+        </button>
       }
     >
       {html ? (
@@ -192,7 +157,6 @@ export function CodeBlock({
   );
 }
 
-/** The code surface and its language row, shared with the streaming tail so a settling block never shifts. */
 export function CodeFrame({
   lang,
   action,
@@ -204,14 +168,15 @@ export function CodeFrame({
   minHeight?: number;
   children: ReactNode;
 }) {
+  const normalized = normalizeLang(lang);
   return (
     <div
-      className="code-block group/code relative my-2.5 overflow-hidden rounded-xl bg-code ring-1 ring-inset ring-code-border"
-      style={minHeight ? { minHeight: `${String(minHeight)}px` } : undefined}
+      className="group/code relative my-2.5 overflow-hidden rounded-xl bg-code ring-1 ring-inset ring-code-border"
+      style={{ minHeight }}
     >
       <div className="flex h-8 items-center justify-between pr-1.5 pl-4">
-        <span className="code-block-lang select-none text-[11px] font-medium text-muted-foreground">
-          {labelFor(lang, normalizeLang(lang))}
+        <span className="select-none text-[11px] font-medium text-muted-foreground">
+          {normalized ? LANG_LABELS[normalized] : lang ? lang.charAt(0).toUpperCase() + lang.slice(1) : "Text"}
         </span>
         {action}
       </div>

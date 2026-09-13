@@ -64,64 +64,61 @@ export default function SettingsNotificationsPage() {
     };
 
     return (
-        <div>
+        <SettingsPage>
             <PageHeader icon={Bell} title="Notifications" />
-
-            <SettingsPage>
-                <SettingsSection
-                    label="Push notifications"
-                    footer={deliveryReport(diagnostics)}
-                >
-                    {isDesktop ? (
-                        <SettingsRow
-                            title="System notifications"
-                            description="Uses your system notifications. Send a test to check they arrive"
-                            control={
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={testing}
-                                    onClick={() => { void handleTest(); }}
-                                >
-                                    Send a test
-                                </Button>
-                            }
-                        />
-                    ) : push.status === "install-required" ? (
-                        <SettingsRow
-                            leading={<Icon icon={ShareUp} className="size-5 text-muted-foreground" />}
-                            title="Add Clawbits to your Home Screen"
-                            description={
-                                <>
-                                    iPhone and iPad only deliver web notifications to the installed
-                                    app. In Safari, tap Share, choose{" "}
-                                    <span className="font-medium text-foreground">Add to Home Screen</span>,
-                                    then open Clawbits from its icon and turn notifications on here.
-                                    Requires iOS or iPadOS 16.4 or later.
-                                </>
-                            }
-                        />
-                    ) : (
-                        <SettingsRow
-                            title="Enable on this device"
-                            description={PUSH_DESCRIPTION[push.status]}
-                            htmlFor="push-notifications"
-                            control={
-                                <Switch
-                                    id="push-notifications"
-                                    checked={push.status === "enabled"}
-                                    disabled={
-                                        push.busy
-                                        || !["prompt", "enabled"].includes(push.status)
-                                    }
-                                    onCheckedChange={(next: boolean) => { void handleToggle(next); }}
-                                />
-                            }
-                        />
-                    )}
-                </SettingsSection>
-            </SettingsPage>
-        </div>
+            <SettingsSection
+                label="Push notifications"
+                footer={deliveryReport(diagnostics)}
+            >
+                {isDesktop ? (
+                    <SettingsRow
+                        title="System notifications"
+                        description="Uses your system notifications. Send a test to check they arrive"
+                        control={
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={testing}
+                                onClick={() => { void handleTest(); }}
+                            >
+                                Send a test
+                            </Button>
+                        }
+                    />
+                ) : push.status === "install-required" ? (
+                    <SettingsRow
+                        leading={<Icon icon={ShareUp} className="size-5 text-muted-foreground" />}
+                        title="Add Clawbits to your Home Screen"
+                        description={
+                            <>
+                                iPhone and iPad only deliver web notifications to the installed
+                                app. In Safari, tap Share, choose{" "}
+                                <span className="font-medium text-foreground">Add to Home Screen</span>,
+                                then open Clawbits from its icon and turn notifications on here.
+                                Requires iOS or iPadOS 16.4 or later.
+                            </>
+                        }
+                    />
+                ) : (
+                    <SettingsRow
+                        title="Enable on this device"
+                        description={PUSH_DESCRIPTION[push.status]}
+                        htmlFor="push-notifications"
+                        control={
+                            <Switch
+                                id="push-notifications"
+                                checked={push.status === "enabled"}
+                                disabled={
+                                    push.busy
+                                    || !["prompt", "enabled"].includes(push.status)
+                                }
+                                onCheckedChange={(next) => { void handleToggle(next); }}
+                            />
+                        }
+                    />
+                )}
+            </SettingsSection>
+        </SettingsPage>
     );
 }
 

@@ -1,34 +1,20 @@
-/**
- * The home tile system: glyph, label, value, on a two-width grid.
- *
- * A `rounded-*` corner is a circular arc and reads visibly rounder at the
- * tangent, which is what makes an icon look foreign next to a native one. So
- * the squircle is a real superellipse (|x|^n + |y|^n = 1 at n = 5, the
- * continuous-corner curve Apple's icon shape approximates), generated once
- * into a `clipPath` in objectBoundingBox units so one definition fits any size.
- */
-import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from "react";
+import {useEffect, useState, type ReactNode} from "react";
 import {Link, useNavigate} from "react-router-dom";
 import {Tooltip, TooltipContent, TooltipTrigger} from "@/components/ui/tooltip";
+import {useLatestRef} from "@/hooks/useLatestRef";
 import {cn} from "@/lib/utils";
 
 const CLIP_ID = "cb-squircle";
 const RIM_ID = "cb-squircle-rim";
 
-function squirclePath(n = 5, steps = 160): string {
-    const pts: string[] = [];
-    for (let i = 0; i < steps; i++) {
-        const t = (i / steps) * Math.PI * 2;
-        const c = Math.cos(t);
-        const s = Math.sin(t);
-        const x = 0.5 + 0.5 * Math.sign(c) * Math.abs(c) ** (2 / n);
-        const y = 0.5 + 0.5 * Math.sign(s) * Math.abs(s) ** (2 / n);
-        pts.push(`${x.toFixed(5)},${y.toFixed(5)}`);
-    }
-    return `M${pts.join("L")}Z`;
-}
-
-const SQUIRCLE_D = squirclePath();
+/** A superellipse (|x|^5 + |y|^5 = 1), the continuous corner of a native icon: a `rounded-*` arc reads visibly
+ *  rounder. In objectBoundingBox units, so one path fits every size. */
+const SQUIRCLE_D = `M${Array.from({length: 160}, (_, i) => {
+    const t = (i / 160) * Math.PI * 2;
+    const x = 0.5 + 0.5 * Math.sign(Math.cos(t)) * Math.abs(Math.cos(t)) ** 0.4;
+    const y = 0.5 + 0.5 * Math.sign(Math.sin(t)) * Math.abs(Math.sin(t)) ** 0.4;
+    return `${x.toFixed(5)},${y.toFixed(5)}`;
+}).join("L")}Z`;
 
 /** Mount once per page that uses `Squircle`. Renders nothing visible. */
 export function SquircleDefs() {
@@ -56,32 +42,22 @@ const DOME =
     "radial-gradient(116% 74% at 50% -16%, oklch(1 0 0 / 0.30), oklch(1 0 0 / 0.05) 46%, transparent 66%)," +
     "linear-gradient(180deg, oklch(1 0 0 / 0.09), transparent 52%)";
 
-interface SquircleProps {
-    size?: number;
-    /** Off for a native icon asset: it carries its own depth, and our sheen
-     *  stacked on top of that reads as a smudge. */
-    glass?: boolean;
-    className?: string;
-    style?: CSSProperties;
-    children: ReactNode;
-}
-
 export function Squircle({
     size = 42,
     glass = true,
     className,
-    style,
     children,
-}: SquircleProps) {
+}: {
+    size?: number;
+    /** Off for a native icon asset: it carries its own depth, and the sheen on top reads as a smudge. */
+    glass?: boolean;
+    className?: string;
+    children: ReactNode;
+}) {
     return (
         <span
             className={cn("relative grid shrink-0 place-items-center", className)}
-            style={{
-                width: size,
-                height: size,
-                clipPath: `url(#${CLIP_ID})`,
-                ...style,
-            }}
+            style={{width: size, height: size, clipPath: `url(#${CLIP_ID})`}}
         >
             {children}
             {glass && (
@@ -91,10 +67,7 @@ export function Squircle({
                         className="pointer-events-none absolute inset-0"
                         style={{background: DOME}}
                     />
-                    {/* The stroke is centred on the path, so the clip keeps its
-                        inner half and the rim curves through the corners: an
-                        inset box-shadow would follow border-radius (zero here)
-                        and square them off. */}
+                    {/* A stroke on the clip path, not an inset box-shadow: a shadow follows border-radius and squares the corners. */}
                     <svg
                         aria-hidden="true"
                         viewBox="0 0 1 1"
@@ -122,22 +95,16 @@ const TILE_CLASS =
     "active:scale-[0.99] focus-visible:outline-2 " +
     "focus-visible:outline-offset-2 focus-visible:outline-ring";
 
-/** Keycap chrome: a real key in the command tile (`<kbd>`), a decorative hint
- *  elsewhere (`<span>`). Shared so the two never drift apart. */
+/** Keycap chrome: a real key in the command tile (`<kbd>`), a decorative hint elsewhere (`<span>`). */
 export const KEYCAP_CLASS =
     "grid h-8 min-w-8 place-items-center rounded-[10px] border border-border " +
     "bg-linear-to-b from-card to-background px-2 font-sans text-[15.5px] font-medium " +
     "text-muted-foreground transition-colors group-hover:text-foreground";
 
-/** Fires the tile on an unmodified digit press. Cmd-number already jumps to
- *  the nav and pinned chats, so plain digits are free. Stays out of the way
- *  of anything that owns the keyboard, so it can never eat a real shortcut. */
+/** Fires on an unmodified digit (⌘-digit already jumps to nav and pinned chats), never while anything else owns
+ *  the keyboard. */
 function useDigitShortcut(digit: number | undefined, run: () => void) {
-    const latest = useRef(run);
-    useEffect(() => {
-        latest.current = run;
-    });
-
+    const latest = useLatestRef(run);
     useEffect(() => {
         if (digit === undefined) return;
         const onKey = (e: KeyboardEvent) => {
@@ -156,20 +123,7 @@ function useDigitShortcut(digit: number | undefined, run: () => void) {
         return () => {
             window.removeEventListener("keydown", onKey);
         };
-    }, [digit]);
-}
-
-interface HomeTileProps {
-    glyph: ReactNode;
-    label: string;
-    value: string;
-    to?: string;
-    onClick?: () => void;
-    trailing?: ReactNode;
-    shortcut?: number;
-    /** Key label for the hover hint when the tile has no digit shortcut. */
-    hotkey?: string;
-    className?: string;
+    }, [digit, latest]);
 }
 
 export function HomeTile({
@@ -182,7 +136,18 @@ export function HomeTile({
     shortcut,
     hotkey,
     className,
-}: HomeTileProps) {
+}: {
+    glyph: ReactNode;
+    label: string;
+    value: string;
+    to?: string;
+    onClick?: () => void;
+    trailing?: ReactNode;
+    shortcut?: number;
+    /** Key label for the hover hint when the tile has no digit shortcut. */
+    hotkey?: string;
+    className?: string;
+}) {
     const navigate = useNavigate();
     const actionable = Boolean(to || onClick);
     const [side, setSide] = useState<"left" | "right">("right");
@@ -240,7 +205,7 @@ export function HomeTile({
             <TooltipContent side={side} sideOffset={12} collisionAvoidance={{side: "none"}} className="whitespace-nowrap">
                 <span>
                     Tip: just press{" "}
-                    <kbd className="inline-grid min-w-5 place-items-center rounded-md bg-background-solid/20 px-1 font-sans font-medium">
+                    <kbd className="inline-grid min-w-5 place-items-center rounded-md bg-background/20 px-1 font-sans font-medium">
                         {hint}
                     </kbd>
                 </span>

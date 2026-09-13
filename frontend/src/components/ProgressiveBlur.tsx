@@ -1,72 +1,29 @@
-import { type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 
-// Progressive (gradient) blur — the iOS status-bar / nav-scrim effect.
-//
-// A single ``backdrop-blur`` + mask only fades a *uniformly* blurred
-// layer in and out; the blur radius is constant, so content either side
-// of the mask is equally sharp/soft and you get a visible "blur stops
-// here" seam. A real progressive blur instead STACKS several layers,
-// each with a larger ``backdrop-filter: blur()`` radius and a mask that
-// confines it closer to the strong edge. Because each layer samples the
-// backdrop *including the already-blurred layers painted behind it*, the
-// blur compounds toward the edge — a smooth 0 → max ramp with no seam.
-//
-// Layer i (0 = gentlest) gets:
-//   - radius  = blur / 2^(layers-1-i)        → …, blur/4, blur/2, blur
-//   - a mask whose opaque band shrinks toward the strong edge, so the
-//     gentle layers cover the whole band while the strong ones only
-//     touch the very edge. The soft gradient stops keep the bands from
-//     banding into each other.
-//
-// Give the root its placement + height via ``className`` (and an
-// optional ``bg-gradient`` tint there — the layers sample it harmlessly).
+import { cn } from "@/lib/utils";
 
-interface ProgressiveBlurProps {
-  /** Placement, size, and any tint (e.g. a ``bg-gradient-*``). The
-   *  element is the blur band itself, so it needs absolute positioning
-   *  and a fixed extent along the blur axis. */
+const LAYERS = 5;
+
+/** A progressive blur: stacked backdrop blurs, each stronger and masked closer to `side`, so the blur ramps to the
+ *  edge instead of stopping on a seam. `blur` is the strongest layer's radius. */
+export function ProgressiveBlur({ className, side = "top", blur = 4, style }: {
   className?: string;
-  /** Edge where the blur is strongest; it ramps to zero at the opposite
-   *  edge. Default ``"top"``. */
   side?: "top" | "bottom";
-  /** Radius (px) of the strongest single layer. The *effective* edge
-   *  blur is a bit higher since the layers compound. Default ``4``. */
   blur?: number;
-  /** Number of stacked layers — more is smoother but costs a touch more
-   *  paint. Default ``5``. */
-  layers?: number;
   style?: CSSProperties;
-}
-
-export function ProgressiveBlur({
-  className,
-  side = "top",
-  blur = 4,
-  layers = 5,
-  style,
-}: ProgressiveBlurProps) {
-  // Mask runs from the strong edge (0%) toward the weak edge.
-  const dir = side === "top" ? "to bottom" : "to top";
+}) {
+  const direction = side === "top" ? "to bottom" : "to top";
   return (
     <div aria-hidden className={className} style={style}>
-      {Array.from({ length: layers }, (_, i) => {
-        const radius = blur / 2 ** (layers - 1 - i);
-        // reach: how far this layer extends from the strong edge.
-        // Gentlest (i=0) spans the whole band; strongest hugs the edge.
-        const reach = 1 - i / layers;
-        const solid = (reach * 50).toFixed(2);
-        const fade = (reach * 100).toFixed(2);
-        const mask = `linear-gradient(${dir}, #000 0%, #000 ${solid}%, transparent ${fade}%)`;
+      {Array.from({ length: LAYERS }, (_, i) => {
+        const reach = 1 - i / LAYERS;
+        const filter = `blur(${String(blur / 2 ** (LAYERS - 1 - i))}px)`;
+        const mask = `linear-gradient(${direction}, #000 0%, #000 ${(reach * 50).toFixed(2)}%, transparent ${(reach * 100).toFixed(2)}%)`;
         return (
           <div
             key={i}
             className="absolute inset-0"
-            style={{
-              backdropFilter: `blur(${String(radius)}px)`,
-              WebkitBackdropFilter: `blur(${String(radius)}px)`,
-              maskImage: mask,
-              WebkitMaskImage: mask,
-            }}
+            style={{ backdropFilter: filter, WebkitBackdropFilter: filter, maskImage: mask, WebkitMaskImage: mask }}
           />
         );
       })}
@@ -76,22 +33,23 @@ export function ProgressiveBlur({
 
 const mix = (color: string, pct: number) => `color-mix(in oklab, var(--${color}) ${String(pct)}%, transparent)`;
 
-/** A fade over the last `fade` of the box on an ease-out curve, so it thins out
- *  gently instead of ending on a visible line. */
-const easedFade = (stop: (pct: number) => string, fade: string) =>
-  `linear-gradient(to bottom, ${stop(100)} calc(100% - ${fade}), ${stop(60)} calc(100% - ${fade} * 0.6), ${stop(25)} calc(100% - ${fade} * 0.3), ${stop(8)} calc(100% - ${fade} * 0.1), transparent)`;
+const easedFade = (stop: (pct: number) => string, fade: string, side: "top" | "bottom") =>
+  `linear-gradient(to ${side === "top" ? "bottom" : "top"}, ${stop(100)} calc(100% - ${fade}), ${stop(60)} calc(100% - ${fade} * 0.6), ${stop(25)} calc(100% - ${fade} * 0.3), ${stop(8)} calc(100% - ${fade} * 0.1), transparent)`;
 
-/** The sidebar's sticky blurred footer, the bottom counterpart to `HeaderScrim`. */
-export const FOOTER_SCRIM =
-  "sticky bottom-0 z-10 -mx-2 mt-auto bg-sidebar/80 px-2 pt-3 pb-2 backdrop-blur-sm [mask-image:linear-gradient(to_top,#000_calc(100%_-_0.75rem),transparent)] supports-[backdrop-filter]:bg-sidebar/65";
+/** A sidebar's scroller between its fixed header and footer. Content fades out at the edges: no tint can hide it
+ *  over the macOS sidebar glass. */
+export const SIDEBAR_SCROLL =
+  "no-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-3 [mask-image:linear-gradient(to_bottom,transparent,#000_0.75rem,#000_calc(100%_-_0.75rem),transparent)]";
 
-/** The tinted, blurred scrim behind a header. By default it blurs
- *  progressively and eases out over 2rem of the content below; `inset` keeps a
- *  uniform blur inside the header and eases out in its bottom 0.75rem, so
- *  nothing at rest is covered. */
-export function HeaderScrim({ color, inset }: { color: "background" | "sidebar"; inset?: boolean }) {
+/** The tinted, blurred scrim behind sticky chrome. By default it blurs progressively and eases out 2rem past the
+ *  chrome; `inset` keeps a uniform blur inside it, easing out over its last 0.75rem. */
+export function Scrim({ color, side = "top", inset }: {
+  color: "background" | "popover";
+  side?: "top" | "bottom";
+  inset?: boolean;
+}) {
   if (inset) {
-    const mask = easedFade((pct) => `rgb(0 0 0 / ${String(pct / 100)})`, "0.75rem");
+    const mask = easedFade((pct) => `rgb(0 0 0 / ${String(pct / 100)})`, "0.75rem", side);
     return (
       <div
         aria-hidden
@@ -103,8 +61,12 @@ export function HeaderScrim({ color, inset }: { color: "background" | "sidebar";
   return (
     <ProgressiveBlur
       blur={8}
-      className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[calc(100%+2rem)]"
-      style={{ background: easedFade((pct) => mix(color, Math.round(0.85 * pct)), "2.5rem") }}
+      side={side}
+      className={cn(
+        "pointer-events-none absolute inset-x-0 -z-10 h-[calc(100%+2rem)]",
+        side === "top" ? "top-0" : "bottom-0",
+      )}
+      style={{ background: easedFade((pct) => mix(color, Math.round(0.85 * pct)), "2.5rem", side) }}
     />
   );
 }

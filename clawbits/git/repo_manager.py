@@ -1,11 +1,4 @@
-"""Git repository manager — wraps subprocess calls to git.
-
-Repos are stored on disk at ``{base_path}/{org_id}/{repo_name}``.
-
-Environment variable:
-    GIT_REPOS_BASE_PATH  – root directory for all repos
-                           (default: ~/.local/share/clawbits/git_repos)
-"""
+"""Git repositories on disk at ``{base_path}/{org_id}/{repo_name}``, driven through the git CLI."""
 import logging
 import os
 import re
@@ -16,43 +9,55 @@ from clawbits.domain import SYSTEM_EMAIL
 
 logger = logging.getLogger(__name__)
 
-# The default must live outside the application directory: repo contents are
-# agent-supplied, and a repo root under the source tree turns any containment
-# bug into writes next to importable code.
+# Outside the source tree: repo contents are agent-supplied, so a containment bug must not write next to code.
 GIT_REPOS_BASE_PATH = os.getenv(
     "GIT_REPOS_BASE_PATH",
     os.path.join(os.path.expanduser("~"), ".local", "share", "clawbits", "git_repos"),
 )
 
+_LOG_FORMAT = "--format=%H%n%s%n%an%n%ae%n%aI"
+_COMMIT_FIELDS = ("sha", "message", "author_name", "author_email", "date")
+
+# A ref is its own argv token, so a leading "-" parses as an option (``--output=<path>`` writes anywhere).
+# Stricter than ``git check-ref-format``: branch, tag, ``refs/`` path or SHA, and no revision grammar.
+_REF_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$", re.ASCII)
+
 
 def _run_git(args: list[str], cwd: str, env: dict | None = None) -> subprocess.CompletedProcess:
-    """Run a git command and return the result."""
-    full_env = {**os.environ, **(env or {})}
     result = subprocess.run(
-        ["git"] + args,
+        ["git", "-c", "commit.gpgsign=false", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
-        env=full_env,
+        env={**os.environ, **(env or {})},
         timeout=30,
     )
     if result.returncode != 0:
-        logger.error(f"git {' '.join(args)} failed in {cwd}: {result.stderr}")
+        logger.error("git %s failed in %s: %s", " ".join(args), cwd, result.stderr)
     return result
 
 
+def _author_env(name: str, email: str) -> dict[str, str]:
+    return {
+        "GIT_AUTHOR_NAME": name,
+        "GIT_AUTHOR_EMAIL": email,
+        "GIT_COMMITTER_NAME": name,
+        "GIT_COMMITTER_EMAIL": email,
+    }
+
+
+def _parse_commits(stdout: str) -> list[dict]:
+    lines = stdout.strip().split("\n")
+    return [dict(zip(_COMMIT_FIELDS, lines[i : i + 5], strict=True)) for i in range(0, len(lines) - 4, 5)]
+
+
 def repo_path(base_path: str, org_id: str, repo_name: str) -> str:
-    """Return the on-disk path for a repository."""
     return os.path.join(base_path, org_id, repo_name)
 
 
 def _validate_rel_path(rel_path: str) -> list[str]:
-    """Lexically validate a repo-relative path and return its components.
-
-    Raises ValueError if ``rel_path`` is absolute or has an empty / ``.`` /
-    ``..`` / ``.git`` component. ``.git`` is rejected because a write there
-    (hooks, config) executes on the next git invocation.
-    """
+    """The components of a repo-relative path. ValueError when it is absolute or has an empty,
+    ``.``, ``..`` or ``.git`` component: a write under ``.git`` executes on the next git call."""
     if os.path.isabs(rel_path) or rel_path.startswith(("/", "\\")):
         raise ValueError(f"absolute path not allowed: {rel_path!r}")
     parts = rel_path.replace("\\", "/").split("/")
@@ -61,46 +66,18 @@ def _validate_rel_path(rel_path: str) -> list[str]:
     return parts
 
 
-# Refs reach this module straight from query params. A ref is passed to git as
-# its own argv token, so one starting with "-" is parsed as an *option*, not a
-# revision — and several of the commands below accept ``--output=<path>``, which
-# redirects their output to an arbitrary file (``git log``/``git show`` write the
-# commit subject or diff there; ``rev-list`` truncates the file to zero even
-# though it then errors). The charset below is strictly tighter than
-# ``git check-ref-format``: it admits branch names, tag names, ``refs/...``
-# paths and SHAs, and excludes every character that could start an option or
-# reach git's revision grammar (``^ ~ : ? * [ \ @{`` and whitespace).
-_REF_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$", re.ASCII)
-
-
-def _validate_ref(ref: str) -> str:
-    """Validate a branch / tag / commit-ish before it becomes a git argv token.
-
-    Raises ValueError unless ``ref`` is a plain ref name or SHA. The leading
-    character is constrained to alphanumeric/underscore, which is what rejects
-    the option-injection case (a leading ``-``); the rest bars git's range and
-    reflog syntax so a ref can only ever name one revision.
-    """
+def _validate_ref(ref: str) -> None:
     if not ref:
         raise ValueError("ref must not be empty")
     if len(ref) > 255:
         raise ValueError(f"ref too long ({len(ref)} chars, max 255)")
-    if not _REF_RE.match(ref):
+    if not _REF_RE.match(ref) or ".." in ref or "//" in ref or ref.endswith(("/", ".", ".lock")):
         raise ValueError(f"invalid ref: {ref!r}")
-    if ".." in ref or "//" in ref or ref.endswith(("/", ".", ".lock")):
-        raise ValueError(f"invalid ref: {ref!r}")
-    return ref
 
 
 def _write_repo_file(rpath: str, parts: list[str], content: str) -> None:
-    """Write a file at ``parts`` under ``rpath`` without following any symlink.
-
-    Walks component-by-component with ``dir_fd`` + ``O_NOFOLLOW``, so a symlink
-    in the working tree (including one materialized by checkout, or one that
-    appears mid-walk) can never redirect the write outside the repository or
-    into ``.git``. Raises ValueError if any component is a symlink or not a
-    plain directory / regular file.
-    """
+    """Write ``parts`` under ``rpath`` one ``dir_fd`` + ``O_NOFOLLOW`` hop at a time, so no symlink, even one
+    checkout materialized or one that appears mid-walk, can redirect the write. ValueError on any unsafe hop."""
     dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     fd = os.open(rpath, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
@@ -140,27 +117,13 @@ def init_repo(
     author_name: str = "Clawbits",
     author_email: str = SYSTEM_EMAIL,
 ) -> str:
-    """Initialize a new git repo with an empty initial commit.
-
-    Returns the absolute path to the repo.
-    """
+    """Create the repo with a README as its first commit; returns its path."""
     rpath = repo_path(base_path, org_id, repo_name)
     os.makedirs(rpath, exist_ok=True)
-
-    env = {
-        "GIT_AUTHOR_NAME": author_name,
-        "GIT_AUTHOR_EMAIL": author_email,
-        "GIT_COMMITTER_NAME": author_name,
-        "GIT_COMMITTER_EMAIL": author_email,
-    }
-
     _run_git(["init", "-b", "main"], cwd=rpath)
-    # Create initial commit with a README
-    readme_path = os.path.join(rpath, "README.md")
-    Path(readme_path).write_text(f"# {repo_name}\n", encoding="utf-8")
+    Path(rpath, "README.md").write_text(f"# {repo_name}\n", encoding="utf-8")
     _run_git(["add", "."], cwd=rpath)
-    _run_git(["commit", "-m", "Initial commit"], cwd=rpath, env=env)
-
+    _run_git(["commit", "-m", "Initial commit"], cwd=rpath, env=_author_env(author_name, author_email))
     return rpath
 
 
@@ -172,53 +135,24 @@ def list_commits(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
-    """List commits on a branch, newest first.
-
-    Returns list of {sha, message, author_name, author_email, date}.
-    """
+    """Commits on ``branch``, newest first."""
     _validate_ref(branch)
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return []
-
-    fmt = "%H%n%s%n%an%n%ae%n%aI"  # sha, subject, author name, author email, ISO date
-    # Every option must precede --end-of-options; git treats everything after it
-    # as a non-option, so a --format= placed later fails to parse.
-    result = _run_git(
-        [
-            "log", f"--format={fmt}", f"--skip={offset}", f"--max-count={limit}",
-            "--end-of-options", branch,
-        ],
-        cwd=rpath,
-    )
-    if result.returncode != 0:
-        return []
-
-    lines = result.stdout.strip().split("\n")
-    commits = []
-    i = 0
-    while i + 4 < len(lines):
-        commits.append({
-            "sha": lines[i],
-            "message": lines[i + 1],
-            "author_name": lines[i + 2],
-            "author_email": lines[i + 3],
-            "date": lines[i + 4],
-        })
-        i += 5
-    return commits
+    # Options must precede --end-of-options: git parses everything after it as a revision.
+    args = ["log", _LOG_FORMAT, f"--skip={offset}", f"--max-count={limit}", "--end-of-options", branch]
+    result = _run_git(args, cwd=rpath)
+    return _parse_commits(result.stdout) if result.returncode == 0 else []
 
 
 def count_commits(base_path: str, org_id: str, repo_name: str, branch: str = "main") -> int:
-    """Count total commits on a branch."""
     _validate_ref(branch)
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return 0
     result = _run_git(["rev-list", "--count", "--end-of-options", branch], cwd=rpath)
-    if result.returncode != 0:
-        return 0
-    return int(result.stdout.strip())
+    return int(result.stdout.strip()) if result.returncode == 0 else 0
 
 
 def list_tree(
@@ -228,67 +162,37 @@ def list_tree(
     ref: str = "main",
     path: str = "",
 ) -> list[dict]:
-    """List entries in a tree (directory) at a given ref and path.
-
-    Returns list of {name, path, type, size}.
-    """
+    """Entries of the directory ``path`` at ``ref``."""
     _validate_ref(ref)
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return []
-
-    # ``path`` needs no check of its own: git resolves it inside the tree and
-    # refuses anything that leaves the repository ("is outside repository").
-    tree_ref = f"{ref}:{path}" if path else ref
-    result = _run_git(["ls-tree", "-l", "--end-of-options", tree_ref], cwd=rpath)
+    # ``path`` needs no check: git resolves it inside the tree and refuses anything outside the repository.
+    result = _run_git(["ls-tree", "-l", "--end-of-options", f"{ref}:{path}" if path else ref], cwd=rpath)
     if result.returncode != 0:
         return []
-
     entries = []
     for line in result.stdout.strip().split("\n"):
-        if not line.strip():
+        meta, tab, name = line.partition("\t")
+        fields = meta.split()
+        if not tab or len(fields) < 4:
             continue
-        # Format: <mode> <type> <sha> <size>\t<name>
-        parts = line.split("\t", 1)
-        if len(parts) != 2:
-            continue
-        meta, name = parts
-        meta_parts = meta.split()
-        if len(meta_parts) < 4:
-            continue
-        entry_type = meta_parts[1]  # "blob" or "tree"
-        size_str = meta_parts[3]
-        size = int(size_str) if size_str != "-" else None
-        full_path = f"{path}/{name}" if path else name
         entries.append({
             "name": name,
-            "path": full_path,
-            "type": entry_type,
-            "size": size,
+            "path": f"{path}/{name}" if path else name,
+            "type": fields[1],
+            "size": None if fields[3] == "-" else int(fields[3]),
         })
     return entries
 
 
-def read_blob(
-    base_path: str,
-    org_id: str,
-    repo_name: str,
-    ref: str,
-    path: str,
-) -> str | None:
-    """Read file content at a given ref and path.
-
-    Returns the content as a string, or None if not found.
-    """
+def read_blob(base_path: str, org_id: str, repo_name: str, ref: str, path: str) -> str | None:
     _validate_ref(ref)
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return None
-
     result = _run_git(["show", "--end-of-options", f"{ref}:{path}"], cwd=rpath)
-    if result.returncode != 0:
-        return None
-    return result.stdout
+    return result.stdout if result.returncode == 0 else None
 
 
 def create_commit(
@@ -301,68 +205,30 @@ def create_commit(
     author_email: str,
     branch: str = "main",
 ) -> dict | None:
-    """Create a commit with file changes.
-
-    Args:
-        files: list of {path, content, action} dicts.
-        action: "create", "update", or "delete".
-
-    Returns the commit dict {sha, message, author_name, author_email, date} or None on failure.
-    """
+    """Commit ``files`` (``{path, content, action}``, action ``create``, ``update`` or ``delete``)
+    on ``branch``. ``None`` when any git step fails."""
     rpath = repo_path(base_path, org_id, repo_name)
     if not os.path.isdir(rpath):
         return None
-
-    # Validate every path before mutating anything: paths are agent-supplied,
-    # and the write below happens before git sees them. The branch is checked
-    # for the same reason the read paths check refs — as a lone token it is
-    # option-parseable, and ``checkout --orphan=<name>`` succeeds.
+    # Everything is validated before the first write: paths are agent-supplied, and a lone branch
+    # token is option-parseable (``checkout --orphan=<name>`` succeeds).
     _validate_ref(branch)
     parts_by_path = {f["path"]: _validate_rel_path(f["path"]) for f in files}
-
-    env = {
-        "GIT_AUTHOR_NAME": author_name,
-        "GIT_AUTHOR_EMAIL": author_email,
-        "GIT_COMMITTER_NAME": author_name,
-        "GIT_COMMITTER_EMAIL": author_email,
-    }
-
-    # Checkout the branch; on failure abort rather than commit elsewhere.
+    env = _author_env(author_name, author_email)
     if _run_git(["checkout", "--end-of-options", branch], cwd=rpath, env=env).returncode != 0:
         return None
-
-    # Apply file changes. Physical (symlink) checks happen inside
-    # _write_repo_file, necessarily after checkout has settled the tree.
     for f in files:
-        action = f["action"]
-
-        if action in ("create", "update"):
+        if f["action"] in ("create", "update"):
             _write_repo_file(rpath, parts_by_path[f["path"]], f.get("content") or "")
-            if _run_git(["add", "--", f["path"]], cwd=rpath).returncode != 0:
-                return None
-        elif action == "delete":
-            if _run_git(["rm", "-f", "--", f["path"]], cwd=rpath).returncode != 0:
-                return None
-
-    # Commit
-    result = _run_git(["commit", "-m", message, "--allow-empty"], cwd=rpath, env=env)
-    if result.returncode != 0:
-        logger.error(f"Commit failed: {result.stderr}")
+            args = ["add", "--", f["path"]]
+        elif f["action"] == "delete":
+            args = ["rm", "-f", "--", f["path"]]
+        else:
+            continue
+        if _run_git(args, cwd=rpath).returncode != 0:
+            return None
+    if _run_git(["commit", "-m", message, "--allow-empty"], cwd=rpath, env=env).returncode != 0:
         return None
-
-    # Get the commit info
-    result = _run_git(["log", "-1", "--format=%H%n%s%n%an%n%ae%n%aI"], cwd=rpath)
-    if result.returncode != 0:
-        return None
-
-    lines = result.stdout.strip().split("\n")
-    if len(lines) < 5:
-        return None
-
-    return {
-        "sha": lines[0],
-        "message": lines[1],
-        "author_name": lines[2],
-        "author_email": lines[3],
-        "date": lines[4],
-    }
+    result = _run_git(["log", "-1", _LOG_FORMAT], cwd=rpath)
+    commits = _parse_commits(result.stdout) if result.returncode == 0 else []
+    return commits[0] if commits else None

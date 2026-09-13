@@ -22,7 +22,7 @@ from sqlmodel import Session
 import clawbits.fastapi.human_endpoints as he
 from clawbits import reef_repo
 from clawbits.datastructures.known_answers import get_answer_for_question
-from clawbits.db.models import Agent
+from clawbits.db.models import Agent, Organization
 from clawbits.reef_repo import NAME_RE, ReefRepo, ReefRepoError, fleet_name
 from tests.fastapi._auth_helpers import auth_headers as _auth
 from tests.fastapi._auth_helpers import register_human as _register
@@ -76,6 +76,8 @@ EVENTS = [
     {"id": 1, "agent": "ana-bot", "at": 1757000000, "kind": "create", "detail": "sandbox"},
     {"id": 2, "agent": "ana-bot", "at": 1757000000, "kind": "start", "detail": "running"},
 ]
+
+FLEET_FILE = ("fleet", "fleet/prod-eu/ana-bot.toml")
 
 
 def _status(host: str = "prod-eu", minutes_ago: int = 0, **fields) -> bytes:
@@ -161,14 +163,27 @@ def fake_repo(monkeypatch):
     he._reef_status_cache.clear()
 
 
-def _org(test_client, slug: str, owner_email: str, member_email: str | None = None):
-    """``(org_id, owner, member)`` with the repository connected, one role in
-    the catalog and one host reporting: what every test below starts from. The
-    role's file is not named after the role, as nothing requires it to be."""
+def _bare_org(test_client, slug: str, owner_email: str) -> tuple[str, dict]:
     owner = _register(test_client, owner_email)
     org_id = test_client.post(
         "/api/human/orgs", json={"name": slug}, headers=_auth(owner["access_token"])
     ).json()["org_id"]
+    return org_id, owner
+
+
+def _connect(test_client, org_id: str, user: dict, repo: str = "acme/agents", token: str = "ghp-good"):
+    return test_client.put(
+        f"/api/human/orgs/{org_id}/reef",
+        json={"repo": repo, "token": token},
+        headers=_auth(user["access_token"]),
+    )
+
+
+def _org(test_client, slug: str, owner_email: str, member_email: str | None = None):
+    """``(org_id, owner, member)`` with the repository connected, one role in
+    the catalog and one host reporting: what every test below starts from. The
+    role's file is not named after the role, as nothing requires it to be."""
+    org_id, owner = _bare_org(test_client, slug, owner_email)
     member = None
     if member_email:
         member = _register(test_client, member_email)
@@ -177,18 +192,57 @@ def _org(test_client, slug: str, owner_email: str, member_email: str | None = No
             json={"email": member_email, "role": "member"},
             headers=_auth(owner["access_token"]),
         )
-    r = test_client.put(
-        f"/api/human/orgs/{org_id}/reef",
-        json={"repo": "acme/agents", "token": "ghp-good"},
-        headers=_auth(owner["access_token"]),
-    )
+    r = _connect(test_client, org_id, owner)
     assert r.status_code == 200, r.text
     FakeRepo.files[("main", "roles/openclaw.toml")] = ROLE
     FakeRepo.files[("status", "status/prod-eu.json")] = _status()
     return org_id, owner, member
 
 
-# ── Connecting the repository ────────────────────────────────────────────────
+def _reef(test_client, org_id: str, user: dict):
+    return test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(user["access_token"]))
+
+
+def _create(test_client, org_id: str, user: dict, **fields):
+    return test_client.post(
+        f"/api/human/orgs/{org_id}/reef/agents",
+        json={"host": "prod-eu", "role": "clawbits-openclaw", **fields},
+        headers=_auth(user["access_token"]),
+    )
+
+
+def _declare(test_client, org_id: str, user: dict, name: str = "ana-bot") -> str:
+    """Declare ``name`` on prod-eu: the signup token its fleet file carries."""
+    r = _create(test_client, org_id, user, name=name)
+    assert r.status_code == 200, r.text
+    raw = FakeRepo.files[("fleet", f"fleet/prod-eu/{name}.toml")]
+    return tomllib.loads(raw.decode())["agents"][name]["env"]["CLAWBITS_SIGNUP_TOKEN"]
+
+
+def _commit(test_client, token: str):
+    return test_client.post(
+        "/api/agentic/signup-commit", json={"session_token": token, "challenge_response": ""}
+    )
+
+
+def _enrol(test_client, org_id: str, user: dict, name: str = "ana-bot") -> str:
+    """Declare ``name`` and spend its token: the agent id it enrolled under."""
+    r = _commit(test_client, _declare(test_client, org_id, user, name))
+    assert r.status_code == 200, r.text
+    return r.json()["agent_id"]
+
+
+def _undeclare(test_client, org_id: str, user: dict, host: str = "prod-eu", name: str = "ana-bot"):
+    return test_client.delete(
+        f"/api/human/orgs/{org_id}/reef/agents/{host}/{name}", headers=_auth(user["access_token"])
+    )
+
+
+def _delete_agent(test_client, org_id: str, user: dict, agent_id: str):
+    return test_client.delete(
+        f"/api/human/orgs/{org_id}/agents/{agent_id}", headers=_auth(user["access_token"])
+    )
+
 
 def test_connect_lifecycle(test_client, _test_engine):
     """Owner connects, everyone reads, owner disconnects. The token is sealed
@@ -196,7 +250,7 @@ def test_connect_lifecycle(test_client, _test_engine):
     org_id, owner, member = _org(test_client, "reef-life", "rl-o@test.com", "rl-m@test.com")
     outsider = _register(test_client, "rl-x@test.com")
 
-    r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(member["access_token"]))
+    r = _reef(test_client, org_id, member)
     assert r.status_code == 200, r.text
     at = json.loads(FakeRepo.files[("status", "status/prod-eu.json")])["at"]
     assert r.json() == {
@@ -214,6 +268,7 @@ def test_connect_lifecycle(test_client, _test_engine):
                     {
                         "name": "ana-bot",
                         "role": "clawbits-openclaw",
+                        "image": "ghcr.io/skalenetwork/clawbits-openclaw@sha256:abc",
                         "desired": "running",
                         "state": "running",
                         "vm": "running",
@@ -231,20 +286,21 @@ def test_connect_lifecycle(test_client, _test_engine):
     }
     assert "ghp-good" not in r.text
 
-    from clawbits.db.models import Organization
-
     with Session(_test_engine) as db:
         stored = db.get(Organization, org_id)
         assert stored.reef_repo == "acme/agents"
         assert "ghp-good" not in stored.reef_repo_token
 
-    r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(outsider["access_token"]))
-    assert r.status_code == 403
+    assert _reef(test_client, org_id, outsider).status_code == 403
 
     r = test_client.delete(f"/api/human/orgs/{org_id}/reef", headers=_auth(owner["access_token"]))
     assert r.status_code == 204
-    r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(owner["access_token"]))
-    assert r.json() == {"repo": None, "connected": False, "hosts": [], "declared": []}
+    assert _reef(test_client, org_id, owner).json() == {
+        "repo": None,
+        "connected": False,
+        "hosts": [],
+        "declared": [],
+    }
 
 
 def test_org_payload_carries_the_connected_bit(test_client):
@@ -268,53 +324,26 @@ def test_org_payload_carries_the_connected_bit(test_client):
 
 def test_connect_is_owner_only(test_client):
     org_id, _, member = _org(test_client, "reef-own", "ro-o@test.com", "ro-m@test.com")
-    headers = _auth(member["access_token"])
-    assert (
-        test_client.put(
-            f"/api/human/orgs/{org_id}/reef",
-            json={"repo": "acme/other", "token": "ghp-good"},
-            headers=headers,
-        ).status_code
-        == 403
-    )
-    assert test_client.delete(f"/api/human/orgs/{org_id}/reef", headers=headers).status_code == 403
+    assert _connect(test_client, org_id, member, repo="acme/other").status_code == 403
+    r = test_client.delete(f"/api/human/orgs/{org_id}/reef", headers=_auth(member["access_token"]))
+    assert r.status_code == 403
 
 
 def test_connect_rejects_a_repo_the_token_cannot_see(test_client):
     """Nothing is stored unless GitHub confirms the token first."""
-    owner = _register(test_client, "rb-o@test.com")
-    org_id = test_client.post(
-        "/api/human/orgs", json={"name": "reef-bad"}, headers=_auth(owner["access_token"])
-    ).json()["org_id"]
+    org_id, owner = _bare_org(test_client, "reef-bad", "rb-o@test.com")
 
-    r = test_client.put(
-        f"/api/human/orgs/{org_id}/reef",
-        json={"repo": "acme/agents", "token": "ghp-wrong"},
-        headers=_auth(owner["access_token"]),
-    )
+    r = _connect(test_client, org_id, owner, token="ghp-wrong")
     assert r.status_code == 502, r.text
-
-    r = test_client.put(
-        f"/api/human/orgs/{org_id}/reef",
-        json={"repo": "not-a-repo", "token": "ghp-good"},
-        headers=_auth(owner["access_token"]),
-    )
-    assert r.status_code == 422
-
-    r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(owner["access_token"]))
-    assert r.json()["connected"] is False
+    assert _connect(test_client, org_id, owner, repo="not-a-repo").status_code == 422
+    assert _reef(test_client, org_id, owner).json()["connected"] is False
 
 
 def test_endpoints_409_without_a_repository(test_client):
-    owner = _register(test_client, "rn-o@test.com")
-    org_id = test_client.post(
-        "/api/human/orgs", json={"name": "reef-none"}, headers=_auth(owner["access_token"])
-    ).json()["org_id"]
-    headers = _auth(owner["access_token"])
-    assert test_client.get(f"/api/human/orgs/{org_id}/reef/roles", headers=headers).status_code == 409
+    org_id, owner = _bare_org(test_client, "reef-none", "rn-o@test.com")
+    r = test_client.get(f"/api/human/orgs/{org_id}/reef/roles", headers=_auth(owner["access_token"]))
+    assert r.status_code == 409
 
-
-# ── The catalog and the status branch ────────────────────────────────────────
 
 def test_roles_only_lists_roles_pointing_here(test_client):
     """A role whose CLAWBITS_ENDPOINT names another server is left out: an
@@ -353,7 +382,7 @@ def test_health_reads_the_heartbeat_and_the_last_apply(test_client):
     )
     FakeRepo.files[("status", "status/garbage.json")] = b"{not json"
 
-    r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(owner["access_token"]))
+    r = _reef(test_client, org_id, owner)
     assert r.status_code == 200, r.text
     hosts = r.json()["hosts"]
     assert [(h["host"], h["health"]) for h in hosts] == [
@@ -366,44 +395,47 @@ def test_health_reads_the_heartbeat_and_the_last_apply(test_client):
     assert (hosts[1]["last_seen"], hosts[1]["applied"]) == (None, None)
 
 
+def test_a_host_on_an_older_reef_keeps_reporting(test_client):
+    """``agent list --json`` grew ``image``; a host whose reef predates it must
+    lose that one field, not drop off the page with every agent on it."""
+    org_id, owner, _ = _org(test_client, "reef-older", "rol-o@test.com")
+    FakeRepo.files[("status", "status/prod-eu.json")] = _status(
+        agents=[{k: v for k, v in AGENT.items() if k != "image"}]
+    )
+
+    r = _reef(test_client, org_id, owner)
+    assert r.status_code == 200, r.text
+    hosts = r.json()["hosts"]
+    assert [h["host"] for h in hosts] == ["prod-eu"]
+    assert hosts[0]["agents"][0]["image"] == ""
+
+
 def test_a_refresh_is_one_listing_plus_a_read_per_host(test_client):
     """The heartbeat rides in the file, so no commit is looked up. The result
     is cached per org, and declaring or removing an agent drops that cache."""
     org_id, owner, _ = _org(test_client, "reef-calls", "rca-o@test.com")
     FakeRepo.files[("status", "status/prod-us.json")] = _status("prod-us")
-    headers = _auth(owner["access_token"])
 
     FakeRepo.calls = 0
-    assert test_client.get(f"/api/human/orgs/{org_id}/reef", headers=headers).status_code == 200
+    assert _reef(test_client, org_id, owner).status_code == 200
     assert FakeRepo.calls == 3
-    test_client.get(f"/api/human/orgs/{org_id}/reef", headers=headers)
+    _reef(test_client, org_id, owner)
     assert FakeRepo.calls == 3
 
     _declare(test_client, org_id, owner)
     assert org_id not in he._reef_status_cache
-    test_client.get(f"/api/human/orgs/{org_id}/reef", headers=headers)
-    r = test_client.delete(f"/api/human/orgs/{org_id}/reef/agents/prod-eu/ana-bot", headers=headers)
+    _reef(test_client, org_id, owner)
+    r = _undeclare(test_client, org_id, owner)
     assert r.status_code == 204, r.text
     assert org_id not in he._reef_status_cache
 
-
-# ── Declaring an agent ───────────────────────────────────────────────────────
 
 def test_create_writes_the_fleet_file(test_client):
     """The file is the whole handoff: role, owner, org and a live one-time
     token, authored by the person who clicked."""
     org_id, owner, _ = _org(test_client, "reef-create", "rc-o@test.com")
 
-    r = test_client.post(
-        f"/api/human/orgs/{org_id}/reef/agents",
-        json={
-            "host": "prod-eu",
-            "role": "clawbits-openclaw",
-            "name": "ana-bot",
-            "public_host": "ana-bot.example.com",
-        },
-        headers=_auth(owner["access_token"]),
-    )
+    r = _create(test_client, org_id, owner, name="ana-bot", public_host="ana-bot.example.com")
     assert r.status_code == 200, r.text
     body = r.json()
     assert (body["host"], body["name"]) == ("prod-eu", "ana-bot")
@@ -411,15 +443,14 @@ def test_create_writes_the_fleet_file(test_client):
     expires_in = datetime.fromisoformat(body["expires_at"]) - datetime.now(UTC)
     assert timedelta(days=6, hours=23) < expires_in <= timedelta(days=7)
 
-    raw = FakeRepo.files[("fleet", "fleet/prod-eu/ana-bot.toml")]
-    parsed = tomllib.loads(raw.decode())
-    assert parsed["version"] == 1
-    entry = parsed["agents"]["ana-bot"]
-    assert entry["role"] == "clawbits-openclaw"
-    assert entry["owner"] == "rc-o"
-    assert entry["env"]["CLAWBITS_ORG_ID"] == org_id
-    assert entry["env"]["CLAWBITS_SIGNUP_TOKEN"].startswith("human-")
-    assert entry["env"]["OPENCLAW_PUBLIC_HOST"] == "ana-bot.example.com"
+    entry = tomllib.loads(FakeRepo.files[FLEET_FILE].decode())
+    assert entry["version"] == 1
+    agent = entry["agents"]["ana-bot"]
+    assert agent["role"] == "clawbits-openclaw"
+    assert agent["owner"] == "rc-o"
+    assert agent["env"]["CLAWBITS_ORG_ID"] == org_id
+    assert agent["env"]["CLAWBITS_SIGNUP_TOKEN"].startswith("human-")
+    assert agent["env"]["OPENCLAW_PUBLIC_HOST"] == "ana-bot.example.com"
     assert FakeRepo.commits == [("declare ana-bot on prod-eu", "rc-o", "rc-o@test.com")]
 
 
@@ -427,11 +458,7 @@ def test_create_without_a_name_names_the_file_after_the_agent(test_client, _test
     """The id and nickname are picked with the token, and the agent commits
     under them on the agentic path its fleet file drives."""
     org_id, owner, _ = _org(test_client, "reef-named", "rn-o@test.com")
-    r = test_client.post(
-        f"/api/human/orgs/{org_id}/reef/agents",
-        json={"host": "prod-eu", "role": "clawbits-openclaw"},
-        headers=_auth(owner["access_token"]),
-    )
+    r = _create(test_client, org_id, owner)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["name"] == body["agent_id"].lower()
@@ -463,11 +490,7 @@ def test_a_picked_name_clashes_with_nothing_on_the_host(test_client, monkeypatch
     FakeRepo.files[("status", "status/prod-eu.json")] = _status(agents=[AGENT | {"name": "ana"}])
 
     def declare() -> str:
-        r = test_client.post(
-            f"/api/human/orgs/{org_id}/reef/agents",
-            json={"host": "prod-eu", "role": "clawbits-openclaw"},
-            headers=_auth(owner["access_token"]),
-        )
+        r = _create(test_client, org_id, owner)
         assert r.status_code == 200, r.text
         return r.json()["name"]
 
@@ -490,24 +513,16 @@ def test_create_rejects_bad_input(test_client):
     is not in the catalog all fail here rather than on the host. A role is
     known by its own name, never by its file's."""
     org_id, owner, _ = _org(test_client, "reef-bad-in", "rbi-o@test.com")
-    headers = _auth(owner["access_token"])
-    good = {"host": "prod-eu", "role": "clawbits-openclaw", "name": "ana-bot"}
 
     for name in ("Ana-Bot", "1bot", "bot-", "", "a" * 41, "an/bot"):
-        r = test_client.post(
-            f"/api/human/orgs/{org_id}/reef/agents", json={**good, "name": name}, headers=headers
-        )
+        r = _create(test_client, org_id, owner, name=name)
         assert r.status_code == 422, f"{name!r} was accepted"
 
-    r = test_client.post(
-        f"/api/human/orgs/{org_id}/reef/agents", json={**good, "host": "prod-us"}, headers=headers
-    )
+    r = _create(test_client, org_id, owner, name="ana-bot", host="prod-us")
     assert r.status_code == 422 and "prod-us" in r.json()["detail"]
 
     for role in ("nope", "openclaw"):
-        r = test_client.post(
-            f"/api/human/orgs/{org_id}/reef/agents", json={**good, "role": role}, headers=headers
-        )
+        r = _create(test_client, org_id, owner, name="ana-bot", role=role)
         assert r.status_code == 422 and role in r.json()["detail"]
 
     assert not [k for k in FakeRepo.files if k[0] == "fleet"]
@@ -515,15 +530,8 @@ def test_create_rejects_bad_input(test_client):
 
 def test_create_refuses_a_name_already_declared(test_client):
     org_id, owner, _ = _org(test_client, "reef-dup", "rd-o@test.com")
-    body = {"host": "prod-eu", "role": "clawbits-openclaw", "name": "ana-bot"}
-    headers = _auth(owner["access_token"])
-    assert (
-        test_client.post(
-            f"/api/human/orgs/{org_id}/reef/agents", json=body, headers=headers
-        ).status_code
-        == 200
-    )
-    r = test_client.post(f"/api/human/orgs/{org_id}/reef/agents", json=body, headers=headers)
+    assert _create(test_client, org_id, owner, name="ana-bot").status_code == 200
+    r = _create(test_client, org_id, owner, name="ana-bot")
     assert r.status_code == 409, r.text
 
 
@@ -533,54 +541,27 @@ def test_create_takes_the_session_down_with_a_failed_write(test_client):
     org_id, owner, _ = _org(test_client, "reef-roll", "rrb-o@test.com")
     FakeRepo.unreachable = True
 
-    r = test_client.post(
-        f"/api/human/orgs/{org_id}/reef/agents",
-        json={"host": "prod-eu", "role": "clawbits-openclaw", "name": "ana-bot"},
-        headers=_auth(owner["access_token"]),
-    )
+    r = _create(test_client, org_id, owner, name="ana-bot")
     assert r.status_code == 502, r.text
 
     FakeRepo.unreachable = False
-    r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(owner["access_token"]))
-    assert r.json()["declared"] == []
-
-
-# ── The token is the identity: signup-commit ─────────────────────────────────
-
-def _declare(test_client, org_id: str, owner: dict, name: str = "ana-bot") -> str:
-    r = test_client.post(
-        f"/api/human/orgs/{org_id}/reef/agents",
-        json={"host": "prod-eu", "role": "clawbits-openclaw", "name": name},
-        headers=_auth(owner["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    raw = FakeRepo.files[("fleet", f"fleet/prod-eu/{name}.toml")]
-    return tomllib.loads(raw.decode())["agents"][name]["env"]["CLAWBITS_SIGNUP_TOKEN"]
+    assert _reef(test_client, org_id, owner).json()["declared"] == []
 
 
 def test_commit_copies_host_and_name_onto_the_agent(test_client, _test_engine):
     org_id, owner, _ = _org(test_client, "reef-commit", "rk-o@test.com")
-    token = _declare(test_client, org_id, owner)
-
-    r = test_client.post(
-        "/api/agentic/signup-commit", json={"session_token": token, "challenge_response": ""}
-    )
-    assert r.status_code == 200, r.text
-    agent_id = r.json()["agent_id"]
+    headers = _auth(owner["access_token"])
+    agent_id = _enrol(test_client, org_id, owner)
 
     with Session(_test_engine) as db:
         row = db.get(Agent, agent_id)
         assert (row.reef_host, row.reef_name) == ("prod-eu", "ana-bot")
 
-    listed = test_client.get(
-        f"/api/human/orgs/{org_id}/agents", headers=_auth(owner["access_token"])
-    ).json()
+    listed = test_client.get(f"/api/human/orgs/{org_id}/agents", headers=headers).json()
     mine = next(a for a in listed["agents"] if a["agent_id"] == agent_id)
     assert (mine["reef_host"], mine["reef_name"]) == ("prod-eu", "ana-bot")
 
-    profile = test_client.get(
-        f"/api/human/orgs/{org_id}/agents/{agent_id}", headers=_auth(owner["access_token"])
-    ).json()
+    profile = test_client.get(f"/api/human/orgs/{org_id}/agents/{agent_id}", headers=headers).json()
     assert (profile["reef_host"], profile["reef_name"]) == ("prod-eu", "ana-bot")
 
 
@@ -590,43 +571,28 @@ def test_a_spent_token_cannot_mint_a_second_agent(test_client):
     org_id, owner, _ = _org(test_client, "reef-spent", "rp-o@test.com")
     token = _declare(test_client, org_id, owner)
 
-    first = test_client.post(
-        "/api/agentic/signup-commit", json={"session_token": token, "challenge_response": ""}
-    )
+    first = _commit(test_client, token)
     assert first.status_code == 200, first.text
-    second = test_client.post(
-        "/api/agentic/signup-commit", json={"session_token": token, "challenge_response": ""}
-    )
+    second = _commit(test_client, token)
     assert second.status_code == 401, second.text
 
 
 def test_declared_clears_once_the_agent_enrols(test_client):
     org_id, owner, _ = _org(test_client, "reef-enrol", "re-o@test.com")
     token = _declare(test_client, org_id, owner)
-    headers = _auth(owner["access_token"])
 
-    def declared():
-        return test_client.get(f"/api/human/orgs/{org_id}/reef", headers=headers).json()["declared"]
+    assert len(_reef(test_client, org_id, owner).json()["declared"]) == 1
+    _commit(test_client, token)
+    assert _reef(test_client, org_id, owner).json()["declared"] == []
 
-    assert len(declared()) == 1
-    test_client.post(
-        "/api/agentic/signup-commit", json={"session_token": token, "challenge_response": ""}
-    )
-    assert declared() == []
-
-
-# ── Removing an agent ────────────────────────────────────────────────────────
 
 def test_remove_deletes_the_fleet_file(test_client):
     org_id, owner, _ = _org(test_client, "reef-rm", "rm-o@test.com")
     _declare(test_client, org_id, owner)
 
-    r = test_client.delete(
-        f"/api/human/orgs/{org_id}/reef/agents/prod-eu/ana-bot",
-        headers=_auth(owner["access_token"]),
-    )
+    r = _undeclare(test_client, org_id, owner)
     assert r.status_code == 204, r.text
-    assert ("fleet", "fleet/prod-eu/ana-bot.toml") not in FakeRepo.files
+    assert FLEET_FILE not in FakeRepo.files
     assert FakeRepo.commits[-1] == ("remove ana-bot from prod-eu", "rm-o", "rm-o@test.com")
 
 
@@ -637,7 +603,7 @@ def test_declared_survives_an_unsealable_token(test_client, monkeypatch):
     _declare(test_client, org_id, owner)
     monkeypatch.setattr(he, "decrypt_secret", lambda _: None)
 
-    r = test_client.get(f"/api/human/orgs/{org_id}/reef", headers=_auth(owner["access_token"]))
+    r = _reef(test_client, org_id, owner)
     assert r.json()["connected"] is False
     assert [(d["host"], d["name"]) for d in r.json()["declared"]] == [("prod-eu", "ana-bot")]
 
@@ -647,14 +613,11 @@ def test_remove_before_enrolment_burns_the_token(test_client):
     removing an agent that has not enrolled revokes that token too."""
     org_id, owner, _ = _org(test_client, "reef-burn", "rbu-o@test.com")
     token = _declare(test_client, org_id, owner)
-    headers = _auth(owner["access_token"])
 
-    r = test_client.delete(f"/api/human/orgs/{org_id}/reef/agents/prod-eu/ana-bot", headers=headers)
+    r = _undeclare(test_client, org_id, owner)
     assert r.status_code == 204, r.text
-    assert test_client.get(f"/api/human/orgs/{org_id}/reef", headers=headers).json()["declared"] == []
-    r = test_client.post(
-        "/api/agentic/signup-commit", json={"session_token": token, "challenge_response": ""}
-    )
+    assert _reef(test_client, org_id, owner).json()["declared"] == []
+    r = _commit(test_client, token)
     assert r.status_code == 401, r.text
 
 
@@ -664,12 +627,9 @@ def test_remove_is_open_to_whoever_declared_it(test_client):
     org_id, _, member = _org(test_client, "reef-rmd", "rmd-o@test.com", "rmd-m@test.com")
     _declare(test_client, org_id, member)
 
-    r = test_client.delete(
-        f"/api/human/orgs/{org_id}/reef/agents/prod-eu/ana-bot",
-        headers=_auth(member["access_token"]),
-    )
+    r = _undeclare(test_client, org_id, member)
     assert r.status_code == 204, r.text
-    assert ("fleet", "fleet/prod-eu/ana-bot.toml") not in FakeRepo.files
+    assert FLEET_FILE not in FakeRepo.files
 
 
 def test_remove_is_operator_declarer_or_owner_only(test_client):
@@ -678,42 +638,95 @@ def test_remove_is_operator_declarer_or_owner_only(test_client):
     org_id, owner, member = _org(test_client, "reef-rmx", "rx-o@test.com", "rx-m@test.com")
     _declare(test_client, org_id, owner)
 
-    r = test_client.delete(
-        f"/api/human/orgs/{org_id}/reef/agents/prod-eu/ana-bot",
-        headers=_auth(member["access_token"]),
-    )
+    r = _undeclare(test_client, org_id, member)
     assert r.status_code == 403, r.text
-    assert ("fleet", "fleet/prod-eu/ana-bot.toml") in FakeRepo.files
+    assert FLEET_FILE in FakeRepo.files
 
 
 def test_a_removed_agent_comes_back_under_its_name(test_client, monkeypatch):
     """Its volumes outlive the fleet file, so declaring the name again brings
     back the agent that enrolled under it, and a picked name never lands on it."""
     org_id, owner, _ = _org(test_client, "reef-back", "rbk-o@test.com")
-    url, headers = f"/api/human/orgs/{org_id}/reef/agents", _auth(owner["access_token"])
     monkeypatch.setattr(test_client.app, "_bot_names", {"Wren": "Wren"})
-    token = _declare(test_client, org_id, owner, "quill")
-    r = test_client.post(
-        "/api/agentic/signup-commit", json={"session_token": token, "challenge_response": ""}
-    )
-    enrolled = r.json()["agent_id"]
-    assert test_client.delete(f"{url}/prod-eu/quill", headers=headers).status_code == 204
+    enrolled = _enrol(test_client, org_id, owner, "quill")
+    assert _undeclare(test_client, org_id, owner, name="quill").status_code == 204
 
     monkeypatch.setattr(test_client.app, "_bot_names", {"Quill": "Quill"})
-    body = {"host": "prod-eu", "role": "clawbits-openclaw"}
-    assert test_client.post(url, json=body, headers=headers).json()["name"] != "quill"
-    back = test_client.post(url, json=body | {"name": "quill"}, headers=headers).json()
+    assert _create(test_client, org_id, owner).json()["name"] != "quill"
+    back = _create(test_client, org_id, owner, name="quill").json()
     assert (back["agent_id"], back["nickname"]) == (enrolled, "Wren")
 
 
 def test_remove_rejects_names_reef_would(test_client):
     org_id, owner, _ = _org(test_client, "reef-rmn", "rmn-o@test.com")
-    headers = _auth(owner["access_token"])
     for host, name in (("Prod-EU", "ana-bot"), ("prod-eu", "ana_bot"), ("prod-eu", "bot-")):
-        r = test_client.delete(
-            f"/api/human/orgs/{org_id}/reef/agents/{host}/{name}", headers=headers
-        )
+        r = _undeclare(test_client, org_id, owner, host, name)
         assert r.status_code == 422, f"{host}/{name} was accepted"
+
+
+def test_deleting_the_agent_takes_its_fleet_file(test_client):
+    """The agent row and the VM go together: a file left behind keeps the VM
+    running under a name nothing owns."""
+    org_id, owner, _ = _org(test_client, "reef-del", "rdl-o@test.com")
+    agent_id = _enrol(test_client, org_id, owner)
+
+    r = _delete_agent(test_client, org_id, owner, agent_id)
+    assert r.status_code == 200, r.text
+    assert FLEET_FILE not in FakeRepo.files
+    assert FakeRepo.commits[-1] == ("remove ana-bot from prod-eu", "rdl-o", "rdl-o@test.com")
+
+
+def test_deleting_the_agent_survives_an_unreachable_repo(test_client):
+    """Reef cleanup is best-effort and runs after the delete commits, so
+    GitHub being down never keeps an agent alive in clawbits."""
+    org_id, owner, _ = _org(test_client, "reef-del-down", "rdd-o@test.com")
+    agent_id = _enrol(test_client, org_id, owner)
+    FakeRepo.unreachable = True
+
+    r = _delete_agent(test_client, org_id, owner, agent_id)
+    assert r.status_code == 200, r.text
+    assert FLEET_FILE in FakeRepo.files
+
+    FakeRepo.unreachable = False
+    listed = test_client.get(
+        f"/api/human/orgs/{org_id}/agents", headers=_auth(owner["access_token"])
+    ).json()
+    assert [a for a in listed["agents"] if a["agent_id"] == agent_id] == []
+
+
+def test_deleting_the_agent_burns_the_token_its_file_carried(test_client):
+    """Re-declaring an enrolled agent's name mints that same agent a fresh
+    token, so a live one outlives nothing here: deleting the agent revokes it,
+    whether or not the file removal lands."""
+    org_id, owner, _ = _org(test_client, "reef-del-token", "rdt-o@test.com")
+    agent_id = _enrol(test_client, org_id, owner)
+    r = _undeclare(test_client, org_id, owner)
+    assert r.status_code == 204, r.text
+    token = _declare(test_client, org_id, owner)
+    FakeRepo.unreachable = True
+
+    r = _delete_agent(test_client, org_id, owner, agent_id)
+    assert r.status_code == 200, r.text
+    r = _commit(test_client, token)
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.parametrize(("deleted", "survives"), [("older", True), ("newest", False)])
+def test_only_the_newest_placement_takes_the_fleet_file(test_client, deleted, survives):
+    """``(reef_host, reef_name)`` is not unique: undeclaring keeps the VM's
+    volumes, so declaring the name again enrols a second agent against the same
+    file. Deleting the superseded row must leave the live agent's VM alone, and
+    the superseded row must not keep that file alive once the live agent goes."""
+    org_id, owner, _ = _org(test_client, f"reef-del-{deleted}", f"rd-{deleted}@test.com")
+    older = _enrol(test_client, org_id, owner)
+    r = _undeclare(test_client, org_id, owner)
+    assert r.status_code == 204, r.text
+    newest = _enrol(test_client, org_id, owner)
+    assert newest != older
+
+    r = _delete_agent(test_client, org_id, owner, {"older": older, "newest": newest}[deleted])
+    assert r.status_code == 200, r.text
+    assert (FLEET_FILE in FakeRepo.files) is survives
 
 
 @pytest.fixture

@@ -44,12 +44,7 @@ export function jumboEmojiClass(count: number): string {
 /** Find a Discord/Slack-style ``:shortcode`` query ending at the caret.
  *  Returns ``null`` when the caret isn't currently inside a colon-prefixed
  *  word; otherwise the start/end of the substring to replace and the
- *  query string (without the leading colon).
- *
- *  Mirrors ``extractMentionQuery`` in ChannelPage.tsx — same anchoring
- *  rules (word-boundary or string start), same character class. Keeping
- *  these as parallel functions rather than a generic abstraction so the
- *  call sites read straightforwardly. */
+ *  query string (without the leading colon). */
 export function extractShortcodeQuery(
   text: string,
   caret: number,

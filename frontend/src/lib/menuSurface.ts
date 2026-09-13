@@ -1,18 +1,16 @@
-/**
- * Shared "liquid glass" surface for floating menus — dropdowns, context
- * menus, and their submenus. A translucent ``bg-popover`` fill with a heavy
- * backdrop blur (so the menu picks up the colors/wallpaper behind it), a soft
- * drop shadow, a hairline inset ring, and a faint highlight line along the top
- * edge for a glassy sheen.
- *
- * ``relative`` is required for the ``before`` highlight; ``p-1.5`` is the
- * standard item-list padding. Compose it with each menu's own positioning,
- * sizing, and open/close animation classes via ``cn()``.
- */
 export const MENU_SURFACE =
-    "relative rounded-2xl bg-popover/85 p-1.5 text-popover-foreground " +
-    "shadow-[0_18px_45px_-12px_rgba(0,0,0,0.45),0_2px_6px_-2px_rgba(0,0,0,0.25)] " +
-    "ring-1 ring-inset ring-foreground/[0.06] backdrop-blur-2xl backdrop-saturate-150 " +
-    "supports-[backdrop-filter]:bg-popover/70 " +
-    "before:pointer-events-none before:absolute before:inset-x-3 before:top-0 before:h-px " +
-    "before:bg-gradient-to-r before:from-transparent before:via-foreground/15 before:to-transparent";
+    "rounded-xl border border-foreground/10 bg-popover p-1 text-popover-foreground shadow-lg";
+
+export const MENU_ITEM =
+    "relative flex cursor-default items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] leading-5 text-foreground outline-hidden select-none " +
+    "data-highlighted:bg-accent data-disabled:pointer-events-none data-disabled:opacity-50 " +
+    "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
+
+export const MENU_DESTRUCTIVE =
+    "data-[variant=destructive]:text-destructive data-[variant=destructive]:data-highlighted:bg-destructive/10 dark:data-[variant=destructive]:data-highlighted:bg-destructive/20";
+
+export const MENU_LABEL = "px-2.5 pt-2 pb-1 text-xs text-muted-foreground";
+
+export const MENU_SEPARATOR = "-mx-1 my-1.5 h-px bg-foreground/8";
+
+export const MENU_SHORTCUT = "ml-auto pl-4 text-xs text-muted-foreground";

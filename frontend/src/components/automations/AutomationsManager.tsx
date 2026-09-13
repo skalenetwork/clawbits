@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useState, type ReactNode} from "react";
+import {useEffect, useState, type ReactNode} from "react";
 import {useQuery} from "@tanstack/react-query";
 import {
     Alert02Icon as Alert,
@@ -17,7 +17,8 @@ import {RecipeShelf} from "@/components/automations/RecipeShelf";
 import {AttentionRow, AutomationCard} from "@/components/automations/AutomationCard";
 import {SectionHeader} from "@/components/automations/SectionHeader";
 import {useAutomationMutations} from "@/components/automations/useAutomationMutations";
-import {useAgentPresence} from "@/hooks/useAgentPresence";
+import {Stagger} from "@/components/agent/manage/Stagger";
+import {updateAgentPresence} from "@/hooks/useAgentPresence";
 import {useNow} from "@/hooks/useNow";
 import {
     getAgents,
@@ -35,29 +36,15 @@ import {automationsRefetchInterval} from "@/lib/automationsPolling";
 import {agentLivenessStatus} from "@/lib/agentLiveness";
 import {agentDisplay} from "@/lib/agentDisplay";
 import {queryKeys} from "@/lib/queryKeys";
-import { Stagger } from "@/components/agent/manage/Stagger";
 
-/**
- * The automations control surface — attention shelf, the agent-grouped card
- * gallery, external mirrors, and the recipe shelf. Used org-wide
- * (``/automations``) and scoped to one agent (the agent profile's Automations
- * tab); pass ``scopeAgentId`` to scope.
- */
+const GRID = "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3";
+
 export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, renderPageHeader}: {
     orgId: string;
     scopeAgentId?: string;
-    /** Set when the scoped agent's runtime can't apply Clawbits automations
-     *  (ironclaw, or a pre-0.7.0 hermes plugin — see {@link automationsUnsupportedReason}). The
-     *  manager then runs in honest mode: the reason replaces the create-flavored
-     *  empty state, and existing stuck rows stay visible for cleanup. (Create
-     *  affordances are already absent — `createAgents` filters such agents.) */
     unsupportedReason?: string | null;
-    /** Render the page's header with the manager's actions (the New-automation
-     *  button) docked at its right end. PageHeader portals into the shell's
-     *  header bar, so where this renders in the tree doesn't matter. */
-    renderPageHeader?: (actions: ReactNode) => ReactNode;
+    renderPageHeader: (actions: ReactNode) => ReactNode;
 }) {
-    const {seed: seedAgents} = useAgentPresence();
     const now = useNow(30_000);
 
     const [templateToCreate, setTemplateToCreate] = useState<AutomationTemplate | null>(null);
@@ -82,16 +69,9 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
         enabled: Boolean(orgId),
     });
 
-    const automations = useMemo(
-        () => automationsQuery.data?.automations ?? [],
-        [automationsQuery.data],
-    );
-    const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
-    const operatedAgents = useMemo(() => agents.filter(a => a.is_operator), [agents]);
-    const agentById = useMemo(
-        () => new Map(agents.map(a => [a.agent_id, a])),
-        [agents],
-    );
+    const automations = automationsQuery.data?.automations ?? [];
+    const agents = agentsQuery.data?.agents;
+    const agentById = new Map((agents ?? []).map(a => [a.agent_id, a]));
     const nameFor = (agentId: string) => {
         const agent = agentById.get(agentId);
         return agent ? agentDisplay(agent) : agentId;
@@ -99,22 +79,15 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
     const livenessFor = (agentId: string) =>
         agentLivenessStatus(agentById.get(agentId)?.last_alive_at ?? null, now);
 
-    // Operated agents eligible for the create picker. When scoped, only the
-    // one. Runtimes without a cron reconciler (ironclaw, or a pre-0.7.0 hermes plugin) are excluded —
-    // the server would 422 the create anyway.
-    const createAgents = useMemo(
-        () =>
-            (scopeAgentId
-                ? operatedAgents.filter(a => a.agent_id === scopeAgentId)
-                : operatedAgents
-            ).filter(a => supportsAutomations(a.agent_type)),
-        [operatedAgents, scopeAgentId],
+    const createAgents = (agents ?? []).filter(a =>
+        a.is_operator
+        && (!scopeAgentId || a.agent_id === scopeAgentId)
+        && supportsAutomations(a.agent_type),
     );
 
     useEffect(() => {
-        if (agents.length === 0) return;
-        seedAgents(agents.map(a => ({agentId: a.agent_id, lastAliveAt: a.last_alive_at ?? null})));
-    }, [agents, seedAgents]);
+        if (agents) updateAgentPresence(agents.map(a => ({agentId: a.agent_id, lastAliveAt: a.last_alive_at ?? null})));
+    }, [agents]);
 
     const mutations = useAutomationMutations(orgId, {
         onDeleted: () => { setToDelete(null); },
@@ -128,60 +101,60 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
         },
         onDelete: (a: AutomationType) => { setToDelete(a); },
     };
+    const card = (a: AutomationType) => (
+        <AutomationCard
+            key={a.automation_id}
+            automation={a}
+            agentName={nameFor(a.agent_id)}
+            agentAvatarUrl={agentById.get(a.agent_id)?.avatar?.url}
+            now={now}
+            actions={cardActions}
+            scopeAgentId={scopeAgentId}
+        />
+    );
 
-    // --- Derived shelves. Plain computation — the React Compiler memoizes. --
-    const managed = automations.filter(a => a.managed_by !== "external");
-    const external = automations.filter(a => a.managed_by === "external");
-    // Attention is computed over EVERY automation, mirrors included: a job
-    // Clawbits doesn't manage can still be failing every run, and the recessed
-    // "Managed elsewhere" shelf is exactly where that goes unseen. The row is
-    // read-only when it opens; being unfixable here is not a reason to be quiet.
+    // Mirrors count too: a job Clawbits doesn't manage can still be failing every run.
     const attention = automations.filter(a =>
-        automationVisualState(a, livenessFor(a.agent_id), nameFor(a.agent_id), now)
-            .needsAttention,
+        automationVisualState(a, livenessFor(a.agent_id), nameFor(a.agent_id), now).needsAttention,
     );
     const attentionIds = new Set(attention.map(a => a.automation_id));
-    const gallery = managed.filter(a => !attentionIds.has(a.automation_id));
-    const externalRest = external.filter(a => !attentionIds.has(a.automation_id));
+    const gallery = automations.filter(a => a.managed_by !== "external" && !attentionIds.has(a.automation_id));
+    const externalRest = automations.filter(a => a.managed_by === "external" && !attentionIds.has(a.automation_id));
 
-    // Group the gallery by agent (org view); scoped view is a single group.
     const byAgent = new Map<string, AutomationType[]>();
     for (const a of gallery) {
-        const list = byAgent.get(a.agent_id) ?? [];
-        list.push(a);
-        byAgent.set(a.agent_id, list);
+        const list = byAgent.get(a.agent_id);
+        if (list) list.push(a);
+        else byAgent.set(a.agent_id, [a]);
     }
-    const sortRuns = (list: AutomationType[]) =>
-        [...list].sort((x, y) => {
-            const nx = x.reported_state?.nextRunAtMs ?? Number.POSITIVE_INFINITY;
-            const ny = y.reported_state?.nextRunAtMs ?? Number.POSITIVE_INFINITY;
-            if (nx !== ny) return nx - ny;
-            return (y.created_at ?? "").localeCompare(x.created_at ?? "");
-        });
     const groups = [...byAgent.entries()]
-        .map(([agentId, list]) => ({agentId, list: sortRuns(list)}))
+        .map(([agentId, list]) => ({
+            agentId,
+            list: list.sort((x, y) => {
+                const nx = x.reported_state?.nextRunAtMs ?? Number.POSITIVE_INFINITY;
+                const ny = y.reported_state?.nextRunAtMs ?? Number.POSITIVE_INFINITY;
+                return nx !== ny ? nx - ny : (y.created_at ?? "").localeCompare(x.created_at ?? "");
+            }),
+        }))
         .sort((x, y) => nameFor(x.agentId).localeCompare(nameFor(y.agentId)));
 
     const isLoading = automationsQuery.isLoading || agentsQuery.isLoading;
     const isError = automationsQuery.isError;
+    const ready = !isLoading && !isError;
     const canCreate = createAgents.length > 0;
 
     return (
         <div className="space-y-8">
-            {/* The page header (portaled into the shell's header bar) carries
-                the primary action at its right end. */}
-            {renderPageHeader?.(
-                canCreate ? (
+            {renderPageHeader(
+                canCreate && (
                     <Button size="sm" onClick={() => { setTemplateToCreate(BLANK_TEMPLATE); }}>
                         <Icon icon={AddSquareIcon} className="size-4"/>
                         New
                     </Button>
-                ) : undefined,
+                ),
             )}
 
-            {/* Needs attention — broken never hides below the fold. Gated on
-                the agents query too, so rows never flash raw agent ids. */}
-            {!isLoading && !isError && attention.length > 0 && (
+            {ready && attention.length > 0 && (
                 <Stagger delay={0} className="space-y-2">
                     <SectionHeader icon={Alert}>Needs attention</SectionHeader>
                     <div className="space-y-2">
@@ -199,7 +172,7 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
             )}
 
             {isLoading && (
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div className={GRID}>
                     {Array.from({length: 3}).map((_, i) => (
                         <div key={i} className="h-44 animate-pulse rounded-xl bg-muted"/>
                     ))}
@@ -212,89 +185,55 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
                 </div>
             )}
 
-            {/* Existing rows on an unsupported runtime: they can never apply,
-                say so above the cards - which stay for cleanup (delete works;
-                the server rejects create/update/run-now). */}
-            {!isLoading && !isError && unsupportedReason && automations.length > 0 && (
+            {ready && unsupportedReason && automations.length > 0 && (
                 <p className="rounded-xl border border-border/50 bg-card px-4 py-3 text-sm text-muted-foreground">
                     {unsupportedReason} Existing ones will never run and can only be removed.
                 </p>
             )}
 
-            {/* The gallery — objects on a shelf, grouped by agent. */}
-            {!isLoading && !isError && gallery.length > 0 && (
+            {ready && gallery.length > 0 && (
                 <div className="space-y-4">
                     <Stagger delay={60}>
                         <SectionHeader icon={Assigned}>Assigned</SectionHeader>
                     </Stagger>
-                    {groups.map(({agentId, list}, gi) => {
-                        const agent = agentById.get(agentId) ?? null;
-                        const offline = livenessFor(agentId) !== "available";
-                        return (
-                            <Stagger key={agentId} delay={Math.min(90 + gi * 60, 270)} className="space-y-3">
-                                {!scopeAgentId && (
-                                    <div className="flex items-center gap-2">
-                                        <AgentAvatarWithPresence
-                                            agentId={agentId}
-                                            name={nameFor(agentId)}
-                                            src={agent?.avatar?.url}
-                                            size={22}
-                                            ringClassName="ring-background"
-                                        />
-                                        <span className="text-sm font-medium text-foreground">
-                                            {nameFor(agentId)}
+                    {groups.map(({agentId, list}, gi) => (
+                        <Stagger key={agentId} delay={Math.min(90 + gi * 60, 270)} className="space-y-3">
+                            {!scopeAgentId && (
+                                <div className="flex items-center gap-2">
+                                    <AgentAvatarWithPresence
+                                        agentId={agentId}
+                                        name={nameFor(agentId)}
+                                        src={agentById.get(agentId)?.avatar?.url}
+                                        size={22}
+                                        ringClassName="ring-background"
+                                    />
+                                    <span className="text-sm font-medium text-foreground">
+                                        {nameFor(agentId)}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground tabular-nums">
+                                        {list.length}
+                                    </span>
+                                    {livenessFor(agentId) !== "available" && (
+                                        <span className="text-xs text-muted-foreground">
+                                            · offline, changes will wait
                                         </span>
-                                        <span className="text-xs text-muted-foreground tabular-nums">
-                                            {String(list.length)}
-                                        </span>
-                                        {offline && (
-                                            <span className="text-xs text-muted-foreground">
-                                                · offline, changes will wait
-                                            </span>
-                                        )}
-                                    </div>
-                                )}
-                                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                                    {list.map(a => (
-                                        <AutomationCard
-                                            key={a.automation_id}
-                                            automation={a}
-                                            agentName={nameFor(a.agent_id)}
-                                            agentAvatarUrl={agentById.get(a.agent_id)?.avatar?.url}
-                                            now={now}
-                                            actions={cardActions}
-                                            scopeAgentId={scopeAgentId}
-                                        />
-                                    ))}
+                                    )}
                                 </div>
-                            </Stagger>
-                        );
-                    })}
+                            )}
+                            <div className={GRID}>{list.map(card)}</div>
+                        </Stagger>
+                    ))}
                 </div>
             )}
 
-            {/* External mirrors — visible, recessed, read-only by construction. */}
-            {!isLoading && !isError && externalRest.length > 0 && (
+            {ready && externalRest.length > 0 && (
                 <Stagger delay={180} className="space-y-3">
                     <SectionHeader icon={External}>Managed elsewhere</SectionHeader>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        {externalRest.map(a => (
-                            <AutomationCard
-                                key={a.automation_id}
-                                automation={a}
-                                agentName={nameFor(a.agent_id)}
-                                agentAvatarUrl={agentById.get(a.agent_id)?.avatar?.url}
-                                now={now}
-                                actions={cardActions}
-                                scopeAgentId={scopeAgentId}
-                            />
-                        ))}
-                    </div>
+                    <div className={GRID}>{externalRest.map(card)}</div>
                 </Stagger>
             )}
 
-            {/* Empty states + recipe shelf. */}
-            {!isLoading && !isError && !canCreate && automations.length === 0 && (
+            {ready && !canCreate && automations.length === 0 && (
                 unsupportedReason ? (
                     <EmptyState title="Automations unavailable" body={unsupportedReason} />
                 ) : (
@@ -305,7 +244,7 @@ export function AutomationsManager({orgId, scopeAgentId, unsupportedReason, rend
                 )
             )}
 
-            {!isLoading && !isError && canCreate && (
+            {ready && canCreate && (
                 <Stagger delay={automations.length === 0 ? 0 : 240} className="space-y-3">
                     <SectionHeader icon={Idea}>Suggested</SectionHeader>
                     <RecipeShelf

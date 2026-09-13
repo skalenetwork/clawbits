@@ -1,74 +1,43 @@
+import { useEffect } from "react";
+import { HashtagIcon, LockIcon, Message01Icon } from "@hugeicons/core-free-icons";
+import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { Avatar } from "@/components/Avatar";
-import { ChatAvatar } from "@/components/ChatAvatar";
 import { Icon } from "@/components/Icon";
-import {
-    HashtagIcon as Hash,
-    LockIcon as Lock,
-} from "@hugeicons/core-free-icons";
-import type { MmChannel } from "@/lib/api";
+import { PresenceDot } from "@/components/PresenceDot";
+import { UserAvatar } from "@/components/UserAvatar";
+import { useAgentStatus } from "@/hooks/useAgentPresence";
+import { seedMemberPresence, useUserStatus } from "@/hooks/useUserPresence";
+import { agentStatusLabel } from "@/lib/agentLiveness";
+import type { MmChannel, MmChannelMember } from "@/lib/api";
 import {
     AGENT_AVATAR_SHAPE,
     CHANNEL_AVATAR_SHAPE,
     HUMAN_AVATAR_SHAPE,
     withSpeciesShape,
 } from "@/lib/avatarShapes";
+import { cn } from "@/lib/utils";
 
-interface ChannelGlyphProps {
+/** A channel's visual prefix: the DM peer's avatar, the channel's generated tile, or a `#` or lock icon at 16px and
+ *  below. `className` styles the tile; a radius in it overrides the species shape. */
+export function ChannelGlyph({ channel, size = 16, showPresenceDot = true, className }: {
     channel: MmChannel;
-    /** Size in px. Sizes ≤16px render the compact ``#`` / lock icon
-     *  inline so it sits cleanly inside text runs. Larger sizes render
-     *  the channel's generated avatar so each channel is visually
-     *  distinct in lists and headers. */
     size?: number;
-    /** Pass-through to ChatAvatar — suppress the top-right presence dot
-     *  on DM avatars when a parent component is rendering its own
-     *  presence indicator (e.g. the DM channel-page header pill). */
     showPresenceDot?: boolean;
-    /** Extra classes for the avatar tile. A radius here overrides the
-     *  species shape below (e.g. the mobile list's larger radii). Not
-     *  applied to the ≤16px inline ``#``/lock icon variant. */
     className?: string;
-}
-
-/**
- * Visual prefix for a channel reference.
- *
- * - DMs delegate to :func:`ChatAvatar`, which stacks member avatars so
- *   you can recognise who you're talking to at a glance.
- * - Tile-sized public/private channels render their server-generated
- *   avatar (marble SVG keyed on ``channel_id``) — see ``clawbits.avatars``.
- * - Inline-sized (≤16px) public/private channels keep the legacy ``#``
- *   or lock icon since a coloured tile inside text would jar.
- *
- * **Species shape:** the silhouette tells the three species apart at a
- * glance — channels are sharp tiles (``rounded-sm``, structural), human
- * DMs are fully soft (``rounded-2xl``, ≈ circular at list sizes), and
- * agent DMs are human-round with one machined corner (``rounded-bl-sm``,
- * the "bot tail" — bottom-left so it stays clear of the bottom-right
- * presence dot). Group DMs take the human shape.
- */
-export function ChannelGlyph({ channel, size = 16, showPresenceDot = true, className }: ChannelGlyphProps) {
+}) {
     if (channel.channel_type === "direct") {
-        const isAgentDm = Boolean(channel.dm_peer_agent_id);
         return (
-            <ChatAvatar
-                channelId={channel.channel_id}
+            <DmGlyph
+                peer={channel.dm_peer}
                 size={size}
-                ringClassName="ring-sidebar-accent"
                 showPresenceDot={showPresenceDot}
-                className={withSpeciesShape(isAgentDm ? AGENT_AVATAR_SHAPE : HUMAN_AVATAR_SHAPE, className)}
+                className={withSpeciesShape(channel.dm_peer_agent_id ? AGENT_AVATAR_SHAPE : HUMAN_AVATAR_SHAPE, className)}
             />
         );
     }
     if (size <= 16) {
-        // Compact inline icon — preserves the Slack/Discord channel-type
-        // signal where space is too tight for a coloured tile.
-        const icon = channel.channel_type === "private" ? Lock : Hash;
-        return <Icon icon={icon} className="shrink-0 text-muted-foreground"/>;
+        return <Icon icon={channel.channel_type === "private" ? LockIcon : HashtagIcon} className="shrink-0 text-muted-foreground"/>;
     }
-    // Tile-sized: show the channel's distinct generated avatar. Falls
-    // back to the initial-letter chip when the row pre-dates the
-    // avatar backfill or the SVG fails to load.
     return (
         <Avatar
             src={channel.avatar?.url}
@@ -76,5 +45,69 @@ export function ChannelGlyph({ channel, size = 16, showPresenceDot = true, class
             size={size}
             className={withSpeciesShape(CHANNEL_AVATAR_SHAPE, className)}
         />
+    );
+}
+
+function DmGlyph({ peer, size, showPresenceDot, className }: {
+    peer: MmChannelMember | null | undefined;
+    size: number;
+    showPresenceDot: boolean;
+    className: string;
+}) {
+    useEffect(() => {
+        if (peer) seedMemberPresence([peer]);
+    }, [peer]);
+
+    const box = { width: size, height: size };
+    // No border: under border-box it shrinks the content box and shifts the full-size avatar up and left.
+    const frame = cn("relative shrink-0 overflow-hidden rounded-lg bg-muted", className);
+
+    if (!peer) {
+        return (
+            <div className={cn(frame, "flex items-center justify-center text-muted-foreground")} style={box}>
+                <Icon icon={Message01Icon} style={{ width: size * 0.8, height: size * 0.8 }}/>
+            </div>
+        );
+    }
+
+    return (
+        <div className="relative shrink-0" style={box}>
+            <div className={frame} style={box}>
+                {peer.agent_id ? (
+                    <AgentFaceAvatar
+                        src={peer.avatar?.url}
+                        size={size}
+                        name={peer.display_name ?? peer.agent_id}
+                        framed={false}
+                        className="rounded-none"
+                    />
+                ) : (
+                    <UserAvatar
+                        size={size}
+                        name={peer.human_id != null ? String(peer.human_id) : (peer.display_name ?? "user")}
+                        src={peer.avatar?.url}
+                        className="rounded-none"
+                    />
+                )}
+            </div>
+            {showPresenceDot && (peer.human_id != null || peer.agent_id != null) && <PeerDot peer={peer} size={size}/>}
+        </div>
+    );
+}
+
+function PeerDot({ peer, size }: { peer: MmChannelMember; size: number }) {
+    const userStatus = useUserStatus(peer.human_id);
+    const agentStatus = useAgentStatus(peer.agent_id);
+    const isAgent = peer.agent_id != null;
+    const label = isAgent ? agentStatusLabel(agentStatus) : userStatus;
+    return (
+        <span className="pointer-events-none absolute bottom-0 right-0" title={label}>
+            <PresenceDot
+                status={isAgent ? agentStatus : userStatus}
+                size={Math.max(7, Math.round(size * 0.22))}
+                ringClassName="ring-sidebar-accent"
+                label={label}
+            />
+        </span>
     );
 }

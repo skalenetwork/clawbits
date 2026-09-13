@@ -1,4 +1,4 @@
-import {NavLink, useLocation} from "react-router-dom";
+import {NavLink, useLocation, useNavigate} from "react-router-dom";
 import {useQuery} from "@tanstack/react-query";
 import {Check, ListFilter, Pin, Plus, Search} from "lucide-react";
 import {Icon} from "@/components/Icon";
@@ -24,31 +24,26 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {SidebarMenu, SidebarMenuButton, SidebarMenuItem} from "@/components/ui/sidebar";
 import {ChannelGlyph} from "@/components/ChannelGlyph";
-import {CreateMenuItems} from "@/components/RailCreateMenu";
-import {openCreate} from "@/components/command/createStore";
+import {CREATE_OPTIONS, openCreate} from "@/components/command/createStore";
 import {openCommandPalette} from "@/components/command/paletteStore";
 import {isMac} from "@/lib/shortcuts/platform";
 import {CollapsibleGroup} from "./CollapsibleGroup";
-import {HeaderScrim} from "@/components/ProgressiveBlur";
+import {SIDEBAR_SCROLL} from "@/components/ProgressiveBlur";
 import {SidebarToggle} from "./SidebarToggle";
 import {isDesktop} from "@/lib/desktop";
 import {NAV_SECTIONS} from "@/lib/navSections";
 
-/**
- * The app's one sidebar: New, Home, Agents and Search, then a collapsible Chats
- * section whose scope filter sits behind the filter icon.
- * Pinned chats lead the list, and every row ends in one slot carrying exactly
- * one signal, chosen by ``signalOf``.
- */
+/** The app's one sidebar: New, the nav and Search, then the Chats list, pinned first, each row ending in one signal. */
 export function MainSidebar() {
     const {activeOrgId} = useAuth();
     const {pathname} = useLocation();
+    const navigate = useNavigate();
     const [tab, setTab] = useChatTab();
     const actions = useChannelActions();
 
     const channelsQuery = useQuery({
-        queryKey: queryKeys.mm.channels(activeOrgId ?? null),
-        queryFn: () => listMmChannels(activeOrgId ?? null),
+        queryKey: queryKeys.mm.channels(activeOrgId),
+        queryFn: () => listMmChannels(activeOrgId),
         enabled: Boolean(activeOrgId),
     });
 
@@ -60,8 +55,7 @@ export function MainSidebar() {
 
     return (
         <>
-            <div className="sticky top-0 z-10 -mx-2 px-2 pt-2 pb-3">
-                <HeaderScrim color="sidebar" inset/>
+            <div className="px-2 pt-2">
                 <SidebarMenu>
                     <SidebarMenuItem className="flex items-center gap-1">
                         <DropdownMenu>
@@ -70,7 +64,18 @@ export function MainSidebar() {
                                 <span>New</span>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start" sideOffset={4} className="min-w-44">
-                                <CreateMenuItems/>
+                                {CREATE_OPTIONS.map((option) => (
+                                    <DropdownMenuItem
+                                        key={option.title}
+                                        onClick={() => {
+                                            if ("to" in option) void navigate(option.to);
+                                            else openCreate(option.kind);
+                                        }}
+                                    >
+                                        <Icon icon={option.icon}/>
+                                        {option.title}
+                                    </DropdownMenuItem>
+                                ))}
                             </DropdownMenuContent>
                         </DropdownMenu>
                         {!isDesktop && <SidebarToggle className="size-[34px] rounded-lg"/>}
@@ -93,34 +98,36 @@ export function MainSidebar() {
                 </SidebarMenu>
             </div>
 
-            <CollapsibleGroup id="chats" label="Chats" action={<ScopeMenu tab={tab} onChange={setTab}/>}>
-                {lingering && <ChatRow channel={lingering} active actions={actions}/>}
-                {list.length > 0 ? (
-                    list.map((c) => (
-                        <ChatRow
-                            key={c.channel_id}
-                            channel={c}
-                            active={pathname === `/channels/${c.channel_id}`}
-                            actions={actions}
-                        />
-                    ))
-                ) : tab === "dms" ? (
-                    <SidebarMenuItem>
-                        <SidebarMenuButton onClick={() => { openCreate("dm"); }} className="text-muted-foreground">
-                            <Plus/>
-                            <span>New DM</span>
-                        </SidebarMenuButton>
-                    </SidebarMenuItem>
-                ) : (
-                    <li className="list-none px-2 py-4 text-xs text-muted-foreground">
-                        {channelsQuery.isLoading
-                            ? "Loading…"
-                            : tab === "channels"
-                                ? "No channels yet"
-                                : "No conversations yet"}
-                    </li>
-                )}
-            </CollapsibleGroup>
+            <div className={SIDEBAR_SCROLL}>
+                <CollapsibleGroup id="chats" label="Chats" action={<ScopeMenu tab={tab} onChange={setTab}/>}>
+                    {lingering && <ChatRow channel={lingering} active actions={actions}/>}
+                    {list.length > 0 ? (
+                        list.map((c) => (
+                            <ChatRow
+                                key={c.channel_id}
+                                channel={c}
+                                active={pathname === `/channels/${c.channel_id}`}
+                                actions={actions}
+                            />
+                        ))
+                    ) : tab === "dms" ? (
+                        <SidebarMenuItem>
+                            <SidebarMenuButton onClick={() => { openCreate("dm"); }} className="text-muted-foreground">
+                                <Plus/>
+                                <span>New DM</span>
+                            </SidebarMenuButton>
+                        </SidebarMenuItem>
+                    ) : (
+                        <li className="list-none px-2 py-4 text-xs text-muted-foreground">
+                            {channelsQuery.isLoading
+                                ? "Loading…"
+                                : tab === "channels"
+                                    ? "No channels yet"
+                                    : "No conversations yet"}
+                        </li>
+                    )}
+                </CollapsibleGroup>
+            </div>
         </>
     );
 }
@@ -168,7 +175,6 @@ function ChatRow({
                         <SidebarMenuButton
                             render={<NavLink to={`/channels/${channel.channel_id}`} viewTransition/>}
                             isActive={active}
-                            tooltip={label}
                             className={channel.muted ? "opacity-60" : undefined}
                         >
                             <ChannelGlyph channel={channel} size={20}/>
@@ -187,8 +193,7 @@ function ChatRow({
     );
 }
 
-/** What a row's one slot carries, loudest first. A mention pierces mute; any
- *  other unread counts; then an agent mid-reply, then the pin, then the time. */
+/** Loudest first: a mention pierces mute, then unread, an agent mid-reply, the pin, the time. */
 type Signal =
     | {kind: "mention"; n: number}
     | {kind: "count"; n: number}

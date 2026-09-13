@@ -1,4 +1,4 @@
-import {useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode} from "react";
+import {useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode} from "react";
 import {useNavigate} from "react-router-dom";
 import {keepPreviousData, useInfiniteQuery, useQuery, useQueryClient} from "@tanstack/react-query";
 import {useSelector} from "@tanstack/react-store";
@@ -30,6 +30,7 @@ import {
     type LucideIcon,
 } from "lucide-react";
 import {Dialog, DialogContent, DialogTitle} from "@/components/ui/dialog";
+import {DrawerBackdrop} from "@/components/ui/drawer";
 import {ChannelGlyph} from "@/components/ChannelGlyph";
 import {UserAvatar} from "@/components/UserAvatar";
 import {AgentFaceAvatar} from "@/components/AgentFaceAvatar";
@@ -65,7 +66,7 @@ type TabId = "all" | Provider;
 interface Item {
     id: string;
     label: string;
-    search: string[];
+    search?: string[];
     lead?: ReactNode;
     meta?: ReactNode;
     keys?: string[];
@@ -135,7 +136,7 @@ const glyph = (Icon: LucideIcon) => (
 const chatTime = (c: MmChannel) => formatRelativeShort(c.last_message_at ?? c.created_at);
 
 function Kbd({children}: {children: ReactNode}) {
-    return <kbd className="inline-grid h-5 min-w-5 place-items-center rounded-sm border border-border bg-background-solid px-1 font-sans text-[11px] font-medium leading-none text-muted-foreground">{children}</kbd>;
+    return <kbd className="inline-grid h-5 min-w-5 place-items-center rounded-sm border border-border bg-background px-1 font-sans text-[11px] font-medium leading-none text-muted-foreground">{children}</kbd>;
 }
 
 function Highlight({text}: {text: string}) {
@@ -223,8 +224,8 @@ function Palette({mobile}: {mobile: boolean}) {
     const orgId = activeOrgId ?? "";
     const enabled = Boolean(activeOrgId);
     const {data: channelData} = useQuery({
-        queryKey: queryKeys.mm.channels(activeOrgId ?? null),
-        queryFn: () => listMmChannels(activeOrgId ?? null),
+        queryKey: queryKeys.mm.channels(activeOrgId),
+        queryFn: () => listMmChannels(activeOrgId),
         enabled,
         staleTime: 60_000,
     });
@@ -240,15 +241,12 @@ function Palette({mobile}: {mobile: boolean}) {
         enabled,
         staleTime: 60_000,
     });
-    const sources = useMemo(
-        () => ({
-            channels: channelData?.channels ?? [],
-            members: memberData?.members ?? [],
-            agents: agentData?.agents ?? [],
-        }),
-        [channelData, memberData, agentData],
-    );
-    const parsed = useMemo(() => parseSearchQuery(query, sources), [query, sources]);
+    const sources = {
+        channels: channelData?.channels ?? [],
+        members: memberData?.members ?? [],
+        agents: agentData?.agents ?? [],
+    };
+    const parsed = parseSearchQuery(query, sources);
     useEffect(() => {
         const id = setTimeout(() => { setDebounced(parsed); }, DEBOUNCE_MS);
         return () => { clearTimeout(id); };
@@ -264,10 +262,10 @@ function Palette({mobile}: {mobile: boolean}) {
     const messageSort = tab === "messages" ? sort : "relevant";
 
     const messages = useInfiniteQuery({
-        queryKey: queryKeys.mm.search(activeOrgId ?? null, debounced.text, messageSort, debounced.filters),
+        queryKey: queryKeys.mm.search(activeOrgId, debounced.text, messageSort, debounced.filters),
         queryFn: ({pageParam}) =>
             searchMessages({
-                orgId: activeOrgId ?? null,
+                orgId: activeOrgId,
                 query: debounced.text,
                 sort: messageSort,
                 cursor: pageParam,
@@ -427,7 +425,6 @@ function Palette({mobile}: {mobile: boolean}) {
             ...found.slice(0, caps.messages).map((r): Item => ({
                 id: `message:${r.post_id}`,
                 label: r.snippet,
-                search: [],
                 keys: [frecencyKey("channel", r.channel_id)],
                 message: r,
                 run: go(`/channels/${r.channel_id}?msg=${r.post_id}`),
@@ -436,7 +433,6 @@ function Palette({mobile}: {mobile: boolean}) {
                 ? [{
                       id: "all-messages",
                       label: "All message results",
-                      search: [],
                       lead: glyph(Search),
                       run: () => { switchTab("messages"); },
                   }]
@@ -449,7 +445,7 @@ function Palette({mobile}: {mobile: boolean}) {
     const q = parsed.text.toLowerCase();
     const score = (it: Item) => {
         if (!q) return frecencyOf(it) * 1e13 + (it.activity ?? 0);
-        const s = fuzzyScoreAny(q, it.search);
+        const s = fuzzyScoreAny(q, it.search ?? []);
         return s < 0 ? -1 : s + Math.min(frecencyOf(it), 150);
     };
     const rank = (items: Item[], cap = Infinity) =>
@@ -471,7 +467,6 @@ function Palette({mobile}: {mobile: boolean}) {
     const operatorItems = OPERATORS.map(({token, hint, icon}): Item => ({
         id: `operator:${token}`,
         label: token,
-        search: [],
         lead: glyph(icon),
         meta: hint,
         run: () => { changeQuery(`${query.trim()} ${token.endsWith(":") ? token : `${token} `}`.trimStart()); },
@@ -718,7 +713,8 @@ function PaletteShell() {
         return (
             <DrawerPrimitive.Root open={open} onOpenChange={onOpenChange}>
                 <DrawerPrimitive.Portal>
-                    <DrawerPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/30 transition-opacity duration-200 data-ending-style:opacity-0 data-starting-style:opacity-0"/>
+                    {/* The palette never blurs what it is searching. */}
+                    <DrawerBackdrop/>
                     <DrawerPrimitive.Viewport className="pointer-events-none fixed inset-0 z-50 flex flex-col justify-end">
                         <DrawerPrimitive.Popup
                             // Base UI's Drawer ignores the visual viewport: size the sheet to it and lift it above the keyboard.
@@ -742,7 +738,6 @@ function PaletteShell() {
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
                 showCloseButton={false}
-                overlayClassName="backdrop-blur-none"
                 className="top-[12vh] w-full max-w-[calc(100%-1.5rem)] translate-y-0 gap-0 overflow-hidden rounded-xl border border-border bg-popover p-0 shadow-lg ring-0 backdrop-blur-none backdrop-saturate-100 supports-[backdrop-filter]:bg-popover sm:max-w-[38rem]"
             >
                 <DialogTitle className="sr-only">Search</DialogTitle>

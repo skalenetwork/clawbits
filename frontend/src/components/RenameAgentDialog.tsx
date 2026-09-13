@@ -1,46 +1,31 @@
 import {useState} from "react";
 import {useMutation, useQueryClient} from "@tanstack/react-query";
-import {PencilEdit02Icon as Pencil} from "@hugeicons/core-free-icons";
-import {Icon} from "@/components/Icon";
+import {
+    ModalButton,
+    ModalField,
+    ModalFooter,
+    ModalHeader,
+    ModalPanel,
+} from "@/components/modals/Modal";
 import {useAuth} from "@/context/AuthContext";
 import {renameAgent} from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
 import {errMsg, toast} from "@/lib/toast";
-import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
+import {DialogDescription} from "@/components/ui/dialog";
 
-export interface RenameTarget {
+interface RenameTarget {
     agent_id: string;
     nickname?: string | null;
 }
 
-/**
- * Operator-only rename dialog. Writes ``Agent.nickname`` server-side
- * (PATCH …/agents/{id}/name); the backend clears any agent-set profile
- * display_name so the new name is what every surface shows. The agent_id
- * (and thus URLs, avatars, DM keys) never changes.
- *
- * Pass ``agent`` to open, null to close — the inner form remounts per
- * agent (keyed), so the input prefills without effects.
- */
+/** Pass `agent` to open, null to close. */
 export function RenameAgentDialog({agent, onOpenChange}: {
     agent: RenameTarget | null;
     onOpenChange: (open: boolean) => void;
 }) {
     const open = agent !== null;
-    // Cache the target so the form stays mounted through the exit transition
-    // (unmounting mid-close cancels the popup's CSS transition and base-ui
-    // then never finishes closing). The epoch keys a fresh form per open so
-    // an abandoned draft doesn't survive a reopen. Render-time setState is
-    // the documented "information from previous renders" pattern.
+    // The target outlives the close so the form stays mounted through the exit transition; each open keys a fresh form.
     const [target, setTarget] = useState<RenameTarget | null>(null);
     const [epoch, setEpoch] = useState(0);
     const [wasOpen, setWasOpen] = useState(false);
@@ -52,17 +37,9 @@ export function RenameAgentDialog({agent, onOpenChange}: {
         }
     }
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-md">
-                {target && (
-                    <RenameForm
-                        key={`${target.agent_id}:${String(epoch)}`}
-                        agent={target}
-                        onOpenChange={onOpenChange}
-                    />
-                )}
-            </DialogContent>
-        </Dialog>
+        <ModalPanel open={open} onOpenChange={onOpenChange} kind="form">
+            {target && <RenameForm key={epoch} agent={target} onOpenChange={onOpenChange}/>}
+        </ModalPanel>
     );
 }
 
@@ -76,19 +53,17 @@ function RenameForm({agent, onOpenChange}: {
     const [name, setName] = useState(current);
 
     const mutation = useMutation({
-        mutationFn: (nickname: string) =>
-            renameAgent(activeOrgId ?? "", agent.agent_id, nickname),
-        onSuccess: (data) => {
+        mutationFn: (nickname: string) => renameAgent(activeOrgId ?? "", agent.agent_id, nickname),
+        onSuccess: data => {
             if (activeOrgId) {
                 void queryClient.invalidateQueries({queryKey: queryKeys.agents(activeOrgId)});
                 void queryClient.invalidateQueries({queryKey: queryKeys.agentProfile(activeOrgId, data.agent_id)});
-                // DM titles derive from the agent's resolved name.
                 void queryClient.invalidateQueries({queryKey: queryKeys.mm.channelsAll});
             }
             toast.success(`Renamed to ${data.nickname}`);
             onOpenChange(false);
         },
-        onError: (err: unknown) => { toast.error(errMsg(err, "Couldn't rename agent")); },
+        onError: err => { toast.error(errMsg(err, "Couldn't rename agent")); },
     });
 
     const trimmed = name.trim();
@@ -96,43 +71,40 @@ function RenameForm({agent, onOpenChange}: {
 
     return (
         <>
-            <DialogHeader>
-                <DialogTitle>
-                    <Icon icon={Pencil} className="text-muted-foreground"/>
-                    Rename agent
-                </DialogTitle>
-                <DialogDescription>
-                    Shown everywhere instead of the generated name. The handle{" "}
-                    <strong>@{agent.agent_id}</strong> stays the same.
-                </DialogDescription>
-            </DialogHeader>
+            <ModalHeader title="Rename agent"/>
             <form
-                onSubmit={(e) => {
+                onSubmit={e => {
                     e.preventDefault();
                     if (canSave) mutation.mutate(trimmed);
                 }}
             >
-                <Input
-                    autoFocus
-                    value={name}
-                    maxLength={32}
-                    onChange={(e) => { setName(e.target.value); }}
-                    placeholder="Agent name"
-                    aria-label="Agent name"
-                />
-                <DialogFooter className="mt-4">
-                    <Button
-                        type="button"
-                        variant="ghost"
+                <div className="p-4">
+                    <ModalField label="Name" htmlFor="rename-agent-name">
+                        <Input
+                            id="rename-agent-name"
+                            autoFocus
+                            value={name}
+                            maxLength={32}
+                            onChange={e => { setName(e.target.value); }}
+                            placeholder="Agent name"
+                        />
+                        <DialogDescription className="text-[12px] text-muted-foreground">
+                            Shown everywhere instead of the generated name. The handle @{agent.agent_id}
+                            stays the same.
+                        </DialogDescription>
+                    </ModalField>
+                </div>
+                <ModalFooter>
+                    <ModalButton
                         onClick={() => { onOpenChange(false); }}
                         disabled={mutation.isPending}
                     >
                         Cancel
-                    </Button>
-                    <Button type="submit" disabled={!canSave}>
+                    </ModalButton>
+                    <ModalButton type="submit" tone="primary" disabled={!canSave}>
                         {mutation.isPending ? "Renaming…" : "Rename"}
-                    </Button>
-                </DialogFooter>
+                    </ModalButton>
+                </ModalFooter>
             </form>
         </>
     );

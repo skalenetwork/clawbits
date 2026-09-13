@@ -24,7 +24,8 @@ from clawbits.avatars.upload import (
 )
 from clawbits.datastructures.avatar_models import AvatarRef
 from clawbits.db.models import HumanUser
-from clawbits.fastapi.human_endpoints import _get_db, get_current_human_user
+from clawbits.fastapi.human_endpoints import _get_db
+from clawbits.fastapi.workos_auth import get_current_human_user
 
 logger = logging.getLogger(__name__)
 

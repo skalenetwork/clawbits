@@ -1,22 +1,16 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { cn } from "@/lib/utils";
 
-/**
- * Spacious bullet list for release notes. Shared by the "What's new" dialog
- * (`ReleaseNotesDialog`) and the public changelog page (`ChangelogPage`) so the
- * notes render identically in both. Dedicated (not the chat renderer) so
- * spacing/typography are fully controlled - and `em` is forced upright so notes
- * never render italic.
- */
-export function ReleaseNotesBody({ content }: { content: string }) {
+export function ReleaseNotesBody({ content, className }: { content: string; className?: string }) {
   return (
-    <div className="text-[15px] leading-relaxed text-foreground/90">
+    <div className={cn("text-[15px] leading-relaxed text-foreground/90", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         skipHtml
         components={{
-          p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
-          ul: ({ children }) => <ul className="my-1 space-y-3">{children}</ul>,
+          p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{children}</p>,
+          ul: ({ children }) => <ul className="my-3 space-y-3 first:mt-0 last:mb-0">{children}</ul>,
           li: ({ children }) => (
             <li className="flex gap-3">
               <span className="mt-[0.6em] size-1.5 shrink-0 rounded-full bg-foreground/35" aria-hidden />

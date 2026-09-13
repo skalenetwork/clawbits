@@ -1,6 +1,4 @@
-/** The machines pulling from the org's repository and the agents declared on
- *  them. Nothing here reaches a host: every verdict is read from what they push. */
-import { useState, type ComponentProps } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { RefreshCw, Sparkles, Trash2, TriangleAlert, type LucideIcon } from "lucide-react";
@@ -9,17 +7,17 @@ import {
   Delete02Icon as Trash,
   MoreHorizontalIcon as More,
 } from "@hugeicons/core-free-icons";
-import { ReefIcon } from "@/components/ReefIcon";
-import { cn } from "@/lib/utils";
 import { Icon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
+import { ReefIcon } from "@/components/ReefIcon";
+import { SquircleDefs } from "@/components/home/tiles";
+import { ReefAgentTile, type ReefAgentTileProps } from "@/components/settings/ReefAgentTile";
 import {
   ReefHealth,
   SettingsPage,
   SettingsRow,
   SettingsRowSkeleton,
   SettingsSection,
-  SettingsStatus,
 } from "@/components/settings/Settings";
 import { SetupMark } from "@/components/setup/SetupShell";
 import { Button } from "@/components/ui/button";
@@ -31,37 +29,27 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/context/AuthContext";
 import { useActiveOrg } from "@/hooks/useActiveOrg";
-import { deleteReef, deleteReefAgent, getReef } from "@/lib/api";
+import { deleteReef, deleteReefAgent, getAgents, getReef } from "@/lib/api";
 import { confirm } from "@/lib/confirm";
 import { formatRelativeAgo, formatRelativeShort, parseUtcTimestamp } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
-interface Status {
-  tone: ComponentProps<typeof SettingsStatus>["tone"];
-  label: string;
-}
-
-const MARK = { machine: "/computer.webp", agent: "/openclaw.png", repo: "/github.webp" };
-
-const STATE: Partial<Record<string, Status>> = {
-  running: { tone: "ok", label: "Running" },
-  pending: { tone: "idle", label: "Starting" },
-  stopped: { tone: "idle", label: "Stopped" },
-  failed: { tone: "bad", label: "Failed" },
-};
-
+const SUBHEAD = "px-3 pb-2 text-[13px] font-medium text-muted-foreground";
+const EVENTS_PREVIEW = 5;
+const EVENT_ROW =
+  "relative flex min-h-13 items-center gap-3 px-4 py-3 text-[13px] not-first:before:absolute not-first:before:inset-x-4 not-first:before:top-0 not-first:before:h-px not-first:before:bg-foreground/8";
 const EVENT_KIND: Partial<Record<string, { icon: LucideIcon; tone: string }>> = {
   created: { icon: Sparkles, tone: "bg-emerald-500/12 text-emerald-500" },
   updated: { icon: RefreshCw, tone: "bg-sky-500/12 text-sky-500" },
   deleted: { icon: Trash2, tone: "bg-destructive/12 text-destructive" },
   failed: { icon: TriangleAlert, tone: "bg-destructive/12 text-destructive" },
 };
-const EVENTS_PREVIEW = 8;
-const EVENT_ROW =
-  "relative flex min-h-13 items-center gap-3 px-4 py-3 text-[13px] not-first:before:absolute not-first:before:inset-x-4 not-first:before:top-0 not-first:before:h-px not-first:before:bg-foreground/8";
-
 const RELATIVE = new Intl.RelativeTimeFormat("en", { style: "narrow" });
+
+const fleetKey = (host: string, name: string) => `${host}/${name}`;
+const muted = (text: string) => <span className="font-normal text-muted-foreground">{text}</span>;
 
 function expiresIn(at: string): string {
   const min = Math.max(1, Math.round((parseUtcTimestamp(at).getTime() - Date.now()) / 60_000));
@@ -69,8 +57,6 @@ function expiresIn(at: string): string {
   if (min < 1440) return `Expires ${RELATIVE.format(Math.floor(min / 60), "hour")}`;
   return `Expires ${RELATIVE.format(Math.floor(min / 1440), "day")}`;
 }
-
-const muted = (text: string) => <span className="font-normal text-muted-foreground">{text}</span>;
 
 export default function SettingsReefPage() {
   const { activeOrgId } = useAuth();
@@ -87,6 +73,12 @@ export default function SettingsReefPage() {
     refetchInterval: 30_000,
   });
   const reef = reefQuery.data;
+
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents(orgId),
+    queryFn: () => getAgents(orgId),
+    enabled: Boolean(activeOrgId),
+  });
 
   const disconnect = useMutation({
     mutationFn: () => deleteReef(orgId),
@@ -119,8 +111,8 @@ export default function SettingsReefPage() {
     void navigate(to);
   };
   const hosts = reef?.hosts ?? [];
-  const enrolled = new Set(hosts.flatMap((h) => h.agents.map((a) => `${h.host}/${a.name}`)));
-  const waiting = (reef?.declared ?? []).filter((d) => !enrolled.has(`${d.host}/${d.name}`));
+  const enrolled = new Set(hosts.flatMap((h) => h.agents.map((a) => fleetKey(h.host, a.name))));
+  const waiting = (reef?.declared ?? []).filter((d) => !enrolled.has(fleetKey(d.host, d.name)));
   const events = hosts
     .flatMap((h) =>
       h.events.flatMap((e) => {
@@ -131,12 +123,42 @@ export default function SettingsReefPage() {
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const shownEvents = allEvents ? events : events.slice(0, EVENTS_PREVIEW);
 
+  const byFleet = new Map(
+    (agentsQuery.data?.agents ?? []).flatMap((a) =>
+      a.reef_host != null && a.reef_name != null ? [[fleetKey(a.reef_host, a.reef_name), a] as const] : [],
+    ),
+  );
+  const tiles: ReefAgentTileProps[] = [
+    ...hosts.flatMap((h) =>
+      h.agents.map((a) => ({
+        host: h.host,
+        name: a.name,
+        row: a,
+        agent: byFleet.get(fleetKey(h.host, a.name)),
+        failure:
+          a.state === "failed"
+            ? h.events.find((e) => e.agent === a.name && e.kind === "failed")?.detail
+            : undefined,
+      })),
+    ),
+    ...waiting.map((d) => ({ host: d.host, name: d.name, expires: expiresIn(d.expires_at) })),
+  ];
+  const mine = tiles.filter((t) => t.agent?.is_operator);
+  const others = tiles.filter((t) => !t.agent?.is_operator);
+  const split = mine.length > 0 && others.some((t) => t.agent != null);
+
   const agentMenu = (host: string, name: string) => (
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={`Actions for ${name}`}
         disabled={remove.isPending}
-        render={<Button variant="ghost" size="icon-sm" />}
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="hidden size-7 group-hover:inline-flex group-focus-within:inline-flex aria-expanded:inline-flex pointer-coarse:inline-flex"
+          />
+        }
       >
         <Icon icon={More} />
       </DropdownMenuTrigger>
@@ -148,7 +170,6 @@ export default function SettingsReefPage() {
               title: `Remove ${name}?`,
               description: `${host} drops it on its next pull. Its data is kept, so declaring the same name again brings it back.`,
               confirmLabel: "Remove",
-              destructive: true,
             }).then((ok) => {
               if (ok) remove.mutate({ host, name });
             });
@@ -160,15 +181,24 @@ export default function SettingsReefPage() {
     </DropdownMenu>
   );
 
-  const repoMark = <SetupMark src={MARK.repo} size={32} />;
+  const repoMark = <SetupMark src="/github.webp" size={32} />;
+
+  const agentGrid = (items: ReefAgentTileProps[]) => (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {items.map((t) => (
+        <ReefAgentTile key={fleetKey(t.host, t.name)} {...t} menu={isOwner ? agentMenu(t.host, t.name) : undefined} />
+      ))}
+    </div>
+  );
 
   return (
     <SettingsPage>
+      <SquircleDefs />
       <PageHeader
         leading={<ReefIcon className="size-4 shrink-0 text-muted-foreground" />}
         title="Reef"
         actions={
-          reef?.connected ? (
+          reef?.connected && (
             <>
               {isOwner && (
                 <Button variant="secondary" size="sm" onClick={go("/setup/reef")}>
@@ -179,7 +209,7 @@ export default function SettingsReefPage() {
                 New agent
               </Button>
             </>
-          ) : null
+          )
         }
       />
 
@@ -191,10 +221,7 @@ export default function SettingsReefPage() {
         </SettingsSection>
       ) : reefQuery.isError ? (
         <SettingsSection>
-          <SettingsRow
-            title="Couldn't load Reef"
-            error={errMsg(reefQuery.error, "Try again in a moment")}
-          />
+          <SettingsRow title="Couldn't load Reef" error={errMsg(reefQuery.error, "Try again in a moment")} />
         </SettingsSection>
       ) : (
         <>
@@ -216,7 +243,7 @@ export default function SettingsReefPage() {
                   hosts.map((h) => (
                     <SettingsRow
                       key={h.host}
-                      leading={<SetupMark src={MARK.machine} size={32} />}
+                      leading={<SetupMark src="/computer.webp" size={32} />}
                       title={h.host}
                       description={[
                         `${h.agents.length} agent${h.agents.length === 1 ? "" : "s"}`,
@@ -232,47 +259,25 @@ export default function SettingsReefPage() {
                 )}
               </SettingsSection>
 
-              <SettingsSection label="Agents">
-                {enrolled.size + waiting.length === 0 && <SettingsRow title={muted("No agents yet")} />}
-                {hosts.flatMap((h) =>
-                  h.agents.map((a) => {
-                    const state: Status = STATE[a.state] ?? { tone: "idle", label: a.state };
-                    return (
-                      <SettingsRow
-                        key={`${h.host}/${a.name}`}
-                        leading={<SetupMark src={MARK.agent} size={32} />}
-                        title={a.name}
-                        description={`${a.role} on ${h.host}${a.role_current ? "" : " · role update pending"}${a.synced ? "" : " · syncing"}`}
-                        error={
-                          a.state === "failed"
-                            ? h.events.find((e) => e.agent === a.name && e.kind === "failed")?.detail
-                            : undefined
-                        }
-                        control={
-                          <>
-                            <SettingsStatus tone={state.tone}>{state.label}</SettingsStatus>
-                            {isOwner && agentMenu(h.host, a.name)}
-                          </>
-                        }
-                      />
-                    );
-                  }),
-                )}
-                {waiting.map((d) => (
-                  <SettingsRow
-                    key={`${d.host}/${d.name}`}
-                    leading={<SetupMark src={MARK.agent} size={32} />}
-                    title={d.name}
-                    description={`Waiting to join ${d.host}`}
-                    control={
-                      <>
-                        <SettingsStatus tone="idle">{expiresIn(d.expires_at)}</SettingsStatus>
-                        {isOwner && agentMenu(d.host, d.name)}
-                      </>
-                    }
-                  />
-                ))}
-              </SettingsSection>
+              {tiles.length === 0 ? (
+                <SettingsSection label="Agents">
+                  <SettingsRow title={muted("No agents yet")} />
+                </SettingsSection>
+              ) : (
+                <section>
+                  <h2 className={SUBHEAD}>Agents</h2>
+                  {split ? (
+                    <>
+                      <h3 className={SUBHEAD}>Yours</h3>
+                      {agentGrid(mine)}
+                      <h3 className={cn(SUBHEAD, "pt-5")}>Others</h3>
+                      {agentGrid(others)}
+                    </>
+                  ) : (
+                    agentGrid(tiles)
+                  )}
+                </section>
+              )}
 
               <SettingsSection label="Activity">
                 {events.length === 0 ? (
@@ -287,9 +292,7 @@ export default function SettingsReefPage() {
                         <span className="min-w-0 basis-1/2 wrap-anywhere">
                           <span className="font-medium">{e.agent}</span>{" "}
                           {e.kind === "failed" ? (
-                            <span className="text-destructive">
-                              failed{e.detail && `: ${e.detail}`}
-                            </span>
+                            <span className="text-destructive">failed{e.detail && `: ${e.detail}`}</span>
                           ) : (
                             e.kind
                           )}
@@ -366,7 +369,6 @@ export default function SettingsReefPage() {
                             description:
                               "Agents already declared keep running: their files stay on the branch. Clawbits just stops reading and writing it.",
                             confirmLabel: "Disconnect",
-                            destructive: true,
                           }).then((ok) => {
                             if (ok) disconnect.mutate();
                           });

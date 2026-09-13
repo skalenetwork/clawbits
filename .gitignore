@@ -1,10 +1,3 @@
-# Written for what this repo actually uses: uv + ruff + pytest (Python 3.14),
-# bun + vite (web), cargo + tauri (desktop), expo (mobile). Deliberately not a
-# concatenation of GitHub's language templates — the previous 470-line version
-# was ~half rules for tooling absent from the tree, including an entire
-# JetBrains block whose negations were unreachable because the directory above
-# them was already ignored.
-
 # ── Secrets ──────────────────────────────────────────────────────────────────
 # The bare .env and the decrypted private keys are never committed.
 .env
@@ -41,10 +34,7 @@ build/
 
 # ── Rust / Tauri ─────────────────────────────────────────────────────────────
 target/
-# Generated from desktop/icons-src by `bun run tauri icons`; regenerated on
-# every dev/build, so committing them would only produce churn.
-desktop/src-tauri/icons/*
-!desktop/src-tauri/icons/.gitkeep
+desktop/src-tauri/gen/schemas/
 
 # ── Mobile (Expo prebuild outputs that are NOT committed) ─────────────────────
 apps/mobile/.expo/
@@ -64,7 +54,7 @@ apps/mobile/android/build/
 .LSOverride
 # `Icon?` is the Finder metadata file (literally "Icon\r"). On case-insensitive
 # APFS it also matches any 5-character `icons/` directory, which is how the PWA
-# icons stayed out of git unnoticed — hence the two re-includes below. If either
+# icons stayed out of git unnoticed, hence the two re-includes below. If either
 # directory is ever renamed, its negation must move with it.
 Icon?
 !desktop/src-tauri/icons/

@@ -1,9 +1,4 @@
-"""Write-side database accessors — SQLModel edition.
-
-Transaction ownership stays with the caller: these methods never call
-``session.commit()`` unless the previous sqlite implementation did (which
-only happens in a couple of legacy paths).
-"""
+"""Write-side database accessors. Transaction ownership stays with the caller: nothing here commits."""
 from __future__ import annotations
 
 import datetime as _dt
@@ -690,19 +685,9 @@ class TableWrite:
         return ts
 
     @staticmethod
-    def set_human_privacy_mode(
-        session: Session,
-        human_id: int,
-        enabled: bool,
-        when: datetime | None = None,
-    ) -> HumanUser:
-        """Legacy single-toggle privacy. Flips all four granular flags
-        atomically (everything hidden / everything visible) so older
-        clients calling ``POST /api/human/privacy-mode`` still see the
-        same coarse behaviour. New clients should use
-        :py:meth:`set_human_privacy_settings`.
-        """
-        del when  # the freeze target is no longer used; signature kept for ABI
+    def set_human_privacy_mode(session: Session, human_id: int, enabled: bool) -> HumanUser:
+        """The single toggle behind ``POST /api/human/privacy-mode``: all four
+        per-signal flags hidden, or all four visible."""
         row = session.get(HumanUser, human_id)
         if row is None:
             raise ValueError(f"Human user '{human_id}' not found")
@@ -1257,7 +1242,7 @@ class TableWrite:
         """Channel ids of the *direct* (DM) channels this agent takes part in.
 
         A DM is identified by ``channel_type == 'direct'`` plus an agent
-        membership row — the same signal :meth:`TableRead.apply_dm_peer_display`
+        membership row, the same signal :meth:`TableRead.apply_dm_peers`
         uses to resolve a DM's peer.
         """
         return list(
@@ -1387,14 +1372,8 @@ class TableWrite:
             )
         )
 
-        # Preserve DM chats: re-point the agent's membership in each direct
-        # channel to the placeholder so the DM stays intact and still renders
-        # as a conversation with "Deleted agent" (its peer is resolved from
-        # the membership rows — see ``TableRead.apply_dm_peer_display``). Drop
-        # a DM membership outright only when the placeholder already holds one
-        # for that channel — the other party of an agent-agent DM was
-        # deleted-with-keep earlier — which would otherwise collide on
-        # ``uq_mm_channel_members_channel_agent``.
+        # A DM the placeholder already joined (its other agent was deleted with keep) would collide on
+        # uq_mm_channel_members_channel_agent, so that membership is dropped instead of re-pointed.
         dm_ids = TableWrite._agent_dm_channel_ids(session, agent_id)
         if dm_ids:
             other_member = aliased(MmChannelMember)
@@ -1837,7 +1816,7 @@ class TableWrite:
         Channels are deliberately **not** torn down when this empties them of
         humans: the org still owns them, and an owner can delete them from
         Settings. A now-human-less DM is likewise left in place - if the
-        person rejoins, ``_reopen_orphaned_dm`` heals it rather than colliding.
+        person rejoins, ``create_or_get_direct`` re-attaches both parties rather than colliding.
 
         Returns the channel ids the human was removed from, so the caller can
         close their live streams and drop the channels from their sidebar.
@@ -2004,18 +1983,6 @@ class TableWrite:
         return org_id
 
     # ---------------- agent claims ----------------
-
-    @staticmethod
-    def create_agent_claim(session: Session, email: str, agent_id: str) -> None:
-        existing = session.exec(
-            select(AgentClaim)
-            .where(AgentClaim.email == email)
-            .where(AgentClaim.agent_id == agent_id)
-        ).first()
-        if existing is not None:
-            return
-        session.add(AgentClaim(email=email, agent_id=agent_id))
-        session.flush()
 
     @staticmethod
     def delete_agent_claims_for_email(session: Session, email: str) -> list[str]:
@@ -3163,6 +3130,17 @@ class TableWrite:
         # chats list forever. A no-op for older posts.
         TableWrite._recompute_channel_preview(session, post.channel_id)
         return post
+
+    @staticmethod
+    def set_mm_post_link_preview(
+        session: Session, post_id: int, message: str, link_preview: dict
+    ) -> bool:
+        result = session.exec(
+            update(MmPost)
+            .where(MmPost.post_id == post_id, MmPost.message == message)
+            .values(link_preview=link_preview)
+        )
+        return result.rowcount == 1
 
     @staticmethod
     def delete_mm_post_human(

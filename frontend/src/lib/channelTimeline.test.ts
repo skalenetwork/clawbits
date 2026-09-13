@@ -111,7 +111,6 @@ describe("decorateRows", () => {
   const decorate = (timeline: ReturnType<typeof buildTimeline>, over = {}) =>
     decorateRows({
       timeline,
-      enteredAtUnread: 0,
       firstUnreadPostId: null,
       generatingAgents: [],
       queuedOwnPostIds: new Set<number>(),
@@ -148,14 +147,9 @@ describe("decorateRows", () => {
     expect(rows.map((r) => r.kind === "post" && r.isGroupStart)).toEqual([true, true, true]);
   });
 
-  it("marks the last post of a run as the group end", () => {
-    const rows = decorate(buildTimeline([post(1), post(2, { created_at: at(1) })], []));
-    expect(rows.map((r) => r.kind === "post" && r.isGroupEnd)).toEqual([false, true]);
-  });
-
   it("anchors the unread divider on the locked post, events ignored", () => {
     const timeline = buildTimeline([post(1), post(2, { created_at: at(1) })], [event(4, at(1))]);
-    const rows = decorate(timeline, { enteredAtUnread: 1, firstUnreadPostId: 2 });
+    const rows = decorate(timeline, { firstUnreadPostId: 2 });
     const flagged = rows.filter((r) => r.kind === "post" && r.showUnreadDivider);
     expect(flagged).toHaveLength(1);
     expect(flagged[0]).toMatchObject({ post: { post_id: 2 } });

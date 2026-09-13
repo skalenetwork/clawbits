@@ -1,21 +1,15 @@
-# clawbits/fastapi/human_endpoints.py
-"""Human-facing data endpoints.
-
-Authentication itself (magic auth + social OAuth) lives in
-:mod:`clawbits.fastapi.workos_auth`; this module imports the
-:func:`get_current_human_user` dependency from there directly.
-"""
+"""Human-facing data endpoints. Authentication lives in :mod:`clawbits.fastapi.workos_auth`."""
 
 import asyncio
 import logging
 import os
 import time
-import uuid as _uuid
+import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from fastapi.concurrency import run_in_threadpool
 from imapclient.exceptions import LoginError
 from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -30,18 +24,16 @@ from clawbits.datastructures.action_models import (
     ActionResponse,
     AgentActionsResponse,
 )
-from clawbits.datastructures.agent_id import AgentId  # noqa: F401  (used elsewhere)
-from clawbits.datastructures.avatar_models import AvatarRef
+from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.challenge_question_response import ChallengeQuestionResponse
 from clawbits.datastructures.email_models import (
     EmailCountResponse,
     EmailDetailResponse,
     EmailListResponse,
     EmailSetReadRequest,
-    EmailSummaryResponse,
 )
 from clawbits.datastructures.mm_models import (
-    GlobalUserStatus,
+    MmChannelEventResponse,
     PrivacyModeRequest,
     PrivacyModeResponse,
     PrivacySettingsRequest,
@@ -71,7 +63,15 @@ from clawbits.datastructures.org_models import (
     SetReefRepoRequest,
     UpdateOrgMemberRoleRequest,
 )
-from clawbits.db.models import DISPLAY_NAME_MAX_LENGTH
+from clawbits.db.models import (
+    AGENT_USAGE_SCHEMA_VERSION,
+    DISPLAY_NAME_MAX_LENGTH,
+    Agent,
+    AgentPost,
+    AgentProfile,
+    AgentSkillInstall,
+    HumanUser,
+)
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite, UserDeletionBlocked
 from clawbits.email.imap_client import (
@@ -83,9 +83,19 @@ from clawbits.email.imap_client import (
     list_emails,
     set_email_read,
 )
-from clawbits.fastapi.agent_signup import AgentSignup
+from clawbits.email.stalwart_provision import deprovision_mailbox
+from clawbits.fastapi.agent_signup import AgentSignup, HumanSession
 from clawbits.fastapi.session_cookie import stage_session_clear
-from clawbits.fastapi.workos_auth import get_current_human_user
+from clawbits.fastapi.workos_auth import (
+    MeResponse,
+    create_workos_organization,
+    delete_workos_organization,
+    delete_workos_user,
+    get_current_human_user,
+    register_membership,
+    unregister_membership,
+    update_membership_role,
+)
 from clawbits.lobstertalk.attention.crypto import (
     EphemeralSecretsKeyError,
     decrypt_secret,
@@ -108,6 +118,7 @@ from clawbits.realtime import (
     publish_member_removed,
     publish_org_added,
     publish_org_updated,
+    publish_user_status,
 )
 from clawbits.reef_repo import (
     NAME_RE,
@@ -121,78 +132,61 @@ from clawbits.reef_repo import (
     parse_role,
     parse_status,
 )
+from clawbits.skills.render import SKILL_RUNTIMES, render_skill, resolve_runtime
+from clawbits.skills.spec import (
+    SkillValidationError,
+    normalize_files,
+    normalize_manifest,
+    validate_bundle,
+    validate_manifest,
+    validate_slug,
+)
 from clawbits.ssrf import HostResolutionError, PrivateAddressError, arun_guarded
 
-# ---------------------------------------------------------------------------
-# Response models still used by data endpoints
-# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+human_router = APIRouter(tags=["Human"])
 
+# The resolver thread can't be cancelled, so this bounds the save request, not the lookup.
+ENDPOINT_CHECK_TIMEOUT_SECONDS = 5.0
 
-class HumanUserResponse(BaseModel):
-    id: int
-    email: str
-    display_name: str | None
-    avatar: AvatarRef | None = None
-
-
-class UpdateProfileRequest(BaseModel):
-    display_name: str | None = Field(default=None, max_length=DISPLAY_NAME_MAX_LENGTH)
-
-
-# ---------------------------------------------------------------------------
-# Tiny request-scoped helper — exported for human_mm_endpoints to share.
-# ---------------------------------------------------------------------------
+# Per-process sliding windows, so with N workers the real ceiling is N times these.
+_RATE_BUCKETS: dict[str, list[float]] = {}
+_LOBSTERTALK_SAVE_LIMIT = 20
+_LOBSTERTALK_HEALTH_LIMIT = 6
+_LOBSTERTALK_RATE_WINDOW_S = 60.0
 
 
 def _get_db(request: Request) -> Session:
     return Session(request.app._engine)
 
 
-# ---------------------------------------------------------------------------
-# Router
-# ---------------------------------------------------------------------------
+def _in_db[T](request: Request, fn: Callable[[Session], T]) -> Awaitable[T]:
+    """Run ``fn`` against its own session on a worker thread, off the event loop."""
 
-logger = logging.getLogger(__name__)
+    def run() -> T:
+        with _get_db(request) as db:
+            return fn(db)
 
-# How long a save waits on resolving an org-supplied LLM host before giving up
-# and letting the (authoritative) call-time check decide. The resolver thread
-# can't be cancelled, so this bounds the *request*, not the lookup.
-ENDPOINT_CHECK_TIMEOUT_SECONDS = 5.0
-
-# --- Lightweight in-process rate limiting -----------------------------------
-# The LobsterTalk save/healthcheck endpoints are owner-only but self-service: a
-# save resolves a caller-chosen DNS name (a slow nameserver ties up a resolver
-# slot) and a healthcheck spends a metered LLM call. Neither should be free to
-# hammer. This is a per-process sliding window keyed by org — with ``--workers
-# N`` the real ceiling is N× these numbers, which is fine for what it guards
-# (one owner looping an endpoint) and costs no Redis round-trip on the hot path.
-_RATE_BUCKETS: dict[str, list[float]] = {}
-_LOBSTERTALK_SAVE_LIMIT = 20
-_LOBSTERTALK_HEALTH_LIMIT = 6  # spends a metered LLM call — tighter than saves
-_LOBSTERTALK_RATE_WINDOW_S = 60.0
+    return asyncio.to_thread(run)
 
 
 def _rate_limit(key: str, *, limit: int, window_s: float = _LOBSTERTALK_RATE_WINDOW_S) -> None:
-    """Raise 429 when ``key`` has already been hit ``limit`` times in the last
-    ``window_s`` seconds; otherwise record this hit and return. Buckets that
-    fall empty are dropped so the map can't grow without bound across orgs."""
+    """429 once ``key`` has been hit ``limit`` times in the last ``window_s`` seconds."""
     now = time.monotonic()
-    cutoff = now - window_s
-    hits = [t for t in _RATE_BUCKETS.get(key, ()) if t >= cutoff]
+    hits = [t for t in _RATE_BUCKETS.get(key, ()) if t >= now - window_s]
     if len(hits) >= limit:
-        # The retry hint rides in the detail, not a Retry-After header: the
-        # app's global HTTPException handler rebuilds the response and drops
-        # exc.headers, so a header here would never reach the client.
+        # The hint rides in the detail: the global HTTPException handler drops exc.headers.
         retry = max(1, int(window_s - (now - hits[0])))
         raise HTTPException(status_code=429, detail=f"Too many requests; retry in ~{retry}s")
     hits.append(now)
     _RATE_BUCKETS[key] = hits
 
 
-human_router = APIRouter(tags=["Human"])
+class UpdateProfileRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=DISPLAY_NAME_MAX_LENGTH)
 
 
-def _settings_response(row) -> PrivacySettingsResponse:
+def _settings_response(row: HumanUser) -> PrivacySettingsResponse:
     return PrivacySettingsResponse(
         last_seen_visible=row.last_seen_visible,
         online_status_visible=row.online_status_visible,
@@ -201,38 +195,44 @@ def _settings_response(row) -> PrivacySettingsResponse:
     )
 
 
-@human_router.get(
-    "/api/human/privacy-settings", response_model=PrivacySettingsResponse
-)
+async def _rebroadcast_presence(
+    human_id: int, fresh: dict | None, channel_ids: list[str], fellow_ids: list[int]
+) -> tuple[str, str | None]:
+    """Publish the user's presence as peers may now see it; returns the status and last-seen sent."""
+    from clawbits.fastapi.human_mm_endpoints import _resolve_presence_view
+
+    bus = get_bus()
+    status, last_seen, label = _resolve_presence_view(fresh, await bus.user_presence_get(human_id))
+    fire_and_forget(
+        publish_user_status(
+            bus, human_id, status, last_seen, channel_ids, fellow_ids, last_seen_label=label
+        )
+    )
+    return status, last_seen
+
+
+@human_router.get("/api/human/privacy-settings", response_model=PrivacySettingsResponse)
 def get_privacy_settings(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
     """Return the calling human's four per-signal privacy flags."""
-    from clawbits.db.models import HumanUser as _HumanUserRow
     with _get_db(request) as db:
-        row = db.get(_HumanUserRow, int(user["id"]))
+        row = db.get(HumanUser, int(user["id"]))
         if row is None:
             raise HTTPException(status_code=404, detail="User not found")
         return _settings_response(row)
 
 
-@human_router.patch(
-    "/api/human/privacy-settings", response_model=PrivacySettingsResponse
-)
-async def update_privacy_settings(
+@human_router.patch("/api/human/privacy-settings", response_model=PrivacySettingsResponse)
+def update_privacy_settings(
     body: PrivacySettingsRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Apply a partial update to the four per-signal privacy flags.
-
-    Only fields present in the request body are written; absent keys
-    leave the existing value untouched. When the change affects
-    ``online_status_visible`` or ``last_seen_visible`` we re-broadcast
-    the user's current presence on the SSE bus so peers see the new
-    visibility immediately (no need to wait for the next heartbeat).
-    """
+    """Apply a partial update to the four per-signal privacy flags; absent keys
+    keep their value. A change to what peers see re-broadcasts presence at once
+    instead of waiting for the next heartbeat."""
     human_id = int(user["id"])
     with _get_db(request) as db:
         row = TableWrite.set_human_privacy_settings(
@@ -248,32 +248,9 @@ async def update_privacy_settings(
         channel_ids = TableRead.get_mm_channel_ids_for_human(db, human_id)
         fellow_ids = TableRead.get_fellow_human_ids(db, human_id)
         fresh = TableRead.get_human_user_by_id(db, human_id)
-
-    # Re-broadcast the user's current presence so peers see the new
-    # visibility immediately. We only need to do this when the change
-    # affects what *peers* see — read receipts / typing indicators
-    # take effect on the next event without a re-broadcast.
-    if (
-        body.online_status_visible is not None
-        or body.last_seen_visible is not None
-    ) and fresh is not None:
-        from clawbits.fastapi.human_mm_endpoints import _resolve_presence_view
-        from clawbits.realtime import publish_user_status
-
-        bus = get_bus()
-        raw_status: GlobalUserStatus = await bus.user_presence_get(human_id)
-        out_status, out_last_seen, out_label = _resolve_presence_view(fresh, raw_status)
-        fire_and_forget(
-            publish_user_status(
-                bus,
-                human_id,
-                out_status,
-                out_last_seen,
-                channel_ids,
-                fellow_ids,
-                last_seen_label=out_label,
-            )
-        )
+    peers_affected = body.online_status_visible is not None or body.last_seen_visible is not None
+    if peers_affected and fresh is not None:
+        fire_and_forget(_rebroadcast_presence(human_id, fresh, channel_ids, fellow_ids))
     return response
 
 
@@ -283,121 +260,92 @@ async def set_privacy_mode(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Enable or disable DB-backed privacy mode for current human.
+    """Enable or disable privacy mode for the current human.
 
-    Enable: force-broadcast ``idle`` so peers immediately mask the user's
-    real status, and return ``idle`` in the response so the caller's UI
-    flips in lockstep.
-
-    Disable: don't lie. The bus has been pinned to ``idle`` for the
-    duration of privacy, so it can't tell us the user's true current
-    state — the next ``/presence`` heartbeat (which the active tab
-    emits within seconds) will publish the truthful transition. We
-    broadcast based on the bus's current value so peers see the same
-    status the caller does, and respond with that value rather than a
-    hardcoded ``idle``. If the bus had already TTL'd to ``offline``
-    (silent disconnect), peers see ``offline``; otherwise they keep
-    seeing ``idle`` for the few seconds until the next heartbeat.
-    """
+    Broadcasts and returns the presence the bus now resolves to, so peers and
+    the caller's UI flip together. Disabling does not guess the true state: the
+    next ``/presence`` heartbeat publishes it."""
     human_id = int(user["id"])
-    with _get_db(request) as db:
+
+    def write(db: Session) -> tuple[list[str], list[int], dict | None]:
         TableWrite.set_human_privacy_mode(db, human_id, body.enabled)
         db.commit()
-        channel_ids = TableRead.get_mm_channel_ids_for_human(db, human_id)
-        fellow_ids = TableRead.get_fellow_human_ids(db, human_id)
-        fresh = TableRead.get_human_user_by_id(db, human_id)
-
-    from clawbits.fastapi.human_mm_endpoints import _resolve_presence_view
-    from clawbits.realtime import fire_and_forget, get_bus, publish_user_status
-
-    bus = get_bus()
-    # ``user_presence_get`` resolves missing keys to ``offline`` so we
-    # always have a real ``GlobalUserStatus`` to feed the resolver.
-    raw_status: GlobalUserStatus = await bus.user_presence_get(human_id)
-    out_status, out_last_seen, out_label = _resolve_presence_view(fresh, raw_status)
-
-    fire_and_forget(
-        publish_user_status(
-            bus,
-            human_id,
-            out_status,
-            out_last_seen,
-            channel_ids,
-            fellow_ids,
-            last_seen_label=out_label,
+        return (
+            TableRead.get_mm_channel_ids_for_human(db, human_id),
+            TableRead.get_fellow_human_ids(db, human_id),
+            TableRead.get_human_user_by_id(db, human_id),
         )
-    )
+
+    channel_ids, fellow_ids, fresh = await _in_db(request, write)
+    status, last_seen = await _rebroadcast_presence(human_id, fresh, channel_ids, fellow_ids)
     return PrivacyModeResponse(
-        human_id=human_id,
-        enabled=body.enabled,
-        status=out_status,
-        last_seen_at=out_last_seen,
+        human_id=human_id, enabled=body.enabled, status=status, last_seen_at=last_seen
     )
 
 
-@human_router.patch("/api/human/me", response_model=HumanUserResponse)
-async def update_me(
+@human_router.patch("/api/human/me", response_model=MeResponse)
+def update_me(
     body: UpdateProfileRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Update the current user's profile (display name)."""
+    """Update the current user's display name. Answers with the full
+    ``GET /api/auth/me`` shape so the client can swap its user in place."""
     with _get_db(request) as db:
-        new_display_name = body.display_name.strip() if body.display_name is not None else None
-        if new_display_name == "":
-            new_display_name = None
-        TableWrite.update_human_display_name(db, user["id"], new_display_name)
+        display_name = (body.display_name or "").strip() or None
+        TableWrite.update_human_display_name(db, user["id"], display_name)
         updated = TableRead.get_human_user_by_id(db, user["id"])
         db.commit()
-        return HumanUserResponse(
-            id=updated["id"],
-            email=updated["email"],
-            display_name=updated["display_name"],
-            avatar=avatar_ref_for_user(
-                user_id=updated["id"],
-                version=updated["avatar_version"],
-                kind=updated["avatar_kind"],
-            ),
-        )
+    return MeResponse(
+        id=updated["id"],
+        email=updated["email"],
+        display_name=updated["display_name"],
+        created_at=updated["created_at"],
+        last_seen_at=updated["last_seen_at"],
+        avatar=avatar_ref_for_user(
+            user_id=updated["id"], version=updated["avatar_version"], kind=updated["avatar_kind"]
+        ),
+    )
 
-
-# ---------------------------------------------------------------------------
-# Data endpoints for the human dashboard
-# ---------------------------------------------------------------------------
 
 def _verify_org_membership(db, org_id: str, user: dict) -> None:
-    """Verify the caller is a member of the given organization."""
     if not TableRead.is_org_member(db, org_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a member of this organization")
 
 
-def _require_org_owner(db, org_id: str, user: dict) -> None:
-    """Verify the caller owns the organization. The wire word is "admins"; the
-    stored role string is "owner"."""
+def _require_org_owner(db, org_id: str, user: dict, action: str = "change this setting") -> None:
+    """The stored role is ``owner``; the wire word is admin."""
     if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
-        raise HTTPException(
-            status_code=403, detail="Only organization admins can change this setting"
-        )
+        raise HTTPException(status_code=403, detail=f"Only organization admins can {action}")
 
 
-def _verify_agent_in_org(db, org_id: str, agent_id: str) -> None:
-    """Verify the agent is associated with the given organization."""
+def _verify_agent_in_org(db, org_id: str, agent_id: str, user: dict) -> None:
+    """The caller is a member of ``org_id`` and the agent belongs to it, so its row exists."""
+    _verify_org_membership(db, org_id, user)
     if not TableRead.is_agent_in_org(db, agent_id, org_id):
         raise HTTPException(status_code=404, detail="Agent not found in this organization")
+
+
+def _require_agent_operator(db, org_id: str, agent_id: str, user: dict, action: str) -> None:
+    _verify_agent_in_org(db, org_id, agent_id, user)
+    if not TableRead.is_agent_operator(db, agent_id, user["id"]):
+        raise HTTPException(status_code=403, detail=f"Only the agent's operator can {action}")
+
+
+def _require_operator_or_admin(db, org_id: str, agent_id: str, user: dict, action: str) -> None:
+    _verify_agent_in_org(db, org_id, agent_id, user)
+    if not TableRead.can_manage_agent_contacts(db, agent_id, user["id"]):
+        raise HTTPException(
+            status_code=403, detail=f"Only the agent's operator or an org admin can {action}"
+        )
 
 
 def _require_visible_post(db, post_id: int, user: dict) -> None:
     """404 unless ``post_id`` belongs to an agent in one of the caller's orgs.
 
-    ``agent_posts.post_id`` is a bare serial, so these routes were trivially
-    enumerable across tenants. 404 rather than 403 is deliberate: a 403 would
-    confirm that a given id exists in somebody else's organization.
-
-    An agent with no org (unapproved, or the shared ``deleted-agent``
-    placeholder) is visible to nobody, matching ``is_agent_in_org``.
-    """
-    from clawbits.db.models import AgentPost
-
+    Post ids are a bare serial, so 404 rather than 403: a 403 would confirm the
+    id exists in somebody else's organization. An agent with no org (unapproved,
+    or the shared ``deleted-agent`` placeholder) is visible to nobody."""
     post = db.get(AgentPost, post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -406,22 +354,7 @@ def _require_visible_post(db, post_id: int, user: dict) -> None:
         raise HTTPException(status_code=404, detail="Post not found")
 
 
-def _require_agent_operator(db, agent_id: str, user: dict) -> None:
-    """Verify the caller operates the agent — stricter than org membership.
-
-    Mail an agent receives is sensitive, so the inbox is operator-only: org
-    membership alone is not enough (same gate as the agent-settings PATCH)."""
-    if not TableRead.is_agent_operator(db, agent_id, user["id"]):
-        raise HTTPException(
-            status_code=403,
-            detail="Only the agent's operator can access its inbox",
-        )
-
-
 def _operator_payload(db, operator_id: int | None) -> dict | None:
-    """Owner (operator) display payload — id + name + avatar — for agent cards
-    and the agent profile. ``None`` when the agent is unbound or the human row
-    is missing."""
     if operator_id is None:
         return None
     human = TableRead.get_human_user_by_id(db, operator_id)
@@ -431,166 +364,116 @@ def _operator_payload(db, operator_id: int | None) -> dict | None:
         "human_id": human["id"],
         "display_name": human["display_name"],
         "avatar": avatar_ref_for_user(
-            user_id=human["id"],
-            version=human["avatar_version"],
-            kind=human["avatar_kind"],
+            user_id=human["id"], version=human["avatar_version"], kind=human["avatar_kind"]
         ).model_dump(),
     }
 
 
+def _agent_payload(db, row: Agent, user: dict) -> dict:
+    """What the agents list and the agent profile share."""
+    agent_id = AgentId(row.agent_id)
+    return {
+        "agent_id": row.agent_id,
+        "nickname": row.nickname,
+        "creation_time": TableRead.get_agent_creation_time(db, agent_id),
+        "last_alive_at": TableRead.get_agent_last_alive(db, agent_id),
+        "file_count": TableRead.get_agent_file_count(db, agent_id),
+        "inter_agent_mode_enabled": row.inter_agent_mode_enabled,
+        "snoozed": row.snoozed,
+        "inter_agent_message_limit": row.inter_agent_message_limit,
+        "is_operator": TableRead.is_agent_operator(db, row.agent_id, user["id"]),
+        "can_dm": TableRead.can_dm_agent(db, row.agent_id, human_id=user["id"]),
+        "can_tag": TableRead.can_tag_agent(db, row.agent_id, human_id=user["id"]),
+        "can_manage_contacts": TableRead.can_manage_agent_contacts(db, row.agent_id, user["id"]),
+        "operator": _operator_payload(db, row.operator_id),
+        "avatar": avatar_ref_for_agent(
+            agent_id=row.agent_id, version=row.avatar_version, kind=row.avatar_kind
+        ).model_dump(),
+        "reef_host": row.reef_host,
+        "reef_name": row.reef_name,
+        "agent_type": row.agent_type,
+        "plugin_version": row.plugin_version,
+    }
+
+
 @human_router.get("/api/human/orgs/{org_id}/agents")
-async def list_agents(
+def list_agents(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
     """List agents owned by an organization. Caller must be an org member."""
-    from clawbits.db.models import Agent as _AgentRow
-    from clawbits.db.models import AgentProfile as _ProfileRow
-
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
-        agent_ids = TableRead.get_agents_owned_by_org(db, org_id)
         agents = []
-        for aid in agent_ids:
-            # Pull the avatar fields straight off the row — cheaper than
-            # going through the granular ``TableRead.get_agent_*`` getters
-            # for kind/version, and one ``session.get`` is dedup'd in the
-            # SQLAlchemy identity map anyway.
-            row = db.get(_AgentRow, aid)
-            prof = db.get(_ProfileRow, aid)
-            avatar = (
-                avatar_ref_for_agent(
-                    agent_id=aid, version=row.avatar_version, kind=row.avatar_kind
-                ).model_dump()
-                if row is not None
-                else None
-            )
-            # Resolve the operator (owner) for display: name + avatar so the
-            # card can show "Owned by …". ``identity map`` dedups the get.
-            operator = _operator_payload(db, row.operator_id if row is not None else None)
+        for agent_id in TableRead.get_agents_owned_by_org(db, org_id):
+            profile = db.get(AgentProfile, agent_id)
             agents.append({
-                "agent_id": aid,
-                "nickname": TableRead.get_agent_nickname(db, AgentId(aid)),
-                "display_name": TableRead.get_agent_profile_display_name(db, aid),
-                "creation_time": TableRead.get_agent_creation_time(db, AgentId(aid)),
-                # Last heartbeat → the client derives available/offline/setup and
-                # ticks the dot locally past the 40-min window.
-                "last_alive_at": TableRead.get_agent_last_alive(db, AgentId(aid)),
-                "file_count": TableRead.get_agent_file_count(db, AgentId(aid)),
-                "description": prof.description if prof else None,
-                "description_source": prof.description_source if prof else None,
-                "description_regen_pending": (
-                    bool(prof.description_regen_requested_at) if prof else False
-                ),
-                "inter_agent_mode_enabled": (
-                    bool(row.inter_agent_mode_enabled) if row is not None else False
-                ),
-                "snoozed": bool(row.snoozed) if row is not None else False,
-                "inter_agent_message_limit": (
-                    int(row.inter_agent_message_limit) if row is not None else 10
-                ),
-                "is_operator": TableRead.is_agent_operator(db, aid, user["id"]),
-                # Contact is closed by default — surface the viewer's grants so
-                # the UI can disable "New DM"/tagging it can't perform anyway.
-                "can_dm": TableRead.can_dm_agent(db, aid, human_id=user["id"]),
-                "can_tag": TableRead.can_tag_agent(db, aid, human_id=user["id"]),
-                "can_manage_contacts": TableRead.can_manage_agent_contacts(
-                    db, aid, user["id"]
-                ),
-                "operator": operator,
-                "avatar": avatar,
-                # Declared on a reef host: the pair naming its fleet file.
-                # NULL for a self-hosted agent.
-                "reef_host": row.reef_host if row is not None else None,
-                "reef_name": row.reef_name if row is not None else None,
-                # Self-reported by the plugin on its liveness ping — runtime kind
-                # + Clawbits plugin version, for the card's "spec" stickers. NULL
-                # until the first modern ping.
-                "agent_type": row.agent_type if row is not None else None,
-                "plugin_version": row.plugin_version if row is not None else None,
+                **_agent_payload(db, db.get(Agent, agent_id), user),
+                "display_name": profile.display_name if profile else None,
+                "description": profile.description if profile else None,
+                "description_source": profile.description_source if profile else None,
+                "description_regen_pending": bool(profile and profile.description_regen_requested_at),
             })
         return {"agents": agents, "total": len(agents)}
 
 
-# ---------------------------------------------------------------------------
-# Agent AI-usage dashboard (self-reported telemetry)
-# ---------------------------------------------------------------------------
-
 _USAGE_RANGE_KEYS = ("day", "week", "month", "all")
+_USAGE_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "call_count")
 
 
 def _usage_zero_totals() -> dict:
+    """``cost_usd`` stays null until a costed event lands: subscription agents report no cost."""
     return {
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
-        # NULL until a costed event exists — the UI shows tokens always and
-        # ``$`` only when non-null (OAuth/subscription agents report no cost).
         "cost_usd": None,
         "call_count": 0,
     }
 
 
 def _fold_usage(total: dict, row: dict) -> None:
-    for key in (
-        "input_tokens",
-        "output_tokens",
-        "cache_read_tokens",
-        "cache_write_tokens",
-        "call_count",
-    ):
+    for key in _USAGE_COUNTERS:
         total[key] += row[key]
     if row["cost_usd"] is not None:
         total["cost_usd"] = (total["cost_usd"] or 0.0) + row["cost_usd"]
 
 
+def _headline_tokens(row: dict) -> int:
+    return row["input_tokens"] + row["output_tokens"]
+
+
 def _usage_per_model(rows: list[dict]) -> list[dict]:
-    """Collapse (agent, model, provider) sums into a per-model view,
-    biggest token totals first."""
     by_model: dict[tuple, dict] = {}
     for r in rows:
-        agg = by_model.setdefault(
-            (r["model"], r["provider"]),
-            {"model": r["model"], "provider": r["provider"], **_usage_zero_totals()},
-        )
-        _fold_usage(agg, r)
-    return sorted(
-        by_model.values(),
-        key=lambda m: m["input_tokens"] + m["output_tokens"],
-        reverse=True,
-    )
+        blank = {"model": r["model"], "provider": r["provider"], **_usage_zero_totals()}
+        _fold_usage(by_model.setdefault((r["model"], r["provider"]), blank), r)
+    return sorted(by_model.values(), key=_headline_tokens, reverse=True)
 
 
 def _usage_range_or_400(range_key: str):
     if range_key not in _USAGE_RANGE_KEYS:
-        raise HTTPException(
-            status_code=400, detail="range must be one of day|week|month|all"
-        )
+        raise HTTPException(status_code=400, detail="range must be one of day|week|month|all")
     return TableRead.usage_range_start(range_key)
 
 
 @human_router.get("/api/human/orgs/{org_id}/usage")
-async def get_org_usage(
+def get_org_usage(
     org_id: str,
     request: Request,
     range_key: str = Query("week", alias="range"),
     group_by: str = Query("agent"),
     user: dict = Depends(get_current_human_user),
 ):
-    """Org-wide AI token usage — agent-self-reported, advisory telemetry.
+    """Org-wide AI token usage: advisory, agent-self-reported telemetry, never a billing input.
 
-    RBAC is enforced here, never client-side: org **owners** get the full
-    per-agent breakdown (BYO-key agents included); **members** get org totals
-    (plus the per-model view when asked) only. The numbers are whatever each
-    agent's plugin reported over its outbound lane — observability, not
-    metering; never a billing input. Non-reporting agents stay on the roster
-    as "no data" so totals are never silently short. See
-    ``docs/protocol/AGENT_USAGE_TRACKING_PLAN.md``.
+    RBAC is enforced here: org owners get the per-agent breakdown, members get
+    org totals (plus the per-model view when asked) only. Agents that never
+    reported stay on the roster as "no data", so totals are never silently
+    short. See ``docs/protocol/AGENT_USAGE_TRACKING_PLAN.md``.
     """
-    from clawbits.db.models import AGENT_USAGE_SCHEMA_VERSION
-
     since = _usage_range_or_400(range_key)
     if group_by not in ("agent", "model"):
         raise HTTPException(status_code=400, detail="group_by must be agent or model")
@@ -599,30 +482,19 @@ async def get_org_usage(
         _verify_org_membership(db, org_id, user)
         is_owner = TableRead.get_org_member_role(db, org_id, user["id"]) == "owner"
         rows = TableRead.get_org_usage_rows(db, org_id, since)
-
         org_total = _usage_zero_totals()
         for r in rows:
             _fold_usage(org_total, r)
 
-        # Daily series for the trend chart. Members see org-level day totals;
-        # owners additionally get the per-agent split (headline tokens) that
-        # drives the stacked bars + per-agent sparklines.
-        daily_rows = TableRead.get_org_usage_daily_rows(db, org_id, since)
         by_day: dict[str, dict] = {}
-        for r in daily_rows:
-            day = by_day.setdefault(
-                r["date"], {"date": r["date"], **_usage_zero_totals(), "by_agent": {}}
-            )
+        for r in TableRead.get_org_usage_daily_rows(db, org_id, since):
+            day = by_day.setdefault(r["date"], {"date": r["date"], **_usage_zero_totals(), "by_agent": {}})
             _fold_usage(day, r)
-            day["by_agent"][r["agent_id"]] = (
-                day["by_agent"].get(r["agent_id"], 0)
-                + r["input_tokens"]
-                + r["output_tokens"]
-            )
+            day["by_agent"][r["agent_id"]] = day["by_agent"].get(r["agent_id"], 0) + _headline_tokens(r)
         daily = sorted(by_day.values(), key=lambda d: d["date"])
         if not is_owner:
             for day in daily:
-                day.pop("by_agent", None)
+                del day["by_agent"]
 
         payload: dict = {
             "schema_version": AGENT_USAGE_SCHEMA_VERSION,
@@ -636,67 +508,41 @@ async def get_org_usage(
         if not is_owner:
             return payload
 
-        # Owner view: the full roster joined with the window's sums, so
-        # agents that never reported render as "no data" instead of
-        # disappearing.
         by_agent: dict[str, dict] = {}
         models_by_agent: dict[str, dict[str, int]] = {}
         for r in rows:
-            agg = by_agent.setdefault(r["agent_id"], _usage_zero_totals())
-            _fold_usage(agg, r)
-            per_model = models_by_agent.setdefault(r["agent_id"], {})
-            per_model[r["model"]] = (
-                per_model.get(r["model"], 0)
-                + r["input_tokens"]
-                + r["output_tokens"]
-            )
+            _fold_usage(by_agent.setdefault(r["agent_id"], _usage_zero_totals()), r)
+            models = models_by_agent.setdefault(r["agent_id"], {})
+            models[r["model"]] = models.get(r["model"], 0) + _headline_tokens(r)
         reporting_ids = TableRead.get_reporting_agent_ids(db, org_id)
         per_agent = []
         for aid in TableRead.get_agents_owned_by_org(db, org_id):
-            totals = by_agent.get(aid, _usage_zero_totals())
-            top_models = sorted(
-                models_by_agent.get(aid, {}).items(),
-                key=lambda kv: kv[1],
-                reverse=True,
-            )
-            per_agent.append(
-                {
-                    "agent_id": aid,
-                    "nickname": TableRead.get_agent_nickname(db, AgentId(aid)),
-                    "display_name": TableRead.get_agent_profile_display_name(
-                        db, aid
-                    ),
-                    "reporting": aid in reporting_ids,
-                    **totals,
-                    "top_models": [m for m, _ in top_models[:3]],
-                }
-            )
-        per_agent.sort(
-            key=lambda a: a["input_tokens"] + a["output_tokens"], reverse=True
-        )
-        payload["per_agent"] = per_agent
+            models = models_by_agent.get(aid, {})
+            per_agent.append({
+                "agent_id": aid,
+                "nickname": TableRead.get_agent_nickname(db, AgentId(aid)),
+                "display_name": TableRead.get_agent_profile_display_name(db, aid),
+                "reporting": aid in reporting_ids,
+                **by_agent.get(aid, _usage_zero_totals()),
+                "top_models": sorted(models, key=models.__getitem__, reverse=True)[:3],
+            })
+        payload["per_agent"] = sorted(per_agent, key=_headline_tokens, reverse=True)
         return payload
 
 
 @human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/usage")
-async def get_agent_usage(
+def get_agent_usage(
     org_id: str,
     agent_id: str,
     request: Request,
     range_key: str = Query("week", alias="range"),
     user: dict = Depends(get_current_human_user),
 ):
-    """One agent's AI usage — org owners or the agent's operator only.
-
-    Same advisory-telemetry caveats as the org endpoint; a plain org member
-    who doesn't operate this agent gets a 403 (members see org totals only).
-    """
-    from clawbits.db.models import AGENT_USAGE_SCHEMA_VERSION
-
+    """One agent's AI usage, for org owners or the agent's operator; a plain
+    member sees org totals only. Same advisory caveats as the org endpoint."""
     since = _usage_range_or_400(range_key)
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
+        _verify_agent_in_org(db, org_id, agent_id, user)
         is_owner = TableRead.get_org_member_role(db, org_id, user["id"]) == "owner"
         if not is_owner and not TableRead.is_agent_operator(db, agent_id, user["id"]):
             raise HTTPException(
@@ -707,14 +553,11 @@ async def get_agent_usage(
         total = _usage_zero_totals()
         for r in rows:
             _fold_usage(total, r)
-        reporting = bool(rows) or bool(
-            TableRead.get_agent_usage_rows(db, agent_id, None)
-        )
         return {
             "schema_version": AGENT_USAGE_SCHEMA_VERSION,
             "range": range_key,
             "agent_id": agent_id,
-            "reporting": reporting,
+            "reporting": bool(rows or TableRead.get_agent_usage_rows(db, agent_id, None)),
             "total": total,
             "per_model": _usage_per_model(rows),
         }
@@ -728,64 +571,71 @@ async def remove_agent_from_org(
     keep_content: bool = False,
     user: dict = Depends(get_current_human_user),
 ):
-    """Hard-delete an agent. Caller must be a member of the org the agent
-    belongs to. The operator and any other org member can trigger this —
-    org members who aren't the operator have *only* this power over the
-    agent.
+    """Hard-delete an agent. Any member of the org the agent belongs to can,
+    and for members who don't operate it this is their only power over it.
 
-    When ``keep_content=true`` the agent's authored content (messages, posts,
-    files, reactions, comments, likes) is reattributed to a shared
-    "Deleted agent" placeholder instead of being deleted, so conversation
-    history survives for other channel members. The default deletes
-    everything the agent created.
+    With ``keep_content=true`` the agent's authored content is reattributed to a
+    shared "Deleted agent" placeholder instead of being deleted. Every group
+    channel it left gets a "left the channel" timeline event, fanned out so open
+    tabs render it without a refetch.
 
-    Every group channel the agent belonged to gets an inline "left the
-    channel" timeline event, fanned out below so open tabs render it without
-    waiting for a refetch."""
-    from clawbits.datastructures.mm_models import MmChannelEventResponse
+    A reef-hosted agent loses its fleet file too, so the next reconcile prunes
+    the VM instead of leaving it running under a name nothing owns, and its
+    signup token dies with the row. Mailbox and fleet cleanup are best-effort
+    and run after the delete commits."""
 
-    with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
+    def delete(db: Session) -> tuple[tuple[str, str] | None, list[dict]]:
+        _verify_agent_in_org(db, org_id, agent_id, user)
+        placement = TableRead.get_reef_placement(db, org_id, agent_id)
+        if placement:
+            # Revoked with the row, not beside the file removal: the token must die even when GitHub is down.
+            TableWrite.revoke_reef_signup(db, org_id, *placement)
         departures = TableWrite.delete_agent(
             db, agent_id, keep_content=keep_content, actor_human_id=user["id"]
         )
         db.commit()
+        return placement, departures
 
+    placement, departures = await _in_db(request, delete)
     for departure in departures:
-        payload = MmChannelEventResponse(**departure["event"]).model_dump()
         fire_and_forget(
             publish_channel_event(
                 get_bus(),
                 departure["channel_id"],
-                payload,
+                MmChannelEventResponse(**departure["event"]).model_dump(),
                 member_human_ids=departure["member_human_ids"],
             )
         )
-    # Best-effort mailbox cleanup after the DB delete commits; never block the
-    # delete on the mail server being reachable.
     try:
-        from clawbits.email.stalwart_provision import deprovision_mailbox
-
-        deprovision_mailbox(agent_id)
+        await asyncio.to_thread(deprovision_mailbox, agent_id)
     except Exception:
         logger.exception("Failed to deprovision Stalwart mailbox for %s", agent_id)
+    if placement:
+        host, name = placement
+        try:
+            repo = await _in_db(request, lambda db: _reef_repo(db, org_id, user))
+            await _undeclare(repo, org_id, host, name, user)
+        except HTTPException:
+            logger.info("No Reef repository for %s, left %s/%s behind", org_id, host, name)
+        except Exception:
+            logger.exception("Failed to remove fleet file %s/%s for %s", host, name, agent_id)
     return {"agent_id": agent_id, "org_id": org_id, "deleted": True}
 
 
 @human_router.delete("/api/human/account", status_code=204)
-async def delete_my_account(
+def delete_my_account(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
     """Permanently delete the authenticated user's account and all of their
-    data. Self-service only — there is no admin-deletes-others path.
+    data. Self-service only.
 
-    Refuses with 409 while the user still operates agents or is the sole
-    owner of an organization that has other members; the error message says
-    what to resolve first. On success the session cookies are cleared so the
-    client is logged out immediately.
-    """
+    Refuses with 409 while the user still operates agents or is the sole owner
+    of an organization that has other members; the detail says what to resolve
+    first. On success the session cookies are cleared, logging the client out.
+    WorkOS cleanup is best-effort and runs only after the local delete commits;
+    orgs the user solely occupied are torn down there so a later login cannot
+    re-adopt them."""
     with _get_db(request) as db:
         try:
             deleted_workos_org_ids = TableWrite.delete_human_user(db, user["id"])
@@ -793,330 +643,11 @@ async def delete_my_account(
             raise HTTPException(status_code=409, detail=str(e)) from e
         db.commit()
 
-    # WorkOS-side cleanup, best-effort and only after the local delete
-    # committed. Deleting the user also drops its memberships WorkOS-side;
-    # the orgs the user solely occupied are torn down too so they don't
-    # linger empty (and can't be re-adopted on a future login).
-    from clawbits.fastapi.workos_auth import (
-        delete_workos_organization,
-        delete_workos_user,
-    )
-
     client = request.app.state.workos
     delete_workos_user(client, workos_user_id=user.get("workos_user_id") or "")
     for workos_org_id in deleted_workos_org_ids:
         delete_workos_organization(client, workos_org_id=workos_org_id)
-
     stage_session_clear(request)
-
-
-@human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}")
-async def get_agent_profile(
-    org_id: str,
-    agent_id: str,
-    request: Request,
-    limit: int = 50,
-    offset: int = 0,
-    user: dict = Depends(get_current_human_user),
-):
-    """Get an agent's profile. Caller must be a member of the owning organization."""
-    from clawbits.db.models import Agent as _AgentRow
-    from clawbits.email.imap_client import agent_email_address
-
-    with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        agent = TableRead.get_agent_by_agentid(db, AgentId(agent_id))
-        if agent is None:
-            raise HTTPException(status_code=404, detail="Agent not found")
-        creation_time = TableRead.get_agent_creation_time(db, AgentId(agent_id))
-        files = TableRead.get_agent_files(db, AgentId(agent_id), limit=limit, offset=offset)
-        file_count = TableRead.get_agent_file_count(db, AgentId(agent_id))
-        posts = TableRead.get_agent_posts(db, AgentId(agent_id), limit=20, offset=0)
-        profile = TableRead.get_agent_profile(db, agent_id) or {}
-        action_count = TableRead.count_agent_actions_for_agent(db, agent_id)
-        agent_row = db.get(_AgentRow, agent_id)
-        inter_agent_mode = bool(
-            agent_row.inter_agent_mode_enabled if agent_row else False
-        )
-        snoozed = bool(agent_row.snoozed if agent_row else False)
-        inter_agent_message_limit = int(
-            agent_row.inter_agent_message_limit if agent_row else 10
-        )
-        avatar = (
-            avatar_ref_for_agent(
-                agent_id=agent_id,
-                version=agent_row.avatar_version,
-                kind=agent_row.avatar_kind,
-            ).model_dump()
-            if agent_row is not None
-            else None
-        )
-        return {
-            "agent_id": agent_id,
-            "email_address": agent_email_address(agent_id),
-            "nickname": TableRead.get_agent_nickname(db, AgentId(agent_id)),
-            "display_name": profile.get("display_name"),
-            "bio": profile.get("bio"),
-            "location": profile.get("location"),
-            "website": profile.get("website"),
-            "avatar_url": profile.get("avatar_url"),
-            "header_url": profile.get("header_url"),
-            "description": profile.get("description"),
-            "description_generated_at": profile.get("description_generated_at"),
-            "description_source": profile.get("description_source"),
-            "description_regen_pending": bool(
-                profile.get("description_regen_requested_at")
-            ),
-            "creation_time": creation_time,
-            # Availability + owner, mirroring the agents-list payload so the
-            # profile hero can show a status dot and "Owned by …".
-            "last_alive_at": TableRead.get_agent_last_alive(db, AgentId(agent_id)),
-            "operator": _operator_payload(
-                db, agent_row.operator_id if agent_row else None
-            ),
-            "files": files,
-            "file_count": file_count,
-            "posts": posts,
-            "action_count": action_count,
-            "inter_agent_mode_enabled": inter_agent_mode,
-            "snoozed": snoozed,
-            "inter_agent_message_limit": inter_agent_message_limit,
-            # LobsterTalk sidecar settings, mirroring the PATCH echo so the Manage
-            # page can read current state (and hydrate its form).
-            "lobstertalk_enabled": bool(
-                agent_row.lobstertalk_enabled if agent_row else False
-            ),
-            "lobstertalk_ollama_host": (
-                agent_row.lobstertalk_ollama_host if agent_row else None
-            ),
-            "lobstertalk_ollama_model": (
-                agent_row.lobstertalk_ollama_model if agent_row else None
-            ),
-            "lobstertalk_interval_seconds": int(
-                agent_row.lobstertalk_interval_seconds if agent_row else 60
-            ),
-            "lobstertalk_message_limit": int(
-                agent_row.lobstertalk_message_limit if agent_row else 100
-            ),
-            "is_operator": TableRead.is_agent_operator(db, agent_id, user["id"]),
-            # Contact is closed by default — see AgentContactPermission. These
-            # let the profile disable the DM button / show the contacts panel.
-            "can_dm": TableRead.can_dm_agent(db, agent_id, human_id=user["id"]),
-            "can_tag": TableRead.can_tag_agent(db, agent_id, human_id=user["id"]),
-            "can_manage_contacts": TableRead.can_manage_agent_contacts(
-                db, agent_id, user["id"]
-            ),
-            "avatar": avatar,
-            # Declared on a reef host: the pair naming its fleet file.
-            "reef_host": agent_row.reef_host if agent_row else None,
-            "reef_name": agent_row.reef_name if agent_row else None,
-            # Self-reported by the plugin on its liveness ping — runtime kind +
-            # Clawbits plugin version, for the card's "spec" stickers.
-            "agent_type": agent_row.agent_type if agent_row else None,
-            "plugin_version": agent_row.plugin_version if agent_row else None,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Agent email inbox — operator-only. Lets the human who operates an agent read
-# and delete the mail it receives at ``<agent_id>@<mail-domain>``.
-#
-# The IMAP client (clawbits.email.imap_client) is SYNCHRONOUS + blocking, but
-# these handlers are ``async def`` — so every call is wrapped in
-# ``run_in_threadpool`` to keep the event loop free. An agent can exist without
-# a provisioned mailbox (signup provisioning is best-effort), in which case IMAP
-# login raises ``LoginError``; the read endpoints catch that and degrade to a
-# clean empty/zero payload rather than surfacing a 500.
-# ---------------------------------------------------------------------------
-
-
-@human_router.get(
-    "/api/human/orgs/{org_id}/agents/{agent_id}/email/count",
-    response_model=EmailCountResponse,
-)
-async def get_agent_email_count(
-    org_id: str,
-    agent_id: str,
-    request: Request,
-    user: dict = Depends(get_current_human_user),
-) -> EmailCountResponse:
-    """Total + unread counts for the agent's mailbox. Operator-only.
-
-    Returns zeroes (never 500) when email isn't configured or the mailbox
-    hasn't been provisioned yet, so the UI shows a clean empty state."""
-    with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        _require_agent_operator(db, agent_id, user)
-    empty = EmailCountResponse(
-        total=0, unread=0, email_address=agent_email_address(agent_id)
-    )
-    if not STALWART_SVC_PASSWORD:
-        return empty
-    try:
-        counts = await run_in_threadpool(get_email_counts, agent_id)
-    except LoginError:
-        return empty  # mailbox not provisioned yet
-    except Exception:
-        logger.exception("email count failed for %s", agent_id)
-        raise HTTPException(status_code=500, detail="Failed to read mailbox")
-    return EmailCountResponse(**counts)
-
-
-@human_router.get(
-    "/api/human/orgs/{org_id}/agents/{agent_id}/email/inbox",
-    response_model=EmailListResponse,
-)
-async def get_agent_email_inbox(
-    org_id: str,
-    agent_id: str,
-    request: Request,
-    limit: int = 50,
-    offset: int = 0,
-    unread_only: bool = False,
-    user: dict = Depends(get_current_human_user),
-) -> EmailListResponse:
-    """List the agent's inbox, newest first. Operator-only.
-
-    With ``unread_only`` the listing (and ``total``) covers UNSEEN messages
-    only. ``limit`` is clamped to 200 — each listing is a live IMAP fetch.
-    Degrades to an empty list (never 500) when email isn't configured or the
-    mailbox hasn't been provisioned yet."""
-    with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        _require_agent_operator(db, agent_id, user)
-    limit = min(max(limit, 1), 200)
-    empty = EmailListResponse(
-        emails=[], total=0, unread_count=0, limit=limit, offset=offset
-    )
-    if not STALWART_SVC_PASSWORD:
-        return empty
-    try:
-        result = await run_in_threadpool(list_emails, agent_id, limit, offset, unread_only)
-    except LoginError:
-        return empty  # mailbox not provisioned yet
-    except Exception:
-        logger.exception("email inbox failed for %s", agent_id)
-        raise HTTPException(status_code=500, detail="Failed to read mailbox")
-    return EmailListResponse(
-        emails=[EmailSummaryResponse(**e) for e in result["emails"]],
-        total=result["total"],
-        unread_count=result["unread_count"],
-        limit=result["limit"],
-        offset=result["offset"],
-    )
-
-
-@human_router.get(
-    "/api/human/orgs/{org_id}/agents/{agent_id}/email/{message_uid}",
-    response_model=EmailDetailResponse,
-)
-async def get_agent_email_detail(
-    org_id: str,
-    agent_id: str,
-    message_uid: int,
-    request: Request,
-    user: dict = Depends(get_current_human_user),
-) -> EmailDetailResponse:
-    """Fetch one message (body + attachments + headers). Marks it read.
-    Operator-only."""
-    with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        _require_agent_operator(db, agent_id, user)
-    if not STALWART_SVC_PASSWORD:
-        raise HTTPException(status_code=503, detail="Email service not configured")
-    try:
-        result = await run_in_threadpool(get_email, agent_id, message_uid)
-    except LoginError:
-        raise HTTPException(
-            status_code=404, detail=f"Email with UID {message_uid} not found"
-        )
-    except Exception:
-        logger.exception("email detail failed for %s uid=%s", agent_id, message_uid)
-        raise HTTPException(status_code=500, detail="Failed to read mailbox")
-    if result is None:
-        raise HTTPException(
-            status_code=404, detail=f"Email with UID {message_uid} not found"
-        )
-    return EmailDetailResponse(**result)
-
-
-@human_router.patch(
-    "/api/human/orgs/{org_id}/agents/{agent_id}/email/{message_uid}",
-)
-async def set_agent_email_read(
-    org_id: str,
-    agent_id: str,
-    message_uid: int,
-    body: EmailSetReadRequest,
-    request: Request,
-    user: dict = Depends(get_current_human_user),
-) -> dict:
-    """Set or clear a message's read state (``\\Seen`` flag). Operator-only.
-
-    Explicit counterpart to the read-on-open side effect of the detail
-    endpoint — powers mark-unread and mark-read-without-opening."""
-    with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        _require_agent_operator(db, agent_id, user)
-    if not STALWART_SVC_PASSWORD:
-        raise HTTPException(status_code=503, detail="Email service not configured")
-    try:
-        updated = await run_in_threadpool(set_email_read, agent_id, message_uid, body.is_read)
-    except LoginError:
-        raise HTTPException(
-            status_code=404, detail=f"Email with UID {message_uid} not found"
-        )
-    except Exception:
-        logger.exception("email mark-read failed for %s uid=%s", agent_id, message_uid)
-        raise HTTPException(status_code=500, detail="Failed to update message")
-    if not updated:
-        raise HTTPException(
-            status_code=404, detail=f"Email with UID {message_uid} not found"
-        )
-    return {
-        "status": "updated",
-        "agent_id": agent_id,
-        "message_uid": message_uid,
-        "is_read": body.is_read,
-    }
-
-
-@human_router.delete(
-    "/api/human/orgs/{org_id}/agents/{agent_id}/email/{message_uid}",
-)
-async def delete_agent_email(
-    org_id: str,
-    agent_id: str,
-    message_uid: int,
-    request: Request,
-    user: dict = Depends(get_current_human_user),
-) -> dict:
-    """Delete one message by UID. Operator-only."""
-    with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        _require_agent_operator(db, agent_id, user)
-    if not STALWART_SVC_PASSWORD:
-        raise HTTPException(status_code=503, detail="Email service not configured")
-    try:
-        deleted = await run_in_threadpool(delete_email, agent_id, message_uid)
-    except LoginError:
-        raise HTTPException(
-            status_code=404, detail=f"Email with UID {message_uid} not found"
-        )
-    except Exception:
-        logger.exception("email delete failed for %s uid=%s", agent_id, message_uid)
-        raise HTTPException(status_code=500, detail="Failed to delete message")
-    if not deleted:
-        raise HTTPException(
-            status_code=404, detail=f"Email with UID {message_uid} not found"
-        )
-    return {"status": "deleted", "agent_id": agent_id, "message_uid": message_uid}
 
 
 class UpdateAgentSettingsRequest(BaseModel):
@@ -1130,12 +661,194 @@ class UpdateAgentSettingsRequest(BaseModel):
     lobstertalk_message_limit: int | None = Field(default=None, ge=10, le=200)
 
 
+def _agent_settings(row: Agent) -> dict:
+    return {name: getattr(row, name) for name in UpdateAgentSettingsRequest.model_fields}
+
+
+_PROFILE_FIELDS = (
+    "display_name",
+    "bio",
+    "location",
+    "website",
+    "avatar_url",
+    "header_url",
+    "description",
+    "description_generated_at",
+    "description_source",
+)
+
+
+@human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}")
+def get_agent_profile(
+    org_id: str,
+    agent_id: str,
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    user: dict = Depends(get_current_human_user),
+):
+    """Get an agent's profile. Caller must be a member of the owning organization."""
+    with _get_db(request) as db:
+        _verify_agent_in_org(db, org_id, agent_id, user)
+        row = db.get(Agent, agent_id)
+        profile = TableRead.get_agent_profile(db, agent_id) or {}
+        return {
+            **_agent_payload(db, row, user),
+            **_agent_settings(row),
+            **{field: profile.get(field) for field in _PROFILE_FIELDS},
+            "email_address": agent_email_address(agent_id),
+            "description_regen_pending": bool(profile.get("description_regen_requested_at")),
+            "files": TableRead.get_agent_files(db, AgentId(agent_id), limit=limit, offset=offset),
+            "posts": TableRead.get_agent_posts(db, AgentId(agent_id), limit=20, offset=0),
+            "action_count": TableRead.count_agent_actions_for_agent(db, agent_id),
+        }
+
+
+def _require_inbox_operator(request: Request, org_id: str, agent_id: str, user: dict) -> None:
+    """An agent's mail is sensitive: its inbox is operator-only, not open to the whole org."""
+    with _get_db(request) as db:
+        _require_agent_operator(db, org_id, agent_id, user, "access its inbox")
+
+
+def _read_mailbox[T](read: Callable[..., T], agent_id: str, *args) -> T | None:
+    """``None`` when mail is unconfigured or the mailbox was never provisioned
+    (signup provisions it best-effort, so IMAP login raises ``LoginError``):
+    the read degrades to empty instead of a 500."""
+    if not STALWART_SVC_PASSWORD:
+        return None
+    try:
+        return read(agent_id, *args)
+    except LoginError:
+        return None
+    except Exception:
+        logger.exception("mailbox read failed for %s", agent_id)
+        raise HTTPException(status_code=500, detail="Failed to read mailbox") from None
+
+
+def _mailbox_message[T](call: Callable[..., T], agent_id: str, message_uid: int, *args, failure: str) -> T:
+    """One per-message IMAP call: 503 when mail is unconfigured, 404 for a missing mailbox or message."""
+    if not STALWART_SVC_PASSWORD:
+        raise HTTPException(status_code=503, detail="Email service not configured")
+    missing = HTTPException(status_code=404, detail=f"Email with UID {message_uid} not found")
+    try:
+        result = call(agent_id, message_uid, *args)
+    except LoginError:
+        raise missing from None
+    except Exception:
+        logger.exception("email %s failed for %s uid=%s", failure, agent_id, message_uid)
+        raise HTTPException(status_code=500, detail=f"Failed to {failure}") from None
+    if not result:
+        raise missing
+    return result
+
+
+@human_router.get(
+    "/api/human/orgs/{org_id}/agents/{agent_id}/email/count",
+    response_model=EmailCountResponse,
+)
+def get_agent_email_count(
+    org_id: str,
+    agent_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> EmailCountResponse:
+    """Total and unread counts for the agent's mailbox. Operator-only; zeroes
+    when email isn't configured or the mailbox isn't provisioned yet."""
+    _require_inbox_operator(request, org_id, agent_id, user)
+    counts = _read_mailbox(get_email_counts, agent_id)
+    if counts is None:
+        return EmailCountResponse(total=0, unread=0, email_address=agent_email_address(agent_id))
+    return EmailCountResponse.model_validate(counts)
+
+
+@human_router.get(
+    "/api/human/orgs/{org_id}/agents/{agent_id}/email/inbox",
+    response_model=EmailListResponse,
+)
+def get_agent_email_inbox(
+    org_id: str,
+    agent_id: str,
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    unread_only: bool = False,
+    user: dict = Depends(get_current_human_user),
+) -> EmailListResponse:
+    """List the agent's inbox, newest first. Operator-only.
+
+    ``unread_only`` narrows the listing and ``total`` to UNSEEN messages.
+    ``limit`` is clamped to 200, as each listing is a live IMAP fetch. Empty
+    when email isn't configured or the mailbox isn't provisioned yet."""
+    _require_inbox_operator(request, org_id, agent_id, user)
+    limit = min(max(limit, 1), 200)
+    result = _read_mailbox(list_emails, agent_id, limit, offset, unread_only)
+    if result is None:
+        return EmailListResponse(emails=[], total=0, unread_count=0, limit=limit, offset=offset)
+    return EmailListResponse.model_validate(result)
+
+
+@human_router.get(
+    "/api/human/orgs/{org_id}/agents/{agent_id}/email/{message_uid}",
+    response_model=EmailDetailResponse,
+)
+def get_agent_email_detail(
+    org_id: str,
+    agent_id: str,
+    message_uid: int,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> EmailDetailResponse:
+    """Fetch one message (body, attachments, headers) and mark it read. Operator-only."""
+    _require_inbox_operator(request, org_id, agent_id, user)
+    return EmailDetailResponse(
+        **_mailbox_message(get_email, agent_id, message_uid, failure="read mailbox")
+    )
+
+
+@human_router.patch(
+    "/api/human/orgs/{org_id}/agents/{agent_id}/email/{message_uid}",
+)
+def set_agent_email_read(
+    org_id: str,
+    agent_id: str,
+    message_uid: int,
+    body: EmailSetReadRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> dict:
+    """Set or clear a message's read state (``\\Seen`` flag) without opening it. Operator-only."""
+    _require_inbox_operator(request, org_id, agent_id, user)
+    _mailbox_message(set_email_read, agent_id, message_uid, body.is_read, failure="update message")
+    return {
+        "status": "updated",
+        "agent_id": agent_id,
+        "message_uid": message_uid,
+        "is_read": body.is_read,
+    }
+
+
+@human_router.delete(
+    "/api/human/orgs/{org_id}/agents/{agent_id}/email/{message_uid}",
+)
+def delete_agent_email(
+    org_id: str,
+    agent_id: str,
+    message_uid: int,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> dict:
+    """Delete one message by UID. Operator-only."""
+    _require_inbox_operator(request, org_id, agent_id, user)
+    _mailbox_message(delete_email, agent_id, message_uid, failure="delete message")
+    return {"status": "deleted", "agent_id": agent_id, "message_uid": message_uid}
+
+
 def _normalize_ollama_host(raw: str) -> str | None:
     """Canonicalize an operator-supplied Ollama base URL to scheme://host:port.
 
-    Accepts ``host``, ``host:port``, or ``http(s)://host[:port]`` (default
-    scheme http, default port 11434). Empty input means "clear the setting".
-    Rejects paths, queries, and credentials.
+    Accepts ``host``, ``host:port`` or ``http(s)://host[:port]`` (default scheme
+    http, default port 11434). Empty input clears the setting. Rejects paths,
+    queries and credentials.
     """
     value = raw.strip().rstrip("/")
     if not value:
@@ -1147,8 +860,8 @@ def _normalize_ollama_host(raw: str) -> str | None:
         detail="lobstertalk_ollama_host must be host[:port] or http(s)://host[:port]",
     )
     try:
-        parts = urlsplit(value)  # ValueError on e.g. an unclosed IPv6 bracket
-        port = parts.port  # ValueError on a non-numeric or out-of-range port
+        parts = urlsplit(value)
+        port = parts.port
     except ValueError:
         raise invalid from None
     if (
@@ -1173,41 +886,24 @@ class SetAgentDescriptionRequest(BaseModel):
 
 
 @human_router.patch("/api/human/orgs/{org_id}/agents/{agent_id}/settings")
-async def update_agent_settings(
+def update_agent_settings(
     org_id: str,
     agent_id: str,
     body: UpdateAgentSettingsRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Update an agent's operator-controlled settings. Caller must be the
-    agent's operator (org membership alone is not enough)."""
+    """Update an agent's operator-controlled settings. Operator-only. The Ollama
+    host and model clear on an explicit null or empty string, so a field's
+    presence in the body matters, not only a non-null value."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        if not TableRead.is_agent_operator(db, agent_id, user["id"]):
-            raise HTTPException(
-                status_code=403, detail="Only the agent's operator can change these settings"
-            )
-        # Nullable LobsterTalk host/model use explicit null (or empty string) to
-        # clear, so "field present" matters, not just "value is not None".
-        clearable = {"lobstertalk_ollama_host", "lobstertalk_ollama_model"}
-        has_value = any(
-            getattr(body, name) is not None for name in type(body).model_fields
-        )
-        has_clear = bool(clearable & body.model_fields_set)
-        if not has_value and not has_clear:
+        _require_agent_operator(db, org_id, agent_id, user, "change these settings")
+        clears = {"lobstertalk_ollama_host", "lobstertalk_ollama_model"} & body.model_fields_set
+        if not clears and not body.model_dump(exclude_none=True):
             raise HTTPException(status_code=400, detail="No settings provided")
-        ollama_host = (
-            _normalize_ollama_host(body.lobstertalk_ollama_host)
-            if body.lobstertalk_ollama_host is not None
-            else None
-        )
-        ollama_model = (
-            body.lobstertalk_ollama_model.strip() or None
-            if body.lobstertalk_ollama_model is not None
-            else None
-        )
+        host = body.lobstertalk_ollama_host
+        ollama_host = _normalize_ollama_host(host) if host is not None else None
+        ollama_model = (body.lobstertalk_ollama_model or "").strip() or None
         updated = TableWrite.update_agent_settings(
             db,
             agent_id,
@@ -1216,51 +912,31 @@ async def update_agent_settings(
             inter_agent_message_limit=body.inter_agent_message_limit,
             lobstertalk_enabled=body.lobstertalk_enabled,
             lobstertalk_ollama_host=ollama_host,
-            clear_lobstertalk_ollama_host=(
-                "lobstertalk_ollama_host" in body.model_fields_set and ollama_host is None
-            ),
+            clear_lobstertalk_ollama_host="lobstertalk_ollama_host" in clears and ollama_host is None,
             lobstertalk_ollama_model=ollama_model,
-            clear_lobstertalk_ollama_model=(
-                "lobstertalk_ollama_model" in body.model_fields_set and ollama_model is None
-            ),
+            clear_lobstertalk_ollama_model="lobstertalk_ollama_model" in clears and ollama_model is None,
             lobstertalk_interval_seconds=body.lobstertalk_interval_seconds,
             lobstertalk_message_limit=body.lobstertalk_message_limit,
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Agent not found")
         db.commit()
-        return {
-            "agent_id": agent_id,
-            "inter_agent_mode_enabled": updated.inter_agent_mode_enabled,
-            "snoozed": updated.snoozed,
-            "inter_agent_message_limit": updated.inter_agent_message_limit,
-            "lobstertalk_enabled": updated.lobstertalk_enabled,
-            "lobstertalk_ollama_host": updated.lobstertalk_ollama_host,
-            "lobstertalk_ollama_model": updated.lobstertalk_ollama_model,
-            "lobstertalk_interval_seconds": updated.lobstertalk_interval_seconds,
-            "lobstertalk_message_limit": updated.lobstertalk_message_limit,
-        }
+        return {"agent_id": agent_id, **_agent_settings(updated)}
 
 
 @human_router.patch("/api/human/orgs/{org_id}/agents/{agent_id}/name")
-async def rename_agent(
+def rename_agent(
     org_id: str,
     agent_id: str,
     body: RenameAgentRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Rename an agent — replaces the generated nickname. Caller must be the
-    agent's operator. Clears any agent-set profile display_name so the new
-    name is what every surface resolves to (resolution prefers display_name
-    over nickname). ``agent_id`` is immutable; only the display changes."""
+    """Rename an agent, replacing its generated nickname. Operator-only. Clears
+    any agent-set profile display_name, which resolution prefers, so the new
+    name is what every surface shows. ``agent_id`` never changes."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        if not TableRead.is_agent_operator(db, agent_id, user["id"]):
-            raise HTTPException(
-                status_code=403, detail="Only the agent's operator can rename it"
-            )
+        _require_agent_operator(db, org_id, agent_id, user, "rename it")
         nickname = body.nickname.strip()
         if not nickname:
             raise HTTPException(status_code=400, detail="Name cannot be empty")
@@ -1271,21 +947,8 @@ async def rename_agent(
         return {"agent_id": agent_id, "nickname": updated.nickname}
 
 
-# ---------------------------------------------------------------------------
-# Automations (operator control plane over OpenClaw cron)
-#
-# Operators set DESIRED automations here; Clawbits stores them and nudges the
-# agent's plugin to reconcile its local gateway cron (Clawbits never connects to
-# the gateway). Reads + writes are operator-gated like agent settings. See
-# docs/protocol/OPENCLAW_AUTOMATIONS_INTEGRATION_STRATEGY.md.
-# ---------------------------------------------------------------------------
-
-
 class CreateAutomationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    # A normalized OpenClaw cron create payload: name, schedule, sessionTarget,
-    # wakeMode, payload (+ optional delivery/failureAlert/enabled). Validated
-    # server-side; unknown keys are dropped on store.
     desired_spec: dict
 
 
@@ -1294,116 +957,92 @@ class UpdateAutomationRequest(BaseModel):
     desired_spec: dict
 
 
-def _validate_delivery_target(db, agent_id: str, desired_spec: dict) -> None:
-    """Reject an automation whose delivery channel the agent is not a member of.
-
-    The picker only offers real memberships, so this guards against a stale or
-    forged ``delivery.to`` — and is the security boundary: the plugin has no
-    application-level membership gate on explicit delivery (only Mattermost's
-    per-post 403 downstream). Absent ``delivery`` → owner DM, nothing to check."""
-    delivery = desired_spec.get("delivery")
-    if not isinstance(delivery, dict):
-        return
-    to = delivery.get("to")
-    if to and not TableRead.is_mm_channel_member(db, to, agent_id):
-        raise HTTPException(
-            status_code=400,
-            detail="Agent is not a member of the chosen delivery channel",
-        )
-
-
-def _require_automation_operator(db, agent_id: str, user: dict) -> None:
-    """Operator-gate for automations — org membership alone is not enough."""
-    if not TableRead.is_agent_operator(db, agent_id, user["id"]):
-        raise HTTPException(
-            status_code=403,
-            detail="Only the agent's operator can manage its automations",
-        )
-
-
-# Runtimes whose in-VM plugin has no Clawbits cron reconciler. Hermes ships
-# one in extensions/hermes/automations.py; IronClaw still cannot converge the
-# desired set. None/unknown passes for backward compatibility.
+# Runtimes whose plugin has no clawbits cron reconciler. An unknown runtime passes.
 _AUTOMATION_INCAPABLE_RUNTIMES = frozenset({"ironclaw"})
 
-# The Hermes plugin version that first shipped the reconciler. An older Hermes
-# agent stores the row and leaves it on "requested" forever — the UI renders that
-# as a pulsing "Applying…" with needsAttention:false, so it is invisible. Reject
-# up front instead of pretending. Deliberately a fixed floor rather than
-# ``min_plugin_version()``: that one tracks plugin.yaml and would tighten itself
-# on every unrelated version bump.
+# Fixed rather than min_plugin_version(), which tightens on every unrelated plugin bump.
 _HERMES_AUTOMATIONS_MIN_VERSION = Version("0.7.0")
 
 
 def _require_automation_capable_runtime(db, agent_id: str) -> None:
-    """422 when the agent's runtime can't apply Clawbits-managed automations.
-
-    Gates create/update/run-now only — list and delete stay open so any
-    pre-existing rows remain visible and removable."""
-    from clawbits.db.models import Agent as _AgentRow
-
-    row = db.get(_AgentRow, agent_id)
-    agent_type = row.agent_type if row is not None else None
-    if agent_type in _AUTOMATION_INCAPABLE_RUNTIMES:
+    """422 when the agent's runtime can't apply clawbits-managed automations.
+    An older Hermes plugin would leave the row on "requested" forever, which the
+    UI renders as an invisible "Applying". A Hermes agent with no parseable
+    version passes, like an unknown runtime. Gates create, update and run: list
+    and delete stay open so existing rows remain visible and removable."""
+    row = db.get(Agent, agent_id)
+    if row.agent_type in _AUTOMATION_INCAPABLE_RUNTIMES:
         raise HTTPException(
             status_code=422,
             detail=(
                 "Automations are not supported by this agent runtime; "
-                f"this agent runs {agent_type}"
+                f"this agent runs {row.agent_type}"
             ),
         )
-    if agent_type == "hermes":
-        raw_version = row.plugin_version if row is not None else None
-        try:
-            reported = Version(raw_version) if raw_version else None
-        except InvalidVersion:
-            reported = None
-        # Missing/unparseable passes, matching the back-compat posture of the
-        # runtime gate above: agents that have never pinged shouldn't be locked
-        # out of a feature their plugin may well support.
-        if reported is not None and reported < _HERMES_AUTOMATIONS_MIN_VERSION:
-            # The hint rides in `detail` — the global HTTPException handler drops
-            # `exc.headers`.
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Automations need Clawbits Hermes plugin "
-                    f"{_HERMES_AUTOMATIONS_MIN_VERSION} or newer; this agent reports "
-                    f"{raw_version}. Redeploy the agent to upgrade its plugin."
-                ),
-            )
+    if row.agent_type != "hermes" or not row.plugin_version:
+        return
+    try:
+        reported = Version(row.plugin_version)
+    except InvalidVersion:
+        return
+    if reported < _HERMES_AUTOMATIONS_MIN_VERSION:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Automations need Clawbits Hermes plugin "
+                f"{_HERMES_AUTOMATIONS_MIN_VERSION} or newer; this agent reports "
+                f"{row.plugin_version}. Redeploy the agent to upgrade its plugin."
+            ),
+        )
 
 
-def _authorize_automation_operator(
-    db, org_id: str, agent_id: str, user: dict
-) -> None:
-    """The standard gate for an agent-scoped automation request: the caller is
-    an org member, the agent belongs to the org, and the caller operates it."""
-    _verify_org_membership(db, org_id, user)
-    _verify_agent_in_org(db, org_id, agent_id)
-    _require_automation_operator(db, agent_id, user)
+def _validate_automation(db, agent_id: str, spec: dict) -> None:
+    """400 for an invalid spec, or for a ``delivery.to`` channel the agent is
+    not in. That check is the security boundary: the plugin does not gate
+    explicit delivery on membership. No ``delivery`` means the owner DM."""
+    try:
+        validate_spec(spec)
+    except SpecValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    delivery = spec.get("delivery")
+    to = delivery.get("to") if isinstance(delivery, dict) else None
+    if to and not TableRead.is_mm_channel_member(db, to, agent_id):
+        raise HTTPException(
+            status_code=400, detail="Agent is not a member of the chosen delivery channel"
+        )
+
+
+def _require_managed_automation(db, automation_id: str, agent_id: str, refusal: str) -> None:
+    existing = TableRead.get_automation_for_agent(db, automation_id, agent_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    if existing.managed_by != "clawbits":
+        raise HTTPException(status_code=409, detail=refusal)
+
+
+def _commit_and_nudge(db, agent_id: str) -> None:
+    """Commit a change to the desired set and nudge the agent's plugin to
+    reconcile its own gateway cron. See
+    docs/protocol/OPENCLAW_AUTOMATIONS_INTEGRATION_STRATEGY.md."""
+    generation = TableRead.agent_desired_generation(db, agent_id)
+    db.commit()
+    fire_and_forget(publish_automation_sync(get_bus(), agent_id, generation))
 
 
 @human_router.get("/api/human/orgs/{org_id}/automations")
-async def list_org_automations(
+def list_org_automations(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Every automation across the org's agents the caller operates.
-
-    The org-wide AutomationsPage list — one call instead of fanning out per
-    agent. Scoped to operated agents, matching the per-agent operator gate."""
+    """Every automation across the org's agents the caller operates, in one call."""
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
-        automations = TableRead.list_org_automations_for_operator(
-            db, org_id, user["id"]
-        )
-    return {"automations": automations}
+        return {"automations": TableRead.list_org_automations_for_operator(db, org_id, user["id"])}
 
 
 @human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/automations")
-async def list_agent_automations(
+def list_agent_automations(
     org_id: str,
     agent_id: str,
     request: Request,
@@ -1411,13 +1050,12 @@ async def list_agent_automations(
 ):
     """List an agent's automations (operator-only)."""
     with _get_db(request) as db:
-        _authorize_automation_operator(db, org_id, agent_id, user)
-        automations = TableRead.list_agent_automations(db, agent_id)
-    return {"automations": automations}
+        _require_agent_operator(db, org_id, agent_id, user, "manage its automations")
+        return {"automations": TableRead.list_agent_automations(db, agent_id)}
 
 
 @human_router.post("/api/human/orgs/{org_id}/agents/{agent_id}/automations")
-async def create_agent_automation(
+def create_agent_automation(
     org_id: str,
     agent_id: str,
     body: CreateAutomationRequest,
@@ -1426,13 +1064,9 @@ async def create_agent_automation(
 ):
     """Create a Clawbits-managed automation and nudge the agent to reconcile."""
     with _get_db(request) as db:
-        _authorize_automation_operator(db, org_id, agent_id, user)
+        _require_agent_operator(db, org_id, agent_id, user, "manage its automations")
         _require_automation_capable_runtime(db, agent_id)
-        try:
-            validate_spec(body.desired_spec)
-        except SpecValidationError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        _validate_delivery_target(db, agent_id, body.desired_spec)
+        _validate_automation(db, agent_id, body.desired_spec)
         row = TableWrite.create_automation(
             db,
             agent_id=agent_id,
@@ -1441,16 +1075,14 @@ async def create_agent_automation(
             created_by=user["id"],
         )
         result = TableRead._automation_to_dict(row)
-        generation = TableRead.agent_desired_generation(db, agent_id)
-        db.commit()
-    await publish_automation_sync(get_bus(), agent_id, generation)
+        _commit_and_nudge(db, agent_id)
     return result
 
 
 @human_router.patch(
     "/api/human/orgs/{org_id}/agents/{agent_id}/automations/{automation_id}"
 )
-async def update_agent_automation(
+def update_agent_automation(
     org_id: str,
     agent_id: str,
     automation_id: str,
@@ -1460,66 +1092,42 @@ async def update_agent_automation(
 ):
     """Replace a managed automation's desired spec and nudge the agent."""
     with _get_db(request) as db:
-        _authorize_automation_operator(db, org_id, agent_id, user)
+        _require_agent_operator(db, org_id, agent_id, user, "manage its automations")
         _require_automation_capable_runtime(db, agent_id)
-        existing = TableRead.get_automation_for_agent(db, automation_id, agent_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Automation not found")
-        if existing.managed_by != "clawbits":
-            raise HTTPException(
-                status_code=409, detail="External automations are read-only"
-            )
-        try:
-            validate_spec(body.desired_spec)
-        except SpecValidationError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        _validate_delivery_target(db, agent_id, body.desired_spec)
-        row = TableWrite.update_automation_desired(
-            db, automation_id, desired_spec=body.desired_spec
-        )
+        _require_managed_automation(db, automation_id, agent_id, "External automations are read-only")
+        _validate_automation(db, agent_id, body.desired_spec)
+        row = TableWrite.update_automation_desired(db, automation_id, desired_spec=body.desired_spec)
         if row is None:
             raise HTTPException(status_code=404, detail="Automation not found")
         result = TableRead._automation_to_dict(row)
-        generation = TableRead.agent_desired_generation(db, agent_id)
-        db.commit()
-    await publish_automation_sync(get_bus(), agent_id, generation)
+        _commit_and_nudge(db, agent_id)
     return result
 
 
 @human_router.delete(
     "/api/human/orgs/{org_id}/agents/{agent_id}/automations/{automation_id}"
 )
-async def delete_agent_automation(
+def delete_agent_automation(
     org_id: str,
     agent_id: str,
     automation_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Mark a managed automation for removal and nudge the agent.
-
-    The agent removes the gateway job on next reconcile; the row is finalized
-    once the agent confirms removal."""
+    """Mark a managed automation for removal and nudge the agent. The row is
+    finalized once the agent confirms it removed the gateway job."""
     with _get_db(request) as db:
-        _authorize_automation_operator(db, org_id, agent_id, user)
-        existing = TableRead.get_automation_for_agent(db, automation_id, agent_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Automation not found")
-        if existing.managed_by != "clawbits":
-            raise HTTPException(
-                status_code=409, detail="External automations are read-only"
-            )
+        _require_agent_operator(db, org_id, agent_id, user, "manage its automations")
+        _require_managed_automation(db, automation_id, agent_id, "External automations are read-only")
         TableWrite.delete_automation(db, automation_id)
-        generation = TableRead.agent_desired_generation(db, agent_id)
-        db.commit()
-    await publish_automation_sync(get_bus(), agent_id, generation)
+        _commit_and_nudge(db, agent_id)
     return {"automation_id": automation_id, "status": "removing"}
 
 
 @human_router.get(
     "/api/human/orgs/{org_id}/agents/{agent_id}/automations/{automation_id}/runs"
 )
-async def list_agent_automation_runs(
+def list_agent_automation_runs(
     org_id: str,
     agent_id: str,
     automation_id: str,
@@ -1528,17 +1136,16 @@ async def list_agent_automation_runs(
 ):
     """Recent runs for an automation (operator-only)."""
     with _get_db(request) as db:
-        _authorize_automation_operator(db, org_id, agent_id, user)
+        _require_agent_operator(db, org_id, agent_id, user, "manage its automations")
         if TableRead.get_automation_for_agent(db, automation_id, agent_id) is None:
             raise HTTPException(status_code=404, detail="Automation not found")
-        runs = TableRead.list_automation_runs(db, automation_id)
-    return {"runs": runs}
+        return {"runs": TableRead.list_automation_runs(db, automation_id)}
 
 
 @human_router.post(
     "/api/human/orgs/{org_id}/agents/{agent_id}/automations/{automation_id}/run"
 )
-async def run_agent_automation_now(
+def run_agent_automation_now(
     org_id: str,
     agent_id: str,
     automation_id: str,
@@ -1546,40 +1153,31 @@ async def run_agent_automation_now(
     user: dict = Depends(get_current_human_user),
 ):
     """Request an immediate one-off run of a managed automation, then nudge the
-    agent. Best-effort: the plugin runs the gateway job on its next reconcile
-    (within seconds via the nudge); if the agent is offline it runs once on
-    reconnect. Operator-only."""
+    agent. Best-effort: the plugin runs the job on its next reconcile, within
+    seconds via the nudge, or once on reconnect. Operator-only."""
     with _get_db(request) as db:
-        _authorize_automation_operator(db, org_id, agent_id, user)
+        _require_agent_operator(db, org_id, agent_id, user, "manage its automations")
         _require_automation_capable_runtime(db, agent_id)
-        existing = TableRead.get_automation_for_agent(db, automation_id, agent_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Automation not found")
-        if existing.managed_by != "clawbits":
-            raise HTTPException(
-                status_code=409, detail="External automations cannot be run"
-            )
+        _require_managed_automation(db, automation_id, agent_id, "External automations cannot be run")
         row = TableWrite.request_automation_run(db, automation_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Automation not found")
         result = TableRead._automation_to_dict(row)
-        generation = TableRead.agent_desired_generation(db, agent_id)
-        db.commit()
-    await publish_automation_sync(get_bus(), agent_id, generation)
+        _commit_and_nudge(db, agent_id)
     return result
 
 
 @human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/channels")
-async def list_agent_delivery_channels(
+def list_agent_delivery_channels(
     org_id: str,
     agent_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Channels and DMs the agent is a member of — the pickable delivery targets
-    for an automation. Operator-only (same gate as the automations routes)."""
+    """Channels and DMs the agent is a member of: the pickable delivery targets
+    for an automation. Operator-only, like the automation routes."""
     with _get_db(request) as db:
-        _authorize_automation_operator(db, org_id, agent_id, user)
+        _require_agent_operator(db, org_id, agent_id, user, "manage its automations")
         channels = TableRead.get_mm_channels_for_agent(db, agent_id)
     return {
         "channels": [
@@ -1595,70 +1193,46 @@ async def list_agent_delivery_channels(
 
 
 @human_router.post("/api/human/orgs/{org_id}/agents/{agent_id}/description/regenerate")
-async def regenerate_agent_description(
+def regenerate_agent_description(
     org_id: str,
     agent_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Ask the agent to regenerate its description. Operator-only.
+    """Ask the agent to regenerate its description. Operator or org owner.
 
-    Generation happens agent-side: this only sets a flag the agent picks up on
-    its next check-in (``GET /info``). The agent then pushes a fresh
-    description via ``PUT /description``, which clears the flag.
-    """
+    Generation happens agent-side: this sets a flag the agent picks up on its
+    next ``GET /info``, and its ``PUT /description`` clears it."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        # The agent's operator OR an owner of the org may trigger a refresh.
-        is_operator = TableRead.is_agent_operator(db, agent_id, user["id"])
-        is_org_owner = TableRead.get_org_member_role(db, org_id, user["id"]) == "owner"
-        if not (is_operator or is_org_owner):
-            raise HTTPException(
-                status_code=403,
-                detail="Only the agent's operator or an org admin can regenerate its description",
-            )
+        _require_operator_or_admin(db, org_id, agent_id, user, "regenerate its description")
         TableWrite.request_agent_description_regen(db, agent_id)
         db.commit()
-        return {"agent_id": agent_id, "description_regen_pending": True}
+    return {"agent_id": agent_id, "description_regen_pending": True}
 
 
 @human_router.patch("/api/human/orgs/{org_id}/agents/{agent_id}/description")
-async def set_agent_description_manual(
+def set_agent_description_manual(
     org_id: str,
     agent_id: str,
     body: SetAgentDescriptionRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Manually set the agent's public description (same gate as regenerate:
-    the agent's operator or an org owner). Stored with ``source="manual"`` and
-    clears any pending regenerate request - the human's text supersedes it.
-    The agent can still overwrite it later via ``PUT /description``."""
+    """Manually set the agent's public description. Operator or org owner.
+    Stored with ``source="manual"``, superseding any pending regenerate request;
+    the agent can still overwrite it later via ``PUT /description``."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        is_operator = TableRead.is_agent_operator(db, agent_id, user["id"])
-        is_org_owner = TableRead.get_org_member_role(db, org_id, user["id"]) == "owner"
-        if not (is_operator or is_org_owner):
-            raise HTTPException(
-                status_code=403,
-                detail="Only the agent's operator or an org admin can set its description",
-            )
+        _require_operator_or_admin(db, org_id, agent_id, user, "set its description")
         text = body.description.strip()
         if not text:
             raise HTTPException(status_code=400, detail="Description can't be empty")
         TableWrite.set_agent_description(db, agent_id, text, source="manual")
         db.commit()
-        return {
-            "agent_id": agent_id,
-            "description": text[:280],
-            "description_source": "manual",
-        }
+    return {"agent_id": agent_id, "description": text[:280], "description_source": "manual"}
 
 
 @human_router.get("/api/human/shared_content")
-async def list_shared_content(
+def list_shared_content(
     request: Request,
     limit: int = 50,
     offset: int = 0,
@@ -1667,14 +1241,12 @@ async def list_shared_content(
     """List recent shared files across the caller's organizations."""
     with _get_db(request) as db:
         org_ids = TableRead.get_org_ids_for_human(db, user["id"])
-        files = TableRead.get_recent_shared_content(
-            db, org_ids, limit=limit, offset=offset
-        )
+        files = TableRead.get_recent_shared_content(db, org_ids, limit=limit, offset=offset)
         return {"files": files, "total": len(files), "limit": limit, "offset": offset}
 
 
 @human_router.get("/api/human/posts")
-async def list_all_agent_posts(
+def list_all_agent_posts(
     request: Request,
     limit: int = 50,
     offset: int = 0,
@@ -1690,7 +1262,7 @@ async def list_all_agent_posts(
 
 
 @human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/posts")
-async def get_agent_posts_for_human(
+def get_agent_posts_for_human(
     org_id: str,
     agent_id: str,
     request: Request,
@@ -1700,19 +1272,19 @@ async def get_agent_posts_for_human(
 ):
     """Get posts from a specific agent. Caller must be a member of the owning organization."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        agent = TableRead.get_agent_by_agentid(db, AgentId(agent_id))
-        if agent is None:
-            raise HTTPException(status_code=404, detail="Agent not found")
-        posts = TableRead.get_agent_posts(db, AgentId(agent_id), limit=limit, offset=offset, current_human_id=user["id"])
+        _verify_agent_in_org(db, org_id, agent_id, user)
+        posts = TableRead.get_agent_posts(
+            db, AgentId(agent_id), limit=limit, offset=offset, current_human_id=user["id"]
+        )
         return {"posts": posts, "total": len(posts), "limit": limit, "offset": offset}
+
 
 class PostCommentRequest(BaseModel):
     message: str = Field(min_length=1, max_length=280)
 
+
 @human_router.post("/api/human/posts/{post_id}/like")
-async def like_post(
+def like_post(
     post_id: int,
     request: Request,
     user: dict = Depends(get_current_human_user),
@@ -1724,8 +1296,9 @@ async def like_post(
         db.commit()
     return {"status": "ok"}
 
+
 @human_router.delete("/api/human/posts/{post_id}/like")
-async def unlike_post(
+def unlike_post(
     post_id: int,
     request: Request,
     user: dict = Depends(get_current_human_user),
@@ -1737,26 +1310,24 @@ async def unlike_post(
         db.commit()
     return {"status": "ok"}
 
+
 @human_router.get("/api/human/posts/{post_id}/comments")
-async def get_post_comments(
+def get_post_comments(
     post_id: int,
     request: Request,
     limit: int = 50,
     offset: int = 0,
     user: dict = Depends(get_current_human_user),
 ):
-    """Get comments for a post in one of the caller's organizations.
-
-    The rows carry each commenter's display name and email, so an unscoped
-    read here leaked personal data, not just post content.
-    """
+    """Get comments for a post in one of the caller's organizations. The rows
+    carry each commenter's name and email, so the scoping guards personal data."""
     with _get_db(request) as db:
         _require_visible_post(db, post_id, user)
-        comments = TableRead.get_post_comments(db, post_id, limit, offset)
-    return {"comments": comments}
+        return {"comments": TableRead.get_post_comments(db, post_id, limit, offset)}
+
 
 @human_router.post("/api/human/posts/{post_id}/comments")
-async def add_post_comment(
+def add_post_comment(
     post_id: int,
     payload: PostCommentRequest,
     request: Request,
@@ -1772,36 +1343,23 @@ async def add_post_comment(
     return {"status": "ok", "comment_id": comment_id}
 
 
-# ---------------------------------------------------------------------------
-# Organization endpoints
-# ---------------------------------------------------------------------------
-
-
 @human_router.post("/api/human/orgs", response_model=OrgResponse)
-async def create_org(
+def create_org(
     body: CreateOrgRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
     """Create a new organization. The caller becomes the owner."""
-    from clawbits.fastapi.workos_auth import (
-        create_workos_organization,
-        register_membership,
-    )
-
     client = request.app.state.workos
     with _get_db(request) as db:
-        existing = TableRead.get_org_by_name(db, body.name)
-        if existing is not None:
+        if TableRead.get_org_by_name(db, body.name) is not None:
             raise HTTPException(status_code=409, detail=f"Organization name '{body.name}' is already taken")
-        org_id = f"org-{_uuid.uuid4()}"
+        org_id = f"org-{uuid.uuid4()}"
         workos_org_id = create_workos_organization(client, name=body.name)
         TableWrite.create_organization(
             db, org_id, workos_org_id, body.name, body.display_name, False, user["id"]
         )
         TableWrite.add_org_member(db, org_id, user["id"], "owner")
-        # The creator has "visited" by definition — bump now so the
-        # switcher doesn't flash a "New" pill on the org they just made.
         TableWrite.touch_org_member_visit(db, org_id, user["id"])
         db.commit()
         org = TableRead.get_organization(db, org_id, viewer_human_id=user["id"])
@@ -1820,39 +1378,30 @@ async def create_org(
         is_personal=False,
     )
     response = OrgResponse(**org)
-    # Cross-tab consistency — the requesting tab already has the org via
-    # the mutation response, but any other tabs the user has open need
-    # an event to splice it into their switcher cache.
-    fire_and_forget(
-        publish_org_added(get_bus(), user["id"], response.model_dump())
-    )
+    fire_and_forget(publish_org_added(get_bus(), user["id"], response.model_dump()))
     return response
 
 
 @human_router.get("/api/human/orgs", response_model=OrgListResponse)
-async def list_orgs(
+def list_orgs(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
     """List organizations the current user belongs to."""
     with _get_db(request) as db:
         orgs = TableRead.get_orgs_for_human(db, user["id"])
-        return OrgListResponse(
-            organizations=[OrgResponse(**o) for o in orgs],
-            total=len(orgs),
-        )
+        return OrgListResponse(organizations=[OrgResponse(**o) for o in orgs], total=len(orgs))
 
 
 @human_router.get("/api/human/orgs/{org_id}", response_model=OrgResponse)
-async def get_org(
+def get_org(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
     """Get organization details. Caller must be a member."""
     with _get_db(request) as db:
-        if not TableRead.is_org_member(db, org_id, user["id"]):
-            raise HTTPException(status_code=403, detail="Not a member of this organization")
+        _verify_org_membership(db, org_id, user)
         org = TableRead.get_organization(db, org_id, viewer_human_id=user["id"])
         if org is None:
             raise HTTPException(status_code=404, detail="Organization not found")
@@ -1860,42 +1409,28 @@ async def get_org(
 
 
 @human_router.post("/api/human/orgs/{org_id}/visit", status_code=204)
-async def mark_org_visited(
+def mark_org_visited(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Mark this org as visited by the caller, bumping ``last_visited_at``
-    to now. Idempotent — the org switcher calls this whenever the user
-    activates an org so the "New" pill clears the moment they enter."""
+    """Bump the caller's ``last_visited_at`` on this org to now, clearing the
+    switcher's "New" pill. Idempotent."""
     with _get_db(request) as db:
-        updated = TableWrite.touch_org_member_visit(db, org_id, user["id"])
-        if not updated:
+        if not TableWrite.touch_org_member_visit(db, org_id, user["id"]):
             raise HTTPException(status_code=404, detail="Not a member of this organization")
         db.commit()
-    return None
 
 
-# ── Reef ─────────────────────────────────────────────────────────────────────
-# Git is the bus. An org connects ONE private repository; clawbits writes a
-# fleet file per agent on the `fleet` branch and reads what each host pushes to
-# the `status` branch. clawbits never talks to a reef host, and nothing on the
-# network reaches it: the host pulls on a timer. See clawbits/reef_repo.py and
-# reef/README.md for host setup.
-
-# A status refresh costs one listing plus one read per host, and the settings
-# page polls it. Every read is conditional, so a file that has not changed
-# answers 304 and costs no rate limit, so the window stays short: a new agent
-# shows up in the setup wizard within seconds of its host reporting.
+# Reads are conditional and a 304 is free, so the window stays short enough for the setup wizard to see a new agent.
 _REEF_STATUS_TTL = 5.0
 _reef_status_cache: dict[str, tuple[float, list[ReefHostResponse]]] = {}
 
 
 def _reef_repo(db, org_id: str, user: dict) -> ReefRepo:
-    """The org's repository, with its token unsealed, for a member of that org.
-    Membership is checked here so no route can reach the token without it. 409
-    when no repository is connected, or when a rotated secrets key left the
-    token unreadable: reconnecting is the fix in both cases."""
+    """The org's repository with its token unsealed, for a member only: no route
+    reaches the token without the check. 409 when none is connected, or when a
+    rotated secrets key left the token unreadable; reconnecting fixes both."""
     _verify_org_membership(db, org_id, user)
     stored = TableRead.get_org_reef(db, org_id)
     token = decrypt_secret(stored[1]) if stored else None
@@ -1905,8 +1440,7 @@ def _reef_repo(db, org_id: str, user: dict) -> ReefRepo:
 
 
 async def _reef_hosts(org_id: str, repo: ReefRepo) -> list[ReefHostResponse]:
-    """Every host that has pushed, by name. A host exists exactly when its
-    status file does: hosts are never stored here."""
+    """Every host that has pushed, by name. A host exists exactly when its status file does."""
     cached = _reef_status_cache.get(org_id)
     now = time.monotonic()
     if cached is not None and cached[0] > now:
@@ -1934,15 +1468,13 @@ def _reef_host(name: str, raw: bytes, now: datetime) -> ReefHostResponse | None:
         host = ReefHostResponse.model_validate(status | {"host": name})
     except ValidationError:
         return None
-    # reef lists events oldest first.
     host.events.reverse()
     return host
 
 
 async def _reef_roles(repo: ReefRepo) -> list[Role]:
-    """The catalog from ``main:roles/``, by name. Roles pointing their agents at
-    a different clawbits are left out: an agent created from one would boot,
-    run, and enrol somewhere else."""
+    """The catalog from ``main:roles/``, by name, without roles pointing their
+    agents at a different clawbits: those would boot and enrol somewhere else."""
     names = [n for n in await repo.list("main", "roles") if n.endswith(".toml")]
     files = await asyncio.gather(*(repo.read("main", f"roles/{n}") for n in names))
     endpoint = os.environ.get("CLAWBITS_BASE_URL", "http://localhost:8000")
@@ -1955,9 +1487,23 @@ async def _reef_roles(repo: ReefRepo) -> list[Role]:
 
 
 def _reef_author(user: dict) -> Author:
-    """Fleet commits are authored by the person who clicked, so `git log` on
-    the fleet branch is the audit trail."""
+    """Fleet commits carry the person who clicked, so `git log` on the fleet branch is the audit trail."""
     return Author(name=user.get("display_name") or user["email"], email=user["email"])
+
+
+async def _undeclare(repo: ReefRepo, org_id: str, host: str, name: str, user: dict) -> None:
+    """Take the agent's fleet file off the branch: the next reconcile prunes
+    its VM. Its volumes survive, so the name can be declared again."""
+    message = f"remove {name} from {host}"
+    await repo.delete("fleet", f"fleet/{host}/{name}.toml", message, _reef_author(user))
+    _reef_status_cache.pop(org_id, None)
+
+
+def _set_org_reef(db, org_id: str, user: dict, repo: str | None, sealed: str | None) -> None:
+    _require_org_owner(db, org_id, user)
+    if not TableWrite.set_org_reef(db, org_id, repo, sealed):
+        raise HTTPException(status_code=404, detail="Organization not found")
+    db.commit()
 
 
 @human_router.get("/api/human/orgs/{org_id}/reef", response_model=ReefResponse)
@@ -1969,10 +1515,15 @@ async def get_reef(
     """The org's reef repository, what every host last pushed, and the agents
     declared but not yet enrolled: an unspent signup token is exactly that
     state. Any member."""
-    with _get_db(request) as db:
+
+    def load(db: Session) -> tuple[tuple[str, str] | None, list[dict]]:
         _verify_org_membership(db, org_id, user)
-        stored = TableRead.get_org_reef(db, org_id)
-        rows = TableRead.list_declared_reef_agents(db, org_id, datetime.now(UTC))
+        return (
+            TableRead.get_org_reef(db, org_id),
+            TableRead.list_declared_reef_agents(db, org_id, datetime.now(UTC)),
+        )
+
+    stored, rows = await _in_db(request, load)
     declared = [ReefAgentResponse(**row) for row in rows]
     token = decrypt_secret(stored[1]) if stored else None
     if token is None:
@@ -1994,8 +1545,7 @@ async def set_reef(
 ):
     """Connect the org's reef repository. Owner only. The token is proven
     against GitHub before anything is stored, and sealed at rest."""
-    with _get_db(request) as db:
-        _require_org_owner(db, org_id, user)
+    await _in_db(request, lambda db: _require_org_owner(db, org_id, user))
     await ReefRepo(repo=body.repo, token=body.token).probe()
     try:
         sealed = encrypt_secret(body.token)
@@ -2005,17 +1555,13 @@ async def set_reef(
             detail="This server has no durable secrets key configured, so a Reef "
             "token cannot be stored. Set CLAWBITS_ATTENTION_SECRETS_KEY.",
         )
-    with _get_db(request) as db:
-        _require_org_owner(db, org_id, user)
-        if not TableWrite.set_org_reef(db, org_id, body.repo, sealed):
-            raise HTTPException(status_code=404, detail="Organization not found")
-        db.commit()
+    await _in_db(request, lambda db: _set_org_reef(db, org_id, user, body.repo, sealed))
     _reef_status_cache.pop(org_id, None)
     return ReefResponse(repo=body.repo, connected=True)
 
 
 @human_router.delete("/api/human/orgs/{org_id}/reef", status_code=204)
-async def delete_reef(
+def delete_reef(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
@@ -2023,12 +1569,8 @@ async def delete_reef(
     """Disconnect the repository. Owner only. Agents already declared keep
     running: their fleet files are still on the branch, untouched."""
     with _get_db(request) as db:
-        _require_org_owner(db, org_id, user)
-        if not TableWrite.set_org_reef(db, org_id, None, None):
-            raise HTTPException(status_code=404, detail="Organization not found")
-        db.commit()
+        _set_org_reef(db, org_id, user, None, None)
     _reef_status_cache.pop(org_id, None)
-    return None
 
 
 @human_router.get(
@@ -2040,8 +1582,7 @@ async def list_reef_roles(
     user: dict = Depends(get_current_human_user),
 ):
     """The role catalog, :func:`_reef_roles`. Any member."""
-    with _get_db(request) as db:
-        repo = _reef_repo(db, org_id, user)
+    repo = await _in_db(request, lambda db: _reef_repo(db, org_id, user))
     return [
         ReefRoleResponse(
             name=role.name,
@@ -2072,8 +1613,7 @@ async def create_reef_agent(
     name of an agent that enrolled on the host brings it back, since its
     volumes kept its key. A failed write takes the session down with it, so a
     declared agent always has a file and a file always has a live token."""
-    with _get_db(request) as db:
-        repo = _reef_repo(db, org_id, user)
+    repo = await _in_db(request, lambda db: _reef_repo(db, org_id, user))
     owner = body.owner or user["email"].split("@")[0]
     if not OWNER_RE.match(owner):
         raise HTTPException(status_code=422, detail="owner is required for this account")
@@ -2089,8 +1629,9 @@ async def create_reef_agent(
         raise HTTPException(
             status_code=409, detail=f"'{body.name}' is already declared on {body.host}"
         )
+    taken = declared | {a.name for a in host.agents}
 
-    with _get_db(request) as db:
+    def mint(db: Session) -> HumanSession:
         known = TableRead.get_org_reef_agents(db, org_id, body.host)
         minted = AgentSignup.mint_human_session(
             db,
@@ -2098,22 +1639,26 @@ async def create_reef_agent(
             org_id,
             user["id"],
             reef=(body.host, body.name),
-            taken=declared | {a.name for a in host.agents} | known.keys(),
+            taken=taken | known.keys(),
             returning=known.get(body.name) if body.name else None,
         )
         db.commit()
+        return minted
+
+    def revoke(db: Session) -> None:
+        TableWrite.delete_challenge_session(db, minted.token)
+        db.commit()
+
+    minted = await _in_db(request, mint)
     name = body.name or fleet_name(minted.agent_id)
     env = {"CLAWBITS_ORG_ID": org_id, "CLAWBITS_SIGNUP_TOKEN": minted.token}
     if body.public_host:
         env["OPENCLAW_PUBLIC_HOST"] = body.public_host
     path, content = f"fleet/{body.host}/{name}.toml", fleet_toml(name, body.role, owner, env)
-    message = f"declare {name} on {body.host}"
     try:
-        await repo.write("fleet", path, content, message, _reef_author(user))
+        await repo.write("fleet", path, content, f"declare {name} on {body.host}", _reef_author(user))
     except ReefRepoError:
-        with _get_db(request) as db:
-            TableWrite.delete_challenge_session(db, minted.token)
-            db.commit()
+        await _in_db(request, revoke)
         raise
     _reef_status_cache.pop(org_id, None)
     return CreateReefAgentResponse(
@@ -2141,74 +1686,59 @@ async def delete_reef_agent(
 
     The next reconcile prunes the VM; its volumes and its clawbits agent row
     survive, so re-declaring the same name brings the same agent back."""
-    with _get_db(request) as db:
+
+    def authorize(db: Session) -> ReefRepo:
         repo = _reef_repo(db, org_id, user)
-        operators = TableRead.get_org_reef_agent_operators(db, org_id, host, name)
-        role = TableRead.get_org_member_role(db, org_id, user["id"])
-        if user["id"] not in operators and role != "owner":
+        if (
+            user["id"] not in TableRead.get_org_reef_agent_operators(db, org_id, host, name)
+            and TableRead.get_org_member_role(db, org_id, user["id"]) != "owner"
+        ):
             raise HTTPException(
                 status_code=403,
                 detail="Only whoever declared or operates the agent, or an organization "
                 "admin, can remove it",
             )
-    message = f"remove {name} from {host}"
-    await repo.delete("fleet", f"fleet/{host}/{name}.toml", message, _reef_author(user))
-    with _get_db(request) as db:
+        return repo
+
+    def revoke(db: Session) -> None:
         TableWrite.revoke_reef_signup(db, org_id, host, name)
         db.commit()
-    _reef_status_cache.pop(org_id, None)
-    return None
 
-
-# The LobsterTalk attention gate is an org-level opt-in (it replaced the server-wide
-# CLAWBITS_ATTENTION_ENABLED env flag). Any member can read the current state; only
-# an owner can flip it. The gate additionally requires the server's `router` extra
-# and each agent's own `lobstertalk_enabled` toggle — this switch just arms the org.
+    await _undeclare(await _in_db(request, authorize), org_id, host, name, user)
+    await _in_db(request, revoke)
 
 
 @human_router.get("/api/human/orgs/{org_id}/attention", response_model=OrgAttentionResponse)
-async def get_org_attention(
+def get_org_attention(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
     """Whether the org has armed the LobsterTalk attention gate. Any member can read."""
     with _get_db(request) as db:
-        if not TableRead.is_org_member(db, org_id, user["id"]):
-            raise HTTPException(status_code=403, detail="Not a member of this organization")
+        _verify_org_membership(db, org_id, user)
         return OrgAttentionResponse(enabled=TableRead.get_org_attention_enabled(db, org_id))
 
 
 @human_router.put("/api/human/orgs/{org_id}/attention", response_model=OrgAttentionResponse)
-async def set_org_attention(
+def set_org_attention(
     org_id: str,
     body: SetOrgAttentionRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Arm/disarm the org's LobsterTalk attention gate. Owner only."""
+    """Arm or disarm the org's LobsterTalk attention gate. Owner only. The gate
+    also needs the server's ``router`` extra and each agent's own toggle."""
     with _get_db(request) as db:
-        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
-            raise HTTPException(
-                status_code=403, detail="Only organization admins can change LobsterTalk attention"
-            )
+        _require_org_owner(db, org_id, user, "change LobsterTalk attention")
         if not TableWrite.set_org_attention_enabled(db, org_id, body.enabled):
             raise HTTPException(status_code=404, detail="Organization not found")
         db.commit()
-        return OrgAttentionResponse(enabled=body.enabled)
-
-
-# The "LobsterTalk" settings tab reads/writes the full attention config in one
-# shape: the org toggle plus the cascade-mode LLM endpoint. Supersedes the
-# /attention pair above for the frontend (kept for compatibility). The stored
-# API key is write-only — responses carry only ``api_key_set``.
+    return OrgAttentionResponse(enabled=body.enabled)
 
 
 def _lobstertalk_response(cfg: dict) -> OrgLobstertalkResponse:
-    # ``api_key_set`` reports a *usable* key, not merely a stored one. A
-    # ciphertext left behind by a rotated secrets key can't be decrypted, so
-    # cascade would silently run without it — reporting "set" would tell the
-    # owner everything is fine while asking them to fix nothing.
+    # A usable key, not merely a stored one: ciphertext from a rotated secrets key can't be decrypted.
     token = cfg["api_key_encrypted"]
     return OrgLobstertalkResponse(
         enabled=cfg["enabled"],
@@ -2222,16 +1752,15 @@ def _lobstertalk_response(cfg: dict) -> OrgLobstertalkResponse:
 
 
 @human_router.get("/api/human/orgs/{org_id}/lobstertalk", response_model=OrgLobstertalkResponse)
-async def get_org_lobstertalk(
+def get_org_lobstertalk(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """The org's LobsterTalk attention config (key redacted to ``api_key_set``).
-    Any member can read."""
+    """The org's LobsterTalk attention config, the org toggle plus the LLM
+    endpoint, with the key redacted to ``api_key_set``. Any member can read."""
     with _get_db(request) as db:
-        if not TableRead.is_org_member(db, org_id, user["id"]):
-            raise HTTPException(status_code=403, detail="Not a member of this organization")
+        _verify_org_membership(db, org_id, user)
         cfg = TableRead.get_org_lobstertalk_config(db, org_id)
         if cfg is None:
             raise HTTPException(status_code=404, detail="Organization not found")
@@ -2247,35 +1776,18 @@ async def set_org_lobstertalk(
 ):
     """Write the org's LobsterTalk attention config. Owner only.
 
-    The LLM modes (cascade, llm_only) require ``base_url`` and ``model``
-    atomically in the same request (the settings form submits its whole
-    state). The stored API key changes only when ``api_key`` is sent
-    (encrypted at rest) or ``clear_api_key`` is set; omitting both keeps it.
+    The LLM modes (cascade, llm_only) require ``base_url`` and ``model`` in the
+    same request. The stored API key changes only when ``api_key`` is sent
+    (encrypted at rest) or ``clear_api_key`` is set.
 
-    A request that arms an LLM mode has its base URL checked here for
-    immediate feedback, and again before every triage call — this one
-    constrains what an owner can save, not where the name resolves later.
-    Requests that don't arm one (turning LobsterTalk off, switching back to
-    embedding) skip the check so a host that has since gone bad can't strand
-    the org."""
-    with _get_db(request) as db:
-        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
-            raise HTTPException(
-                status_code=403, detail="Only organization admins can change LobsterTalk settings"
-            )
-    # Owner-only, but self-service: cap how fast one org can drive the DNS
-    # resolution below (a caller-chosen, possibly-slow nameserver).
+    A request that arms an LLM mode has its base URL checked here for immediate
+    feedback, and again before every triage call. Requests that don't arm one
+    skip the check, so a host that has since gone bad can't stop an org from
+    turning LobsterTalk off."""
+    await _in_db(request, lambda db: _require_org_owner(db, org_id, user, "change LobsterTalk settings"))
     _rate_limit(f"lt-save:{org_id}", limit=_LOBSTERTALK_SAVE_LIMIT)
-    # Outside the session on purpose: resolution is a network round trip with
-    # no timeout of its own, against a name the caller chose. Doing it while
-    # holding a pooled connection (and an open transaction) would let anyone
-    # tie up the pool by pointing base_url at a deliberately slow nameserver.
-    # It runs on the dedicated SSRF resolver pool (arun_guarded), so a stuck
-    # getaddrinfo can't starve the default executor DB/Redis work shares.
-    # Only when this request actually arms an LLM mode — otherwise a config
-    # whose host has since gone bad would make the org unable to turn
-    # LobsterTalk *off*, which is exactly when you most want to.
     if body.enabled and body.mode in ("cascade", "llm_only") and body.base_url:
+        # No session held: a caller-chosen nameserver could otherwise tie up the pool.
         try:
             await asyncio.wait_for(
                 arun_guarded(check_endpoint_allowed, body.base_url),
@@ -2284,60 +1796,53 @@ async def set_org_lobstertalk(
         except PrivateAddressError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         except (HostResolutionError, TimeoutError):
-            # Don't block a save on a name this host can't resolve yet, or
-            # can't resolve quickly (split-horizon DNS, an endpoint not up
-            # yet). The call-time check still refuses to dial anything unsafe.
             pass
-    with _get_db(request) as db:
-        # Re-check ownership in the *write* transaction. The check above ran in
-        # an earlier session and the DNS resolution between them is a network
-        # round trip — long enough for the caller to be demoted. Without this a
-        # just-removed owner could still land the write (a classic TOCTOU).
-        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
-            raise HTTPException(
-                status_code=403, detail="Only organization admins can change LobsterTalk settings"
-            )
-        update_api_key = body.api_key is not None or body.clear_api_key
-        try:
-            api_key_encrypted = encrypt_secret(body.api_key) if body.api_key is not None else None
-        except EphemeralSecretsKeyError as e:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "This server has no durable secrets key configured, so an API key "
-                    "cannot be stored. Set CLAWBITS_ATTENTION_SECRETS_KEY, or use an "
-                    "endpoint that needs no key."
-                ),
-            ) from e
-        if not TableWrite.set_org_lobstertalk_config(
-            db,
-            org_id,
+
+    update_api_key = body.api_key is not None or body.clear_api_key
+
+    def save() -> OrgLobstertalkResponse:
+        with _get_db(request) as db:
+            # Re-checked in the write transaction: the caller may have been demoted during the DNS round trip.
+            _require_org_owner(db, org_id, user, "change LobsterTalk settings")
+            try:
+                api_key_encrypted = encrypt_secret(body.api_key) if body.api_key is not None else None
+            except EphemeralSecretsKeyError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "This server has no durable secrets key configured, so an API key "
+                        "cannot be stored. Set CLAWBITS_ATTENTION_SECRETS_KEY, or use an "
+                        "endpoint that needs no key."
+                    ),
+                ) from e
+            if not TableWrite.set_org_lobstertalk_config(
+                db,
+                org_id,
+                enabled=body.enabled,
+                mode=body.mode,
+                base_url=body.base_url,
+                model=body.model,
+                api_key_encrypted=api_key_encrypted,
+                update_api_key=update_api_key,
+                cooldown_seconds=body.cooldown_seconds,
+            ):
+                raise HTTPException(status_code=404, detail="Organization not found")
+            org_row = TableRead.get_organization(db, org_id)
+            db.commit()
+            response = _lobstertalk_response(TableRead.get_org_lobstertalk_config(db, org_id))
+        audit.lobstertalk_config_updated(
+            request,
+            actor_user=user,
+            workos_org_id=(org_row or {}).get("workos_org_id", ""),
             enabled=body.enabled,
             mode=body.mode,
             base_url=body.base_url,
-            model=body.model,
-            api_key_encrypted=api_key_encrypted,
-            update_api_key=update_api_key,
+            api_key_changed=update_api_key,
             cooldown_seconds=body.cooldown_seconds,
-        ):
-            raise HTTPException(status_code=404, detail="Organization not found")
-        org_row = TableRead.get_organization(db, org_id)
-        db.commit()
-        response = _lobstertalk_response(TableRead.get_org_lobstertalk_config(db, org_id))
-    # After commit, outside the session: record who changed the config that
-    # governs whether channel transcripts (private channels included) get
-    # shipped to an org-controlled endpoint. Best-effort; never blocks the save.
-    audit.lobstertalk_config_updated(
-        request,
-        actor_user=user,
-        workos_org_id=(org_row or {}).get("workos_org_id", ""),
-        enabled=body.enabled,
-        mode=body.mode,
-        base_url=body.base_url,
-        api_key_changed=update_api_key,
-        cooldown_seconds=body.cooldown_seconds,
-    )
-    return response
+        )
+        return response
+
+    return await asyncio.to_thread(save)
 
 
 @human_router.post(
@@ -2350,28 +1855,20 @@ async def lobstertalk_healthcheck(
     user: dict = Depends(get_current_human_user),
 ):
     """Run one live triage-shaped call against the org's *stored* LLM config
-    and report which stage failed, if any. Owner only — it spends a metered
-    call on the org's key. Probes the stored config (not a draft) so the key
-    never travels back through the API; the frontend fires this right after a
-    successful save, when stored == what the owner just typed.
+    and report which stage failed, if any. Owner only, as it spends a metered
+    call on the org's key. The stored config, not a draft, so the key never
+    travels back through the API; the frontend fires this right after a save.
 
-    Config problems the probe can't even attempt (embedding mode, missing
-    endpoint fields) are 422s; problems the probe *finds* (bad key, wrong
-    URL, unusable model) are 200s with ``ok=false`` — the check worked, the
-    endpoint didn't."""
-    with _get_db(request) as db:
-        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
-            raise HTTPException(
-                status_code=403, detail="Only organization admins can test LobsterTalk settings"
-            )
-        cfg = TableRead.get_org_lobstertalk_config(db, org_id)
-    # Each probe spends a metered LLM call against the org's key — cap the rate
-    # so this can't be looped into a spend amplifier. (After the owner check so
-    # a rejected non-owner never fills the bucket.)
+    Config the probe can't even attempt (embedding mode, missing endpoint
+    fields) is a 422; problems the probe finds (bad key, wrong URL, unusable
+    model) are a 200 with ``ok=false``."""
+
+    def load(db: Session) -> dict | None:
+        _require_org_owner(db, org_id, user, "test LobsterTalk settings")
+        return TableRead.get_org_lobstertalk_config(db, org_id)
+
+    cfg = await _in_db(request, load)
     _rate_limit(f"lt-health:{org_id}", limit=_LOBSTERTALK_HEALTH_LIMIT)
-    # Session released before the probe: it's a network call against a
-    # caller-chosen host under a 30s deadline — same reason the PUT resolves
-    # DNS outside the session.
     if cfg is None:
         raise HTTPException(status_code=404, detail="Organization not found")
     if cfg["mode"] not in ("cascade", "llm_only"):
@@ -2403,28 +1900,23 @@ async def lobstertalk_healthcheck(
     "/api/human/orgs/{org_id}/lobstertalk/channels/{channel_id}",
     response_model=OrgLobstertalkChannelResponse,
 )
-async def set_org_lobstertalk_channel(
+def set_org_lobstertalk_channel(
     org_id: str,
     channel_id: str,
     body: SetOrgLobstertalkChannelRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Approve or revoke one public channel on the org's LobsterTalk
-    allowlist. Owner only. Closed by default: a channel no owner has approved
-    never gets an attention pass, regardless of the org and agent toggles.
+    """Approve or revoke one public channel on the org's LobsterTalk allowlist.
+    Owner only. Closed by default: an unapproved channel never gets an attention
+    pass, whatever the org and agent toggles say.
 
-    Unlike the config PUT there is no network round trip between the owner
-    check and the write, so a single transaction covers both — no TOCTOU
-    re-check needed. Unknown channels and channels of *other* orgs are the
-    same 404 (channel ids must not be probeable across orgs); non-public
-    channels are 422 in both directions — the attention gate hard-requires
-    public first, so approval on them would be a dead flag."""
+    Unknown channels and other orgs' channels are the same 404, so ids can't be
+    probed across orgs; non-public channels are 422 either way, since the gate
+    requires public first. Approval admits the transcript to the org's LLM
+    endpoint, so it gets the same best-effort audit trail as the config."""
     with _get_db(request) as db:
-        if TableRead.get_org_member_role(db, org_id, user["id"]) != "owner":
-            raise HTTPException(
-                status_code=403, detail="Only organization admins can change LobsterTalk settings"
-            )
+        _require_org_owner(db, org_id, user, "change LobsterTalk settings")
         channel = TableRead.get_mm_channel(db, channel_id)
         if channel is None or channel.get("org_id") != org_id:
             raise HTTPException(status_code=404, detail="Channel not found")
@@ -2435,9 +1927,6 @@ async def set_org_lobstertalk_channel(
         TableWrite.set_mm_channel_lobstertalk_approved(db, channel_id, body.approved)
         org_row = TableRead.get_organization(db, org_id)
         db.commit()
-    # After commit, outside the session: approval is what admits this
-    # channel's transcript to the org-configured LLM endpoint, so it gets the
-    # same best-effort audit trail as the config itself.
     audit.lobstertalk_channel_updated(
         request,
         actor_user=user,
@@ -2446,56 +1935,50 @@ async def set_org_lobstertalk_channel(
         channel_name=channel.get("name") or channel_id,
         approved=body.approved,
     )
-    return OrgLobstertalkChannelResponse(
-        channel_id=channel_id, lobstertalk_approved=body.approved
-    )
+    return OrgLobstertalkChannelResponse(channel_id=channel_id, lobstertalk_approved=body.approved)
+
+
+def _members_response(members: list[dict]) -> OrgMembersListResponse:
+    return OrgMembersListResponse(members=[OrgMemberResponse(**m) for m in members], total=len(members))
+
+
+def _require_another_owner(db, org_id: str, verb: str) -> None:
+    """Every org keeps an owner, so nobody is left able to manage it."""
+    if sum(m["role"] == "owner" for m in TableRead.get_org_members(db, org_id)) <= 1:
+        raise HTTPException(status_code=400, detail=f"Cannot {verb} the last admin of an organization")
 
 
 @human_router.get("/api/human/orgs/{org_id}/members", response_model=OrgMembersListResponse)
-async def list_org_members(
+def list_org_members(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """List members of an organization. Any member can read — this powers
-    both the owner-only admin page (which self-gates off ``my_role``) and
-    the directory pickers used to add people to channels, start DMs, etc.
-    Privileged actions (add/remove member, role changes) remain owner-only
-    on their own endpoints."""
+    """List members of an organization. Any member can read: this powers the
+    admin page (which gates itself off ``my_role``) and the people pickers.
+    Adding, removing and role changes stay owner-only."""
     with _get_db(request) as db:
-        if not TableRead.is_org_member(db, org_id, user["id"]):
-            raise HTTPException(
-                status_code=403,
-                detail="Not a member of this organization",
-            )
-        members = TableRead.get_org_members(db, org_id)
-        return OrgMembersListResponse(
-            members=[OrgMemberResponse(**m) for m in members],
-            total=len(members),
-        )
+        _verify_org_membership(db, org_id, user)
+        return _members_response(TableRead.get_org_members(db, org_id))
 
 
 @human_router.post("/api/human/orgs/{org_id}/members", response_model=OrgMembersListResponse)
-async def add_org_member(
+def add_org_member(
     org_id: str,
     body: AddOrgMemberRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Add a member to an organization. Caller must be an owner."""
+    """Add a member to an organization. Caller must be an owner.
+
+    Contact is closed by default, so the new member only joins the default
+    channel of agents they may DM or tag."""
     with _get_db(request) as db:
-        role = TableRead.get_org_member_role(db, org_id, user["id"])
-        if role != "owner":
-            raise HTTPException(status_code=403, detail="Only organization admins can add members")
-        # Look up target user by email
+        _require_org_owner(db, org_id, user, "add members")
         target = TableRead.get_human_user_by_email(db, body.email)
         if target is None:
             raise HTTPException(status_code=404, detail=f"User '{body.email}' not found")
         TableWrite.add_org_member(db, org_id, target["id"], body.role)
-        # Contact is closed by default: a newly-added org member is NOT dropped
-        # into an agent's channel unless they're permitted to contact that agent
-        # (its operator, or someone the operator/owner granted). Otherwise a new
-        # hire would land in a channel with an agent they can't even message.
         for owned_agent_id in TableRead.get_agents_owned_by_org(db, org_id):
             if not (
                 TableRead.can_dm_agent(db, owned_agent_id, human_id=target["id"])
@@ -2505,17 +1988,11 @@ async def add_org_member(
             channel = TableWrite.ensure_agent_default_mm_channel(db, owned_agent_id)
             if channel.get("channel_type") != "private":
                 TableWrite.add_mm_channel_member_human(db, channel["channel_id"], target["id"])
-        # Build the SSE payload from the new member's perspective so
-        # ``my_role`` lands correctly. ``last_visited_at`` and the unread
-        # counters fall back to their model defaults — fine, since a
-        # just-added member can't have visited the org yet.
         org = TableRead.get_organization(db, org_id, viewer_human_id=target["id"])
         members = TableRead.get_org_members(db, org_id)
         db.commit()
 
     if org is not None:
-        from clawbits.fastapi.workos_auth import register_membership
-
         register_membership(
             request.app.state.workos,
             workos_user_id=target["workos_user_id"],
@@ -2529,26 +2006,14 @@ async def add_org_member(
             workos_org_id=org["workos_org_id"],
             role=body.role,
         )
-        # Drop the org into the new member's switcher in real time. Any
-        # tab they have open will splice it in with a "New" pill (since
-        # ``last_visited_at`` is null) without needing a manual reload.
-        fire_and_forget(
-            publish_org_added(
-                get_bus(),
-                target["id"],
-                OrgResponse(**org).model_dump(),
-            )
-        )
-    return OrgMembersListResponse(
-        members=[OrgMemberResponse(**m) for m in members],
-        total=len(members),
-    )
+        fire_and_forget(publish_org_added(get_bus(), target["id"], OrgResponse(**org).model_dump()))
+    return _members_response(members)
 
 
 @human_router.patch(
     "/api/human/orgs/{org_id}/members/{member_id}", response_model=OrgMembersListResponse
 )
-async def update_org_member_role(
+def update_org_member_role(
     org_id: str,
     member_id: int,
     body: UpdateOrgMemberRoleRequest,
@@ -2556,45 +2021,26 @@ async def update_org_member_role(
     user: dict = Depends(get_current_human_user),
 ):
     """Promote a member to owner, or demote an owner to member. Caller must be
-    an owner. Cannot demote the last owner — the same floor
-    :func:`remove_org_member` enforces, so an org can never end up with
-    nobody able to manage it."""
+    an owner, and the last owner can't be demoted. Setting the current role is a
+    no-op with no WorkOS write or audit event. The target's ``org.updated``
+    frame carries ``my_role`` from their own perspective."""
     with _get_db(request) as db:
-        caller_role = TableRead.get_org_member_role(db, org_id, user["id"])
-        if caller_role != "owner":
-            raise HTTPException(
-                status_code=403, detail="Only organization admins can change roles"
-            )
+        _require_org_owner(db, org_id, user, "change roles")
         old_role = TableRead.get_org_member_role(db, org_id, member_id)
         if old_role is None:
-            raise HTTPException(
-                status_code=404, detail="Member not found in this organization"
-            )
+            raise HTTPException(status_code=404, detail="Member not found in this organization")
         if old_role == body.role:
-            # No-op: return the current list rather than burning a WorkOS
-            # round-trip and an audit event on a double-click.
-            members = TableRead.get_org_members(db, org_id)
-            return OrgMembersListResponse(members=[OrgMemberResponse(**m) for m in members], total=len(members))
+            return _members_response(TableRead.get_org_members(db, org_id))
         if old_role == "owner":
-            members = TableRead.get_org_members(db, org_id)
-            owner_count = sum(1 for m in members if m["role"] == "owner")
-            if owner_count <= 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot demote the last admin of an organization",
-                )
+            _require_another_owner(db, org_id, "demote")
         target = TableRead.get_human_user_by_id(db, member_id)
         TableWrite.update_org_member_role(db, org_id, member_id, body.role)
         org = TableRead.get_organization(db, org_id)
-        # Rendered from the target's perspective so the ``my_role`` in the
-        # SSE payload is theirs, not the acting owner's.
         target_org = TableRead.get_organization(db, org_id, viewer_human_id=member_id)
         members = TableRead.get_org_members(db, org_id)
         db.commit()
 
     if org is not None and target is not None:
-        from clawbits.fastapi.workos_auth import update_membership_role
-
         update_membership_role(
             request.app.state.workos,
             workos_user_id=target["workos_user_id"],
@@ -2609,44 +2055,31 @@ async def update_org_member_role(
             old_role=old_role,
             new_role=body.role,
         )
-        # Flip the target's own admin surfaces live — including the acting
-        # owner's other tabs when they demoted themselves.
         if target_org is not None:
             fire_and_forget(
-                publish_org_updated(
-                    get_bus(),
-                    member_id,
-                    OrgResponse(**target_org).model_dump(),
-                )
+                publish_org_updated(get_bus(), member_id, OrgResponse(**target_org).model_dump())
             )
-    return OrgMembersListResponse(members=[OrgMemberResponse(**m) for m in members], total=len(members))
+    return _members_response(members)
 
 
 @human_router.delete("/api/human/orgs/{org_id}/members/{member_id}", response_model=OrgMembersListResponse)
-async def remove_org_member(
+def remove_org_member(
     org_id: str,
     member_id: int,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Remove a member from an organization. Caller must be an owner. Cannot remove the last owner."""
+    """Remove a member from an organization. Caller must be an owner. Cannot
+    remove the last owner. Also drops their membership of the org's channels,
+    which is what the per-channel gates check."""
     with _get_db(request) as db:
-        caller_role = TableRead.get_org_member_role(db, org_id, user["id"])
-        if caller_role != "owner":
-            raise HTTPException(status_code=403, detail="Only organization admins can remove members")
-        # Prevent removing the last owner
+        _require_org_owner(db, org_id, user, "remove members")
         target_role = TableRead.get_org_member_role(db, org_id, member_id)
         if target_role is None:
             raise HTTPException(status_code=404, detail="Member not found in this organization")
         if target_role == "owner":
-            # Count remaining owners
-            members = TableRead.get_org_members(db, org_id)
-            owner_count = sum(1 for m in members if m["role"] == "owner")
-            if owner_count <= 1:
-                raise HTTPException(status_code=400, detail="Cannot remove the last admin of an organization")
+            _require_another_owner(db, org_id, "remove")
         target = TableRead.get_human_user_by_id(db, member_id)
-        # Also drops their membership of this org's channels - that, not the
-        # OrgMember row, is what the per-channel gates actually check.
         revoked_channel_ids = TableWrite.remove_org_member(db, org_id, member_id)
         org = TableRead.get_organization(db, org_id)
         members = TableRead.get_org_members(db, org_id)
@@ -2654,15 +2087,10 @@ async def remove_org_member(
 
     bus = get_bus()
     for channel_id in revoked_channel_ids:
-        # On the channel topic: closes any stream they still have open, rather
-        # than leaving it live until its next periodic re-check.
         fire_and_forget(publish_member_removed(bus, channel_id, human_id=member_id))
-        # On their personal topic: drops the channel from their sidebar.
         fire_and_forget(publish_channel_removed(bus, member_id, channel_id))
 
     if org is not None and target is not None:
-        from clawbits.fastapi.workos_auth import unregister_membership
-
         unregister_membership(
             request.app.state.workos,
             workos_user_id=target["workos_user_id"],
@@ -2674,19 +2102,11 @@ async def remove_org_member(
             target_user=target,
             workos_org_id=org["workos_org_id"],
         )
-    return OrgMembersListResponse(
-        members=[OrgMemberResponse(**m) for m in members],
-        total=len(members),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Agent Action Registry (human-facing)
-# ---------------------------------------------------------------------------
+    return _members_response(members)
 
 
 @human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/actions", response_model=AgentActionsResponse)
-async def get_agent_actions(
+def get_agent_actions(
     org_id: str,
     agent_id: str,
     request: Request,
@@ -2696,19 +2116,17 @@ async def get_agent_actions(
 ):
     """Get all action documents for a specific agent. Caller must be an org member."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
+        _verify_agent_in_org(db, org_id, agent_id, user)
         items = TableRead.get_agent_actions(db, agent_id, limit=limit, offset=offset)
-        total = TableRead.count_agent_actions_for_agent(db, agent_id)
         return AgentActionsResponse(
             agent_id=agent_id,
             actions=[ActionListItem(**i) for i in items],
-            total=total,
+            total=TableRead.count_agent_actions_for_agent(db, agent_id),
         )
 
 
 @human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/actions/{action_id}", response_model=ActionResponse)
-async def get_agent_action(
+def get_agent_action(
     org_id: str,
     agent_id: str,
     action_id: str,
@@ -2717,8 +2135,7 @@ async def get_agent_action(
 ):
     """Get a specific action document for an agent. Caller must be an org member."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
+        _verify_agent_in_org(db, org_id, agent_id, user)
         row = TableRead.get_agent_action(db, agent_id, action_id)
         if row is None:
             raise HTTPException(status_code=404, detail="No action document found for this agent with this ID")
@@ -2726,7 +2143,7 @@ async def get_agent_action(
 
 
 @human_router.get("/api/human/actions", response_model=ActionListResponse)
-async def list_agent_actions(
+def list_agent_actions(
     request: Request,
     limit: int = 100,
     offset: int = 0,
@@ -2736,19 +2153,24 @@ async def list_agent_actions(
     with _get_db(request) as db:
         org_ids = TableRead.get_org_ids_for_human(db, user["id"])
         items = TableRead.list_agent_actions(db, org_ids, limit=limit, offset=offset)
-        total = TableRead.count_agent_actions(db, org_ids)
         return ActionListResponse(
             actions=[ActionListItem(**i) for i in items],
-            total=total,
+            total=TableRead.count_agent_actions(db, org_ids),
         )
 
 
-# ---------------------------------------------------------------------------
-# Agent Signup Request approval
-# ---------------------------------------------------------------------------
+def _signup_request_in_org(db, org_id: str, request_id: str, user: dict) -> dict:
+    _verify_org_membership(db, org_id, user)
+    signup_req = TableRead.get_signup_request(db, request_id)
+    if signup_req is None:
+        raise HTTPException(status_code=404, detail="Signup request not found")
+    if signup_req["org_id"] != org_id:
+        raise HTTPException(status_code=404, detail="Signup request not found in this organization")
+    return signup_req
+
 
 @human_router.get("/api/human/orgs/{org_id}/signup-requests")
-async def list_signup_requests(
+def list_signup_requests(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
@@ -2756,10 +2178,10 @@ async def list_signup_requests(
     """List pending agent signup requests for an organization. Any org member can view."""
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
-        requests_list = TableRead.get_pending_signup_requests_for_org(db, org_id)
-        return {"requests": requests_list}
+        return {"requests": TableRead.get_pending_signup_requests_for_org(db, org_id)}
 
 
+# async on purpose: approval fires the DM avatar hook, which needs the running event loop.
 @human_router.post("/api/human/orgs/{org_id}/signup-requests/{request_id}/approve")
 async def approve_signup_request(
     org_id: str,
@@ -2768,26 +2190,15 @@ async def approve_signup_request(
     user: dict = Depends(get_current_human_user),
 ):
     """Approve a pending agent signup request. Any member of the organization can approve."""
-    from clawbits.fastapi.agent_signup import AgentSignup
-
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-
-        # Verify the request belongs to this org
-        signup_req = TableRead.get_signup_request(db, request_id)
-        if signup_req is None:
-            raise HTTPException(status_code=404, detail="Signup request not found")
-        if signup_req["org_id"] != org_id:
-            raise HTTPException(status_code=404, detail="Signup request not found in this organization")
-
+        _signup_request_in_org(db, org_id, request_id, user)
         result = AgentSignup.approve_signup_request(request.app, request_id, user["id"], db=db)
         db.commit()
-
         return result
 
 
 @human_router.post("/api/human/orgs/{org_id}/signup-requests/{request_id}/reject")
-async def reject_signup_request(
+def reject_signup_request(
     org_id: str,
     request_id: str,
     request: Request,
@@ -2795,25 +2206,13 @@ async def reject_signup_request(
 ):
     """Reject a pending agent signup request. Any member of the organization can reject."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-
-        signup_req = TableRead.get_signup_request(db, request_id)
-        if signup_req is None:
-            raise HTTPException(status_code=404, detail="Signup request not found")
-        if signup_req["org_id"] != org_id:
-            raise HTTPException(status_code=404, detail="Signup request not found in this organization")
+        signup_req = _signup_request_in_org(db, org_id, request_id, user)
         if signup_req["status"] != "pending_approval":
             raise HTTPException(status_code=409, detail=f"Signup request already {signup_req['status']}")
-
         TableWrite.reject_signup_request(db, request_id, user["id"])
         db.commit()
-
         return TableRead.get_signup_request(db, request_id)
 
-
-# ---------------------------------------------------------------------------
-# Human-initiated agent signup
-# ---------------------------------------------------------------------------
 
 class HumanAgentSignupRequest(BaseModel):
     org_id: str = Field(description="Organization ID the human is a member of")
@@ -2854,16 +2253,6 @@ def human_agents_signup(
     )
 
 
-
-# ---------------------------------------------------------------------------
-# Skills library (org catalog)
-#
-# An org authors versioned skills here; installing them onto agents is a
-# separate plane that lands later. Catalog routes are gated on org MEMBERSHIP
-# (not agent operatorship): an org owner who operates no agents must still see
-# the shared library. See docs/protocol/SKILLS_LIBRARY_PLAN.md.
-# ---------------------------------------------------------------------------
-
 # The human lane has no CB_TOKENS backstop.
 _SKILL_WRITE_LIMIT = 30
 
@@ -2896,30 +2285,36 @@ class ForkSkillRequest(BaseModel):
     display_name: str | None = None
 
 
+class InstallSkillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    skill_id: str
+
+
+class UpdateInstallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
 def _skill_or_404(db, org_id: str, skill_id: str):
-    """Fetch a skill, re-deriving its org from the row itself."""
     row = TableRead.get_skill_for_org(db, skill_id, org_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Skill not found")
     return row
 
 
+def _checked_slug(slug: str) -> str:
+    try:
+        validate_slug(slug)
+    except SkillValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return slug
+
+
 def _prepare_skill_content(
     *, slug: str, manifest: dict, body_md: str, files: list[dict] | None
 ) -> tuple[dict, list[dict]]:
-    """Validate then normalize authored content, mapping errors to 400.
-
-    Validation runs before normalization so a missing field is named in the 400
-    rather than silently dropped.
-    """
-    from clawbits.skills.spec import (
-        SkillValidationError,
-        normalize_files,
-        normalize_manifest,
-        validate_bundle,
-        validate_manifest,
-    )
-
+    """Validate, then normalize, authored content as a 400 on failure. Validation
+    comes first so a missing field is named rather than silently dropped."""
     try:
         validate_manifest(manifest, slug=slug)
         normalized = normalize_manifest(manifest)
@@ -2930,45 +2325,45 @@ def _prepare_skill_content(
     return normalized, normalized_files
 
 
+def _managed_install(db, agent_id: str, install_id: str) -> AgentSkillInstall:
+    row = db.get(AgentSkillInstall, install_id)
+    if row is None or row.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Skill install not found")
+    if row.managed_by != "clawbits":
+        raise HTTPException(status_code=409, detail="Clawbits doesn't manage this skill")
+    return row
+
+
 @human_router.get("/api/human/orgs/{org_id}/skills")
-async def list_org_skills(
+def list_org_skills(
     org_id: str,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """The org's skill library."""
+    """The org's skill library. Membership-gated, not operator-gated: an owner
+    who operates no agents still sees it. See docs/protocol/SKILLS_LIBRARY_PLAN.md."""
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
-        skills = TableRead.list_org_skills(db, org_id)
-    return {"skills": skills}
+        return {"skills": TableRead.list_org_skills(db, org_id)}
 
 
 @human_router.post("/api/human/orgs/{org_id}/skills")
-async def create_org_skill(
+def create_org_skill(
     org_id: str,
     body: CreateSkillRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
     """Create a skill and publish its first version."""
-    from clawbits.skills.spec import SkillValidationError, validate_slug
-
     _rate_limit(f"skill-write:{org_id}", limit=_SKILL_WRITE_LIMIT)
-    slug = (body.slug or "").strip().lower()
-    try:
-        validate_slug(slug)
-    except SkillValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+    slug = _checked_slug(body.slug.strip().lower())
     manifest, files = _prepare_skill_content(
         slug=slug, manifest=body.manifest, body_md=body.body_md, files=body.files
     )
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
         if slug in TableRead.get_org_skill_slugs(db, org_id):
-            raise HTTPException(
-                status_code=409, detail=f"A skill named '{slug}' already exists"
-            )
+            raise HTTPException(status_code=409, detail=f"A skill named '{slug}' already exists")
         row = TableWrite.create_skill(
             db,
             org_id=org_id,
@@ -2985,7 +2380,7 @@ async def create_org_skill(
 
 
 @human_router.get("/api/human/orgs/{org_id}/skills/{skill_id}")
-async def get_org_skill(
+def get_org_skill(
     org_id: str,
     skill_id: str,
     request: Request,
@@ -2995,13 +2390,13 @@ async def get_org_skill(
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
         result = TableRead.get_skill_detail(db, skill_id, org_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail="Skill not found")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
     return result
 
 
 @human_router.patch("/api/human/orgs/{org_id}/skills/{skill_id}")
-async def update_org_skill(
+def update_org_skill(
     org_id: str,
     skill_id: str,
     body: UpdateSkillMetaRequest,
@@ -3011,11 +2406,10 @@ async def update_org_skill(
     """Edit catalog metadata. Content edits go through publish."""
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
-        skill = _skill_or_404(db, org_id, skill_id)
         TableWrite.update_skill_meta(
             db,
-            skill=skill,
-            display_name=(body.display_name.strip() if body.display_name else None),
+            skill=_skill_or_404(db, org_id, skill_id),
+            display_name=body.display_name.strip() if body.display_name else None,
         )
         result = TableRead.get_skill_detail(db, skill_id, org_id)
         db.commit()
@@ -3023,7 +2417,7 @@ async def update_org_skill(
 
 
 @human_router.post("/api/human/orgs/{org_id}/skills/{skill_id}/versions")
-async def publish_org_skill_version(
+def publish_org_skill_version(
     org_id: str,
     skill_id: str,
     body: PublishSkillRequest,
@@ -3036,10 +2430,7 @@ async def publish_org_skill_version(
         _verify_org_membership(db, org_id, user)
         skill = _skill_or_404(db, org_id, skill_id)
         manifest, files = _prepare_skill_content(
-            slug=skill.slug,
-            manifest=body.manifest,
-            body_md=body.body_md,
-            files=body.files,
+            slug=skill.slug, manifest=body.manifest, body_md=body.body_md, files=body.files
         )
         version = TableWrite.publish_skill_version(
             db,
@@ -3047,7 +2438,7 @@ async def publish_org_skill_version(
             manifest=manifest,
             body_md=body.body_md,
             files=files,
-            changelog=(body.changelog.strip() if body.changelog else None),
+            changelog=body.changelog.strip() if body.changelog else None,
             published_by=user["id"],
         )
         result = TableRead._skill_version_to_dict(version, include_content=True)
@@ -3056,7 +2447,7 @@ async def publish_org_skill_version(
 
 
 @human_router.get("/api/human/orgs/{org_id}/skills/{skill_id}/versions")
-async def list_org_skill_versions(
+def list_org_skill_versions(
     org_id: str,
     skill_id: str,
     request: Request,
@@ -3066,14 +2457,13 @@ async def list_org_skill_versions(
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
         _skill_or_404(db, org_id, skill_id)
-        versions = TableRead.list_skill_versions(db, skill_id)
-    return {"versions": versions}
+        return {"versions": TableRead.list_skill_versions(db, skill_id)}
 
 
 @human_router.get(
     "/api/human/orgs/{org_id}/skills/{skill_id}/versions/{version_id}/render"
 )
-async def render_org_skill_version(
+def render_org_skill_version(
     org_id: str,
     skill_id: str,
     version_id: str,
@@ -3082,8 +2472,6 @@ async def render_org_skill_version(
     user: dict = Depends(get_current_human_user),
 ):
     """The exact ``SKILL.md`` bytes that would land on disk for ``runtime``."""
-    from clawbits.skills.render import SKILL_RUNTIMES, render_skill
-
     if runtime not in SKILL_RUNTIMES:
         raise HTTPException(status_code=400, detail=f"Unknown runtime: {runtime}")
     with _get_db(request) as db:
@@ -3092,28 +2480,24 @@ async def render_org_skill_version(
         version = TableRead.get_skill_version(db, version_id, skill_id)
         if version is None:
             raise HTTPException(status_code=404, detail="Version not found")
-        content = render_skill(version.manifest, version.body_md, runtime=runtime)
-        path = f"{skill.slug}/SKILL.md"
-        content_hash = version.content_hash
-    return {
-        "runtime": runtime,
-        "path": path,
-        "content": content,
-        "content_hash": content_hash,
-    }
+        return {
+            "runtime": runtime,
+            "path": f"{skill.slug}/SKILL.md",
+            "content": render_skill(version.manifest, version.body_md, runtime=runtime),
+            "content_hash": version.content_hash,
+        }
 
 
 @human_router.post("/api/human/orgs/{org_id}/skills/{skill_id}/fork")
-async def fork_org_skill(
+def fork_org_skill(
     org_id: str,
     skill_id: str,
     body: ForkSkillRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Fork a skill into this org, recording lineage. ``org_id`` is the forking org."""
-    from clawbits.skills.spec import SkillValidationError, validate_slug
-
+    """Fork a skill into this org, recording lineage. ``org_id`` is the forking
+    org. Without a slug, a free ``<slug>-fork[-N]`` is derived."""
     _rate_limit(f"skill-write:{org_id}", limit=_SKILL_WRITE_LIMIT)
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
@@ -3122,29 +2506,20 @@ async def fork_org_skill(
             raise HTTPException(
                 status_code=409, detail="Cannot fork a skill with no published version"
             )
-        source_version = TableRead.get_skill_version(
-            db, source.latest_version_id, source.skill_id
-        )
+        source_version = TableRead.get_skill_version(db, source.latest_version_id, source.skill_id)
         if source_version is None:
             raise HTTPException(status_code=404, detail="Source version not found")
 
         taken = TableRead.get_org_skill_slugs(db, org_id)
         slug = (body.slug or "").strip().lower()
         if not slug:
-            # Same-org forks always collide, so derive a free slug.
             slug = f"{source.slug}-fork"
             suffix = 2
             while slug in taken:
                 slug = f"{source.slug}-fork-{suffix}"
                 suffix += 1
-        try:
-            validate_slug(slug)
-        except SkillValidationError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if slug in taken:
-            raise HTTPException(
-                status_code=409, detail=f"A skill named '{slug}' already exists"
-            )
+        if _checked_slug(slug) in taken:
+            raise HTTPException(status_code=409, detail=f"A skill named '{slug}' already exists")
 
         fork = TableWrite.fork_skill(
             db,
@@ -3161,7 +2536,7 @@ async def fork_org_skill(
 
 
 @human_router.delete("/api/human/orgs/{org_id}/skills/{skill_id}")
-async def delete_org_skill(
+def delete_org_skill(
     org_id: str,
     skill_id: str,
     request: Request,
@@ -3170,14 +2545,13 @@ async def delete_org_skill(
     """Soft-delete a skill from the library."""
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
-        skill = _skill_or_404(db, org_id, skill_id)
-        TableWrite.delete_skill(db, skill=skill)
+        TableWrite.delete_skill(db, skill=_skill_or_404(db, org_id, skill_id))
         db.commit()
     return {"skill_id": skill_id, "deleted": True}
 
 
 @human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/skills")
-async def list_agent_skills(
+def list_agent_skills(
     org_id: str,
     agent_id: str,
     request: Request,
@@ -3185,81 +2559,37 @@ async def list_agent_skills(
 ):
     """Skills actually present on the agent, as it last reported them."""
     with _get_db(request) as db:
-        _verify_org_membership(db, org_id, user)
-        _verify_agent_in_org(db, org_id, agent_id)
-        if not TableRead.can_manage_agent_contacts(db, agent_id, user["id"]):
-            raise HTTPException(
-                status_code=403, detail="Only the agent's operator or an org admin can view its skills"
-            )
+        _require_operator_or_admin(db, org_id, agent_id, user, "view its skills")
         return TableRead.list_agent_skills(db, agent_id)
 
 
-class InstallSkillRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    skill_id: str
-
-
-class UpdateInstallRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool
-
-
-def _authorize_agent_skills(db, org_id: str, agent_id: str, user: dict) -> None:
-    _verify_org_membership(db, org_id, user)
-    _verify_agent_in_org(db, org_id, agent_id)
-    if not TableRead.can_manage_agent_contacts(db, agent_id, user["id"]):
-        raise HTTPException(
-            status_code=403,
-            detail="Only the agent's operator or an org admin can manage its skills",
-        )
-
-
-def _install_or_404(db, agent_id: str, install_id: str):
-    from clawbits.db.models import AgentSkillInstall
-
-    row = db.get(AgentSkillInstall, install_id)
-    if row is None or row.agent_id != agent_id:
-        raise HTTPException(status_code=404, detail="Skill install not found")
-    return row
-
-
 @human_router.post("/api/human/orgs/{org_id}/agents/{agent_id}/skills")
-async def install_agent_skill(
+def install_agent_skill(
     org_id: str,
     agent_id: str,
     body: InstallSkillRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Install an org skill onto an agent."""
-    from clawbits.db.models import Agent as _AgentRow
-    from clawbits.skills.render import resolve_runtime
-
+    """Install an org skill onto an agent. Cross-org attach is refused (fork
+    first): that closes both reading another org's private skill by id and an
+    upstream edit reaching an agent that never opted in."""
     with _get_db(request) as db:
-        _authorize_agent_skills(db, org_id, agent_id, user)
-
-        agent = db.get(_AgentRow, agent_id)
-        runtime = resolve_runtime(agent.agent_type if agent else None)
+        _require_operator_or_admin(db, org_id, agent_id, user, "manage its skills")
+        runtime = resolve_runtime(db.get(Agent, agent_id).agent_type)
         if not runtime.can_receive:
             raise HTTPException(
                 status_code=422,
                 detail=f"Skills require an OpenClaw runtime; this agent runs {runtime.name}",
             )
-
-        # Cross-org attach is forbidden — fork first. One rule closes both the
-        # by-id read of another org's private skill and the supply chain where
-        # an upstream edit reaches an agent that never opted in.
         skill = _skill_or_404(db, org_id, body.skill_id)
         if skill.latest_version_id is None:
-            raise HTTPException(
-                status_code=409, detail="This skill has no published version yet"
-            )
+            raise HTTPException(status_code=409, detail="This skill has no published version yet")
         if runtime.name not in (skill.runtimes or ["openclaw"]):
             raise HTTPException(
                 status_code=422,
                 detail=f"'{skill.slug}' does not declare support for {runtime.name}",
             )
-
         TableWrite.install_skill(
             db, agent_id=agent_id, org_id=org_id, skill=skill, installed_by=user["id"]
         )
@@ -3269,7 +2599,7 @@ async def install_agent_skill(
 
 
 @human_router.patch("/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}")
-async def update_agent_skill_install(
+def update_agent_skill_install(
     org_id: str,
     agent_id: str,
     install_id: str,
@@ -3279,12 +2609,8 @@ async def update_agent_skill_install(
 ):
     """Enable or disable an installed skill."""
     with _get_db(request) as db:
-        _authorize_agent_skills(db, org_id, agent_id, user)
-        row = _install_or_404(db, agent_id, install_id)
-        if row.managed_by != "clawbits":
-            raise HTTPException(
-                status_code=409, detail="Clawbits doesn't manage this skill"
-            )
+        _require_operator_or_admin(db, org_id, agent_id, user, "manage its skills")
+        row = _managed_install(db, agent_id, install_id)
         TableWrite.set_skill_install_enabled(db, row=row, enabled=body.enabled)
         result = TableRead.list_agent_skills(db, agent_id)
         db.commit()
@@ -3292,7 +2618,7 @@ async def update_agent_skill_install(
 
 
 @human_router.delete("/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}")
-async def uninstall_agent_skill(
+def uninstall_agent_skill(
     org_id: str,
     agent_id: str,
     install_id: str,
@@ -3304,12 +2630,8 @@ async def uninstall_agent_skill(
     confirms the directory is gone; ``force`` drops it without waiting, for an
     agent that will never report again."""
     with _get_db(request) as db:
-        _authorize_agent_skills(db, org_id, agent_id, user)
-        row = _install_or_404(db, agent_id, install_id)
-        if row.managed_by != "clawbits":
-            raise HTTPException(
-                status_code=409, detail="Clawbits doesn't manage this skill"
-            )
+        _require_operator_or_admin(db, org_id, agent_id, user, "manage its skills")
+        row = _managed_install(db, agent_id, install_id)
         if force:
             TableWrite.forget_skill_install(db, row=row)
         else:

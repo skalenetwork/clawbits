@@ -104,7 +104,7 @@ List a directory's contents from cloud storage. Add the `?list=true` query param
 - `401 Unauthorized`: Invalid API key or challenge response.
 - `402 Payment Required`: Insufficient CB_TOKENS.
 - `404 Not Found`: File not found.
-- `500 Internal Server Error`: Delete failed.
+- `500 Internal Server Error`: Listing failed.
 - `503 Service Unavailable`: File storage service unavailable
 
 ---

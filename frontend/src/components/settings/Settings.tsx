@@ -16,11 +16,25 @@ const STATUS_DOT = {
   idle: "border border-muted-foreground",
 } as const;
 
-const REEF_HEALTH = {
-  live: { tone: "ok", label: "Live", halo: "ring-emerald-500/20" },
-  stale: { tone: "warn", label: "Stale", halo: "ring-amber-500/20" },
-  failing: { tone: "bad", label: "Failing", halo: "ring-destructive/20" },
-} as const satisfies Record<ReefHost["health"], { tone: keyof typeof STATUS_DOT; label: string; halo: string }>;
+export type StatusTone = keyof typeof STATUS_DOT;
+
+interface StatusLook {
+  tone: StatusTone;
+  label: string;
+}
+
+const REEF_STATE: Record<string, StatusLook> = {
+  running: { tone: "ok", label: "Running" },
+  pending: { tone: "idle", label: "Starting" },
+  stopped: { tone: "idle", label: "Stopped" },
+  failed: { tone: "bad", label: "Failed" },
+};
+
+const REEF_HEALTH: Record<ReefHost["health"], StatusLook> = {
+  live: { tone: "ok", label: "Live" },
+  stale: { tone: "warn", label: "Stale" },
+  failing: { tone: "bad", label: "Failing" },
+};
 
 export function SettingsPage({ children }: { children: ReactNode }) {
   return (
@@ -51,9 +65,7 @@ export function SettingsSection({
       )}
       <div className="rounded-[14px] bg-card">{children}</div>
       {footer != null && (
-        <div className="px-3 pt-2 text-[12.5px] text-muted-foreground">
-          {footer}
-        </div>
+        <div className="px-3 pt-2 text-[12.5px] text-muted-foreground">{footer}</div>
       )}
     </section>
   );
@@ -76,16 +88,12 @@ export function SettingsRow({
   control?: ReactNode;
   htmlFor?: string;
   onClick?: () => void;
-  /** The title links here and its hit area covers the row; the control stays
-   *  above it, so a menu in it is never nested in the link. */
   to?: string;
 }) {
   const body = (
     <>
       {leading != null && (
-        <span className="flex min-h-8 min-w-8 shrink-0 items-center justify-center">
-          {leading}
-        </span>
+        <span className="flex min-h-8 min-w-8 shrink-0 items-center justify-center">{leading}</span>
       )}
       <span className="flex min-w-0 flex-1 items-center gap-x-4 gap-y-2 max-sm:flex-wrap">
         <span className="min-w-0 flex-1 max-sm:basis-[calc(100%-3rem)]">
@@ -101,9 +109,7 @@ export function SettingsRow({
             <span className={TITLE}>{title}</span>
           )}
           {description != null && (
-            <span className="block text-[13px] text-muted-foreground">
-              {description}
-            </span>
+            <span className="block text-[13px] text-muted-foreground">{description}</span>
           )}
           {error != null && (
             <span className="mt-1 block font-mono text-[12.5px] text-destructive wrap-anywhere">
@@ -153,29 +159,40 @@ export function SettingsRowSkeleton({
   );
 }
 
-export function SettingsStatus({
+export function StatusDot({
   tone,
-  children,
+  label,
+  className,
 }: {
-  tone: keyof typeof STATUS_DOT;
-  children: ReactNode;
+  tone: StatusTone;
+  label?: string;
+  className?: string;
 }) {
   return (
+    <span
+      role={label == null ? "presentation" : "img"}
+      aria-label={label}
+      title={label}
+      className={cn("size-2.5 shrink-0 rounded-full", STATUS_DOT[tone], className)}
+    />
+  );
+}
+
+export function SettingsStatus({ tone, children }: { tone: StatusTone; children: ReactNode }) {
+  return (
     <span className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
-      <span className={cn("size-[7px] shrink-0 rounded-full", STATUS_DOT[tone])} />
+      <StatusDot tone={tone} className="size-[7px]" />
       {children}
     </span>
   );
 }
 
+export function ReefState({ state }: { state: string }) {
+  const look = REEF_STATE[state];
+  return <SettingsStatus tone={look?.tone ?? "idle"}>{look?.label ?? state}</SettingsStatus>;
+}
+
 export function ReefHealth({ health }: { health: ReefHost["health"] }) {
-  const { tone, label, halo } = REEF_HEALTH[health];
-  return (
-    <span
-      role="img"
-      aria-label={label}
-      title={label}
-      className={cn("size-2.5 shrink-0 rounded-full ring-4", STATUS_DOT[tone], halo)}
-    />
-  );
+  const { tone, label } = REEF_HEALTH[health];
+  return <StatusDot tone={tone} label={label} />;
 }

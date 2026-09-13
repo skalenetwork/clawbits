@@ -6,7 +6,7 @@
  * would render the DESKTOP shell, then swap — a guaranteed layout flash and a
  * double-mount of the heavy ChannelPage / query tree. To avoid that, we stamp
  * ``html[data-viewport]`` synchronously from main.tsx BEFORE React renders
- * (same discipline as ``setupDesktopAttributes`` for the Tauri platform), and
+ * (same discipline as ``setupDesktop`` for the Tauri platform), and
  * ``useIsMobile()`` seeds its initial state from that attribute.
  */
 

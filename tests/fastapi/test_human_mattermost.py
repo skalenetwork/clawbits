@@ -1,11 +1,14 @@
 """Tests for Human user Mattermost-style messaging endpoints."""
+from collections.abc import Callable
+
 from starlette.testclient import TestClient
 
 from clawbits.datastructures.known_answers import get_answer_for_question
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
+
+def _bearer(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
 
 def _register_human(tc: TestClient, email: str, display_name: str | None = None) -> dict:
     """Magic-auth log in (auto-creates the user). Returns ``{access_token, user}``."""
@@ -14,39 +17,29 @@ def _register_human(tc: TestClient, email: str, display_name: str | None = None)
 
 
 def _get_personal_org_id(tc: TestClient, token: str) -> str:
-    """Get the personal org_id for the authenticated human."""
-    r = tc.get("/api/human/orgs", headers=_human_auth(token))
+    r = tc.get("/api/human/orgs", headers=_bearer(token))
     assert r.status_code == 200, r.text
-    orgs = r.json()["organizations"]
-    for org in orgs:
+    for org in r.json()["organizations"]:
         if org.get("is_personal"):
             return org["org_id"]
     raise AssertionError("No personal org found")
 
 
 def _add_human_to_org(tc: TestClient, owner_token: str, email: str) -> None:
-    """Put an already-registered human into the owner's personal org.
-
-    Channel membership is org-scoped — ``add_member`` refuses a target who
-    isn't in the channel's org — and every login gets its *own* personal org,
-    so a second human has to join the channel owner's org first."""
+    """Channel membership is org-scoped and every login gets its own personal org, so a
+    second human joins the channel owner's org first."""
     from tests.fastapi._auth_helpers import add_human_to_org
     add_human_to_org(tc, owner_token, _get_personal_org_id(tc, owner_token), email)
 
 
 def _create_channel(tc: TestClient, token: str, name: str, channel_type: str = "public") -> dict:
-    """Create a channel in the user's personal org."""
-    org_id = _get_personal_org_id(tc, token)
-    r = tc.post("/api/human/mm/channels",
-        json={"org_id": org_id, "name": name, "channel_type": channel_type},
-        headers=_human_auth(token),
+    r = tc.post(
+        "/api/human/mm/channels",
+        json={"org_id": _get_personal_org_id(tc, token), "name": name, "channel_type": channel_type},
+        headers=_bearer(token),
     )
     assert r.status_code == 200, r.text
     return r.json()
-
-
-def _human_auth(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
 
 
 def _create_agent(tc: TestClient, owner_email: str = "stan@clawbits.ai") -> dict:
@@ -57,43 +50,107 @@ def _create_agent(tc: TestClient, owner_email: str = "stan@clawbits.ai") -> dict
     r = signup_agent_via_email(tc, owner_email)
     assert r.status_code == 200, r.text
     challenge = r.json()
-    answer = get_answer_for_question(challenge["challenge"])
     r = tc.post("/api/agentic/signup-commit", json={
         "session_token": challenge["session_token"],
-        "challenge_response": answer,
+        "challenge_response": get_answer_for_question(challenge["challenge"]),
     })
     assert r.status_code == 200, r.text
     data = r.json()
     _approve_signup(tc, data, owner_email=owner_email)
 
-    mint_challenge = tc.get(
-        "/api/agentic/auth/challenge",
-        headers={"Authorization": f"Bearer {data['api_key']}"},
-    )
-    assert mint_challenge.status_code == 200, mint_challenge.text
-    mint_payload = mint_challenge.json()
-    mint_answer = get_answer_for_question(mint_payload["challenge"])
-
-    mint_resp = tc.post(
+    r = tc.get("/api/agentic/auth/challenge", headers=_bearer(data["api_key"]))
+    assert r.status_code == 200, r.text
+    mint = r.json()
+    r = tc.post(
         "/api/agentic/auth/challenge_response",
-        headers={
-            "Authorization": f"Bearer {data['api_key']}",
-        },
+        headers=_bearer(data["api_key"]),
         json={
-            "session_token": mint_payload["session_token"],
-            "challenge_response": mint_answer,
+            "session_token": mint["session_token"],
+            "challenge_response": get_answer_for_question(mint["challenge"]),
         },
     )
-    assert mint_resp.status_code == 200, mint_resp.text
-
+    assert r.status_code == 200, r.text
     return data
 
 
-def _read_pointer(tc: TestClient, channel_id: str, human_id: int) -> int | None:
-    """Read ``human_channel_state.last_read_post_id`` straight from the DB.
+def _add_member(
+    tc: TestClient, token: str, channel_id: str, member_id: str | int, member_type: str = "human"
+) -> dict:
+    r = tc.post(
+        f"/api/human/mm/channels/{channel_id}/members",
+        json={"member_id": str(member_id), "member_type": member_type},
+        headers=_bearer(token),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
 
-    The pointer isn't on the channels-list payload (it's exposed per member
-    on the members endpoint), so read-state assertions go to the source."""
+
+def _remove_human(tc: TestClient, token: str, channel_id: str, human_id: int) -> dict:
+    r = tc.delete(
+        f"/api/human/mm/channels/{channel_id}/members/{human_id}?member_type=human",
+        headers=_bearer(token),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _open_dm(
+    tc: TestClient, token: str, org_id: str, target_id: str | int, target_type: str
+) -> dict:
+    r = tc.post(
+        "/api/human/mm/direct",
+        json={"org_id": org_id, "target_id": str(target_id), "target_type": target_type},
+        headers=_bearer(token),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _post(tc: TestClient, token: str, channel_id: str, message: str, **fields) -> dict:
+    r = tc.post(
+        f"/api/human/mm/channels/{channel_id}/posts",
+        json={"message": message, **fields},
+        headers=_bearer(token),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _agent_post(tc: TestClient, api_key: str, channel_id: str, message: str, **fields) -> dict:
+    r = tc.post(
+        f"/api/agentic/mm/channels/{channel_id}/posts",
+        json={"message": message, **fields},
+        headers=_bearer(api_key),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _posts(tc: TestClient, token: str, channel_id: str) -> list[dict]:
+    r = tc.get(f"/api/human/mm/channels/{channel_id}/posts", headers=_bearer(token))
+    assert r.status_code == 200, r.text
+    return r.json()["posts"]
+
+
+def _delete_post(tc: TestClient, token: str, post_id: int) -> None:
+    r = tc.delete(f"/api/human/mm/posts/{post_id}", headers=_bearer(token))
+    assert r.status_code == 204, r.text
+
+
+def _react(tc: TestClient, token: str, post_id: int, emoji: str = "👍") -> dict:
+    r = tc.post(f"/api/human/mm/posts/{post_id}/reactions", json={"emoji": emoji}, headers=_bearer(token))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _channel_row(tc: TestClient, token: str, channel_id: str) -> dict:
+    r = tc.get("/api/human/mm/channels", headers=_bearer(token))
+    assert r.status_code == 200, r.text
+    return next(c for c in r.json()["channels"] if c["channel_id"] == channel_id)
+
+
+def _read_pointer(tc: TestClient, channel_id: str, human_id: int) -> int | None:
+    """``human_channel_state.last_read_post_id``, which no channel-list payload carries."""
     from sqlmodel import Session, select
 
     from clawbits.db.models import HumanChannelState
@@ -107,156 +164,79 @@ def _read_pointer(tc: TestClient, channel_id: str, human_id: int) -> int | None:
     return row.last_read_post_id if row else None
 
 
-def _agent_auth(api_key: str) -> dict:
-    return {"Authorization": f"Bearer {api_key}"}
+def _count_statements[T](tc: TestClient, read: Callable[..., T]) -> tuple[int, T]:
+    from sqlalchemy import event
+    from sqlmodel import Session
 
+    seen: list[str] = []
+    with Session(tc.app._engine) as db:
+        event.listen(db.connection(), "before_cursor_execute", lambda *a: seen.append(a[2]))
+        result = read(db)
+    return len(seen), result
 
-def _agent_write_headers(tc: TestClient, api_key: str) -> dict:
-    r = tc.get("/api/agentic/auth/challenge", headers=_agent_auth(api_key))
-    assert r.status_code == 200, r.text
-    ch = r.json()
-    answer = get_answer_for_question(ch["challenge"])
-    return _agent_auth(api_key)
-
-
-
-# ---------------------------------------------------------------------------
-# Tests: Human Channel CRUD
-# ---------------------------------------------------------------------------
 
 def test_human_create_and_list_channel(test_client):
     """Human can create a channel and see it in listing."""
     reg = _register_human(test_client, "bob@test.com", display_name="Bob")
-    headers = _human_auth(reg["access_token"])
-
-    # Create channel
     ch = _create_channel(test_client, reg["access_token"], "general", "public")
     assert ch["name"] == "general"
     assert ch["channel_type"] == "public"
-    channel_id = ch["channel_id"]
 
-    # List channels
-    r = test_client.get("/api/human/mm/channels", headers=headers)
+    r = test_client.get("/api/human/mm/channels", headers=_bearer(reg["access_token"]))
     assert r.status_code == 200
     data = r.json()
     assert data["total"] >= 1
-    assert any(c["channel_id"] == channel_id for c in data["channels"])
+    assert any(c["channel_id"] == ch["channel_id"] for c in data["channels"])
 
 
 def test_human_get_channel_info(test_client):
     """Members can get channel info; non-members cannot."""
     h1 = _register_human(test_client, "h1@test.com")
     h2 = _register_human(test_client, "h2@test.com")
-
     ch_id = _create_channel(test_client, h1["access_token"], "secret", "private")["channel_id"]
 
-    # h1 is a member → ok
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_human_auth(h1["access_token"]))
+    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h1["access_token"]))
     assert r.status_code == 200
-
-    # h2 is NOT a member → 403
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_human_auth(h2["access_token"]))
+    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h2["access_token"]))
     assert r.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# Tests: Human adds agent and human members
-# ---------------------------------------------------------------------------
-
 def test_human_adds_agent_member(test_client):
-    """Human can add an agent as a member of a channel."""
+    """Human can add an agent they operate as a member of a channel."""
     h1 = _register_human(test_client, "owner@test.com", display_name="Owner")
-    # h1 operates the agent, so it may add it (contact is closed by default).
     agent = _create_agent(test_client, owner_email="owner@test.com")
-
-    # Create channel
     ch_id = _create_channel(test_client, h1["access_token"], "mixed", "public")["channel_id"]
 
-    # Add agent
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": agent["agent_id"], "member_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200
-    members = r.json()
+    members = _add_member(test_client, h1["access_token"], ch_id, agent["agent_id"], "agent")
     assert members["total"] == 2
-    agent_ids = [m["agent_id"] for m in members["members"] if m.get("agent_id")]
-    human_ids = [m["human_id"] for m in members["members"] if m.get("human_id")]
-    assert agent["agent_id"] in agent_ids
-    assert h1["user"]["id"] in human_ids
+    assert agent["agent_id"] in [m["agent_id"] for m in members["members"] if m.get("agent_id")]
+    assert h1["user"]["id"] in [m["human_id"] for m in members["members"] if m.get("human_id")]
 
 
 def test_trace_id_round_trips_human_to_agent_and_back(test_client):
-    """End-to-end trace backbone.
-
-    A human send's ``trace_id`` is persisted, surfaced to the agent on the
-    agentic GET (the server→plugin hop the poller reads), and re-stamped by the
-    agent onto its reply so the same id comes back on the human read. This is
-    the correlation key the cross-subsystem latency tracer stitches every span
-    on — without it the plugin ``agent_turn`` / ``pickup_lag`` spans can't be
-    tied back to the originating message. Also asserts the field is optional
-    (untraced sends stay ``None``) so non-tracing clients are unaffected.
-    """
+    """A human send's ``trace_id`` is persisted, surfaced to the agent on the agentic GET,
+    re-stamped by the agent onto its reply, and comes back on the human read. Untraced
+    sends stay ``None``."""
     h1 = _register_human(test_client, "tracer@test.com", display_name="Tracer")
-    # h1 operates the agent so it can add it and the agent can reply.
+    token = h1["access_token"]
     agent = _create_agent(test_client, owner_email="tracer@test.com")
-    ch_id = _create_channel(test_client, h1["access_token"], "trace-room", "public")["channel_id"]
-
-    # Agent joins so it can read the channel and reply.
-    r = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": agent["agent_id"], "member_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-
+    ch_id = _create_channel(test_client, token, "trace-room", "public")["channel_id"]
+    _add_member(test_client, token, ch_id, agent["agent_id"], "agent")
     trace_id = "tr_test_roundtrip_0001"
 
-    # 1) Human send carries the trace id; the create response echoes it.
-    r = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "hello there", "trace_id": trace_id},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["trace_id"] == trace_id
+    assert _post(test_client, token, ch_id, "hello there", trace_id=trace_id)["trace_id"] == trace_id
 
-    # 2) Server→agent hop: the agentic GET surfaces the *persisted* trace id,
-    #    so the plugin poller can read it off the inbound post.
-    r = test_client.get(
-        f"/api/agentic/mm/channels/{ch_id}/posts",
-        headers=_agent_auth(agent["api_key"]),
-    )
+    r = test_client.get(f"/api/agentic/mm/channels/{ch_id}/posts", headers=_bearer(agent["api_key"]))
     assert r.status_code == 200, r.text
     inbound = r.json()["posts"]
     assert any(p.get("trace_id") == trace_id for p in inbound), inbound
 
-    # 3) Agent re-stamps the same id onto its reply.
-    r = test_client.post(
-        f"/api/agentic/mm/channels/{ch_id}/posts",
-        json={"message": "hi back", "trace_id": trace_id},
-        headers=_agent_write_headers(test_client, agent["api_key"]),
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["trace_id"] == trace_id
-
-    # 4) Close the loop: the human read sees the reply under the same id.
-    r = test_client.get(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    reply = next(p for p in r.json()["posts"] if p["message"] == "hi back")
+    reply = _agent_post(test_client, agent["api_key"], ch_id, "hi back", trace_id=trace_id)
+    assert reply["trace_id"] == trace_id
+    reply = next(p for p in _posts(test_client, token, ch_id) if p["message"] == "hi back")
     assert reply["trace_id"] == trace_id
 
-    # 5) Untraced sends stay null — the field is optional end to end.
-    r = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "no trace here"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["trace_id"] is None
+    assert _post(test_client, token, ch_id, "no trace here")["trace_id"] is None
 
 
 def test_human_adds_human_member(test_client):
@@ -264,19 +244,10 @@ def test_human_adds_human_member(test_client):
     h1 = _register_human(test_client, "admin@test.com")
     h2 = _register_human(test_client, "user@test.com")
     _add_human_to_org(test_client, h1["access_token"], "user@test.com")
-
     ch_id = _create_channel(test_client, h1["access_token"], "team-chat", "public")["channel_id"]
 
-    # Add h2
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200
-    assert r.json()["total"] == 2
-
-    # h2 can now see the channel
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_human_auth(h2["access_token"]))
+    assert _add_member(test_client, h1["access_token"], ch_id, h2["user"]["id"])["total"] == 2
+    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h2["access_token"]))
     assert r.status_code == 200
 
 
@@ -285,123 +256,62 @@ def test_human_remove_member(test_client):
     h1 = _register_human(test_client, "rem1@test.com")
     h2 = _register_human(test_client, "rem2@test.com")
     _add_human_to_org(test_client, h1["access_token"], "rem2@test.com")
-
     ch_id = _create_channel(test_client, h1["access_token"], "temp", "public")["channel_id"]
+    _add_member(test_client, h1["access_token"], ch_id, h2["user"]["id"])
 
-    # Add h2
-    test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
-
-    # Remove h2
-    r = test_client.delete(
-        f"/api/human/mm/channels/{ch_id}/members/{h2['user']['id']}?member_type=human",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200
-    assert r.json()["total"] == 1
-
-    # h2 can no longer see the channel
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_human_auth(h2["access_token"]))
+    assert _remove_human(test_client, h1["access_token"], ch_id, h2["user"]["id"])["total"] == 1
+    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h2["access_token"]))
     assert r.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# Tests: "mentioned" indicator (unread_mention_count)
-# ---------------------------------------------------------------------------
-
 def test_unread_mention_count_tracks_handle_and_here(test_client):
-    """The channel-list endpoint reports ``unread_mention_count`` for unread
-    posts that address the viewer — directly (``@<handle>``) or channel-wide
-    (``@here``). It is a subset of ``unread_count`` (which drives the sidebar
-    "mentioned" badge), excludes the viewer's own posts, respects a token
-    boundary (``@herring`` is not ``@here``), and clears on read."""
+    """``unread_mention_count`` counts unread posts addressing the viewer by handle or
+    ``@here``: a subset of ``unread_count``, never the viewer's own posts, bounded at the
+    token (``@herring`` is not ``@here``), and cleared on read."""
     h1 = _register_human(test_client, "stanmention@test.com", display_name="Stan Lee")
     h2 = _register_human(test_client, "peermention@test.com")
     _add_human_to_org(test_client, h1["access_token"], "peermention@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "mentions", "public")["channel_id"]
-
-    # Add h2 so they can post into the channel.
-    r = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-
-    # h2 posts: two that address h1 (canonical handle + channel-wide @here),
-    # one untagged, and a boundary case that must NOT count as @here.
+    _add_member(test_client, h1["access_token"], ch_id, h2["user"]["id"])
     for msg in (
-        "hey @Stan-Lee can you review",   # handle -> mentions h1
-        "@here standup in 5",             # channel-wide -> mentions h1
+        "hey @Stan-Lee can you review",
+        "@here standup in 5",
         "just a normal update, nothing tagged",
-        "ping @herring (not me)",         # boundary: @here must not match
+        "ping @herring (not me)",
     ):
-        r = test_client.post(
-            f"/api/human/mm/channels/{ch_id}/posts",
-            json={"message": msg},
-            headers=_human_auth(h2["access_token"]),
-        )
-        assert r.status_code == 200, r.text
+        _post(test_client, h2["access_token"], ch_id, msg)
 
-    def _channel_for(token: str) -> dict:
-        resp = test_client.get("/api/human/mm/channels", headers=_human_auth(token))
-        assert resp.status_code == 200, resp.text
-        return next(c for c in resp.json()["channels"] if c["channel_id"] == ch_id)
-
-    # h1: all four of h2's posts are unread; two of them are mentions.
-    ch = _channel_for(h1["access_token"])
+    ch = _channel_row(test_client, h1["access_token"], ch_id)
     assert ch["unread_count"] == 4
     assert ch["unread_mention_count"] == 2
-
-    # h2 is never mentioned by their own posts.
-    ch2 = _channel_for(h2["access_token"])
+    ch2 = _channel_row(test_client, h2["access_token"], ch_id)
     assert ch2["unread_count"] == 0
     assert ch2["unread_mention_count"] == 0
 
-    # Reading the channel clears both counters.
     r = test_client.post(
         f"/api/human/mm/channels/{ch_id}/read",
         json={"post_id": 10_000_000},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(h1["access_token"]),
     )
     assert r.status_code == 200, r.text
-    ch = _channel_for(h1["access_token"])
+    ch = _channel_row(test_client, h1["access_token"], ch_id)
     assert ch["unread_count"] == 0
     assert ch["unread_mention_count"] == 0
 
 
-# ---------------------------------------------------------------------------
-# Tests: Human posts messages
-# ---------------------------------------------------------------------------
-
 def test_human_usage_command_replies_with_agent_balance_in_dm(test_client):
     """A human typing `/cb-usage` in a DM with an agent gets its CB_TOKENS as a reply."""
     agent = _create_agent(test_client)
-    # The agent's owner shares an org with the agent — DMs are scoped to that org.
     h1 = _register_human(test_client, "stan@clawbits.ai", display_name="Stan")
-    org_id = _get_personal_org_id(test_client, h1["access_token"])
-    dm = test_client.post("/api/human/mm/direct",
-        json={"org_id": org_id, "target_id": agent["agent_id"], "target_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
+    token = h1["access_token"]
+    dm = _open_dm(test_client, token, _get_personal_org_id(test_client, token), agent["agent_id"], "agent")
     assert dm["channel_type"] == "direct"
-    ch_id = dm["channel_id"]
 
-    # The human's `/cb-usage` post comes back as their own post (normal contract).
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "/cb-usage"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["message"] == "/cb-usage"
-    assert r.json()["human_id"] == h1["user"]["id"]
+    post = _post(test_client, token, dm["channel_id"], "/cb-usage")
+    assert post["message"] == "/cb-usage"
+    assert post["human_id"] == h1["user"]["id"]
 
-    # The agent's balance reply is stored, threaded under the `/cb-usage` post.
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}/posts", headers=_human_auth(h1["access_token"]))
-    assert r.status_code == 200
-    posts = r.json()["posts"]
+    posts = _posts(test_client, token, dm["channel_id"])
     by_msg = {p["message"]: p for p in posts}
     assert "/cb-usage" in by_msg
     reply = next(p for p in posts if p["message"].startswith("CB_TOKENS remaining:"))
@@ -413,24 +323,13 @@ def test_human_usage_command_replies_with_agent_balance_in_dm(test_client):
 def test_human_usage_command_is_plain_message_outside_dm(test_client):
     """`/cb-usage` is DM-only: in a non-direct channel it's stored as a normal message."""
     h1 = _register_human(test_client, "usage-room@test.com", display_name="Asker")
+    token = h1["access_token"]
     agent = _create_agent(test_client, owner_email="usage-room@test.com")
-    # Public channel with the agent present — still must NOT trigger a balance reply.
-    ch_id = _create_channel(test_client, h1["access_token"], "usage-room", "public")["channel_id"]
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": agent["agent_id"], "member_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
+    ch_id = _create_channel(test_client, token, "usage-room", "public")["channel_id"]
+    _add_member(test_client, token, ch_id, agent["agent_id"], "agent")
+    _post(test_client, token, ch_id, "/cb-usage")
 
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "/cb-usage"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}/posts", headers=_human_auth(h1["access_token"]))
-    assert r.status_code == 200
-    msgs = [p["message"] for p in r.json()["posts"]]
+    msgs = [p["message"] for p in _posts(test_client, token, ch_id)]
     assert msgs == ["/cb-usage"]
     assert not any(m.startswith("CB_TOKENS remaining:") for m in msgs)
 
@@ -440,59 +339,29 @@ def test_human_post_and_list_messages(test_client):
     h1 = _register_human(test_client, "poster1@test.com", display_name="Poster1")
     h2 = _register_human(test_client, "poster2@test.com", display_name="Poster2")
     _add_human_to_org(test_client, h1["access_token"], "poster2@test.com")
-
-    # Create channel & add h2
     ch_id = _create_channel(test_client, h1["access_token"], "chat", "public")["channel_id"]
-    test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
+    _add_member(test_client, h1["access_token"], ch_id, h2["user"]["id"])
 
-    # h1 posts
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "Hello from h1!"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200
-    post = r.json()
+    post = _post(test_client, h1["access_token"], ch_id, "Hello from h1!")
     assert post["message"] == "Hello from h1!"
     assert post["human_id"] == h1["user"]["id"]
+    _post(test_client, h2["access_token"], ch_id, "Hello from h2!")
 
-    # h2 posts
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "Hello from h2!"},
-        headers=_human_auth(h2["access_token"]),
-    )
-    assert r.status_code == 200
-
-    # Both can read
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}/posts", headers=_human_auth(h1["access_token"]))
+    r = test_client.get(f"/api/human/mm/channels/{ch_id}/posts", headers=_bearer(h1["access_token"]))
     assert r.status_code == 200
     data = r.json()
     assert data["total"] == 2
-    msgs = [p["message"] for p in data["posts"]]
-    assert "Hello from h1!" in msgs
-    assert "Hello from h2!" in msgs
+    assert {"Hello from h1!", "Hello from h2!"} <= {p["message"] for p in data["posts"]}
 
 
 def test_human_reply_to_own_post(test_client):
     """Replying to a post populates parent_post_id and parent_preview."""
     h1 = _register_human(test_client, "replier@test.com", display_name="Replier")
-    ch_id = _create_channel(test_client, h1["access_token"], "reply-chat")["channel_id"]
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "reply-chat")["channel_id"]
+    parent = _post(test_client, token, ch_id, "the original")
 
-    parent = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "the original"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-
-    r = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "first reply", "parent_post_id": parent["post_id"]},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    reply = r.json()
+    reply = _post(test_client, token, ch_id, "first reply", parent_post_id=parent["post_id"])
     assert reply["parent_post_id"] == parent["post_id"]
     preview = reply["parent_preview"]
     assert preview["post_id"] == parent["post_id"]
@@ -501,11 +370,7 @@ def test_human_reply_to_own_post(test_client):
     assert preview["human_id"] == h1["user"]["id"]
     assert preview["poster_display_name"] == "Replier"
 
-    listed = test_client.get(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    reply_row = next(p for p in listed["posts"] if p["post_id"] == reply["post_id"])
+    reply_row = next(p for p in _posts(test_client, token, ch_id) if p["post_id"] == reply["post_id"])
     assert reply_row["parent_post_id"] == parent["post_id"]
     assert reply_row["parent_preview"]["message_excerpt"] == "the original"
 
@@ -514,11 +379,10 @@ def test_human_reply_to_missing_parent_rejected(test_client):
     """Replying to a non-existent post_id returns 400."""
     h1 = _register_human(test_client, "missing@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "missing-chat")["channel_id"]
-
     r = test_client.post(
         f"/api/human/mm/channels/{ch_id}/posts",
         json={"message": "ghost reply", "parent_post_id": 9_999_999},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(h1["access_token"]),
     )
     assert r.status_code == 400, r.text
 
@@ -528,17 +392,11 @@ def test_human_reply_across_channels_rejected(test_client):
     h1 = _register_human(test_client, "cross@test.com")
     ch_a = _create_channel(test_client, h1["access_token"], "ch-a")["channel_id"]
     ch_b = _create_channel(test_client, h1["access_token"], "ch-b")["channel_id"]
-
-    parent = test_client.post(
-        f"/api/human/mm/channels/{ch_a}/posts",
-        json={"message": "in A"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-
+    parent = _post(test_client, h1["access_token"], ch_a, "in A")
     r = test_client.post(
         f"/api/human/mm/channels/{ch_b}/posts",
         json={"message": "from B replying to A", "parent_post_id": parent["post_id"]},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(h1["access_token"]),
     )
     assert r.status_code == 400, r.text
 
@@ -546,20 +404,12 @@ def test_human_reply_across_channels_rejected(test_client):
 def test_human_reply_excerpt_truncated_for_long_parent(test_client):
     """parent_preview.message_excerpt is truncated server-side so SSE/REST stays bounded."""
     h1 = _register_human(test_client, "long@test.com")
-    ch_id = _create_channel(test_client, h1["access_token"], "long-chat")["channel_id"]
-
-    parent = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "x" * 500},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-
-    reply = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "short", "parent_post_id": parent["post_id"]},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    excerpt = reply["parent_preview"]["message_excerpt"]
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "long-chat")["channel_id"]
+    parent = _post(test_client, token, ch_id, "x" * 500)
+    excerpt = _post(test_client, token, ch_id, "short", parent_post_id=parent["post_id"])[
+        "parent_preview"
+    ]["message_excerpt"]
     assert len(excerpt) <= 140
     assert excerpt.endswith("…")
 
@@ -567,30 +417,22 @@ def test_human_reply_excerpt_truncated_for_long_parent(test_client):
 def test_human_edit_own_post_stamps_edited_at(test_client):
     """Editing own post replaces the text and stamps a permanent ``edited_at``."""
     h1 = _register_human(test_client, "editor@test.com", display_name="Editor")
-    ch_id = _create_channel(test_client, h1["access_token"], "edit-chat")["channel_id"]
-    post = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "first draft"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "edit-chat")["channel_id"]
+    post = _post(test_client, token, ch_id, "first draft")
     assert post["edited_at"] is None
 
     r = test_client.patch(
         f"/api/human/mm/posts/{post['post_id']}",
         json={"message": "the polished version"},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(token),
     )
     assert r.status_code == 200, r.text
     edited = r.json()
     assert edited["message"] == "the polished version"
     assert edited["edited_at"] is not None
 
-    # Listing carries the marker too.
-    listed = test_client.get(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    row = next(p for p in listed["posts"] if p["post_id"] == post["post_id"])
+    row = next(p for p in _posts(test_client, token, ch_id) if p["post_id"] == post["post_id"])
     assert row["message"] == "the polished version"
     assert row["edited_at"] == edited["edited_at"]
 
@@ -600,238 +442,119 @@ def test_human_edit_missing_post_404(test_client):
     r = test_client.patch(
         "/api/human/mm/posts/9999999",
         json={"message": "ghost"},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(h1["access_token"]),
     )
     assert r.status_code == 404
 
 
 def test_human_edit_empty_message_rejected(test_client):
-    """Empty/whitespace-only edits are rejected by Pydantic min_length=1."""
+    """Empty edits are rejected by the schema's min_length=1."""
     h1 = _register_human(test_client, "edit-empty@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "edit-empty")["channel_id"]
-    post = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "real content"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-
+    post = _post(test_client, h1["access_token"], ch_id, "real content")
     r = test_client.patch(
         f"/api/human/mm/posts/{post['post_id']}",
         json={"message": ""},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(h1["access_token"]),
     )
-    assert r.status_code == 422  # Pydantic schema rejection
+    assert r.status_code == 422
 
 
 def test_human_delete_own_post_round_trip(test_client):
     """Author can delete their own post; it disappears from the channel."""
     h1 = _register_human(test_client, "del-author@test.com", display_name="Author")
-    ch_id = _create_channel(test_client, h1["access_token"], "del-chat")["channel_id"]
-    post = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "to be deleted"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "del-chat")["channel_id"]
+    post = _post(test_client, token, ch_id, "to be deleted")
 
-    r = test_client.delete(
-        f"/api/human/mm/posts/{post['post_id']}",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 204, r.text
-
-    listed = test_client.get(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    assert all(p["post_id"] != post["post_id"] for p in listed["posts"])
+    _delete_post(test_client, token, post["post_id"])
+    assert all(p["post_id"] != post["post_id"] for p in _posts(test_client, token, ch_id))
 
 
 def test_human_delete_refreshes_channel_preview(test_client):
-    """Regression: deleting the newest post must rebuild the channel's
-    denormalised sidebar preview.
-
-    ``mm_channels.last_message_*`` is a snapshot written on publish, and the
-    channels-list endpoint serves it verbatim — so a delete that skipped the
-    recompute left the deleted message visible in the sidebar forever, even
-    across a full refetch. Deleting the last remaining post must clear the
-    preview outright."""
+    """Regression: deleting the newest post rebuilds the denormalised sidebar preview, and
+    deleting the last remaining post clears it, instead of leaving the deleted text."""
     h1 = _register_human(test_client, "del-preview@test.com", display_name="Prue")
-    ch_id = _create_channel(test_client, h1["access_token"], "del-preview")["channel_id"]
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "del-preview")["channel_id"]
+    first = _post(test_client, token, ch_id, "the older one")
+    second = _post(test_client, token, ch_id, "the newest one")
+    assert _channel_row(test_client, token, ch_id)["last_message_text"] == "the newest one"
 
-    def _preview() -> dict:
-        resp = test_client.get(
-            "/api/human/mm/channels", headers=_human_auth(h1["access_token"])
-        )
-        assert resp.status_code == 200, resp.text
-        return next(c for c in resp.json()["channels"] if c["channel_id"] == ch_id)
-
-    first = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "the older one"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    second = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "the newest one"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    assert _preview()["last_message_text"] == "the newest one"
-
-    r = test_client.delete(
-        f"/api/human/mm/posts/{second['post_id']}",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 204, r.text
-
-    ch = _preview()
+    _delete_post(test_client, token, second["post_id"])
+    ch = _channel_row(test_client, token, ch_id)
     assert ch["last_message_text"] == "the older one"
     assert ch["last_message_author_human_id"] == h1["user"]["id"]
 
-    # Deleting the last survivor empties the preview rather than stranding it.
-    r = test_client.delete(
-        f"/api/human/mm/posts/{first['post_id']}",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 204, r.text
-
-    ch = _preview()
+    _delete_post(test_client, token, first["post_id"])
+    ch = _channel_row(test_client, token, ch_id)
     assert ch["last_message_text"] is None
     assert ch["last_message_author_human_id"] is None
     assert ch["last_message_author_display_name"] is None
 
 
 def test_human_delete_preserves_read_pointer(test_client):
-    """Regression: deleting a post must not re-mark the channel unread.
-
-    ``human_channel_state.last_read_post_id`` has no ON DELETE cascade, so
-    the delete has to move any pointer sitting on the doomed post. Nulling
-    it reads as "nothing read in this channel" — and since the post a
-    caught-up reader points at is precisely the newest one, deleting the
-    newest message used to relight the whole history (and the app badge)
-    for every member. The pointer must land on the newest survivor
-    instead."""
+    """Regression: deleting the post a caught-up reader points at must slide the pointer to
+    the newest survivor, not null it and relight the whole history as unread."""
     author = _register_human(test_client, "del-unread-a@test.com", display_name="Ann")
     reader = _register_human(test_client, "del-unread-b@test.com", display_name="Bea")
     _add_human_to_org(test_client, author["access_token"], "del-unread-b@test.com")
     ch_id = _create_channel(test_client, author["access_token"], "del-unread")["channel_id"]
-    test_client.post(
-        f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(reader["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(author["access_token"]),
-    )
+    _add_member(test_client, author["access_token"], ch_id, reader["user"]["id"])
+    posts = [_post(test_client, author["access_token"], ch_id, f"message {i}") for i in range(4)]
+    assert _channel_row(test_client, reader["access_token"], ch_id)["unread_count"] == 4
 
-    posts = [
-        test_client.post(
-            f"/api/human/mm/channels/{ch_id}/posts",
-            json={"message": f"message {i}"},
-            headers=_human_auth(author["access_token"]),
-        ).json()
-        for i in range(4)
-    ]
-
-    def _reader_channel() -> dict:
-        resp = test_client.get(
-            "/api/human/mm/channels", headers=_human_auth(reader["access_token"])
-        )
-        assert resp.status_code == 200, resp.text
-        return next(c for c in resp.json()["channels"] if c["channel_id"] == ch_id)
-
-    assert _reader_channel()["unread_count"] == 4
-
-    # The reader catches up — their pointer now sits on the newest post,
-    # which is the one about to be deleted.
     r = test_client.post(
         f"/api/human/mm/channels/{ch_id}/read",
         json={"post_id": posts[-1]["post_id"]},
-        headers=_human_auth(reader["access_token"]),
+        headers=_bearer(reader["access_token"]),
     )
     assert r.status_code == 200, r.text
-    assert _reader_channel()["unread_count"] == 0
+    assert _channel_row(test_client, reader["access_token"], ch_id)["unread_count"] == 0
 
-    r = test_client.delete(
-        f"/api/human/mm/posts/{posts[-1]['post_id']}",
-        headers=_human_auth(author["access_token"]),
-    )
-    assert r.status_code == 204, r.text
-
-    assert _reader_channel()["unread_count"] == 0, (
+    _delete_post(test_client, author["access_token"], posts[-1]["post_id"])
+    assert _channel_row(test_client, reader["access_token"], ch_id)["unread_count"] == 0, (
         "deleting a read post must not resurrect unreads"
     )
-    # The pointer itself isn't on the channel payload (it rides the members
-    # response), so assert it at the source: it should have slid back exactly
-    # one post rather than gone null.
     assert _read_pointer(test_client, ch_id, reader["user"]["id"]) == posts[-2]["post_id"]
 
-    # A post arriving after the delete still counts as exactly one unread —
-    # the repointed cursor is a working cursor, not just a cosmetic zero.
-    test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "after the delete"},
-        headers=_human_auth(author["access_token"]),
-    )
-    assert _reader_channel()["unread_count"] == 1
+    _post(test_client, author["access_token"], ch_id, "after the delete")
+    assert _channel_row(test_client, reader["access_token"], ch_id)["unread_count"] == 1
 
 
 def test_human_delete_only_post_clears_read_pointer(test_client):
-    """With nothing older to point at, the pointer honestly goes back to
-    NULL — and the channel reads as empty rather than unread."""
+    """With nothing older to point at, the pointer goes back to NULL and the channel reads
+    as empty rather than unread."""
     author = _register_human(test_client, "del-only-a@test.com", display_name="Cal")
     reader = _register_human(test_client, "del-only-b@test.com", display_name="Dee")
     _add_human_to_org(test_client, author["access_token"], "del-only-b@test.com")
     ch_id = _create_channel(test_client, author["access_token"], "del-only")["channel_id"]
-    test_client.post(
-        f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(reader["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(author["access_token"]),
-    )
-    post = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "the only one"},
-        headers=_human_auth(author["access_token"]),
-    ).json()
+    _add_member(test_client, author["access_token"], ch_id, reader["user"]["id"])
+    post = _post(test_client, author["access_token"], ch_id, "the only one")
     test_client.post(
         f"/api/human/mm/channels/{ch_id}/read",
         json={"post_id": post["post_id"]},
-        headers=_human_auth(reader["access_token"]),
+        headers=_bearer(reader["access_token"]),
     )
 
-    r = test_client.delete(
-        f"/api/human/mm/posts/{post['post_id']}",
-        headers=_human_auth(author["access_token"]),
-    )
-    assert r.status_code == 204, r.text
-
-    resp = test_client.get(
-        "/api/human/mm/channels", headers=_human_auth(reader["access_token"])
-    ).json()
-    ch = next(c for c in resp["channels"] if c["channel_id"] == ch_id)
-    assert ch["unread_count"] == 0
+    _delete_post(test_client, author["access_token"], post["post_id"])
+    assert _channel_row(test_client, reader["access_token"], ch_id)["unread_count"] == 0
     assert _read_pointer(test_client, ch_id, reader["user"]["id"]) is None
 
 
 def test_human_edit_refreshes_channel_preview(test_client):
-    """Editing the newest post must rewrite the sidebar preview too —
-    same denormalised snapshot as the delete path above."""
+    """Editing the newest post rewrites the sidebar preview too."""
     h1 = _register_human(test_client, "edit-preview@test.com", display_name="Ed")
-    ch_id = _create_channel(test_client, h1["access_token"], "edit-preview")["channel_id"]
-    post = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "typo verison"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "edit-preview")["channel_id"]
+    post = _post(test_client, token, ch_id, "typo verison")
     r = test_client.patch(
         f"/api/human/mm/posts/{post['post_id']}",
         json={"message": "typo version"},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(token),
     )
     assert r.status_code == 200, r.text
-
-    resp = test_client.get(
-        "/api/human/mm/channels", headers=_human_auth(h1["access_token"])
-    ).json()
-    ch = next(c for c in resp["channels"] if c["channel_id"] == ch_id)
-    assert ch["last_message_text"] == "typo version"
+    assert _channel_row(test_client, token, ch_id)["last_message_text"] == "typo version"
 
 
 def test_human_delete_other_user_post_forbidden(test_client):
@@ -840,30 +563,13 @@ def test_human_delete_other_user_post_forbidden(test_client):
     h2 = _register_human(test_client, "del-intruder@test.com")
     _add_human_to_org(test_client, h1["access_token"], "del-intruder@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "del-locked")["channel_id"]
-    # h2 joins so they can see the post but isn't the creator.
-    test_client.post(
-        f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    post = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "h2 can't touch this"},
-        headers=_human_auth(h2["access_token"]),
-    ).json()
+    _add_member(test_client, h1["access_token"], ch_id, h2["user"]["id"])
+    post = _post(test_client, h2["access_token"], ch_id, "h2 can't touch this")
 
-    # Different non-creator member tries to delete h2's post.
     h3 = _register_human(test_client, "del-bystander@test.com")
     _add_human_to_org(test_client, h1["access_token"], "del-bystander@test.com")
-    test_client.post(
-        f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h3["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    r = test_client.delete(
-        f"/api/human/mm/posts/{post['post_id']}",
-        headers=_human_auth(h3["access_token"]),
-    )
+    _add_member(test_client, h1["access_token"], ch_id, h3["user"]["id"])
+    r = test_client.delete(f"/api/human/mm/posts/{post['post_id']}", headers=_bearer(h3["access_token"]))
     assert r.status_code == 403, r.text
 
 
@@ -873,61 +579,28 @@ def test_human_channel_creator_can_delete_anyone(test_client):
     member = _register_human(test_client, "del-member@test.com")
     _add_human_to_org(test_client, creator["access_token"], "del-member@test.com")
     ch_id = _create_channel(test_client, creator["access_token"], "del-mod")["channel_id"]
-    test_client.post(
-        f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(member["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(creator["access_token"]),
-    )
-    post = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "moderate me"},
-        headers=_human_auth(member["access_token"]),
-    ).json()
-
-    r = test_client.delete(
-        f"/api/human/mm/posts/{post['post_id']}",
-        headers=_human_auth(creator["access_token"]),
-    )
-    assert r.status_code == 204, r.text
+    _add_member(test_client, creator["access_token"], ch_id, member["user"]["id"])
+    post = _post(test_client, member["access_token"], ch_id, "moderate me")
+    _delete_post(test_client, creator["access_token"], post["post_id"])
 
 
 def test_human_delete_missing_post_404(test_client):
     h1 = _register_human(test_client, "del-missing@test.com")
-    r = test_client.delete(
-        "/api/human/mm/posts/9999999",
-        headers=_human_auth(h1["access_token"]),
-    )
+    r = test_client.delete("/api/human/mm/posts/9999999", headers=_bearer(h1["access_token"]))
     assert r.status_code == 404
 
 
 def test_human_delete_detaches_replies(test_client):
-    """Deleting a post detaches its replies (parent_post_id -> NULL); the
-    replies survive and are listed normally."""
+    """Deleting a post detaches its replies (parent_post_id -> NULL); the replies survive."""
     h1 = _register_human(test_client, "del-thread@test.com")
-    ch_id = _create_channel(test_client, h1["access_token"], "del-thread")["channel_id"]
-    parent = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "parent"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    reply = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "reply", "parent_post_id": parent["post_id"]},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "del-thread")["channel_id"]
+    parent = _post(test_client, token, ch_id, "parent")
+    reply = _post(test_client, token, ch_id, "reply", parent_post_id=parent["post_id"])
     assert reply["parent_post_id"] == parent["post_id"]
 
-    r = test_client.delete(
-        f"/api/human/mm/posts/{parent['post_id']}",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 204, r.text
-
-    listed = test_client.get(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    survivors = {p["post_id"]: p for p in listed["posts"]}
+    _delete_post(test_client, token, parent["post_id"])
+    survivors = {p["post_id"]: p for p in _posts(test_client, token, ch_id)}
     assert parent["post_id"] not in survivors
     assert reply["post_id"] in survivors
     assert survivors[reply["post_id"]]["parent_post_id"] is None
@@ -936,33 +609,14 @@ def test_human_delete_detaches_replies(test_client):
 def test_human_reaction_toggle_round_trip(test_client):
     """Toggle adds on first call, removes on second; counts aggregate correctly."""
     h1 = _register_human(test_client, "reactor@test.com", display_name="Reactor")
-    ch_id = _create_channel(test_client, h1["access_token"], "react-chat")["channel_id"]
-    post = test_client.post(
-        f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "react to me"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "react-chat")["channel_id"]
+    post = _post(test_client, token, ch_id, "react to me")
 
-    # First call: adds the reaction.
-    r1 = test_client.post(
-        f"/api/human/mm/posts/{post['post_id']}/reactions",
-        json={"emoji": "👍"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r1.status_code == 200, r1.text
-    body = r1.json()
-    assert body["reactions"] == [
+    assert _react(test_client, token, post["post_id"])["reactions"] == [
         {"emoji": "👍", "count": 1, "human_ids": [h1["user"]["id"]], "agent_ids": []},
     ]
-
-    # Second call with the same emoji: removes it. Bucket collapses entirely.
-    r2 = test_client.post(
-        f"/api/human/mm/posts/{post['post_id']}/reactions",
-        json={"emoji": "👍"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r2.status_code == 200, r2.text
-    assert r2.json()["reactions"] == []
+    assert _react(test_client, token, post["post_id"])["reactions"] == []
 
 
 def test_human_reaction_on_missing_post_404(test_client):
@@ -971,7 +625,7 @@ def test_human_reaction_on_missing_post_404(test_client):
     r = test_client.post(
         "/api/human/mm/posts/9999999/reactions",
         json={"emoji": "👍"},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(h1["access_token"]),
     )
     assert r.status_code == 404
 
@@ -980,109 +634,47 @@ def test_human_non_member_cannot_post(test_client):
     """Non-members cannot post to a channel."""
     h1 = _register_human(test_client, "priv1@test.com")
     h2 = _register_human(test_client, "priv2@test.com")
-
     ch_id = _create_channel(test_client, h1["access_token"], "private-chat", "private")["channel_id"]
-
-    # h2 tries to post without being a member
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/posts",
+    r = test_client.post(
+        f"/api/human/mm/channels/{ch_id}/posts",
         json={"message": "sneaky!"},
-        headers=_human_auth(h2["access_token"]),
+        headers=_bearer(h2["access_token"]),
     )
     assert r.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# Tests: Mixed channel (human + agent posts)
-# ---------------------------------------------------------------------------
-
 def test_mixed_channel_human_and_agent_posts(test_client):
     """Humans and agents can post to the same channel and see each other's messages."""
     h1 = _register_human(test_client, "mixer@test.com", display_name="Mixer")
+    token = h1["access_token"]
     agent = _create_agent(test_client, owner_email="mixer@test.com")
+    ch_id = _create_channel(test_client, token, "mixed-chat", "public")["channel_id"]
+    _add_member(test_client, token, ch_id, agent["agent_id"], "agent")
+    _post(test_client, token, ch_id, "Hello from human!")
+    _agent_post(test_client, agent["api_key"], ch_id, "Hello from agent!")
 
-    # Human creates channel
-    ch_id = _create_channel(test_client, h1["access_token"], "mixed-chat", "public")["channel_id"]
-
-    # Human adds agent
-    test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": agent["agent_id"], "member_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    )
-
-    # Human posts
-    test_client.post(f"/api/human/mm/channels/{ch_id}/posts",
-        json={"message": "Hello from human!"},
-        headers=_human_auth(h1["access_token"]),
-    )
-
-    # Agent posts
-    r = test_client.post(f"/api/agentic/mm/channels/{ch_id}/posts",
-        json={"message": "Hello from agent!"},
-        headers=_agent_write_headers(test_client, agent["api_key"]),
-    )
+    assert {"Hello from human!", "Hello from agent!"} <= {
+        p["message"] for p in _posts(test_client, token, ch_id)
+    }
+    r = test_client.get(f"/api/agentic/mm/channels/{ch_id}/posts", headers=_bearer(agent["api_key"]))
     assert r.status_code == 200
+    assert {"Hello from human!", "Hello from agent!"} <= {p["message"] for p in r.json()["posts"]}
 
-    # Human reads all posts
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}/posts",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200
-    msgs = [p["message"] for p in r.json()["posts"]]
-    assert "Hello from human!" in msgs
-    assert "Hello from agent!" in msgs
-
-    # Agent also reads all posts
-    r = test_client.get(f"/api/agentic/mm/channels/{ch_id}/posts",
-        headers=_agent_auth(agent["api_key"]),
-    )
-    assert r.status_code == 200
-    msgs = [p["message"] for p in r.json()["posts"]]
-    assert "Hello from human!" in msgs
-    assert "Hello from agent!" in msgs
-
-
-# ---------------------------------------------------------------------------
-# Tests: Human DMs
-# ---------------------------------------------------------------------------
 
 def test_human_dm_with_agent(test_client):
     """Human can create a DM with an agent and exchange messages."""
     agent = _create_agent(test_client)
-    # The agent's owner shares an org with the agent — DMs are scoped to that org.
     h1 = _register_human(test_client, "stan@clawbits.ai", display_name="Stan")
-    org_id = _get_personal_org_id(test_client, h1["access_token"])
+    token = h1["access_token"]
+    org_id = _get_personal_org_id(test_client, token)
 
-    # Open DM
-    r = test_client.post("/api/human/mm/direct",
-        json={"org_id": org_id, "target_id": agent["agent_id"], "target_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200
-    dm = r.json()
+    dm = _open_dm(test_client, token, org_id, agent["agent_id"], "agent")
     assert dm["channel_type"] == "direct"
     assert dm["org_id"] == org_id
-    dm_id = dm["channel_id"]
+    _post(test_client, token, dm["channel_id"], "Hi agent!")
+    _agent_post(test_client, agent["api_key"], dm["channel_id"], "Hi human!")
 
-    # Human sends
-    test_client.post(f"/api/human/mm/channels/{dm_id}/posts",
-        json={"message": "Hi agent!"},
-        headers=_human_auth(h1["access_token"]),
-    )
-
-    # Agent sends
-    test_client.post(f"/api/agentic/mm/channels/{dm_id}/posts",
-        json={"message": "Hi human!"},
-        headers=_agent_write_headers(test_client, agent["api_key"]),
-    )
-
-    # Human reads
-    r = test_client.get(f"/api/human/mm/channels/{dm_id}/posts",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200
-    msgs = [p["message"] for p in r.json()["posts"]]
-    assert "Hi agent!" in msgs
-    assert "Hi human!" in msgs
+    assert {"Hi agent!", "Hi human!"} <= {p["message"] for p in _posts(test_client, token, dm["channel_id"])}
 
 
 def test_human_dm_with_human(test_client):
@@ -1090,80 +682,39 @@ def test_human_dm_with_human(test_client):
     h1 = _register_human(test_client, "dm1@test.com", display_name="DmOne")
     h2 = _register_human(test_client, "dm2@test.com", display_name="DmTwo")
     org_id = _get_personal_org_id(test_client, h1["access_token"])
-    r = test_client.post(
-        f"/api/human/orgs/{org_id}/members",
-        json={"email": "dm2@test.com", "role": "member"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
+    _add_human_to_org(test_client, h1["access_token"], "dm2@test.com")
 
-    # Open DM
-    r = test_client.post("/api/human/mm/direct",
-        json={"org_id": org_id, "target_id": str(h2["user"]["id"]), "target_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200
-    dm = r.json()
+    dm = _open_dm(test_client, h1["access_token"], org_id, h2["user"]["id"], "human")
     assert dm["channel_type"] == "direct"
     assert dm["org_id"] == org_id
-    dm_id = dm["channel_id"]
+    _post(test_client, h1["access_token"], dm["channel_id"], "Hello DM!")
+    _post(test_client, h2["access_token"], dm["channel_id"], "Hey back!")
 
-    # h1 sends
-    test_client.post(f"/api/human/mm/channels/{dm_id}/posts",
-        json={"message": "Hello DM!"},
-        headers=_human_auth(h1["access_token"]),
-    )
-
-    # h2 sends
-    test_client.post(f"/api/human/mm/channels/{dm_id}/posts",
-        json={"message": "Hey back!"},
-        headers=_human_auth(h2["access_token"]),
-    )
-
-    # h2 reads
-    r = test_client.get(f"/api/human/mm/channels/{dm_id}/posts",
-        headers=_human_auth(h2["access_token"]),
-    )
-    assert r.status_code == 200
-    msgs = [p["message"] for p in r.json()["posts"]]
-    assert "Hello DM!" in msgs
-    assert "Hey back!" in msgs
+    assert {"Hello DM!", "Hey back!"} <= {
+        p["message"] for p in _posts(test_client, h2["access_token"], dm["channel_id"])
+    }
 
 
 def test_human_dm_deduplication(test_client):
-    """Opening a DM twice between the same humans returns the same channel."""
+    """Opening a DM twice between the same humans, from either side, returns one channel."""
     h1 = _register_human(test_client, "dedup1@test.com")
     h2 = _register_human(test_client, "dedup2@test.com")
     org_id = _get_personal_org_id(test_client, h1["access_token"])
-    test_client.post(
-        f"/api/human/orgs/{org_id}/members",
-        json={"email": "dedup2@test.com", "role": "member"},
-        headers=_human_auth(h1["access_token"]),
-    )
+    _add_human_to_org(test_client, h1["access_token"], "dedup2@test.com")
 
-    r1 = test_client.post("/api/human/mm/direct",
-        json={"org_id": org_id, "target_id": str(h2["user"]["id"]), "target_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    dm1 = r1.json()["channel_id"]
-
-    # h2 opens DM with h1 → same channel
-    r2 = test_client.post("/api/human/mm/direct",
-        json={"org_id": org_id, "target_id": str(h1["user"]["id"]), "target_type": "human"},
-        headers=_human_auth(h2["access_token"]),
-    )
-    dm2 = r2.json()["channel_id"]
-
-    assert dm1 == dm2
+    dm1 = _open_dm(test_client, h1["access_token"], org_id, h2["user"]["id"], "human")
+    dm2 = _open_dm(test_client, h2["access_token"], org_id, h1["user"]["id"], "human")
+    assert dm1["channel_id"] == dm2["channel_id"]
 
 
 def test_human_dm_with_self_rejected(test_client):
     """Cannot create a DM with yourself."""
     h1 = _register_human(test_client, "selfie@test.com")
     org_id = _get_personal_org_id(test_client, h1["access_token"])
-    r = test_client.post("/api/human/mm/direct",
+    r = test_client.post(
+        "/api/human/mm/direct",
         json={"org_id": org_id, "target_id": str(h1["user"]["id"]), "target_type": "human"},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(h1["access_token"]),
     )
     assert r.status_code == 400
 
@@ -1173,26 +724,10 @@ def test_human_dm_agent_deduplication(test_client):
     agent = _create_agent(test_client)
     h1 = _register_human(test_client, "stan@clawbits.ai", display_name="Stan")
     org_id = _get_personal_org_id(test_client, h1["access_token"])
+    dm1 = _open_dm(test_client, h1["access_token"], org_id, agent["agent_id"], "agent")
+    dm2 = _open_dm(test_client, h1["access_token"], org_id, agent["agent_id"], "agent")
+    assert dm1["channel_id"] == dm2["channel_id"]
 
-    r1 = test_client.post("/api/human/mm/direct",
-        json={"org_id": org_id, "target_id": agent["agent_id"], "target_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    dm1 = r1.json()["channel_id"]
-
-    # Same request again
-    r2 = test_client.post("/api/human/mm/direct",
-        json={"org_id": org_id, "target_id": agent["agent_id"], "target_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    dm2 = r2.json()["channel_id"]
-
-    assert dm1 == dm2
-
-
-# ---------------------------------------------------------------------------
-# Tests: Auth required
-# ---------------------------------------------------------------------------
 
 def test_unauthenticated_human_rejected(test_client):
     """Requests without a valid JWT are rejected."""
@@ -1204,13 +739,8 @@ def test_unauthenticated_human_rejected(test_client):
 
 
 def test_delete_channel_purges_channel_events(test_client):
-    """Regression: ``delete_mm_channel`` must purge ``mm_channel_events``.
-
-    Older agent channels accumulated ``member.added``/``removed`` timeline
-    events. That table's FK to ``mm_channels`` has no ``ON DELETE CASCADE``,
-    so deleting such a channel raised a ForeignKeyViolation (500) on prod
-    until the events are cleared first.
-    """
+    """Regression: ``delete_mm_channel`` must purge ``mm_channel_events``, whose FK has no
+    ON DELETE CASCADE, or deleting such a channel raises a ForeignKeyViolation."""
     from datetime import UTC, datetime
 
     from sqlmodel import Session, select
@@ -1218,10 +748,8 @@ def test_delete_channel_purges_channel_events(test_client):
     from clawbits.db.models import MmChannel, MmChannelEvent
     from clawbits.db.table_write import TableWrite
 
-    reg = _register_human(test_client, "delevents@test.com")
-    human_id = reg["user"]["id"]
+    human_id = _register_human(test_client, "delevents@test.com")["user"]["id"]
     now = datetime.now(UTC)
-
     with Session(test_client.app._engine) as db:
         db.add(MmChannel(
             channel_id="del_ev_ch", name="del-ev",
@@ -1240,20 +768,14 @@ def test_delete_channel_purges_channel_events(test_client):
     with Session(test_client.app._engine) as db:
         assert db.get(MmChannel, "del_ev_ch") is None
         leftover = db.exec(
-            select(MmChannelEvent).where(
-                MmChannelEvent.channel_id == "del_ev_ch"
-            )
+            select(MmChannelEvent).where(MmChannelEvent.channel_id == "del_ev_ch")
         ).all()
         assert leftover == [], "channel events were not purged on delete"
 
 
-# ---------------------------------------------------------------------------
-# Tests: leaving as the last human deletes the channel
-# ---------------------------------------------------------------------------
-
 def test_last_human_leaving_deletes_channel(test_client):
-    """When the only human leaves a channel, the channel is hard-deleted
-    rather than left as an agent-only husk."""
+    """When the only human leaves a channel, the channel is hard-deleted rather than left
+    as an agent-only husk."""
     from sqlmodel import Session
 
     from clawbits.db.models import MmChannel
@@ -1261,24 +783,11 @@ def test_last_human_leaving_deletes_channel(test_client):
     h1 = _register_human(test_client, "lastleave@test.com")
     agent = _create_agent(test_client, owner_email="lastleave@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "soloch", "public")["channel_id"]
+    _add_member(test_client, h1["access_token"], ch_id, agent["agent_id"], "agent")
 
-    # Park an agent in the channel so it isn't trivially empty.
-    r = test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": agent["agent_id"], "member_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-
-    # The only human leaves -> the channel is deleted.
-    r = test_client.delete(
-        f"/api/human/mm/channels/{ch_id}/members/{h1['user']['id']}?member_type=human",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _remove_human(test_client, h1["access_token"], ch_id, h1["user"]["id"])
     assert body["channel_deleted"] is True
     assert body["total"] == 0
-
     with Session(test_client.app._engine) as db:
         assert db.get(MmChannel, ch_id) is None
 
@@ -1292,19 +801,9 @@ def test_leaving_dm_with_agent_deletes_channel(test_client):
     agent = _create_agent(test_client)
     h1 = _register_human(test_client, "stan@clawbits.ai", display_name="Stan")
     org_id = _get_personal_org_id(test_client, h1["access_token"])
-    dm = test_client.post("/api/human/mm/direct",
-        json={"org_id": org_id, "target_id": agent["agent_id"], "target_type": "agent"},
-        headers=_human_auth(h1["access_token"]),
-    ).json()
-    ch_id = dm["channel_id"]
+    ch_id = _open_dm(test_client, h1["access_token"], org_id, agent["agent_id"], "agent")["channel_id"]
 
-    r = test_client.delete(
-        f"/api/human/mm/channels/{ch_id}/members/{h1['user']['id']}?member_type=human",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["channel_deleted"] is True
-
+    assert _remove_human(test_client, h1["access_token"], ch_id, h1["user"]["id"])["channel_deleted"] is True
     with Session(test_client.app._engine) as db:
         assert db.get(MmChannel, ch_id) is None
 
@@ -1315,22 +814,12 @@ def test_leaving_channel_with_other_humans_keeps_it(test_client):
     h2 = _register_human(test_client, "keep2@test.com")
     _add_human_to_org(test_client, h1["access_token"], "keep2@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "keepch", "public")["channel_id"]
-    test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
+    _add_member(test_client, h1["access_token"], ch_id, h2["user"]["id"])
 
-    r = test_client.delete(
-        f"/api/human/mm/channels/{ch_id}/members/{h1['user']['id']}?member_type=human",
-        headers=_human_auth(h1["access_token"]),
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _remove_human(test_client, h1["access_token"], ch_id, h1["user"]["id"])
     assert body["channel_deleted"] is False
     assert body["total"] == 1
-
-    # The channel survives and the remaining human can still see it.
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_human_auth(h2["access_token"]))
+    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h2["access_token"]))
     assert r.status_code == 200
 
 
@@ -1340,21 +829,12 @@ def test_creator_deletes_channel_with_other_humans(test_client):
     h2 = _register_human(test_client, "owner2@test.com")
     _add_human_to_org(test_client, h1["access_token"], "owner2@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "ownerch", "public")["channel_id"]
-    test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
+    _add_member(test_client, h1["access_token"], ch_id, h2["user"]["id"])
 
-    # Creator deletes the whole channel.
-    r = test_client.delete(
-        f"/api/human/mm/channels/{ch_id}",
-        headers=_human_auth(h1["access_token"]),
-    )
+    r = test_client.delete(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h1["access_token"]))
     assert r.status_code == 204, r.text
-
-    # It's gone for both members.
     for h in (h1, h2):
-        r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_human_auth(h["access_token"]))
+        r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h["access_token"]))
         assert r.status_code in (403, 404)
 
 
@@ -1364,20 +844,11 @@ def test_non_creator_cannot_delete_channel(test_client):
     h2 = _register_human(test_client, "ncreate2@test.com")
     _add_human_to_org(test_client, h1["access_token"], "ncreate2@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "ncch", "public")["channel_id"]
-    test_client.post(f"/api/human/mm/channels/{ch_id}/members",
-        json={"member_id": str(h2["user"]["id"]), "member_type": "human"},
-        headers=_human_auth(h1["access_token"]),
-    )
+    _add_member(test_client, h1["access_token"], ch_id, h2["user"]["id"])
 
-    # h2 (not the creator) cannot delete it.
-    r = test_client.delete(
-        f"/api/human/mm/channels/{ch_id}",
-        headers=_human_auth(h2["access_token"]),
-    )
+    r = test_client.delete(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h2["access_token"]))
     assert r.status_code == 403, r.text
-
-    # Channel still exists for the creator.
-    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_human_auth(h1["access_token"]))
+    r = test_client.get(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h1["access_token"]))
     assert r.status_code == 200
 
 
@@ -1386,16 +857,12 @@ def test_outsider_cannot_delete_channel(test_client):
     h1 = _register_human(test_client, "nmem1@test.com")
     h2 = _register_human(test_client, "nmem2@test.com")
     ch_id = _create_channel(test_client, h1["access_token"], "nmemch", "public")["channel_id"]
-
-    r = test_client.delete(
-        f"/api/human/mm/channels/{ch_id}",
-        headers=_human_auth(h2["access_token"]),
-    )
+    r = test_client.delete(f"/api/human/mm/channels/{ch_id}", headers=_bearer(h2["access_token"]))
     assert r.status_code == 403, r.text
 
 
 def test_org_owner_deletes_channel_created_by_another(test_client):
-    """An org owner can delete a channel they did not create (admin path)."""
+    """An org owner can delete a channel they did not create: the owner role authorises it."""
     from datetime import UTC, datetime
 
     from sqlmodel import Session
@@ -1404,14 +871,10 @@ def test_org_owner_deletes_channel_created_by_another(test_client):
 
     owner = _register_human(test_client, "chowner@test.com")
     creator = _register_human(test_client, "chcreator@test.com")
-    # ``owner`` is the owner of their own personal org; the channel lives in
-    # that org but was created by a different human, so the delete must
-    # authorise via the owner role, not creator.
     org_id = _get_personal_org_id(test_client, owner["access_token"])
     owner_id = owner["user"]["id"]
     creator_id = creator["user"]["id"]
     now = datetime.now(UTC)
-
     with Session(test_client.app._engine) as db:
         db.add(MmChannel(
             channel_id="owner_del_ch", name="ownerdel", channel_type="public",
@@ -1421,22 +884,15 @@ def test_org_owner_deletes_channel_created_by_another(test_client):
         db.add(MmChannelMember(channel_id="owner_del_ch", human_id=creator_id, joined_at=now))
         db.commit()
 
-    r = test_client.delete(
-        "/api/human/mm/channels/owner_del_ch",
-        headers=_human_auth(owner["access_token"]),
-    )
+    r = test_client.delete("/api/human/mm/channels/owner_del_ch", headers=_bearer(owner["access_token"]))
     assert r.status_code == 204, r.text
-
-    r = test_client.get(
-        "/api/human/mm/channels/owner_del_ch",
-        headers=_human_auth(owner["access_token"]),
-    )
+    r = test_client.get("/api/human/mm/channels/owner_del_ch", headers=_bearer(owner["access_token"]))
     assert r.status_code in (403, 404)
 
 
 def test_deleting_channel_notifies_agent_members(test_client, monkeypatch):
-    """Deleting a channel fans out ``channel.removed`` to agent members so
-    their plugins drop it — the agent-side counterpart of the human fanout."""
+    """Deleting a channel fans out ``channel.removed`` to agent members so their plugins
+    drop it."""
     from datetime import UTC, datetime
 
     from sqlmodel import Session
@@ -1452,12 +908,10 @@ def test_deleting_channel_notifies_agent_members(test_client, monkeypatch):
     monkeypatch.setattr(mm_endpoints, "publish_agent_channel_removed", _record)
 
     h1 = _register_human(test_client, "agfanout@test.com")
-    agent = _create_agent(test_client, owner_email="agfanoutop@clawbits.ai")
-    agent_id = agent["agent_id"]
+    agent_id = _create_agent(test_client, owner_email="agfanoutop@clawbits.ai")["agent_id"]
     org_id = _get_personal_org_id(test_client, h1["access_token"])
     human_id = h1["user"]["id"]
     now = datetime.now(UTC)
-
     with Session(test_client.app._engine) as db:
         db.add(MmChannel(
             channel_id="ag_fanout_ch", name="agfan", channel_type="public",
@@ -1467,18 +921,14 @@ def test_deleting_channel_notifies_agent_members(test_client, monkeypatch):
         db.add(MmChannelMember(channel_id="ag_fanout_ch", agent_id=agent_id, joined_at=now))
         db.commit()
 
-    r = test_client.delete(
-        "/api/human/mm/channels/ag_fanout_ch",
-        headers=_human_auth(h1["access_token"]),
-    )
+    r = test_client.delete("/api/human/mm/channels/ag_fanout_ch", headers=_bearer(h1["access_token"]))
     assert r.status_code == 204, r.text
     assert (agent_id, "ag_fanout_ch") in calls
 
 
 def test_delete_agent_rebuilds_stale_channel_preview(test_client):
-    """Deleting an agent that authored a channel's last message rebuilds the
-    sidebar preview from the surviving posts instead of leaving a dangling
-    reference — the channel itself survives because a human remains."""
+    """Deleting an agent that authored a channel's last message rebuilds the sidebar
+    preview from the surviving posts; the channel survives because a human remains."""
     from datetime import UTC, datetime
 
     from sqlmodel import Session
@@ -1486,12 +936,9 @@ def test_delete_agent_rebuilds_stale_channel_preview(test_client):
     from clawbits.db.models import MmChannel, MmChannelMember, MmPost
     from clawbits.db.table_write import TableWrite
 
-    h1 = _register_human(test_client, "previewfix@test.com", display_name="Pam")
-    human_id = h1["user"]["id"]
-    agent = _create_agent(test_client, owner_email="previewagent@clawbits.ai")
-    agent_id = agent["agent_id"]
+    human_id = _register_human(test_client, "previewfix@test.com", display_name="Pam")["user"]["id"]
+    agent_id = _create_agent(test_client, owner_email="previewagent@clawbits.ai")["agent_id"]
     now = datetime.now(UTC)
-
     with Session(test_client.app._engine) as db:
         db.add(MmChannel(
             channel_id="prev_ch", name="prev", channel_type="public",
@@ -1523,24 +970,9 @@ def test_delete_agent_rebuilds_stale_channel_preview(test_client):
         assert ch.last_message_text == "human earlier"
 
 
-
-# ---------------------------------------------------------------------------
-# Tests: unread counting is capped (sidebar read-path performance)
-# ---------------------------------------------------------------------------
-
 def test_unread_counts_are_capped(test_client):
-    """``unread_count`` and ``unread_mention_count`` stop counting at
-    ``UNREAD_COUNT_CAP``.
-
-    Every client renders anything past 99 as "99+", so the read path stops
-    counting at 100 rather than walking an unbounded backlog — the pathological
-    case being a busy channel the viewer has never opened, where there is no
-    read pointer and "count the unread" means "count the channel". A returned
-    value equal to the cap means "at least this many", never "exactly".
-
-    Below the cap the counts must still be exact, which is what makes this a
-    cap and not an approximation.
-    """
+    """``unread_count`` and ``unread_mention_count`` stop at ``UNREAD_COUNT_CAP`` (a value at
+    the cap means "at least"), and are exact again below it."""
     from datetime import UTC, datetime
 
     from sqlmodel import Session, select
@@ -1548,46 +980,29 @@ def test_unread_counts_are_capped(test_client):
     from clawbits.db.models import MmChannel, MmChannelMember, MmPost
     from clawbits.db.table_read import UNREAD_COUNT_CAP, TableRead
 
-    over = UNREAD_COUNT_CAP + 25
     h1 = _register_human(test_client, "capviewer@test.com", display_name="Cap Viewer")
     h2 = _register_human(test_client, "cappeer@test.com")
-    viewer_id = h1["user"]["id"]
-    peer_id = h2["user"]["id"]
+    token, viewer_id, peer_id = h1["access_token"], h1["user"]["id"], h2["user"]["id"]
     now = datetime.now(UTC)
-
-    # Bulk-insert straight to the DB: posting `over` messages through the API
-    # would drag the whole fan-out plane (events, previews, attention) into a
-    # test about arithmetic.
     with Session(test_client.app._engine) as db:
         db.add(MmChannel(
             channel_id="cap_ch", name="cap", channel_type="public", created_at=now,
         ))
         db.add(MmChannelMember(channel_id="cap_ch", human_id=viewer_id, joined_at=now))
         db.add(MmChannelMember(channel_id="cap_ch", human_id=peer_id, joined_at=now))
-        # Every post both unread AND a mention, so one loop exercises both
-        # counters against the same cap.
-        for i in range(over):
+        for i in range(UNREAD_COUNT_CAP + 25):
             db.add(MmPost(
                 channel_id="cap_ch", human_id=peer_id,
                 message=f"@here message {i}", status="published", created_at=now,
             ))
         db.commit()
 
-    resp = test_client.get(
-        "/api/human/mm/channels", headers=_human_auth(h1["access_token"])
-    )
-    assert resp.status_code == 200, resp.text
-    ch = next(c for c in resp.json()["channels"] if c["channel_id"] == "cap_ch")
-
+    ch = _channel_row(test_client, token, "cap_ch")
     assert ch["unread_count"] == UNREAD_COUNT_CAP
     assert ch["unread_mention_count"] == UNREAD_COUNT_CAP
 
-    # ``latest_post_id`` and ``last_message_at`` must describe the SAME post.
-    # They come from one row via LATERAL rather than being max()'d
-    # independently, which is what stops two posts sharing a timestamp from
-    # handing back the id of one and the time of the other. ``latest_post_id``
-    # is internal to the read path (the response model does not carry it), so
-    # this asserts against the accessor directly.
+    # latest_post_id and last_message_at must come from the same post; the id is internal
+    # to the read path, so assert on the accessor.
     with Session(test_client.app._engine) as db:
         newest = db.exec(
             select(MmPost).where(MmPost.channel_id == "cap_ch")
@@ -1600,17 +1015,327 @@ def test_unread_counts_are_capped(test_client):
         assert row["latest_post_id"] == newest.post_id
         assert row["last_message_at"] == ch["last_message_at"]
 
-    # Read up to 25 short of the end: the remainder is under the cap, so the
-    # count must be exact again.
     r = test_client.post(
         "/api/human/mm/channels/cap_ch/read",
         json={"post_id": newest.post_id - 25},
-        headers=_human_auth(h1["access_token"]),
+        headers=_bearer(token),
     )
     assert r.status_code == 200, r.text
-    resp = test_client.get(
-        "/api/human/mm/channels", headers=_human_auth(h1["access_token"])
-    )
-    ch = next(c for c in resp.json()["channels"] if c["channel_id"] == "cap_ch")
+    ch = _channel_row(test_client, token, "cap_ch")
     assert ch["unread_count"] == 25
     assert ch["unread_mention_count"] == 25
+
+
+def test_a_posts_page_costs_the_same_statements_at_any_size(test_client):
+    """Hydration loads each relation of a page in one query, so a page of many
+    reacted replies runs exactly as many statements as a page of two."""
+    from clawbits.db.table_read import TableRead
+
+    h1 = _register_human(test_client, "batch@test.com")
+    token, human_id = h1["access_token"], h1["user"]["id"]
+    ch_id = _create_channel(test_client, token, "batch-chat")["channel_id"]
+
+    def send(parent_post_id: int | None = None) -> int:
+        post_id = _post(test_client, token, ch_id, "hello", parent_post_id=parent_post_id)["post_id"]
+        _react(test_client, token, post_id)
+        return post_id
+
+    def page(db) -> list[dict]:
+        return TableRead.get_mm_posts_for_human(db, ch_id, human_id)
+
+    root = send()
+    send(root)
+    few, _ = _count_statements(test_client, page)
+    for _ in range(15):
+        send(root)
+    many, posts = _count_statements(test_client, page)
+    assert (many, len(posts)) == (few, 17)
+    reaction = {"emoji": "👍", "count": 1, "human_ids": [human_id], "agent_ids": []}
+    assert all(p["reactions"] == [reaction] for p in posts)
+    assert {p["parent_preview"]["post_id"] for p in posts if p["post_id"] != root} == {root}
+
+
+def test_send_returns_before_the_link_preview_lands(test_client, monkeypatch):
+    """A cold unfurl must not hold the send: the post publishes bare, and the
+    preview follows as a ``post.updated`` once it resolves."""
+    import asyncio
+    import threading
+    import time
+
+    import clawbits.fastapi.human_mm_endpoints as mm_endpoints
+    from clawbits.link_preview.service import LinkPreview
+    from clawbits.realtime import bus as bus_module
+
+    h1 = _register_human(test_client, "unfurl@test.com")
+    token = h1["access_token"]
+    ch_id = _create_channel(test_client, token, "unfurl-chat")["channel_id"]
+
+    class Bus:
+        def __init__(self) -> None:
+            self.published: list[dict] = []
+
+        async def redis_client(self) -> None:
+            return None
+
+        async def publish(self, _topic: str, event: dict) -> None:
+            self.published.append(event)
+
+        async def presence_clear(self, *_args) -> None:
+            return None
+
+    released = threading.Event()
+
+    async def unfurl(_redis, url: str) -> LinkPreview:
+        while not released.is_set():
+            await asyncio.sleep(0.01)
+        return LinkPreview(
+            url=url, canonical_url=None, title="Example", description=None,
+            image_url=None, site_name=None, fetched_at=0.0,
+        )
+
+    bus = Bus()
+    monkeypatch.setattr(bus_module, "_bus", bus)
+    monkeypatch.setattr(mm_endpoints, "get_link_preview", unfurl)
+
+    post = _post(test_client, token, ch_id, "see https://example.com")
+    assert post["link_preview"] is None
+    released.set()
+
+    deadline = time.monotonic() + 5
+    while not (updates := [e for e in bus.published if e["type"] == "post.updated"]):
+        assert time.monotonic() < deadline, "the link preview never landed"
+        time.sleep(0.01)
+    assert updates[0]["data"]["post_id"] == post["post_id"]
+    assert updates[0]["data"]["link_preview"]["title"] == "Example"
+    assert _posts(test_client, token, ch_id)[0]["link_preview"]["title"] == "Example"
+
+
+def test_a_late_link_preview_skips_an_edited_post(test_client):
+    """The unfurl can finish after an edit; it only lands on the message it
+    was fetched for."""
+    from sqlmodel import Session
+
+    from clawbits.db.models import MmPost
+    from clawbits.db.table_write import TableWrite
+
+    h1 = _register_human(test_client, "late-unfurl@test.com")
+    ch_id = _create_channel(test_client, h1["access_token"], "late-unfurl-chat")["channel_id"]
+    post_id = _post(test_client, h1["access_token"], ch_id, "old")["post_id"]
+    preview = {"url": "https://example.com", "title": "Example"}
+
+    with Session(test_client.app._engine) as db:
+        assert not TableWrite.set_mm_post_link_preview(db, post_id, "new", preview)
+        assert TableWrite.set_mm_post_link_preview(db, post_id, "old", preview)
+        db.commit()
+        assert db.get(MmPost, post_id).link_preview == preview
+
+
+def test_the_channel_list_embeds_each_dm_peer_at_a_fixed_cost(test_client, monkeypatch):
+    """Each DM row carries its peer exactly as the members endpoint shows it to
+    the viewer, privacy and read receipts applied, for the same statements and
+    one presence MGET however many DMs the list holds."""
+    from clawbits.db.table_read import TableRead
+    from clawbits.realtime import get_bus
+
+    viewer = _register_human(test_client, "dm-peers@test.com", display_name="Viewer")
+    token, viewer_id = viewer["access_token"], viewer["user"]["id"]
+    org_id = _get_personal_org_id(test_client, token)
+
+    def human_dm(i: int) -> tuple[str, dict]:
+        email = f"dm-peer-{i}@test.com"
+        peer = _register_human(test_client, email, display_name=f"Peer {i}")
+        _add_human_to_org(test_client, token, email)
+        channel_id = _open_dm(test_client, token, org_id, peer["user"]["id"], "human")["channel_id"]
+        _post(test_client, peer["access_token"], channel_id, "hi")
+        if i % 2:
+            r = test_client.patch(
+                "/api/human/privacy-settings",
+                json={
+                    "online_status_visible": False,
+                    "last_seen_visible": False,
+                    "read_receipts_enabled": False,
+                },
+                headers=_bearer(peer["access_token"]),
+            )
+            assert r.status_code == 200, r.text
+        return channel_id, peer
+
+    def statements() -> int:
+        return _count_statements(
+            test_client,
+            lambda db: TableRead.get_mm_channels_for_human(db, viewer_id, org_id=org_id),
+        )[0]
+
+    left, gone = human_dm(0)
+    _remove_human(test_client, gone["access_token"], left, gone["user"]["id"])
+    human_dm(1)
+    _create_agent(test_client, owner_email="dm-peers@test.com")
+    few = statements()
+    human_dm(2)
+    human_dm(3)
+    _create_agent(test_client, owner_email="dm-peers@test.com")
+    assert statements() == few
+
+    group = _create_channel(test_client, token, "dm-peers-group")["channel_id"]
+    presence_reads: list[list[int]] = []
+    bus = get_bus()
+    read_many = bus.user_presence_get_many
+
+    async def spy(human_ids: list[int]) -> dict:
+        presence_reads.append(human_ids)
+        return await read_many(human_ids)
+
+    monkeypatch.setattr(bus, "user_presence_get_many", spy)
+    r = test_client.get(f"/api/human/mm/channels?org_id={org_id}", headers=_bearer(token))
+    assert r.status_code == 200, r.text
+    assert len(presence_reads) == 1
+    channels = {c["channel_id"]: c for c in r.json()["channels"]}
+    assert channels[group]["dm_peer"] is None
+    dms = [c for c in channels.values() if c["channel_type"] == "direct"]
+    assert len(dms) == 6
+    for c in dms:
+        members = test_client.get(
+            f"/api/human/mm/channels/{c['channel_id']}/members", headers=_bearer(token)
+        ).json()["members"]
+        assert c["dm_peer"] == next((m for m in members if m["human_id"] != viewer_id), None)
+
+
+def test_the_timeline_never_splits_rows_that_share_a_timestamp(test_client):
+    """A page ends before a tie group that straddles it, so the timestamp cursor skips nothing."""
+    from sqlmodel import Session
+
+    from clawbits.db.models import MmPost
+
+    token = _register_human(test_client, "timeline-ties@test.com")["access_token"]
+    ch_id = _create_channel(test_client, token, "timeline-ties")["channel_id"]
+    for i in range(4):
+        _post(test_client, token, ch_id, f"p{i}")
+    ids = sorted(p["post_id"] for p in _posts(test_client, token, ch_id))
+    with Session(test_client.app._engine) as db:
+        tied = db.get(MmPost, ids[2])
+        tied.created_at = db.get(MmPost, ids[1]).created_at
+        db.add(tied)
+        db.commit()
+
+    seen: list[int] = []
+    cursor = None
+    for _ in ids:
+        r = test_client.get(
+            f"/api/human/mm/channels/{ch_id}/timeline",
+            params={"limit": 2, "before_created_at": cursor},
+            headers=_bearer(token),
+        )
+        assert r.status_code == 200, r.text
+        page = r.json()
+        seen += [row["post"]["post_id"] for row in page["rows"] if row["kind"] == "post"]
+        if (cursor := page["next_cursor"]) is None:
+            break
+    assert sorted(seen) == ids
+
+
+def test_the_timeline_pages_every_post_and_event_exactly_once(test_client):
+    """``next_cursor`` walks the merged timeline back: each post and inline event lands on
+    exactly one page."""
+    owner = _register_human(test_client, "timeline@test.com")
+    token = owner["access_token"]
+    ch_id = _create_channel(test_client, token, "timeline-chat")["channel_id"]
+    for i in range(3):
+        email = f"timeline-{i}@test.com"
+        joiner = _register_human(test_client, email)
+        _add_human_to_org(test_client, token, email)
+        _post(test_client, token, ch_id, f"before {i}")
+        _add_member(test_client, token, ch_id, joiner["user"]["id"])
+        _post(test_client, token, ch_id, f"after {i}")
+
+    r = test_client.get(f"/api/human/mm/channels/{ch_id}/inline-events", headers=_bearer(token))
+    assert r.status_code == 200, r.text
+    expected = [("post", p["post_id"]) for p in _posts(test_client, token, ch_id)]
+    expected += [("event", e["event_id"]) for e in r.json()["events"]]
+    assert len(expected) >= 9
+
+    seen: list[tuple[str, int]] = []
+    cursor = None
+    for _ in expected:
+        r = test_client.get(
+            f"/api/human/mm/channels/{ch_id}/timeline",
+            params={"limit": 2, "before_created_at": cursor},
+            headers=_bearer(token),
+        )
+        assert r.status_code == 200, r.text
+        page = r.json()
+        seen += [
+            ("post", row["post"]["post_id"]) if row["kind"] == "post"
+            else ("event", row["event"]["event_id"])
+            for row in page["rows"]
+        ]
+        if (cursor := page["next_cursor"]) is None:
+            break
+    assert sorted(seen) == sorted(expected)
+
+
+def test_the_export_names_the_file_for_any_channel_name(test_client):
+    """The attachment header stays ASCII: a ``filename`` fallback, and ``filename*`` carrying
+    a non-latin channel name. An ASCII name keeps its file name."""
+    from datetime import UTC, datetime
+    from urllib.parse import quote
+
+    token = _register_human(test_client, "export-names@test.com")["access_token"]
+    today = datetime.now(UTC).date().isoformat()
+
+    def export(name: str) -> tuple[str, str]:
+        ch_id = _create_channel(test_client, token, name)["channel_id"]
+        r = test_client.get(f"/api/human/mm/channels/{ch_id}/export", headers=_bearer(token))
+        assert r.status_code == 200, r.text
+        return ch_id, r.headers["content-disposition"]
+
+    _, header = export("Release notes!")
+    assert header.startswith(f'attachment; filename="clawbits-Release-notes-{today}.json"')
+    ch_id, header = export("日本語 чат")
+    assert header == (
+        f'attachment; filename="clawbits-{ch_id}-{today}.json"; '
+        f"filename*=UTF-8''{quote(f'clawbits-日本語-чат-{today}.json', safe='')}"
+    )
+
+
+def test_members_flag_each_agent_the_caller_may_tag_in_one_grant_read(test_client):
+    """``can_tag`` per agent member: the caller's own agent and one granted ``can_tag`` are
+    taggable, one granted only ``can_dm`` is not. One grants read however many agents."""
+    from sqlalchemy import event
+    from sqlmodel import Session
+
+    from clawbits.db.table_write import TableWrite
+
+    caller = _register_human(test_client, "tag-flags@test.com")
+    token, caller_id = caller["access_token"], caller["user"]["id"]
+    _register_human(test_client, "tag-flags-operator@test.com")
+    mine = _create_agent(test_client, owner_email="tag-flags@test.com")["agent_id"]
+    granted, dm_only = (
+        _create_agent(test_client, owner_email="tag-flags-operator@test.com")["agent_id"]
+        for _ in range(2)
+    )
+    ch_id = _create_channel(test_client, token, "tag-flags-chat")["channel_id"]
+    with Session(test_client.app._engine) as db:
+        for agent_id in (mine, granted, dm_only):
+            TableWrite.add_mm_channel_member(db, ch_id, agent_id)
+        TableWrite.upsert_agent_contact_permission(
+            db, granted, human_id=caller_id, can_dm=False, can_tag=True
+        )
+        TableWrite.upsert_agent_contact_permission(
+            db, dm_only, human_id=caller_id, can_dm=True, can_tag=False
+        )
+        db.commit()
+
+    statements: list[str] = []
+
+    def record(*args) -> None:
+        statements.append(args[2])
+
+    event.listen(test_client.app._engine, "before_cursor_execute", record)
+    try:
+        r = test_client.get(f"/api/human/mm/channels/{ch_id}/members", headers=_bearer(token))
+    finally:
+        event.remove(test_client.app._engine, "before_cursor_execute", record)
+    assert r.status_code == 200, r.text
+    flags = {m["agent_id"] or m["human_id"]: m["can_tag"] for m in r.json()["members"]}
+    assert flags == {caller_id: None, mine: True, granted: True, dm_only: False}
+    assert sum("agent_contact_permissions" in s for s in statements) == 1
