@@ -5,7 +5,9 @@ import {
   ModalPanel,
 } from "@/components/modals/Modal";
 import { ReleaseNotesBody } from "@/components/release-notes/ReleaseNotesBody";
+import { CHANGELOG_URL } from "@/components/WordmarkLink";
 import { useReleaseNotes } from "@/hooks/useReleaseNotes";
+import { openExternal } from "@/lib/desktop";
 import { LATEST_RELEASE } from "@/lib/releaseNotes";
 
 export function ReleaseNotesDialog() {
@@ -32,7 +34,12 @@ export function ReleaseNotesDialog() {
       </div>
 
       <ModalFooter>
-        <ModalButton to="/changelog" onClick={dismiss}>
+        <ModalButton
+          onClick={() => {
+            dismiss();
+            void openExternal(CHANGELOG_URL);
+          }}
+        >
           All updates
         </ModalButton>
         <ModalButton tone="primary" onClick={dismiss}>Got it</ModalButton>

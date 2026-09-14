@@ -48,7 +48,7 @@ export function Squircle({
     className,
     children,
 }: {
-    size?: number;
+    size?: number | string;
     /** Off for a native icon asset: it carries its own depth, and the sheen on top reads as a smudge. */
     glass?: boolean;
     className?: string;

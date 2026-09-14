@@ -206,7 +206,6 @@ html[data-tauri-platform="macos"][data-translucent] body {
   --font-sans: 'Inter Variable', ui-sans-serif, sans-serif, system-ui;
   --font-serif: 'Fraunces Variable', serif;
   --font-mono: 'JetBrains Mono Variable', monospace;
-  --font-rounded: 'Fredoka Variable', ui-rounded, 'SF Pro Rounded', 'Baloo 2', system-ui, sans-serif;
   --font-heading: 'Inter Variable', ui-sans-serif, sans-serif, system-ui;
 
   --radius-sm: calc(var(--radius) - 4px);
@@ -236,6 +235,8 @@ html[data-tauri-platform="macos"][data-translucent] body {
   --text-message: 0.9375rem;
   --text-message--line-height: 1.6;
   --text-message--letter-spacing: -0.01em;
+
+  --animate-sombra-rise: sombra-rise 1100ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 #root {
@@ -490,27 +491,6 @@ html[data-tauri-platform="macos"][data-translucent] body {
   animation-duration: 360ms;
   animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 }
-.vt-agent-card {
-  view-transition-name: agent-card-hero;
-}
-.vt-automation-hero {
-  view-transition-name: automation-hero;
-}
-.vt-inbox-message {
-  view-transition-name: inbox-message-hero;
-}
-::view-transition-group(agent-card-hero),
-::view-transition-old(agent-card-hero),
-::view-transition-new(agent-card-hero),
-::view-transition-group(automation-hero),
-::view-transition-old(automation-hero),
-::view-transition-new(automation-hero),
-::view-transition-group(inbox-message-hero),
-::view-transition-old(inbox-message-hero),
-::view-transition-new(inbox-message-hero) {
-  animation-duration: 420ms;
-  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-}
 
 /* filter, not backdrop-filter: only filter is captured in the view-transition snapshots. */
 html[data-media-viewer] #root {
@@ -665,47 +645,489 @@ html[data-media-viewer] [data-vt-contextual] {
   color: var(--foreground);
 }
 
-/* AgentCard tilt: the outer .t-tilt is the flat hit area and never transforms, so the card cannot slide out from under the pointer. */
-@media (hover: hover) and (pointer: fine) {
-  /* Fine pointers only: on touch it would stop the gallery grid scrolling. */
-  .t-tilt {
-    touch-action: none;
-  }
+@property --mx {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.5;
 }
-.t-tilt-card {
-  position: relative;
-  transform: perspective(1000px) rotateX(var(--tilt-rx, 0deg)) rotateY(var(--tilt-ry, 0deg));
-  transform-style: preserve-3d;
-  transition: transform 1000ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
+@property --my {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.5;
 }
-.t-tilt-card.is-tilting {
-  transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.agentcard-glare {
-  opacity: 0;
-  mix-blend-mode: screen;
-  pointer-events: none;
-  transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.t-tilt.is-hover .agentcard-glare {
-  opacity: 0.55;
+@property --tilt {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
 }
 
-.agentcard-shadow {
-  --card-glow: #888888;
-  --card-glow2: #888888;
-  filter:
-    drop-shadow(0 2px 4px rgba(20, 14, 8, 0.05))
-    drop-shadow(0 14px 30px color-mix(in oklch, var(--card-glow) 13%, transparent))
-    drop-shadow(0 30px 62px color-mix(in oklch, var(--card-glow2) 8%, transparent));
+.access {
+  --access-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  width: 340px;
+  max-width: 100%;
+  margin: -2.75rem auto 0;
+  transition: --mx 0.6s var(--access-ease), --my 0.6s var(--access-ease), --tilt 0.5s var(--access-ease);
 }
-.dark .agentcard-shadow {
-  filter:
-    drop-shadow(0 2px 6px rgba(0, 0, 0, 0.24))
-    drop-shadow(0 14px 34px color-mix(in oklch, var(--card-glow) 16%, transparent))
-    drop-shadow(0 28px 60px color-mix(in oklch, var(--card-glow2) 10%, transparent))
-    drop-shadow(0 0 1px rgba(255, 255, 255, 0.16));
+.access[data-hover] {
+  transition-duration: 0.18s, 0.18s, 0.3s;
+}
+
+.access-card {
+  --access-cut: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 540 856'%3E%3Cpath fill-rule='evenodd' d='M30 0h480a30 30 0 0 1 30 30v796a30 30 0 0 1-30 30H30a30 30 0 0 1-30-30V30A30 30 0 0 1 30 0ZM213 32h114a15 15 0 0 1 0 30H213a15 15 0 0 1 0-30Z'/%3E%3C/svg%3E");
+  --access-star: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M5 0 6.1 3.9 10 5 6.1 6.1 5 10 3.9 6.1 0 5 3.9 3.9Z'/%3E%3C/svg%3E");
+  --access-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2.6 0 0 0 -.9'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  --access-satin: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.012 .75' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 3 0 0 0 -1.15'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+  --access-brush: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.003 .9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='1.5 0 0 0 -.25 1.5 0 0 0 -.25 1.5 0 0 0 -.25 0 0 0 0 1'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+  --access-pearl: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 320'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.016' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='1.3 0 0 0 -.12 0 1.2 0 0 -.06 0 0 1.4 0 -.16 0 0 0 0 1'/%3E%3C/filter%3E%3Crect width='320' height='320' filter='url(%23n)'/%3E%3C/svg%3E");
+  --access-soft: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.7' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 .92 0 0 0 0 .8 2.6 0 0 0 -.95'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  --access-glass: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 160'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.35' numOctaves='1' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .86 0 0 0 0 .94 0 0 0 0 1 3.4 0 0 0 -1.45'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  --access-specks: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 260 260'%3E%3Ccircle cx='36.9' cy='232.4' r='0.46' fill='%23c4f1ff' fill-opacity='0.44'/%3E%3Ccircle cx='87.2' cy='150.7' r='0.66' fill='%23d6ccff' fill-opacity='0.31'/%3E%3Ccircle cx='156.3' cy='136.4' r='0.67' fill='%23fff' fill-opacity='0.40'/%3E%3Ccircle cx='162.0' cy='28.7' r='0.42' fill='%23c4f1ff' fill-opacity='0.54'/%3E%3Ccircle cx='124.9' cy='225.9' r='0.56' fill='%23d6ccff' fill-opacity='0.57'/%3E%3Ccircle cx='234.9' cy='97.2' r='0.76' fill='%23fff' fill-opacity='0.64'/%3E%3C/svg%3E");
+  --access-strap: #504b46;
+  --access-metal: #aab0b7;
+  --access-metal-hi: #f7f9fa;
+  --access-metal-lo: #6c727a;
+  --access-thread: transparent;
+  --access-stock: linear-gradient(172deg, #fdfdfb, #f3f3ef);
+  --access-ink: #1c1c1a;
+  --access-sub: rgb(28 28 26 / 0.55);
+  --access-quiet: rgb(28 28 26 / 0.36);
+  --access-edge: rgb(28 28 26 / 0.08);
+  --access-detail: oklch(0.6 0.12 var(--access-h));
+  --access-glint: linear-gradient(105deg, transparent calc(var(--mx) * 160% - 60%), rgb(255 255 255 / calc(var(--tilt) * 0.9)) calc(var(--mx) * 160% - 30%), transparent calc(var(--mx) * 160%));
+  --access-foil: var(--access-ink);
+  --access-label: var(--access-sub);
+  --access-namefoil: var(--access-ink);
+  --access-cutline: rgb(28 28 26 / 0.1);
+  --access-tex: var(--access-grain) 0 0 / 200px 200px;
+  --access-tex-o: 0.03;
+  --access-tex-blend: multiply;
+  --access-ring: none;
+  --access-ring-w: 0;
+  --access-ring-blend: normal;
+  --access-sheen: radial-gradient(65% 45% at calc(var(--mx) * 100%) calc(var(--my) * 100%), rgb(255 255 255 / 0.85), rgb(255 255 255 / 0) 70%), linear-gradient(rgb(24 22 18 / 0.035) 0 0);
+  --access-sheen-blend: normal;
+  --access-sheen-o: 1;
+  position: relative;
+  display: block;
+  width: 100%;
+  container-type: inline-size;
+  text-align: start;
+  letter-spacing: normal;
+  outline: none;
+  -webkit-user-select: none;
+  user-select: none;
+  transform: rotate(calc((var(--mx) - 0.5) * var(--tilt) * -1.6deg));
+  transform-origin: 50% 0;
+}
+.access-card:focus-visible .access-tilt {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 5.556% / 3.505%;
+}
+
+.access-card[data-tier="swell"] {
+  --access-stock: linear-gradient(152deg, oklch(0.99 0.007 var(--access-h)) 0%, oklch(0.955 0.032 var(--access-h)) 52%, oklch(0.978 0.018 var(--access-h)) 100%);
+  --access-tex: var(--access-satin) 0 0 / 240px 240px;
+  --access-tex-o: 0.045;
+}
+.access-card[data-tier="tide"] {
+  --access-foil: var(--access-glint), linear-gradient(135deg, #80868d 8%, #bfc4c9 42%, #8a9097 62%, #b3b8be 92%);
+  --access-tex-o: 0.05;
+  --access-ring: var(--access-brush) 0 0 / 240px 240px, conic-gradient(from calc(var(--mx) * 120deg - 60deg), #c2c6ca, #f3f4f5 25%, #bcc1c5 50%, #f1f2f3 75%, #c2c6ca);
+  --access-ring-w: 1cqw;
+  --access-ring-blend: soft-light, normal;
+}
+.access-card[data-tier="nacre"] {
+  --access-stock: radial-gradient(95% 55% at 12% 0%, oklch(0.975 0.018 350 / 0.9), transparent 70%), radial-gradient(90% 60% at 100% 100%, oklch(0.965 0.02 225 / 0.9), transparent 72%), linear-gradient(172deg, #fdfcf9, #f4f2ee);
+  --access-foil: var(--access-glint), linear-gradient(calc(100deg + var(--mx) * 40deg), oklch(0.6 0.07 350), oklch(0.62 0.06 255) 30%, oklch(0.64 0.06 175) 55%, oklch(0.6 0.07 305)) calc(var(--mx) * 100%) 0 / 240% 100%;
+  --access-label: var(--access-foil);
+  --access-tex: var(--access-grain) 0 0 / 200px 200px, var(--access-pearl) 0 0 / 320px 320px;
+  --access-tex-o: 0.07;
+  --access-sheen: linear-gradient(calc(105deg + var(--mx) * 50deg), transparent 18%, oklch(0.9 0.07 345) 36%, oklch(0.92 0.06 250) 50%, oklch(0.93 0.06 165) 63%, transparent 82%) calc(var(--mx) * 100%) calc(var(--my) * 100%) / 220% 220% no-repeat;
+  --access-sheen-blend: multiply;
+  --access-sheen-o: 0.5;
+}
+.access-card[data-tier="abyss"] {
+  --access-metal: #c19c5e;
+  --access-metal-hi: #fcebc6;
+  --access-metal-lo: #7a5a2b;
+  --access-thread: #d9b776;
+  --access-stock: radial-gradient(120% 70% at 18% 0%, rgb(84 66 44 / 0.34), transparent 65%), linear-gradient(176deg, #16161b, #0c0c10);
+  --access-ink: #f3ede1;
+  --access-sub: rgb(243 237 225 / 0.56);
+  --access-quiet: rgb(243 237 225 / 0.34);
+  --access-edge: rgb(255 238 205 / 0.07);
+  --access-detail: oklch(0.8 0.075 var(--access-h));
+  --access-foil: linear-gradient(105deg, transparent calc(var(--mx) * 160% - 60%), rgb(255 243 212 / calc(var(--tilt) * 0.85)) calc(var(--mx) * 160% - 30%), transparent calc(var(--mx) * 160%)), linear-gradient(160deg, #b88d4c, #efd79f 36%, #c49b58 58%, #e8cb8c 80%, #a47c41);
+  --access-label: var(--access-foil);
+  --access-namefoil: var(--access-foil);
+  --access-cutline: rgb(222 188 122 / 0.28);
+  --access-tex: var(--access-soft) 0 0 / 200px 200px;
+  --access-tex-o: 0.11;
+  --access-tex-blend: normal;
+  --access-ring: conic-gradient(from calc(var(--mx) * 90deg), #8a6934, #eed49b 14%, #a78247 32%, #f5e2b3 52%, #94733d 70%, #e2c486 86%, #8a6934);
+  --access-ring-w: max(1px, 0.32cqw);
+  --access-sheen: radial-gradient(70% 50% at calc(var(--mx) * 100%) calc(var(--my) * 100%), rgb(255 222 160 / 0.09), transparent 70%);
+}
+.access-card[data-tier="hadal"] {
+  --access-metal: #8e9bab;
+  --access-metal-hi: #eef6ff;
+  --access-metal-lo: #4c5766;
+  --access-thread: #72e0ef;
+  --access-stock: var(--access-specks) 0 0 / 260px 260px, radial-gradient(130% 75% at 88% 100%, rgb(92 82 150 / 0.26), transparent 70%), linear-gradient(176deg, #1b1b20, #09090c);
+  --access-ink: #eef1f6;
+  --access-sub: rgb(230 236 246 / 0.56);
+  --access-quiet: rgb(230 236 246 / 0.34);
+  --access-edge: rgb(205 225 255 / 0.07);
+  --access-detail: url(#access-g-plat) #d5dbe3;
+  --access-foil: linear-gradient(105deg, transparent calc(var(--mx) * 160% - 60%), rgb(240 252 255 / calc(var(--tilt) * 0.9)) calc(var(--mx) * 160% - 30%), transparent calc(var(--mx) * 160%)), linear-gradient(115deg, #b9c1cc, #f2f5f9 24%, #b4dfe8 44%, #cfc6ef 62%, #eef1f6 80%, #aab3bf) calc(var(--mx) * 100%) 0 / 220% 100%;
+  --access-label: var(--access-foil);
+  --access-namefoil: var(--access-foil);
+  --access-cutline: rgb(190 220 250 / 0.2);
+  --access-tex: var(--access-glass) 0 0 / 160px 160px;
+  --access-tex-o: 0.12;
+  --access-tex-blend: normal;
+  --access-ring: conic-gradient(from calc(var(--mx) * 120deg + 200deg), #aab4c2, #f0faff 10%, #8fe0ee 24%, #b6a4f4 40%, #e6ebf2 55%, #80d4e6 72%, #c3b2f6 86%, #aab4c2);
+  --access-ring-w: max(1px, 0.4cqw);
+  --access-sheen: radial-gradient(70% 50% at calc(var(--mx) * 100%) calc(var(--my) * 100%), rgb(170 220 255 / 0.08), transparent 70%);
+}
+
+.access-strap,
+.access-hook {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  pointer-events: none;
+}
+.access-strap {
+  margin-bottom: calc(-44cqw / 5.4);
+  filter: drop-shadow(0 0.6cqw 0.8cqw rgb(24 22 18 / 0.18));
+}
+.access-hook {
+  position: absolute;
+  top: 0;
+  left: 0;
+  filter: drop-shadow(0 0.3cqw 0.35cqw rgb(24 22 18 / 0.32));
+}
+.access-web {
+  fill: var(--access-strap);
+}
+.access-thread {
+  fill: none;
+  stroke: var(--access-thread);
+  stroke-width: 1.3;
+}
+.access-stitch {
+  fill: none;
+  stroke: rgb(255 255 255 / 0.2);
+  stroke-dasharray: 3 2.2;
+}
+.access-metal {
+  fill: var(--access-metal);
+  stroke: var(--access-metal-lo);
+  stroke-width: 0.8;
+}
+.access-groove {
+  fill: none;
+  stroke: var(--access-metal-lo);
+  stroke-width: 1.1;
+  stroke-opacity: 0.7;
+}
+.access-groove-hi {
+  fill: none;
+  stroke: var(--access-metal-hi);
+  stroke-width: 0.7;
+}
+.access-wire,
+.access-wire-lo,
+.access-wire-hi {
+  fill: none;
+  stroke-linecap: round;
+}
+.access-wire {
+  stroke: var(--access-metal);
+  stroke-width: 6.4;
+}
+.access-wire-lo {
+  stroke: var(--access-metal-lo);
+  stroke-width: 7.6;
+}
+.access-wire-hi {
+  stroke: var(--access-metal-hi);
+  stroke-width: 1.6;
+}
+.access-eye {
+  stroke-width: 4.4;
+}
+
+.access-tilt {
+  display: block;
+  transform: perspective(900px) rotateX(calc((0.5 - var(--my)) * var(--tilt) * 10deg)) rotateY(calc((var(--mx) - 0.5) * var(--tilt) * 10deg));
+  transform-origin: 50% 4%;
+  filter: drop-shadow(0 1px 1px rgb(24 22 18 / 0.07)) drop-shadow(0 10px 22px rgb(24 22 18 / 0.11));
+}
+.access-flip {
+  position: relative;
+  display: block;
+  aspect-ratio: 540 / 856;
+  transform: perspective(1400px) rotateY(0deg);
+  transform-style: preserve-3d;
+  transition: transform 0.7s cubic-bezier(0.65, 0, 0.35, 1);
+}
+.access-card[aria-pressed="true"] .access-flip {
+  transform: perspective(1400px) rotateY(180deg);
+}
+
+.access-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 8.5cqw 8cqw;
+  border-radius: 5.556% / 3.505%;
+  background: var(--access-stock);
+  color: var(--access-ink);
+  box-shadow: inset 0 0 0 1px var(--access-edge);
+  -webkit-mask: var(--access-cut) 0 0 / 100% 100% no-repeat;
+  mask: var(--access-cut) 0 0 / 100% 100% no-repeat;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  transition: visibility 0s 0.35s;
+}
+.access-back {
+  transform: rotateY(180deg);
+}
+.access-card:not([aria-pressed="true"]) .access-back,
+.access-card[aria-pressed="true"] .access-front {
+  visibility: hidden;
+}
+.access-face::before,
+.access-face::after,
+.access-fx,
+.access-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.access-face::before {
+  content: "";
+  background: var(--access-tex);
+  opacity: var(--access-tex-o);
+  mix-blend-mode: var(--access-tex-blend);
+}
+.access-face::after {
+  content: "";
+  padding: var(--access-ring-w);
+  background: var(--access-ring);
+  background-blend-mode: var(--access-ring-blend);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+.access-sheen {
+  opacity: 0;
+  background: var(--access-sheen);
+  mix-blend-mode: var(--access-sheen-blend);
+  transition: opacity 0.5s ease;
+}
+.access[data-hover] .access-sheen {
+  opacity: var(--access-sheen-o);
+}
+.access-card[data-tier="hadal"] .access-fx {
+  box-shadow:
+    inset 1.2cqw 1.4cqw 4cqw -1.6cqw oklch(0.82 0.11 210 / 0.5),
+    inset -1.2cqw -1.4cqw 4cqw -1.6cqw oklch(0.64 0.15 295 / 0.55),
+    inset 0 0 0 1px oklch(0.78 0.07 250 / 0.18);
+  animation: access-breathe 10s ease-in-out infinite alternate;
+}
+@keyframes access-breathe {
+  from { opacity: 0.45; }
+  to { opacity: 0.9; }
+}
+.access-slot {
+  position: absolute;
+  left: 36.667%;
+  width: 26.667%;
+  top: 3.738%;
+  height: 3.505%;
+  border-radius: 99px;
+  box-shadow: 0 0 0 1px var(--access-cutline);
+}
+
+.access-top,
+.access-id,
+.access-foot,
+.access-bhead,
+.access-marks,
+.access-return {
+  position: relative;
+}
+.access-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3cqw;
+  height: 5.4cqw;
+  margin-top: 6cqw;
+}
+.access-logo {
+  display: block;
+  flex: none;
+  width: 5.4cqw;
+  height: 5.4cqw;
+  background: var(--access-foil);
+  -webkit-mask: url(/clawbits-short.svg) center / contain no-repeat;
+  mask: url(/clawbits-short.svg) center / contain no-repeat;
+}
+.access-org {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: max(7.5px, 4cqw);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.access-avatar {
+  margin-top: 28cqw;
+  background: var(--access-edge);
+}
+.access-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.access-id {
+  display: flex;
+  flex-direction: column;
+  gap: 1.4cqw;
+  margin-top: 7cqw;
+}
+.access-name {
+  align-self: flex-start;
+  max-width: 100%;
+  margin-block: -0.175em;
+  padding-block: 0.1em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 8.2cqw;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  line-height: 1.2;
+  background: var(--access-namefoil);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.access-sub {
+  font-size: max(7.5px, 4cqw);
+  color: var(--access-sub);
+  line-height: 1.3;
+}
+.access-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-top: auto;
+}
+.access-tier {
+  display: flex;
+  align-items: center;
+  gap: 1.2cqw;
+  font-size: max(7.5px, 3.7cqw);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.access-tier-name {
+  display: inline-block;
+  line-height: 1.2;
+  background: var(--access-label);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.access-star {
+  display: none;
+  width: 2.6cqw;
+  height: 2.6cqw;
+  background: var(--access-foil);
+  -webkit-mask: var(--access-star) center / contain no-repeat;
+  mask: var(--access-star) center / contain no-repeat;
+}
+.access-card[data-full] .access-star {
+  display: block;
+}
+.access-nfc {
+  display: block;
+  width: 4.76cqw;
+  height: 7.4cqw;
+  fill: none;
+  stroke: var(--access-detail);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.access-bhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: 22cqw;
+  font-size: 3.8cqw;
+  color: var(--access-sub);
+}
+.access-btitle {
+  font-weight: 600;
+  color: var(--access-ink);
+}
+.access-marks {
+  margin-top: 4cqw;
+}
+.access-marks > span {
+  display: flex;
+  align-items: center;
+  gap: 2.6cqw;
+  height: 9cqw;
+  font-size: 3.8cqw;
+  border-top: 1px solid var(--access-edge);
+}
+.access-marks > span:last-child {
+  border-bottom: 1px solid var(--access-edge);
+}
+.access-marks i {
+  flex: none;
+  width: 1.8cqw;
+  height: 1.8cqw;
+  border-radius: 50%;
+  background: var(--access-quiet);
+  opacity: 0.45;
+}
+.access-marks [data-on] i {
+  background: var(--access-foil);
+  opacity: 1;
+}
+.access-what {
+  flex: 1;
+  color: var(--access-sub);
+}
+.access-marks [data-on] .access-what {
+  color: var(--access-ink);
+}
+.access-when {
+  color: var(--access-quiet);
+  font-variant-numeric: tabular-nums;
+}
+.access-marks [data-on] .access-when {
+  color: var(--access-sub);
+}
+.access-return {
+  margin-top: auto;
+  font-size: 3.4cqw;
+  color: var(--access-quiet);
 }
 
 /* 0fr to 1fr grid rows: the reliable way to transition height to and from auto. */
@@ -750,21 +1172,16 @@ html[data-media-viewer] [data-vt-contextual] {
 .home-tiles > *:nth-child(7) { animation-delay: 360ms; }
 .home-tiles > *:nth-child(8) { animation-delay: 420ms; }
 
+@keyframes sombra-rise {
+  from { transform: scaleY(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-old(root),
   ::view-transition-new(root),
   ::view-transition-group(mm-media),
   ::view-transition-old(mm-media),
-  ::view-transition-new(mm-media),
-  ::view-transition-group(agent-card-hero),
-  ::view-transition-old(agent-card-hero),
-  ::view-transition-new(agent-card-hero),
-  ::view-transition-group(automation-hero),
-  ::view-transition-old(automation-hero),
-  ::view-transition-new(automation-hero),
-  ::view-transition-group(inbox-message-hero),
-  ::view-transition-old(inbox-message-hero),
-  ::view-transition-new(inbox-message-hero) {
+  ::view-transition-new(mm-media) {
     animation: none;
   }
   .stream-word-in,
@@ -788,12 +1205,13 @@ html[data-media-viewer] [data-vt-contextual] {
     animation: none;
     opacity: 0;
   }
-  .t-tilt-card {
-    transform: none !important;
-    transition: none !important;
+  .access-flip,
+  .access-face {
+    transition: none;
   }
-  .agentcard-glare {
-    opacity: 0 !important;
+  .access-card[data-tier="hadal"] .access-fx {
+    animation: none;
+    opacity: 0.75;
   }
   .disclosure,
   .disclosure > .disclosure-inner,

@@ -44,9 +44,8 @@ In scope — anything in this repository, particularly:
 
 Out of scope:
 
-- Missing hardening on a deliberately permissive **local dev** setup — `CLAWBITS_DEV_AUTH=1`,
-  `CLAWBITS_INSECURE_COOKIES=1`, and an unset `REEF_ADMIN_TOKEN` are documented dev conveniences and
-  are unsafe by design.
+- Missing hardening on a deliberately permissive **local dev** setup: `CLAWBITS_DEV_AUTH=1` and
+  `CLAWBITS_INSECURE_COOKIES=1` are documented dev conveniences and are unsafe by design.
 - Anything requiring a compromised operator machine or a stolen API key already in the attacker's
   possession.
 - Vulnerabilities in third-party dependencies with no exploitable path in this codebase — report

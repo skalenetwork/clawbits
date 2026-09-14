@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ReefHost } from "@/lib/api";
+import { TONE_FILL, type StatusTone } from "@/lib/status";
 import { cn } from "@/lib/utils";
 
 const ROW =
@@ -9,14 +10,7 @@ const ROW =
 const PRESSABLE = "outline-none transition-colors first:rounded-t-[14px] last:rounded-b-[14px]";
 const TITLE = "block text-sm font-medium text-foreground";
 
-const STATUS_DOT = {
-  ok: "bg-emerald-500",
-  warn: "bg-amber-500",
-  bad: "bg-destructive",
-  idle: "border border-muted-foreground",
-} as const;
-
-export type StatusTone = keyof typeof STATUS_DOT;
+const STATUS_DOT: Record<StatusTone, string> = { ...TONE_FILL, idle: "border border-muted-foreground" };
 
 interface StatusLook {
   tone: StatusTone;
@@ -48,11 +42,13 @@ export function SettingsSection({
   label,
   aside,
   footer,
+  stack,
   children,
 }: {
   label?: ReactNode;
   aside?: ReactNode;
   footer?: ReactNode;
+  stack?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -63,7 +59,7 @@ export function SettingsSection({
           {aside != null && <div className="font-normal">{aside}</div>}
         </div>
       )}
-      <div className="rounded-[14px] bg-card">{children}</div>
+      <div className={stack ? "flex flex-col gap-2" : "rounded-[14px] bg-card"}>{children}</div>
       {footer != null && (
         <div className="px-3 pt-2 text-[12.5px] text-muted-foreground">{footer}</div>
       )}
@@ -80,6 +76,8 @@ export function SettingsRow({
   htmlFor,
   onClick,
   to,
+  replace,
+  selected,
 }: {
   title: ReactNode;
   description?: ReactNode;
@@ -89,6 +87,8 @@ export function SettingsRow({
   htmlFor?: string;
   onClick?: () => void;
   to?: string;
+  replace?: boolean;
+  selected?: boolean;
 }) {
   const body = (
     <>
@@ -102,7 +102,12 @@ export function SettingsRow({
               {title}
             </label>
           ) : to ? (
-            <Link to={to} className={cn(TITLE, "outline-none after:absolute after:inset-0")}>
+            <Link
+              to={to}
+              replace={replace}
+              aria-current={selected}
+              className={cn(TITLE, "outline-none after:absolute after:inset-0")}
+            >
               {title}
             </Link>
           ) : (
@@ -127,7 +132,13 @@ export function SettingsRow({
     <button
       type="button"
       onClick={onClick}
-      className={cn(ROW, PRESSABLE, "cursor-pointer hover:bg-foreground/4 focus-visible:bg-foreground/4")}
+      aria-current={selected}
+      className={cn(
+        ROW,
+        PRESSABLE,
+        "cursor-pointer hover:bg-foreground/4 focus-visible:bg-foreground/4",
+        selected && "bg-foreground/8 hover:bg-foreground/8",
+      )}
     >
       {body}
     </button>
@@ -136,6 +147,7 @@ export function SettingsRow({
       className={cn(
         ROW,
         to && [PRESSABLE, "has-[a:hover]:bg-foreground/4 has-[a:focus-visible]:bg-foreground/4"],
+        selected && "bg-foreground/8 has-[a:hover]:bg-foreground/8",
       )}
     >
       {body}

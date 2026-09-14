@@ -1608,3 +1608,22 @@ class AgentSkillSyncState(SQLModel, table=True):
         default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
     )
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+
+
+class AgentMark(SQLModel, table=True):
+    """One Tidemark: an agent's first-time achievement. Insert-only, so a mark never drops.
+
+    ``kind`` is plain text validated in code by :data:`clawbits.agent_marks.MarkKind`, so a new
+    kind needs no migration. ``detail`` holds ids only, resolved to an org-safe label on read.
+    """
+
+    __tablename__ = "agent_marks"
+
+    agent_id: str = Field(primary_key=True, foreign_key="agents.agent_id")
+    kind: str = Field(sa_column=SAColumn(Text, primary_key=True))
+    earned_at: datetime | None = Field(
+        default=None, sa_column=_server_now_column(nullable=False)
+    )
+    detail: dict[str, Any] | None = Field(
+        default=None, sa_column=SAColumn(JSONB(none_as_null=True), nullable=True)
+    )

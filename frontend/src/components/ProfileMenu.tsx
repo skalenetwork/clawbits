@@ -11,12 +11,13 @@ import { UserAvatar } from "@/components/UserAvatar";
 import {
   ProfileMenuContext,
   useProfileMenuTrigger,
+  type ProfileMember,
   type ProfileMenuTarget,
 } from "@/components/profileMenuContext";
 import { useAgentStatus } from "@/hooks/useAgentPresence";
 import { useUserStatus } from "@/hooks/useUserPresence";
 import { agentStatusLabel } from "@/lib/agentLiveness";
-import { createOrGetMmDirect, type MmChannelMember } from "@/lib/api";
+import { createOrGetMmDirect } from "@/lib/api";
 import { MENU_ITEM, MENU_SURFACE } from "@/lib/menuSurface";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -53,7 +54,7 @@ export const ProfileMenuTrigger = memo(function ProfileMenuTrigger({
   className,
   ariaLabel,
 }: {
-  member: MmChannelMember | null;
+  member: ProfileMember | null;
   handleText: string;
   children: ReactNode;
   className: string;

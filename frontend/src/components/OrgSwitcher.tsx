@@ -26,7 +26,9 @@ import {
 } from "@/components/modals/Modal";
 import {Input} from "@/components/ui/input";
 import {UserAvatar} from "@/components/UserAvatar";
+import {CHANGELOG_URL} from "@/components/WordmarkLink";
 import {createOrg, getOrgs, markOrgVisited, type Org} from "@/lib/api";
+import {openExternal} from "@/lib/desktop";
 import {queryKeys} from "@/lib/queryKeys";
 import {useAuth} from "@/context/AuthContext";
 import {toast} from "@/lib/toast";
@@ -155,7 +157,7 @@ export function OrgSwitcher() {
                         </DropdownMenuItem>
                     </DropdownMenuGroup>
                     <DropdownMenuSeparator/>
-                    <DropdownMenuItem onClick={() => { void navigate("/changelog"); }}>
+                    <DropdownMenuItem onClick={() => { void openExternal(CHANGELOG_URL); }}>
                         <Icon icon={Sparkles}/>
                         What&apos;s new
                         <DropdownMenuShortcut className="tabular-nums">v{__BUILD_VERSION__}</DropdownMenuShortcut>

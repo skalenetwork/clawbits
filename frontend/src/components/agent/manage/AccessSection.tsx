@@ -1,15 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AtIcon,
-  Cancel01Icon,
-  LockIcon,
-  Mail01Icon,
-  RefreshIcon,
-  UserIcon,
-  UserMultiple02Icon,
-} from "@hugeicons/core-free-icons";
-import { Bot } from "lucide-react";
+import { Add01Icon, AtIcon, Cancel01Icon, LockIcon, Mail01Icon } from "@hugeicons/core-free-icons";
 import {
   getAgents,
   listAgentContactPermissions,
@@ -21,11 +12,9 @@ import {
 } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
+import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { Icon } from "@/components/Icon";
-import { Avatar } from "@/components/Avatar";
-import { SectionHeader } from "@/components/automations/SectionHeader";
-import { ManageAddButton } from "./ManageAddButton";
+import { UserAvatar } from "@/components/UserAvatar";
 import {
   ModalHeader,
   ModalList,
@@ -35,8 +24,8 @@ import {
   ModalSearch,
   ModalSection,
 } from "@/components/modals/Modal";
+import { SettingsRow, SettingsRowSkeleton, SettingsSection } from "@/components/settings/Settings";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface Candidate {
@@ -54,6 +43,9 @@ const PERMS = [
   { field: "can_tag", icon: AtIcon, label: "Tag", tooltip: "Can @-mention in channels" },
 ] as const;
 
+const CHIP =
+  "inline-flex h-[26px] items-center gap-[5px] rounded-[7px] border border-border px-[9px] text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-pressed:border-transparent aria-pressed:bg-foreground/8 aria-pressed:text-foreground";
+
 function pickName(...vals: (string | null | undefined)[]): string {
   return vals.map((v) => v?.trim()).find(Boolean) ?? "";
 }
@@ -61,11 +53,13 @@ function pickName(...vals: (string | null | undefined)[]): string {
 export function AccessSection({
   orgId,
   agentId,
+  agentName,
   operator,
 }: {
   orgId: string;
   agentId: string;
-  operator: AgentOperator | null;
+  agentName: string;
+  operator?: AgentOperator | null;
 }) {
   const queryClient = useQueryClient();
   const permsKey = queryKeys.agentContactPermissions(agentId);
@@ -79,12 +73,10 @@ export function AccessSection({
   const membersQuery = useQuery({
     queryKey: queryKeys.orgMembers(orgId),
     queryFn: () => listOrgMembers(orgId),
-    enabled: Boolean(orgId),
   });
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents(orgId),
     queryFn: () => getAgents(orgId),
-    enabled: Boolean(orgId),
   });
 
   const grants = permsQuery.data?.permissions ?? [];
@@ -131,7 +123,7 @@ export function AccessSection({
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: permsKey });
-      void queryClient.invalidateQueries({ queryKey: ["agentProfile"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentProfile(orgId, agentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents(orgId) });
     },
     onError: (err) => {
@@ -145,85 +137,77 @@ export function AccessSection({
     : null;
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <SectionHeader icon={UserMultiple02Icon}>
-          <span className="truncate">Who can reach this agent</span>
-          {grants.length > 0 && (
-            <span className="tabular-nums text-muted-foreground/70">{grants.length}</span>
-          )}
-        </SectionHeader>
-        <ManageAddButton
-          onClick={() => {
-            setAdding(true);
-          }}
-        />
-      </div>
-
-      <div className="overflow-hidden rounded-xl border border-border/60 bg-card">
-        <div className="divide-y divide-border/60">
-          {operator && (
-            <div className="flex items-center gap-3 px-4 py-2.5">
-              <Avatar src={operator.avatar?.url} name={operatorName} size={32} className="rounded-full" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-foreground">{operatorName}</div>
-                <div className="text-label text-muted-foreground">Operator</div>
-              </div>
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted/60 px-2.5 py-1 text-label font-medium text-muted-foreground">
-                <Icon icon={LockIcon} className="size-3" />
+    <>
+      <SettingsSection
+        label={`Who can reach ${agentName}`}
+        aside={
+          <button
+            type="button"
+            onClick={() => {
+              setAdding(true);
+            }}
+            className="inline-flex items-center gap-1 rounded-sm font-medium text-foreground outline-none transition-colors hover:text-foreground/70 focus-visible:ring-2 focus-visible:ring-ring/50"
+          >
+            <Icon icon={Add01Icon} className="size-3.5" />
+            Add
+          </button>
+        }
+      >
+        {operator && (
+          <SettingsRow
+            leading={<UserAvatar name={operatorName} src={operator.avatar?.url} />}
+            title={operatorName}
+            description="Operator"
+            control={
+              <span className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
+                <Icon icon={LockIcon} className="size-3.5" />
                 Always allowed
               </span>
-            </div>
-          )}
-
-          {permsQuery.isLoading ? (
-            <div className="space-y-2 px-4 py-3">
-              <Skeleton className="h-8 w-full" />
-              <Skeleton className="h-8 w-full" />
-            </div>
-          ) : permsQuery.isError ? (
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <span className="text-caption text-muted-foreground">Couldn&apos;t load the allowlist.</span>
+            }
+          />
+        )}
+        {permsQuery.isPending ? (
+          Array.from({ length: 2 }, (_, i) => <SettingsRowSkeleton key={i} />)
+        ) : permsQuery.isError ? (
+          <SettingsRow
+            title="Couldn't load the allowlist"
+            control={
               <Button
-                variant="ghost"
-                size="xs"
+                variant="outline"
+                size="sm"
                 onClick={() => {
                   void permsQuery.refetch();
                 }}
               >
-                <Icon icon={RefreshIcon} className="size-3.5" />
                 Retry
               </Button>
-            </div>
-          ) : grants.length === 0 ? (
-            <div className="px-4 py-4 text-caption text-muted-foreground">
-              No one else can reach this agent yet - grant access with{" "}
-              <span className="font-medium">Add</span>.
-            </div>
-          ) : (
-            grants.map((entry) => {
-              const key = `${entry.principal_type}:${entry.principal_id}`;
-              const info = directory.get(key);
-              const label = pickName(entry.display_name, info?.label) || entry.principal_id;
-              const human = entry.principal_type === "human";
-              const rowPending = pendingPrincipal === key;
-              return (
-                <div key={key} className="group flex items-center gap-3 px-4 py-2.5">
-                  <Avatar src={info?.avatarUrl} name={label} size={32} className="rounded-full" />
-                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                    <span className="truncate text-sm text-foreground">{label}</span>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <span className="shrink-0 text-muted-foreground/60">
-                            <Icon icon={human ? UserIcon : Bot} className="size-3.5" />
-                          </span>
-                        }
-                      />
-                      <TooltipContent>{human ? "Person" : "Agent"}</TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
+            }
+          />
+        ) : grants.length === 0 ? (
+          <SettingsRow
+            title={<span className="font-normal text-muted-foreground">No one else can reach {agentName} yet</span>}
+          />
+        ) : (
+          grants.map((entry) => {
+            const key = `${entry.principal_type}:${entry.principal_id}`;
+            const info = directory.get(key);
+            const label = pickName(entry.display_name, info?.label) || entry.principal_id;
+            const human = entry.principal_type === "human";
+            const rowPending = pendingPrincipal === key;
+            return (
+              <SettingsRow
+                key={key}
+                leading={
+                  human ? (
+                    <UserAvatar name={label} src={info?.avatarUrl} />
+                  ) : (
+                    <AgentFaceAvatar name={label} src={info?.avatarUrl} />
+                  )
+                }
+                title={label}
+                description={human ? "Person" : "Agent"}
+                control={
+                  <>
                     {PERMS.map((p) => (
                       <Tooltip key={p.field}>
                         <TooltipTrigger
@@ -236,14 +220,7 @@ export function AccessSection({
                               onClick={() => {
                                 mutation.mutate({ ...entry, [p.field]: !entry[p.field] });
                               }}
-                              className={cn(
-                                "flex h-9 items-center gap-1 rounded-lg border border-transparent px-2 text-xs font-medium transition-colors outline-none",
-                                "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30",
-                                "disabled:pointer-events-none disabled:opacity-50",
-                                entry[p.field]
-                                  ? "bg-primary/10 text-foreground"
-                                  : "text-muted-foreground/50 hover:bg-muted hover:text-muted-foreground",
-                              )}
+                              className={CHIP}
                             >
                               <Icon icon={p.icon} className="size-3.5" />
                               {p.label}
@@ -253,30 +230,26 @@ export function AccessSection({
                         <TooltipContent>{p.tooltip}</TooltipContent>
                       </Tooltip>
                     ))}
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-muted-foreground"
                       disabled={rowPending}
+                      aria-label={`Remove ${label}`}
+                      title="Remove access"
                       onClick={() => {
                         mutation.mutate({ ...entry, can_dm: false, can_tag: false });
                       }}
-                      className={cn(
-                        "ml-1 flex size-9 items-center justify-center rounded-lg text-muted-foreground transition-[color,background-color,opacity] outline-none",
-                        "opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100",
-                        "hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30",
-                        "disabled:pointer-events-none disabled:opacity-40",
-                      )}
-                      aria-label={`Remove ${label}`}
-                      title="Remove access"
                     >
                       <Icon icon={Cancel01Icon} className="size-4" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
+                    </Button>
+                  </>
+                }
+              />
+            );
+          })
+        )}
+      </SettingsSection>
 
       <ModalPanel
         open={adding}
@@ -293,7 +266,7 @@ export function AccessSection({
           <ModalSearch value={query} onChange={setQuery} placeholder="Search people and agents" />
         </ModalHeader>
         <ModalList>
-          {membersQuery.isLoading || agentsQuery.isLoading ? (
+          {membersQuery.isPending || agentsQuery.isPending ? (
             <ModalNote>Loading…</ModalNote>
           ) : candidates.length === 0 ? (
             <ModalNote>No one left to add.</ModalNote>
@@ -322,6 +295,6 @@ export function AccessSection({
           )}
         </ModalList>
       </ModalPanel>
-    </section>
+    </>
   );
 }

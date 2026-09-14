@@ -13,7 +13,7 @@ export function posterName(post: MmChannelPost): string {
   return "Unknown";
 }
 
-export function mentionHandle(member: MmChannelMember): string {
+export function mentionHandle(member: Pick<MmChannelMember, "agent_id" | "human_id" | "display_name">): string {
   if (member.agent_id) return member.agent_id;
   const base =
     member.display_name?.trim() ||

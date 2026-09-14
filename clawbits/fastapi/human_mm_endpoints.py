@@ -219,9 +219,9 @@ def _require_presigner(request: Request) -> R2Presigner:
 
 def _with_file_urls(request: Request, posts: list[dict]) -> list[dict]:
     presigner = getattr(request.app, "_r2_presigner", None)
-    ttl = load_file_config().download_url_ttl
+    cfg = load_file_config()
     for post in posts:
-        enrich_post_files_with_urls(post, presigner, ttl=ttl)
+        enrich_post_files_with_urls(post, presigner, cfg)
     return posts
 
 
@@ -1387,14 +1387,11 @@ def get_file_download_url(
         if row.status != "uploaded":
             raise HTTPException(status_code=409, detail=f"File not ready (status={row.status})")
         _require_human_member(db, row.channel_id, user["id"])
-        # The post enricher signs ``:original`` for images only, so a longer media TTL on
-        # this shared cache key never leaks into it.
-        is_media = (row.content_type or "").lower().startswith(("video/", "audio/"))
         url, expires_at = cached_presigned_get(
             presigner,
             cache_key=f"{row.file_id}:original",
             object_key=row.object_key,
-            ttl=cfg.media_download_url_ttl if is_media else cfg.download_url_ttl,
+            ttl=cfg.download_url_ttl_for(row.content_type),
             download_filename=row.filename,
         )
     return MmFileDownloadUrlResponse(

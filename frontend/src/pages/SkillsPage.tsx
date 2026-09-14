@@ -59,8 +59,8 @@ export default function SkillsPage() {
                     <SkillScopeMenu scope={scope} onScopeChange={setScope} counts={counts}/>
                 }
                 actions={
-                    <Button size="sm" onClick={() => { setForgeOpen(true); }}>
-                        <Icon icon={Plus} className="size-4"/>
+                    <Button size="compact" onClick={() => { setForgeOpen(true); }}>
+                        <Icon icon={Plus}/>
                         New
                     </Button>
                 }

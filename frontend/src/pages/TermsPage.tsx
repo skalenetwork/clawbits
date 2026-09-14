@@ -1,5 +1,7 @@
 import { Link } from "react-router-dom";
 import { SiteHeader } from "@/components/SiteHeader";
+import { CHANGELOG_URL } from "@/components/WordmarkLink";
+import { openExternal } from "@/lib/desktop";
 
 const EFFECTIVE_DATE = "6 May 2026";
 
@@ -568,9 +570,16 @@ export default function TermsPage() {
             <Link to="/privacy" className="hover:text-foreground">
               Privacy
             </Link>
-            <Link to="/changelog" className="hover:text-foreground">
+            <a
+              href={CHANGELOG_URL}
+              onClick={(e) => {
+                e.preventDefault();
+                void openExternal(CHANGELOG_URL);
+              }}
+              className="hover:text-foreground"
+            >
               Changelog
-            </Link>
+            </a>
             <Link to="/login" className="hover:text-foreground">
               Back to sign in
             </Link>

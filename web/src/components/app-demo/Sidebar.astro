@@ -1,0 +1,488 @@
+---
+import { ArrowLeft, ArrowRight, Bot, House, ListFilter, PanelLeft, Pin, Plus, Search } from "lucide";
+import { Settings01Icon } from "@hugeicons/core-free-icons";
+import { ico } from "../../lib/appicon";
+import { CAST, type Chat } from "../../content/demo-chats";
+
+interface Props {
+  chats: Chat[];
+}
+
+const { chats } = Astro.props;
+const rows = [...chats.filter((c) => c.pinned), ...chats.filter((c) => !c.pinned)];
+
+/** A team org, so the label carries no " (Personal)" suffix (OrgSwitcher.tsx:36-39). */
+const ORG = "Clawbits HQ";
+---
+
+<aside class="side">
+  <div class="top">
+    <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="hist">
+      <span class="tb"><span class="ic s16" set:html={ico(ArrowLeft)} /></span>
+      <span class="tb"><span class="ic s16" set:html={ico(ArrowRight)} /></span>
+    </span>
+    <span class="toggle"><span class="ic s16" set:html={ico(PanelLeft)} /></span>
+  </div>
+
+  <div class="nav">
+    <span class="row"><span class="ic s16" set:html={ico(Plus)} />New</span>
+    <label class="row">
+      <input type="radio" name="demo-view" id="v-home" class="vr" />
+      <span class="ic s16" set:html={ico(House)} />Home
+    </label>
+    <label class="row">
+      <input type="radio" name="demo-view" id="v-agents" class="vr" />
+      <span class="ic s16" set:html={ico(Bot)} />Agents
+    </label>
+    <span class="row"><span class="ic s16" set:html={ico(Search)} />Search<kbd>⌘K</kbd></span>
+  </div>
+
+  <div class="scroll">
+    <div class="head">
+      <span class="label">Chats</span>
+      <span class="filter"><span class="ic s12" set:html={ico(ListFilter)} /></span>
+    </div>
+    <div class="list">
+      {
+        rows.map((c) => {
+          const pill = c.mention ? `@${c.mention}` : c.unread ? String(c.unread) : undefined;
+          return (
+            <label class="row">
+              <input type="radio" name="demo-view" id={`v-${c.id}`} class="vr" checked={c.id === "eng"} />
+              <span class="glyph">
+                <img class={`ava s20 ava-${c.species}`} src={c.src} alt="" width="20" height="20" />
+                {c.peer && <i class:list={["pd", `pd-${CAST[c.peer].presence}`]} />}
+              </span>
+              <span class="name trunc">{c.name}</span>
+              <span class="trail">
+                {pill && <span class="pill">{pill}</span>}
+                {c.working ? (
+                  <span class="sig" role="img" aria-label="Replying">
+                    <i class="spin" />
+                  </span>
+                ) : c.pinned ? (
+                  <span class="sig" role="img" aria-label="Pinned">
+                    <span class="ic s14" set:html={ico(Pin)} />
+                  </span>
+                ) : (
+                  <span class="time">{c.time}</span>
+                )}
+              </span>
+            </label>
+          );
+        })
+      }
+    </div>
+  </div>
+
+  <div class="foot">
+    <span class="me">
+      <img class="ava ava-human s28" src={CAST.you.ava} alt="" width="28" height="28" />
+      <span class="who">
+        <span class="who-name trunc">{CAST.you.name}</span>
+        <span class="who-org trunc">{ORG}</span>
+      </span>
+    </span>
+    <span class="cog"><span class="ic s16" set:html={ico(Settings01Icon)} /></span>
+  </div>
+</aside>
+
+<style>
+  .side {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    width: 240px;
+    border-radius: var(--win-radius) 0 0 var(--win-radius);
+    background: var(--side-glass);
+    backdrop-filter: var(--side-filter);
+  }
+
+  .top {
+    position: relative;
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: flex-end;
+    height: 38px;
+    padding-right: 8px;
+  }
+
+  .lights {
+    position: absolute;
+    top: 13px;
+    left: 15px;
+    display: flex;
+    gap: 9px;
+  }
+
+  /**
+   * macOS 27 liquid glass lights. The rim is darkest at the left and right and
+   * fades toward the top and bottom: side-offset inset shadows follow the circle
+   * and thin out there on their own. A light crescent sits along the top and a
+   * refracted glow along the bottom.
+   */
+  .lights i {
+    position: relative;
+    --fill: #ef6f68;
+    --rim: #c2362f;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background:
+      radial-gradient(70% 45% at 50% 95%, rgb(255 255 255 / 0.35), transparent),
+      radial-gradient(90% 55% at 50% 10%, rgb(255 255 255 / 0.12), transparent),
+      var(--fill);
+    box-shadow:
+      inset 1.2px 0 1px -0.3px var(--rim),
+      inset -1.2px 0 1px -0.3px var(--rim),
+      inset 0 0 0 0.5px color-mix(in oklab, var(--rim) 45%, transparent),
+      inset 0 1.2px 1px -0.4px rgb(255 255 255 / 0.55),
+      inset 0 -1.5px 1.5px -0.5px rgb(255 255 255 / 0.45),
+      0 0.6px 1.4px color-mix(in oklab, var(--rim) 30%, transparent);
+  }
+
+  .lights i:nth-child(2) {
+    --fill: #f6c344;
+    --rim: #c98814;
+  }
+
+  .lights i:nth-child(3) {
+    --fill: #6bca52;
+    --rim: #3a8f2f;
+  }
+
+  /** Hovering the cluster reveals all three glyphs, as macOS does: close, minimize, zoom. */
+  .lights i::before,
+  .lights i::after {
+    content: "";
+    position: absolute;
+    opacity: 0;
+    transition: opacity 80ms linear;
+  }
+
+  .lights:hover i::before,
+  .lights:hover i::after {
+    opacity: 1;
+  }
+
+  .lights i:nth-child(1)::before,
+  .lights i:nth-child(1)::after,
+  .lights i:nth-child(2)::before {
+    top: 50%;
+    left: 50%;
+    width: 7.5px;
+    height: 1.6px;
+    border-radius: 1px;
+    translate: -50% -50%;
+  }
+
+  .lights i:nth-child(1)::before,
+  .lights i:nth-child(1)::after {
+    background: #7e1911;
+  }
+
+  .lights i:nth-child(1)::before {
+    rotate: 45deg;
+  }
+
+  .lights i:nth-child(1)::after {
+    rotate: -45deg;
+  }
+
+  .lights i:nth-child(2)::before {
+    width: 7px;
+    background: #87590a;
+  }
+
+  .lights i:nth-child(3)::before,
+  .lights i:nth-child(3)::after {
+    top: 4px;
+    left: 4px;
+    width: 6px;
+    height: 6px;
+    background: #206a1c;
+  }
+
+  .lights i:nth-child(3)::before {
+    clip-path: polygon(0 0, 88% 0, 0 88%);
+  }
+
+  .lights i:nth-child(3)::after {
+    clip-path: polygon(100% 12%, 100% 100%, 12% 100%);
+  }
+
+  .hist {
+    position: absolute;
+    top: 6px;
+    left: 92px;
+    display: flex;
+    gap: 2px;
+  }
+
+  .tb,
+  .toggle {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    color: var(--mut);
+  }
+
+  .tb {
+    border-radius: 50%;
+  }
+
+  .tb:hover {
+    background: var(--active);
+    color: var(--ink);
+  }
+
+  .toggle {
+    border-radius: 8px;
+  }
+
+  .toggle:hover {
+    background: var(--hover);
+    color: var(--ink);
+  }
+
+  .nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 8px 0;
+  }
+
+  .row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 34px;
+    padding: 0 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  label {
+    cursor: pointer;
+  }
+
+  .row:hover {
+    background: var(--hover);
+  }
+
+  .row:active {
+    background: var(--press);
+  }
+
+  .row:has(> .vr:checked) {
+    background: var(--active);
+  }
+
+  .row:has(> .vr:focus-visible) {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  kbd {
+    margin-left: auto;
+    font-family: inherit;
+    font-size: 11px;
+    color: var(--mut);
+    opacity: 0;
+    transition: opacity 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .row:hover kbd {
+    opacity: 1;
+  }
+
+  .scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px 8px;
+    scrollbar-width: none;
+    mask-image: linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    height: 28px;
+    padding-right: 10px;
+  }
+
+  .label {
+    padding: 0 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--mut);
+  }
+
+  .filter {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    margin-left: auto;
+    border-radius: 8px;
+    color: var(--mut);
+  }
+
+  .filter:hover {
+    background: var(--hover);
+    color: var(--ink);
+  }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .glyph {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .glyph .pd {
+    right: 0;
+    bottom: 0;
+    width: 7px;
+    height: 7px;
+    box-shadow: 0 0 0 1.5px var(--muted);
+  }
+
+  .name {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .trail {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: flex-end;
+    width: 36px;
+  }
+
+  .pill {
+    display: grid;
+    place-items: center;
+    min-width: 19px;
+    height: 19px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--unread);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sig {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    color: var(--mut);
+  }
+
+  .spin {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--signal);
+    border-right-color: transparent;
+    border-radius: 50%;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .spin {
+      animation: side-spin 1s linear infinite;
+    }
+  }
+
+  @keyframes side-spin {
+    to {
+      rotate: 360deg;
+    }
+  }
+
+  .time {
+    font-size: 10px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    color: var(--mut);
+  }
+
+  .row:has(> .vr:checked) .pill,
+  .row:not(:has(> .vr:checked)) .pill + * {
+    display: none;
+  }
+
+  .row:not(:has(> .vr:checked)):has(.pill) .name {
+    font-weight: 600;
+  }
+
+  .foot {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px 8px;
+  }
+
+  .me {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 6px 8px;
+    border-radius: 10px;
+  }
+
+  .me:hover {
+    background: var(--hover);
+  }
+
+  .who {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .who > span {
+    display: block;
+  }
+
+  .who-name {
+    font-size: 13px;
+    line-height: 15px;
+    font-weight: 500;
+  }
+
+  .who-org {
+    font-size: 11px;
+    line-height: 13px;
+    color: var(--mut);
+  }
+
+  .cog {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    color: var(--mut);
+  }
+
+  .cog:hover {
+    background: var(--hover);
+    color: var(--ink);
+  }
+</style>

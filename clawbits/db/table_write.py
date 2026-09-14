@@ -16,11 +16,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, delete, select, update
 
+from clawbits.agent_marks import MarkKind
 from clawbits.avatars.config import CURRENT_AVATAR_VERSION
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.api_key import ApiKey
 from clawbits.datastructures.long_name import LongName
-from clawbits.datastructures.mm_models import agent_dm_channel_name
+from clawbits.datastructures.mm_models import agent_default_channel_name, agent_dm_channel_name
 from clawbits.datastructures.nickname import NickName
 from clawbits.db.models import (
     UNKNOWN_PROVIDER,
@@ -29,6 +30,7 @@ from clawbits.db.models import (
     AgentChannelState,
     AgentClaim,
     AgentContactPermission,
+    AgentMark,
     AgentPost,
     AgentProfile,
     AgentSignupRequest,
@@ -1019,6 +1021,7 @@ class TableWrite:
         session.exec(
             delete(AgentSkillSyncState).where(AgentSkillSyncState.agent_id == agent_id)
         )
+        session.exec(delete(AgentMark).where(AgentMark.agent_id == agent_id))
 
         if keep_content:
             TableWrite._delete_agent_keep_content(session, agent)
@@ -2035,6 +2038,9 @@ class TableWrite:
             return
         session.add(MmChannelMember(channel_id=channel_id, agent_id=agent_id))
         session.flush()
+        channel = session.get(MmChannel, channel_id)
+        if channel.channel_type != "direct" and channel.name != agent_default_channel_name(agent_id):
+            TableWrite.award_mark(session, agent_id, "channel", {"channel_id": channel_id})
 
     # ------------------------------------------------------------------
     # Agent contact permissions (operator-managed contact allowlist)
@@ -2170,6 +2176,7 @@ class TableWrite:
         )
         session.add(row)
         session.flush()
+        TableWrite.award_mark(session, agent_id, "automation", {"automation_id": row.automation_id})
         return row
 
     @staticmethod
@@ -3039,6 +3046,8 @@ class TableWrite:
             agent.inter_agent_message_limit = inter_agent_message_limit
         if lobstertalk_enabled is not None:
             agent.lobstertalk_enabled = lobstertalk_enabled
+        if lobstertalk_enabled:
+            TableWrite.award_mark(session, agent_id, "lobstertalk")
         # host/model are nullable: None normally means "not provided", so
         # clearing needs an explicit flag from the endpoint layer.
         if clear_lobstertalk_ollama_host:
@@ -3482,7 +3491,7 @@ class TableWrite:
         if org_id is None:
             raise ValueError(f"Agent '{agent_id}' has no organization")
 
-        channel_name = f"agent-{agent_id}"
+        channel_name = agent_default_channel_name(agent_id)
         channel = TableRead.get_mm_channel_by_org_and_name(session, org_id, channel_name)
         if channel is None:
             TableWrite.create_mm_channel(
@@ -3584,6 +3593,49 @@ class TableWrite:
         if channel is None:
             raise ValueError("Failed to load created operator-agent communication channel")
         return channel, True
+
+    # ---------------- agent marks ----------------
+
+    @staticmethod
+    def award_mark(
+        session: Session, agent_id: str, kind: MarkKind, detail: dict[str, int | str] | None = None
+    ) -> None:
+        """Record a first-time achievement. Insert-only: an earned mark is never touched again,
+        and the lookup first keeps a repeat award to one primary key read."""
+        if session.get(AgentMark, (agent_id, kind)) is not None:
+            return
+        session.execute(
+            pg_insert(AgentMark)
+            .values(agent_id=agent_id, kind=kind, detail=detail)
+            .on_conflict_do_nothing(index_elements=["agent_id", "kind"])
+        )
+
+    @staticmethod
+    def award_post_marks(session: Session, agent_id: str, channel_id: str, post_id: int) -> None:
+        """Conversation and teamwork for a post the agent published in a direct channel. The
+        latest earlier post by the other side names the human it answered, or the peer agent,
+        and teamwork goes to both agents. Server-authored posts never come through here."""
+        other = session.exec(
+            select(MmPost.human_id, MmPost.agent_id)
+            .join(MmChannel, MmChannel.channel_id == MmPost.channel_id)
+            .where(
+                MmPost.channel_id == channel_id,
+                MmChannel.channel_type == "direct",
+                MmPost.post_id < post_id,
+                MmPost.status == "published",
+                MmPost.agent_id.is_distinct_from(agent_id),
+            )
+            .order_by(MmPost.post_id.desc())
+            .limit(1)
+        ).first()
+        if other is None:
+            return
+        human_id, peer_agent_id = other
+        if human_id is not None:
+            TableWrite.award_mark(session, agent_id, "conversation", {"human_id": human_id})
+        elif peer_agent_id != DELETED_AGENT_ID:
+            TableWrite.award_mark(session, agent_id, "teamwork", {"peer_agent_id": peer_agent_id})
+            TableWrite.award_mark(session, peer_agent_id, "teamwork", {"peer_agent_id": agent_id})
 
     # ---------------- agent actions ----------------
 

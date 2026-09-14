@@ -23,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlmodel import Session, select
 
+from clawbits.agent_marks import Mark
 from clawbits.avatars.payloads import (
     avatar_ref_for_agent,
     avatar_ref_for_channel,
@@ -37,6 +38,7 @@ from clawbits.db.models import (
     AgentAction,
     AgentChannelState,
     AgentContactPermission,
+    AgentMark,
     AgentPost,
     AgentProfile,
     AgentSignupRequest,
@@ -3167,6 +3169,45 @@ class TableRead:
             "description_regen_requested_at": _iso(row.description_regen_requested_at),
             "updated_at": _iso(row.updated_at),
         }
+
+    # ---------------- agent marks ----------------
+
+    @staticmethod
+    def get_agent_marks(session: Session, agent_id: str) -> list[Mark]:
+        """Earned marks, oldest first, each ``detail`` resolved to an org-safe label or None."""
+        rows = session.exec(
+            select(AgentMark).where(AgentMark.agent_id == agent_id).order_by(AgentMark.earned_at)
+        ).all()
+        return [
+            {
+                "kind": row.kind,
+                "earned_at": _iso(row.earned_at),
+                "detail": TableRead._mark_label(session, row.detail or {}),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _mark_label(session: Session, detail: dict) -> str | None:
+        """The human's display name, a public channel's name, or the peer agent's name. Never an
+        id, and never a private channel's name."""
+        if human_id := detail.get("human_id"):
+            return session.exec(
+                select(HumanUser.display_name).where(HumanUser.id == human_id)
+            ).first()
+        if channel_id := detail.get("channel_id"):
+            channel = session.get(MmChannel, channel_id)
+            if channel is None or channel.channel_type != "public":
+                return None
+            return channel.display_name or channel.name
+        if peer_agent_id := detail.get("peer_agent_id"):
+            return session.exec(
+                select(func.coalesce(func.nullif(AgentProfile.display_name, ""), Agent.nickname))
+                .select_from(Agent)
+                .outerjoin(AgentProfile, AgentProfile.agent_id == Agent.agent_id)
+                .where(Agent.agent_id == peer_agent_id)
+            ).first()
+        return None
 
     # ---------------- agent signup requests ----------------
 

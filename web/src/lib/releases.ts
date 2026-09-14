@@ -266,7 +266,7 @@ export async function getDesktopFacts(): Promise<DesktopFacts> {
     // fallback lockup reads exactly like the live one.
     title: `Clawbits desktop-v${version}`,
     // No sha to show without the release. The lockup drops the line rather
-    // than inventing one - see AppDemo's link preview.
+    // than inventing one - see ReleaseOg.astro.
     sha: "",
     channel: "prod",
     url: `${LINKS.github}/releases/latest`,

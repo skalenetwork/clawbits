@@ -178,6 +178,27 @@ def test_no_staging_emits_no_cookie(client: TestClient) -> None:
     assert "set-cookie" not in {k.lower() for k in resp.headers.keys()}
 
 
+@pytest.mark.parametrize(
+    ("path", "token"),
+    [("/pydantic", "sealed-pydantic"), ("/stream", "sealed-stream"),
+     ("/redirect", "sealed-redirect"), ("/raises", "sealed-after-raise")],
+)
+def test_bearer_client_receives_rotated_session(client: TestClient, path: str, token: str) -> None:
+    response = client.get(path, headers={"Authorization": "bEaReR previous"}, follow_redirects=False)
+    assert response.headers["X-Clawbits-Session"] == token
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_cookie_client_does_not_receive_bearer_session_header(client: TestClient) -> None:
+    assert "X-Clawbits-Session" not in client.get("/pydantic").headers
+
+
+def test_bearer_session_header_requires_rotation(client: TestClient) -> None:
+    headers = {"Authorization": "Bearer current"}
+    assert "X-Clawbits-Session" not in client.get("/no-staging", headers=headers).headers
+    assert "X-Clawbits-Session" not in client.post("/clear", headers=headers).headers
+
+
 # ---------------------------------------------------------------------------
 # Cookie attributes — the parts a misconfiguration would silently break.
 # ---------------------------------------------------------------------------

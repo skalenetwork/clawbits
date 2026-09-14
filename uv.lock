@@ -397,7 +397,7 @@ wheels = [
 
 [[package]]
 name = "clawbits"
-version = "0.24.0"
+version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "alembic" },

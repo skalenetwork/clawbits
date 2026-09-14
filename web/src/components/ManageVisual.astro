@@ -24,10 +24,6 @@ import PointerCursor from "./PointerCursor.astro";
  *   2. Agent card  - one card centred between its two columns of actions
  *   3. Manage      - the Environment variables list, key pasted, Save
  *
- * SIMPLIFIED CARDS (owner, 2026-08-18). AppDemo.astro carries the collectible
- * card ported 1:1 from frontend/src/components/agent-card - scallop lobes, arc
- * text on r136/r150, registration ticks, the joined and operator seals. None
- * of that survives at this size: three cards share ~400px here, so each is
  * FAITHFUL AGAIN (owner, 2026-08-18). The first pass drew a suggestion of the
  * card in divs - white frame, tinted body, a round avatar - on the reasoning
  * that the real one's detail would land sub-pixel. That was wrong about the
@@ -40,7 +36,8 @@ import PointerCursor from "./PointerCursor.astro";
  * What the miniatures still drop is COPY, which does have a floor: the handle
  * arc, the JOINED medal's date and the operator seal all fall under a legible
  * size here and would read as smudges. Shapes scale; 6px text does not. If the cards ever need to be
- * exact, extract AppDemo's version rather than growing this one.
+ * exact, port the rest of frontend/src/components/agent-card into
+ * lib/agent-card.ts rather than growing this one.
  *
  * Unlike step 01 this is OUR product, so the strings are real: the agent
  * names are the demo fleet, and the env rows are the ones the reference shot

@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { PencilEdit02Icon, RefreshIcon, SparklesIcon } from "@hugeicons/core-free-icons";
-import { Bot } from "lucide-react";
-import { setAgentDescription, type AgentProfile } from "@/lib/api";
+import { RefreshIcon } from "@hugeicons/core-free-icons";
+import { renameAgent, setAgentDescription, type AgentProfile } from "@/lib/api";
 import { generateAgentDescription } from "@/lib/agentDescription";
 import { agentDisplay } from "@/lib/agentDisplay";
 import { formatRelativeAgo } from "@/lib/formatting";
@@ -10,25 +9,85 @@ import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/Icon";
+import { ModalButton, ModalField, ModalFooter, ModalHeader, ModalPanel } from "@/components/modals/Modal";
+import { SettingsRow, SettingsSection } from "@/components/settings/Settings";
 import { Button } from "@/components/ui/button";
 import { DialogDescription } from "@/components/ui/dialog";
-import { ModalButton, ModalField, ModalFooter, ModalHeader, ModalPanel } from "@/components/modals/Modal";
-import { SectionHeader } from "@/components/automations/SectionHeader";
-import { ManageTile } from "./ManageTile";
+import { Input } from "@/components/ui/input";
 
+const NAME_MAX = 32;
 const DESCRIPTION_MAX = 280;
 
-function EditDescriptionForm({
-  orgId,
-  agentId,
-  initial,
-  onClose,
-}: {
+type FormKind = "rename" | "description";
+
+interface FormProps {
   orgId: string;
   agentId: string;
   initial: string;
   onClose: () => void;
-}) {
+}
+
+function RenameForm({ orgId, agentId, initial, onClose }: FormProps) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(initial);
+
+  const mutation = useMutation({
+    mutationFn: (nickname: string) => renameAgent(orgId, agentId, nickname),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents(orgId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentProfile(orgId, agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
+      toast.success(`Renamed to ${data.nickname}`);
+      onClose();
+    },
+    onError: (err) => {
+      toast.error(errMsg(err, "Couldn't rename agent"));
+    },
+  });
+
+  const trimmed = name.trim();
+  const canSave = trimmed.length > 0 && trimmed !== initial && !mutation.isPending;
+
+  return (
+    <>
+      <ModalHeader title="Rename agent" />
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSave) mutation.mutate(trimmed);
+        }}
+      >
+        <div className="p-4">
+          <ModalField label="Name" htmlFor="rename-agent-name">
+            <Input
+              id="rename-agent-name"
+              autoFocus
+              value={name}
+              maxLength={NAME_MAX}
+              onChange={(e) => {
+                setName(e.target.value);
+              }}
+              placeholder="Agent name"
+            />
+            <DialogDescription className="text-[12px] text-muted-foreground">
+              Shown everywhere instead of the generated name. The handle @{agentId} stays the same.
+            </DialogDescription>
+          </ModalField>
+        </div>
+        <ModalFooter>
+          <ModalButton onClick={onClose} disabled={mutation.isPending}>
+            Cancel
+          </ModalButton>
+          <ModalButton type="submit" tone="primary" disabled={!canSave}>
+            {mutation.isPending ? "Renaming…" : "Rename"}
+          </ModalButton>
+        </ModalFooter>
+      </form>
+    </>
+  );
+}
+
+function DescriptionForm({ orgId, agentId, initial, onClose }: FormProps) {
   const queryClient = useQueryClient();
   const [text, setText] = useState(initial);
 
@@ -69,12 +128,7 @@ function EditDescriptionForm({
                 setText(e.target.value);
               }}
               placeholder="What is this agent for?"
-              className={cn(
-                "min-h-24 w-full min-w-0 resize-y rounded-xl bg-muted/40 p-3",
-                "text-sm leading-relaxed text-foreground outline-none",
-                "transition-shadow placeholder:text-muted-foreground/50",
-                "focus-visible:ring-2 focus-visible:ring-ring/30",
-              )}
+              className="min-h-24 w-full min-w-0 resize-y rounded-xl bg-muted/40 p-3 text-sm leading-relaxed text-foreground outline-none transition-shadow placeholder:text-muted-foreground/50 focus-visible:ring-2 focus-visible:ring-ring/30"
             />
             <div className="flex items-baseline justify-between gap-3 text-[12px] text-muted-foreground">
               <DialogDescription className="text-[12px] text-muted-foreground">
@@ -99,19 +153,12 @@ function EditDescriptionForm({
   );
 }
 
-export function IdentitySection({
-  orgId,
-  profile,
-  onRename,
-}: {
-  orgId: string;
-  profile: AgentProfile;
-  onRename: () => void;
-}) {
+export function IdentitySection({ orgId, profile }: { orgId: string; profile: AgentProfile }) {
   const queryClient = useQueryClient();
   const agentId = profile.agent_id;
-  const [editOpen, setEditOpen] = useState(false);
-  const [editEpoch, setEditEpoch] = useState(0);
+  const name = agentDisplay(profile);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState<{ kind: FormKind; epoch: number }>({ kind: "description", epoch: 0 });
 
   const regenMutation = useMutation({
     mutationFn: () => generateAgentDescription(orgId, agentId),
@@ -124,101 +171,99 @@ export function IdentitySection({
     },
   });
 
+  const openForm = (kind: FormKind) => {
+    setForm(({ epoch }) => ({ kind, epoch: epoch + 1 }));
+    setOpen(true);
+  };
+  const formProps = {
+    orgId,
+    agentId,
+    onClose: () => {
+      setOpen(false);
+    },
+  };
+
   const regenPending = Boolean(profile.description_regen_pending);
-  const hasDescription = Boolean(profile.description);
-  const generated =
-    profile.description_source === "auto" ? formatRelativeAgo(profile.description_generated_at) : null;
+  const description = [
+    profile.description || "No description yet",
+    profile.description_source === "auto" &&
+      ["Auto-generated", formatRelativeAgo(profile.description_generated_at)].filter(Boolean).join(" "),
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
-    <section className="space-y-3">
-      <SectionHeader icon={Bot}>Identity</SectionHeader>
-      <div className="space-y-3">
+    <>
+      <SettingsSection
+        label="Identity"
+        footer={
+          profile.is_operator
+            ? undefined
+            : `Only ${profile.operator?.display_name ?? "the operator"} can rename ${name} or change how it behaves.`
+        }
+      >
         {profile.is_operator && (
-          <ManageTile
-            icon={PencilEdit02Icon}
+          <SettingsRow
             title="Name"
-            caption={
-              <span className="block truncate">
-                {agentDisplay(profile)} · @{agentId}
-              </span>
-            }
+            description={`${name} · @${agentId}`}
             control={
-              <Button variant="outline" size="sm" onClick={onRename}>
-                <Icon icon={PencilEdit02Icon} className="size-3.5" />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  openForm("rename");
+                }}
+              >
                 Rename
               </Button>
             }
           />
         )}
-
-        <ManageTile
-          icon={SparklesIcon}
+        <SettingsRow
           title="Description"
-          align="start"
-          caption={
-            <div className="mt-0.5 space-y-1">
-              {generated != null && (
-                <div className="text-label font-medium text-muted-foreground/80">
-                  {generated ? `Auto-generated ${generated}` : "Auto-generated"}
-                </div>
-              )}
-              {hasDescription ? (
-                <p className="line-clamp-2 leading-relaxed">{profile.description}</p>
-              ) : (
-                <p>No description yet</p>
-              )}
-            </div>
-          }
+          description={description}
           control={
-            <div className="flex items-center gap-2">
+            <>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  setEditEpoch((e) => e + 1);
-                  setEditOpen(true);
-                }}
                 title="Write the description yourself"
+                onClick={() => {
+                  openForm("description");
+                }}
               >
-                <Icon icon={PencilEdit02Icon} className="size-3.5" />
                 Edit
               </Button>
-              {/* Never disabled while pending: an agent that missed the first ask would strand the operator. */}
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  regenMutation.mutate();
-                }}
                 disabled={regenMutation.isPending}
                 title={
                   regenPending
-                    ? "Refresh already requested - click to ask again"
+                    ? "Refresh already requested. Click to ask again"
                     : "Ask the agent to rewrite its description from recent activity"
                 }
+                onClick={() => {
+                  regenMutation.mutate();
+                }}
               >
                 <Icon
                   icon={RefreshIcon}
                   className={cn("size-3.5", (regenMutation.isPending || regenPending) && "animate-spin")}
                 />
-                {regenPending ? "Refreshing…" : hasDescription ? "Regenerate" : "Generate"}
+                {regenPending ? "Refreshing…" : profile.description ? "Regenerate" : "Generate"}
               </Button>
-            </div>
+            </>
           }
         />
-      </div>
-
-      <ModalPanel open={editOpen} onOpenChange={setEditOpen} kind="form">
-        <EditDescriptionForm
-          key={editEpoch}
-          orgId={orgId}
-          agentId={agentId}
-          initial={profile.description ?? ""}
-          onClose={() => {
-            setEditOpen(false);
-          }}
-        />
+      </SettingsSection>
+      <ModalPanel open={open} onOpenChange={setOpen} kind="form">
+        {form.kind === "rename" ? (
+          <RenameForm key={form.epoch} {...formProps} initial={profile.nickname ?? agentId} />
+        ) : (
+          <DescriptionForm key={form.epoch} {...formProps} initial={profile.description ?? ""} />
+        )}
       </ModalPanel>
-    </section>
+    </>
   );
 }

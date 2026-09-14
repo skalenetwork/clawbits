@@ -2,15 +2,17 @@ import { createContext, useContext, type MouseEvent } from "react";
 
 import type { MmChannelMember } from "@/lib/api";
 
+export type ProfileMember = Pick<MmChannelMember, "agent_id" | "human_id" | "display_name" | "status" | "avatar">;
+
 export interface ProfileMenuTarget {
-  member: MmChannelMember;
+  member: ProfileMember;
   handleText: string;
   anchor: HTMLElement;
 }
 
 export const ProfileMenuContext = createContext<{ open: (target: ProfileMenuTarget) => void } | null>(null);
 
-export function useProfileMenuTrigger(member: MmChannelMember | null, handleText: string) {
+export function useProfileMenuTrigger(member: ProfileMember | null, handleText: string) {
   const ctx = useContext(ProfileMenuContext);
   return (e: MouseEvent<HTMLElement>) => {
     if (!ctx || !member) return;

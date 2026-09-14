@@ -2,18 +2,13 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { Squircle } from "@/components/home/tiles";
-import { StatusDot, type StatusTone } from "@/components/settings/Settings";
+import { StatusDot } from "@/components/settings/Settings";
+import type { StatusTone } from "@/lib/status";
 import { useAgentStatus } from "@/hooks/useAgentPresence";
 import { agentDisplay } from "@/lib/agentDisplay";
 import type { AgentLivenessStatus, AgentUser, ReefHostAgent } from "@/lib/api";
-import { formatAgentVersion, parseAgentImage } from "@/lib/formatting";
+import { RUNTIME_LOGO, formatAgentVersion, parseAgentImage, reefAttention } from "@/lib/formatting";
 import { cn } from "@/lib/utils";
-
-const RUNTIME_LOGO: Record<string, string> = {
-  openclaw: "/openclaw.png",
-  hermes: "/hermes.png",
-  ironclaw: "/ironclaw.png",
-};
 
 export interface ReefAgentTileProps {
   host: string;
@@ -23,14 +18,6 @@ export interface ReefAgentTileProps {
   failure?: string;
   expires?: string;
   menu?: ReactNode;
-}
-
-function attention(row: ReefHostAgent): { bad?: boolean; label: string } | null {
-  if (row.state === "failed") return { bad: true, label: "failed" };
-  if (!row.role_current) return { label: "update pending" };
-  if (!row.synced) return { label: "syncing" };
-  if (row.state === "running") return null;
-  return { label: row.state === "pending" ? "starting" : row.state };
 }
 
 function machineStatus(
@@ -56,7 +43,7 @@ export function ReefAgentTile({ host, name, row, agent, failure, expires, menu }
   const image = row ? parseAgentImage(row.image) : null;
   const logo = RUNTIME_LOGO[agent?.agent_type ?? image?.scheme?.runtime ?? ""];
   const owner = agent?.is_operator ? null : agent?.operator?.display_name;
-  const chip = expires == null ? (row ? attention(row) : null) : { label: expires };
+  const chip = expires == null ? (row ? reefAttention(row) : null) : { label: expires };
   const title = agent ? agentDisplay(agent) : name;
 
   return (

@@ -2269,6 +2269,8 @@ class ClawBitsServer(FastAPI):
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=str(e)) from e
 
+            if body.status in ("published", "draft"):
+                TableWrite.award_post_marks(db, agent_id, channel_id, post_id)
             db.commit()
             row = db.get(_MmPostRow, post_id)
             post_dict = TableRead.hydrate_mm_posts(db, [row])[0]
@@ -2281,7 +2283,7 @@ class ClawBitsServer(FastAPI):
             attention_ctx = (
                 build_attention_context(db, channel_id) if row.status == "published" else None
             )
-        enrich_post_files_with_urls(post_dict, self._r2_presigner, ttl=cfg.download_url_ttl)
+        enrich_post_files_with_urls(post_dict, self._r2_presigner, cfg)
         response = MmPostResponse(**post_dict)
         status = "generating" if body.status == "streaming" else "online"
         bus = get_bus()
@@ -2346,14 +2348,8 @@ class ClawBitsServer(FastAPI):
                 posts = posts[:limit]
             else:
                 posts = TableRead.get_mm_posts(db, channel_id, limit, offset)
-        # Same enrichment as the human read path: presign GET URLs for
-        # image attachments inline so `<img src>` works without a per-
-        # image round trip. URLs are cached for ~ttl-60s, keeping
-        # response bodies stable across the safety-net poll.
         for p in posts:
-            enrich_post_files_with_urls(
-                p, self._r2_presigner, ttl=cfg.download_url_ttl
-            )
+            enrich_post_files_with_urls(p, self._r2_presigner, cfg)
         return MmPostListResponse(
             posts=[MmPostResponse(**p) for p in posts],
             total=len(posts),
@@ -2441,9 +2437,7 @@ class ClawBitsServer(FastAPI):
                 db, channel_id, post_id, radius
             )
         for p in posts:
-            enrich_post_files_with_urls(
-                p, self._r2_presigner, ttl=cfg.download_url_ttl
-            )
+            enrich_post_files_with_urls(p, self._r2_presigner, cfg)
         return MmPostListResponse(
             posts=[MmPostResponse(**p) for p in posts],
             total=len(posts),
@@ -2552,9 +2546,7 @@ class ClawBitsServer(FastAPI):
             post_dict = TableRead.hydrate_mm_posts(db, [row])[0]
 
         cfg = load_file_config()
-        enrich_post_files_with_urls(
-            post_dict, self._r2_presigner, ttl=cfg.download_url_ttl
-        )
+        enrich_post_files_with_urls(post_dict, self._r2_presigner, cfg)
         response = MmPostResponse(**post_dict)
         fire_and_forget(publish_post_updated(get_bus(), response.channel_id, response.model_dump()))
         return response
@@ -3491,7 +3483,7 @@ class ClawBitsServer(FastAPI):
                 presigner,
                 cache_key=f"{row.file_id}:original",
                 object_key=row.object_key,
-                ttl=cfg.download_url_ttl,
+                ttl=cfg.download_url_ttl_for(row.content_type),
                 download_filename=row.filename,
             )
             expires_in = max(0, expires_at - int(time.time()))
@@ -3573,6 +3565,8 @@ class ClawBitsServer(FastAPI):
                 raise HTTPException(status_code=403, detail="Not the post owner")
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc))
+            if body.done:
+                TableWrite.award_post_marks(db, agent_id, channel_id, post_id)
             db.commit()
             if body.cancel:
                 bus = get_bus()

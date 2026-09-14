@@ -31,7 +31,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useActiveOrg } from "@/hooks/useActiveOrg";
 import { deleteReef, deleteReefAgent, getAgents, getReef } from "@/lib/api";
 import { confirm } from "@/lib/confirm";
-import { formatRelativeAgo, formatRelativeShort, parseUtcTimestamp } from "@/lib/formatting";
+import { fleetKey, formatRelativeAgo, formatRelativeShort, parseUtcTimestamp } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -48,7 +48,6 @@ const EVENT_KIND: Partial<Record<string, { icon: LucideIcon; tone: string }>> = 
 };
 const RELATIVE = new Intl.RelativeTimeFormat("en", { style: "narrow" });
 
-const fleetKey = (host: string, name: string) => `${host}/${name}`;
 const muted = (text: string) => <span className="font-normal text-muted-foreground">{text}</span>;
 
 function expiresIn(at: string): string {
@@ -201,11 +200,11 @@ export default function SettingsReefPage() {
           reef?.connected && (
             <>
               {isOwner && (
-                <Button variant="secondary" size="sm" onClick={go("/setup/reef")}>
+                <Button variant="secondary" size="compact" onClick={go("/setup/reef")}>
                   Add machine
                 </Button>
               )}
-              <Button size="sm" onClick={go("/setup/agent")}>
+              <Button size="compact" onClick={go("/setup/agent")}>
                 New agent
               </Button>
             </>

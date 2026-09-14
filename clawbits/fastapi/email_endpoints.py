@@ -19,6 +19,7 @@ from clawbits.datastructures.email_models import (
     EmailSummaryResponse,
 )
 from clawbits.db.table_read import TableRead
+from clawbits.db.table_write import TableWrite
 from clawbits.email.imap_client import (
     STALWART_SVC_PASSWORD,
     agent_email_address,
@@ -96,6 +97,10 @@ class EmailEndpoints:
             EmailEndpoints._check_stalwart_configured()
 
             counts = get_email_counts(agent_id)
+            if counts["total"]:
+                with Session(server._engine) as db:
+                    TableWrite.award_mark(db, agent_id, "mail")
+                    db.commit()
             return EmailCountResponse(**counts)
         except HTTPException:
             raise

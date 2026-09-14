@@ -17,6 +17,7 @@ import GuestOnly from "./components/GuestOnly";
 import RequireAuth from "./components/RequireAuth";
 import { ScrollToTop } from "./components/ScrollToTop";
 import { AgentShell } from "./components/agent/AgentShell";
+import { AgentTabs } from "./components/agent/AgentTabs";
 import { DesktopTitleBar } from "./components/DesktopTitleBar";
 import { useDesktopNav } from "./hooks/useDesktopNav";
 import { Analytics } from "./components/Analytics";
@@ -33,11 +34,9 @@ const ReefSetupPage = lazy(() => import("./pages/ReefSetupPage"));
 const AgentSetupPage = lazy(() => import("./pages/AgentSetupPage"));
 const TermsPage = lazy(() => import("./pages/TermsPage"));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
-const ChangelogPage = lazy(() => import("./pages/ChangelogPage"));
 const AgentCardPage = lazy(() => import("./pages/AgentCardPage"));
 const AgentInboxPage = lazy(() => import("./pages/AgentInboxPage"));
 const AgentAutomationsPage = lazy(() => import("./pages/AgentAutomationsPage"));
-const AgentAutomationDetailPage = lazy(() => import("./pages/AgentAutomationDetailPage"));
 const AgentManagePage = lazy(() => import("./pages/AgentManagePage"));
 const AgentHomePage = lazy(loadAgentHomePage);
 const ChannelPage = lazy(loadChannelPage);
@@ -49,15 +48,13 @@ const SettingsConnectorsPage = lazy(() => import("./pages/SettingsConnectorsPage
 const SettingsAppearancePage = lazy(() => import("./pages/SettingsAppearancePage"));
 const SettingsPrivacyPage = lazy(() => import("./pages/SettingsPrivacyPage"));
 const SettingsNotificationsPage = lazy(() => import("./pages/SettingsNotificationsPage"));
-const SettingsAgentsPage = lazy(() => import("./pages/SettingsAgentsPage"));
+const AgentsPage = lazy(() => import("./pages/AgentsPage"));
 const SettingsChannelsPage = lazy(() => import("./pages/SettingsChannelsPage"));
 const SettingsLobstertalkPage = lazy(() => import("./pages/SettingsLobstertalkPage"));
 const SettingsReefPage = lazy(() => import("./pages/SettingsReefPage"));
-const AutomationsPage = lazy(() => import("./pages/AutomationsPage"));
 const AgentSkillsPage = lazy(() => import("./pages/AgentSkillsPage"));
 const SkillDetailPage = lazy(() => import("./pages/SkillDetailPage"));
 const SkillsPage = lazy(() => import("./pages/SkillsPage"));
-const AutomationDetailPage = lazy(() => import("./pages/AutomationDetailPage"));
 
 // A cold load starts its landing page's chunk alongside the auth check, so the page is ready when the shell mounts.
 if (window.location.pathname.startsWith("/channels/")) void loadChannelPage();
@@ -87,26 +84,25 @@ function AppShell() {
           </Route>
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
-          <Route path="/changelog" element={<ChangelogPage />} />
           <Route element={<RequireAuth />}>
             <Route path="/setup/reef" element={<ReefSetupPage />} />
             <Route path="/setup/agent" element={<AgentSetupPage />} />
           </Route>
           <Route element={<AppLayout />}>
             <Route path="/home" element={<AgentHomePage />} />
-            <Route path="/agents" element={<SettingsAgentsPage />} />
+            <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agents/:agentId" element={<AgentShell />}>
-              <Route index element={<AgentCardPage />} />
-              <Route path="inbox/:uid?" element={<AgentInboxPage />} />
-              <Route path="automations" element={<AgentAutomationsPage />} />
-              <Route path="automations/:automationId" element={<AgentAutomationDetailPage />} />
+              <Route element={<AgentTabs />}>
+                <Route index element={<Navigate to="card" replace />} />
+                <Route path="automations/:automationId?" element={<AgentAutomationsPage />} />
+                <Route path="inbox/:uid?" element={<AgentInboxPage />} />
+                <Route path="card" element={<AgentCardPage />} />
+                <Route path="manage" element={<AgentManagePage />} />
+              </Route>
               <Route path="skills" element={<AgentSkillsPage />} />
-              <Route path="manage" element={<AgentManagePage />} />
             </Route>
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/skills/:skillId" element={<SkillDetailPage />} />
-            <Route path="/automations" element={<AutomationsPage />} />
-            <Route path="/automations/:automationId" element={<AutomationDetailPage />} />
             <Route path="/channels/:channelId" element={<ChannelPage />} />
             <Route path="/settings" element={<SettingsMenuPage />} />
             <Route path="/settings/profile" element={<SettingsProfilePage />} />

@@ -1,251 +1,178 @@
-import {useState} from "react";
-import {ActivityIcon as Activity, ArrowDown01Icon as Chevron} from "@hugeicons/core-free-icons";
-import {Icon} from "@/components/Icon";
-import type {AutomationRun} from "@/lib/api";
-import {formatRelativeAgo, parseUtcTimestamp} from "@/lib/formatting";
-import {formatInstant} from "@/lib/schedule";
-import {cn} from "@/lib/utils";
-import {formatDuration} from "@/lib/toolPresentation";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+import { Icon } from "@/components/Icon";
+import { StatusDot } from "@/components/settings/Settings";
+import { Skeleton } from "@/components/ui/skeleton";
+import { listAutomationRuns, type Automation, type AutomationRun } from "@/lib/api";
+import { automationsRefetchInterval } from "@/lib/automationsPolling";
+import { formatRelativeAgo, parseUtcTimestamp } from "@/lib/formatting";
+import { queryKeys } from "@/lib/queryKeys";
+import { formatInstant } from "@/lib/schedule";
+import { TONE_FILL, type StatusTone } from "@/lib/status";
+import { formatDuration } from "@/lib/toolPresentation";
+import { cn } from "@/lib/utils";
 
-/**
- * Run history for one automation — the strip (a Vercel-style row of thin bars)
- * and the list. The run is the real artifact, but honestly framed: a green
- * run means it completed without crashing, not that the task succeeded, and
- * runs carry only status/error/diagnostics (output goes to the delivery
- * channel; no transcript is stored).
- */
-
-function runOk(status: string | null): boolean {
-    const s = (status ?? "").toLowerCase();
-    return s === "ok" || s === "success" || s === "succeeded";
-}
-
-function runFailed(status: string | null): boolean {
-    const s = (status ?? "").toLowerCase();
-    return s === "error" || s === "failed" || s === "failure";
-}
-
-/** The bounded run summary the plugin self-reports. Delivery outcome is tracked
- *  separately from the turn status: a run can succeed yet fail to reach its
- *  channel. `did_not_run` marks a manual run the gateway declined to start. */
-interface RunSummary {
-    error?: string;
-    diagnostic_summary?: string;
-    delivered?: boolean;
-    delivery_status?: string;
-    delivery_error?: string;
-    did_not_run?: boolean;
-    reason?: string;
-}
-
-function runSummary(run: AutomationRun): RunSummary {
-    return run.summary ?? {};
-}
-
-/**
- * The honest state of a run, in precedence order:
- * - `did-not-run`  a manual run the gateway declined (paused, already running…)
- * - `failed`       the turn itself crashed
- * - `not-delivered` the turn succeeded but its output never reached the channel
- * - `ok`           ran and delivered
- * - `unknown`      reported without a status
- */
 type RunKind = "did-not-run" | "failed" | "not-delivered" | "ok" | "unknown";
 
+interface RunSummary {
+  error?: string;
+  diagnostic_summary?: string;
+  delivered?: boolean;
+  delivery_status?: string;
+  delivery_error?: string;
+  did_not_run?: boolean;
+}
+
+const RUN_KIND: Record<RunKind, { label: string; tone: StatusTone }> = {
+  "did-not-run": { label: "didn't run", tone: "warn" },
+  failed: { label: "failed", tone: "bad" },
+  "not-delivered": { label: "ran, not delivered", tone: "warn" },
+  ok: { label: "ran", tone: "ok" },
+  unknown: { label: "ran", tone: "idle" },
+};
+
+const BAR: Record<StatusTone, string> = { ...TONE_FILL, idle: "bg-foreground/15" };
+
+const summaryOf = (run: AutomationRun): RunSummary => run.summary ?? {};
+
 function runKind(run: AutomationRun): RunKind {
-    const s = runSummary(run);
-    if (s.did_not_run === true) return "did-not-run";
-    if (runFailed(run.status)) return "failed";
-    if (s.delivered === false || s.delivery_status === "not-delivered") return "not-delivered";
-    if (runOk(run.status)) return "ok";
-    return "unknown";
+  const summary = summaryOf(run);
+  const status = (run.status ?? "").toLowerCase();
+  if (summary.did_not_run === true) return "did-not-run";
+  if (["error", "failed", "failure"].includes(status)) return "failed";
+  if (summary.delivered === false || summary.delivery_status === "not-delivered") return "not-delivered";
+  if (["ok", "success", "succeeded"].includes(status)) return "ok";
+  return "unknown";
 }
 
-const RUN_KIND_LABEL: Record<RunKind, string> = {
-    "did-not-run": "didn't run",
-    failed: "failed",
-    "not-delivered": "ran, not delivered",
-    ok: "ran",
-    unknown: "ran",
-};
-
-/** Dot/bar tint per kind. Amber marks "attention, but not a crash" — a declined
- *  manual run or a delivered-nothing run — distinct from a red hard failure. */
-const RUN_KIND_DOT: Record<RunKind, string> = {
-    "did-not-run": "bg-amber-500",
-    failed: "bg-red-500",
-    "not-delivered": "bg-amber-500",
-    ok: "bg-emerald-500",
-    unknown: "bg-zinc-400 dark:bg-zinc-600",
-};
-
-/** Wall-clock duration from the run row (finished − started), if reported. */
 function runDurationMs(run: AutomationRun): number | null {
-    if (!run.started_at || !run.finished_at) return null;
-    const started = parseUtcTimestamp(run.started_at).getTime();
-    const finished = parseUtcTimestamp(run.finished_at).getTime();
-    if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return null;
-    return finished - started;
+  if (!run.started_at || !run.finished_at) return null;
+  const ms = parseUtcTimestamp(run.finished_at).getTime() - parseUtcTimestamp(run.started_at).getTime();
+  return Number.isFinite(ms) && ms >= 0 ? ms : null;
 }
 
-/**
- * The strip: one thin bar per run, oldest → newest, height scaled by duration
- * where reported. `pendingGhost` appends a dashed pulsing slot while a
- * requested run hasn't landed as a row yet — the animation encodes the async
- * contract instead of faking a result.
- */
-export function RunStrip({runs, pendingGhost = false, className}: {
-    runs: AutomationRun[];
-    pendingGhost?: boolean;
-    className?: string;
-}) {
-    if (runs.length === 0 && !pendingGhost) return null;
-    const durations = runs.map(runDurationMs);
-    const max = Math.max(1, ...durations.filter((d): d is number => d != null));
-    const chronological = [...runs].reverse();
-    const chronologicalDurations = [...durations].reverse();
-    return (
-        <div className={cn("flex h-8 items-end gap-1", className)} aria-label="Recent runs">
-            {chronological.map((run, i) => {
-                const dur = chronologicalDurations[i] ?? null;
-                const h = dur != null ? Math.max(0.35, dur / max) : 0.55;
-                const kind = runKind(run);
-                // A crash or a silent no-delivery is drawn full height so it
-                // stands out by shape, not color alone.
-                const attention = kind === "failed" || kind === "not-delivered";
-                const barColor =
-                    kind === "failed"
-                        ? "bg-red-500/80"
-                        : kind === "not-delivered" || kind === "did-not-run"
-                          ? "bg-amber-500/70"
-                          : kind === "ok"
-                            ? "bg-emerald-500/50 hover:bg-emerald-500/80"
-                            : "bg-muted-foreground/30";
-                const started = run.started_at ?? run.created_at;
-                return (
-                    <span
-                        key={run.id}
-                        title={[
-                            started ? formatInstant(parseUtcTimestamp(started).getTime()) : null,
-                            RUN_KIND_LABEL[kind],
-                            formatDuration(dur),
-                        ].filter(Boolean).join(" · ")}
-                        className={cn("w-1.5 rounded-full transition-colors", barColor)}
-                        style={{height: attention ? "100%" : `${String(Math.round(h * 100))}%`}}
-                    />
-                );
-            })}
-            {pendingGhost && (
-                <span
-                    title="Run requested - appears here once the agent reports it"
-                    className="h-[55%] w-1.5 animate-pulse rounded-full border border-dashed border-muted-foreground/50"
-                />
-            )}
+function startedAt(run: AutomationRun): string | null {
+  const started = run.started_at ?? run.created_at;
+  return started ? formatInstant(parseUtcTimestamp(started).getTime()) : null;
+}
+
+function RunRow({ run }: { run: AutomationRun }) {
+  const [open, setOpen] = useState(false);
+  const { error, diagnostic_summary, delivery_error } = summaryOf(run);
+  const kind = runKind(run);
+  const warn = kind === "did-not-run" || kind === "not-delivered";
+  const expandable = Boolean(error || diagnostic_summary || delivery_error);
+  const duration = formatDuration(runDurationMs(run));
+
+  return (
+    <li className="border-foreground/8 not-first:border-t">
+      <button
+        type="button"
+        disabled={!expandable}
+        aria-expanded={expandable ? open : undefined}
+        onClick={() => {
+          setOpen(!open);
+        }}
+        className="flex w-full items-center gap-2 py-[7px] text-left text-[13px] outline-none enabled:cursor-pointer focus-visible:underline"
+      >
+        <StatusDot tone={RUN_KIND[kind].tone} className="size-[7px]" />
+        <span title={startedAt(run) ?? undefined} className="min-w-0 flex-1 truncate">
+          {RUN_KIND[kind].label} {formatRelativeAgo(run.started_at ?? run.created_at)}
+        </span>
+        {duration && <span className="shrink-0 text-muted-foreground tabular-nums">{duration}</span>}
+        {expandable && (
+          <Icon
+            icon={ArrowDown01Icon}
+            className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
+          />
+        )}
+      </button>
+      {open && (
+        <div className="mb-2 flex flex-col gap-1.5 rounded-[10px] bg-foreground/5 p-3 text-xs leading-relaxed wrap-anywhere">
+          {error && <p className={warn ? "text-amber-700 dark:text-amber-400" : "text-destructive"}>{error}</p>}
+          {delivery_error && (
+            <p className="text-amber-700 dark:text-amber-400">Delivery to the channel failed: {delivery_error}</p>
+          )}
+          {diagnostic_summary && <p className="font-mono text-[11px] text-muted-foreground">{diagnostic_summary}</p>}
         </div>
-    );
+      )}
+    </li>
+  );
 }
 
-/** One expandable run row: status pill, when, duration, error on demand. */
-function RunRow({run}: {run: AutomationRun}) {
-    const [expanded, setExpanded] = useState(false);
-    const summary = runSummary(run);
-    const kind = runKind(run);
-    // A dropped delivery is an amber warning, not a red error — the turn ran.
-    const amber = kind === "did-not-run" || kind === "not-delivered";
-    const hasDetail =
-        Boolean(summary.error) ||
-        Boolean(summary.diagnostic_summary) ||
-        Boolean(summary.delivery_error);
-    const dur = formatDuration(runDurationMs(run));
-    const started = run.started_at ?? run.created_at;
-
-    return (
-        <li>
-            <button
-                type="button"
-                onClick={() => { if (hasDetail) setExpanded(v => !v); }}
-                className={cn(
-                    "flex w-full items-center gap-3 rounded-lg px-2 py-2.5 text-left",
-                    hasDetail && "cursor-pointer transition-colors hover:bg-muted/40",
-                )}
-                aria-expanded={hasDetail ? expanded : undefined}
-                disabled={!hasDetail}
-            >
-                <span
-                    aria-hidden
-                    className={cn("size-2 shrink-0 rounded-full", RUN_KIND_DOT[kind])}
-                />
-                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                    {RUN_KIND_LABEL[kind]} {started ? formatRelativeAgo(started) : ""}
-                </span>
-                <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground tabular-nums">
-                    {dur && <span>{dur}</span>}
-                    {hasDetail && (
-                        <Icon
-                            icon={Chevron}
-                            className={cn("size-3.5 transition-transform", expanded && "rotate-180")}
-                        />
-                    )}
-                </span>
-            </button>
-            {expanded && hasDetail && (
-                <div className="mb-2 ml-7 space-y-1.5 rounded-lg bg-muted/40 p-3">
-                    {summary.error && (
-                        <p className={cn(
-                            "break-words text-xs leading-relaxed",
-                            amber
-                                ? "text-amber-600 dark:text-amber-400"
-                                : "text-red-600 dark:text-red-400",
-                        )}>{summary.error}</p>
-                    )}
-                    {summary.delivery_error && (
-                        <p className="break-words text-xs leading-relaxed text-amber-600 dark:text-amber-400">
-                            Delivery to the channel failed: {summary.delivery_error}
-                        </p>
-                    )}
-                    {summary.diagnostic_summary && (
-                        <p className="break-words font-mono text-[11px] leading-relaxed text-muted-foreground">
-                            {summary.diagnostic_summary}
-                        </p>
-                    )}
-                </div>
-            )}
-        </li>
-    );
-}
-
-export function RunList({runs, isLoading, isError, emptyLabel = "No runs reported yet"}: {
-    runs: AutomationRun[];
-    isLoading: boolean;
-    isError: boolean;
-    /** Empty-state copy. Override where "none yet" would be a lie — a mirror
-     *  never receives run rows at all, so "not reported yet" reads as a delay
-     *  that will resolve, when nothing is coming. */
-    emptyLabel?: string;
+export function RunHistory({
+  orgId,
+  automation: a,
+  lastFailed,
+}: {
+  orgId: string;
+  automation: Automation;
+  lastFailed: boolean;
 }) {
-    if (isLoading) {
-        return (
-            <div className="space-y-2 py-2">
-                {Array.from({length: 3}).map((_, i) => (
-                    <div key={i} className="h-10 animate-pulse rounded-lg bg-muted"/>
-                ))}
-            </div>
-        );
-    }
-    if (isError) {
-        return <p className="py-6 text-center text-sm text-destructive">Couldn't load runs.</p>;
-    }
-    if (runs.length === 0) {
-        return (
-            <div className="flex flex-col items-center gap-2 py-8 text-center">
-                <Icon icon={Activity} className="size-5 text-muted-foreground"/>
-                <p className="max-w-sm text-balance text-sm text-muted-foreground">{emptyLabel}</p>
-            </div>
-        );
-    }
-    return (
-        <ul className="divide-y divide-border/40">
-            {runs.map((run) => <RunRow key={run.id} run={run}/>)}
+  const query = useQuery({
+    queryKey: queryKeys.automationRuns(orgId, a.agent_id, a.automation_id),
+    queryFn: () => listAutomationRuns(orgId, a.agent_id, a.automation_id),
+    refetchInterval: automationsRefetchInterval,
+  });
+  const runs = query.data?.runs ?? [];
+  const lastRunAtMs = a.reported_state?.lastRunAtMs;
+  const longest = Math.max(1, ...runs.map(runDurationMs).filter((ms) => ms != null));
+
+  return (
+    <section className="flex flex-col gap-2.5">
+      <div className="flex justify-between gap-3 text-xs text-muted-foreground">
+        <h4 className="font-medium">Runs</h4>
+        {lastRunAtMs != null && (
+          <span title={formatInstant(lastRunAtMs)} className={cn(lastFailed && "text-destructive")}>
+            {lastFailed ? "Last run failed" : "Last run"} {formatRelativeAgo(lastRunAtMs)}
+          </span>
+        )}
+      </div>
+      {(runs.length > 0 || a.run_pending) && (
+        <div aria-hidden className="flex h-7 items-end gap-[3px]">
+          {runs.toReversed().map((run) => {
+            const kind = runKind(run);
+            const ms = runDurationMs(run);
+            const full = kind === "failed" || kind === "not-delivered";
+            return (
+              <span
+                key={run.id}
+                title={[startedAt(run), RUN_KIND[kind].label, formatDuration(ms)].filter(Boolean).join(" · ")}
+                className={cn("min-h-[35%] max-w-6 flex-1 rounded-[2px]", BAR[RUN_KIND[kind].tone])}
+                style={{
+                  height: full ? "100%" : ms == null ? "55%" : `${String(Math.round((ms / longest) * 100))}%`,
+                }}
+              />
+            );
+          })}
+          {a.run_pending && (
+            <span
+              title="Run requested, it appears here once the agent reports it"
+              className="h-[55%] max-w-6 flex-1 rounded-[2px] border border-dashed border-muted-foreground/50"
+            />
+          )}
+        </div>
+      )}
+      {!query.data ? (
+        query.isError ? (
+          <p className="text-[13px] text-destructive">Couldn't load runs</p>
+        ) : (
+          <Skeleton className="h-20 rounded-[10px]" />
+        )
+      ) : runs.length === 0 ? (
+        <p className="text-[13px] text-muted-foreground">
+          {a.managed_by === "external"
+            ? "Run history isn't reported for automations managed outside Clawbits."
+            : "No runs reported yet"}
+        </p>
+      ) : (
+        <ul>
+          {runs.map((run) => (
+            <RunRow key={run.id} run={run} />
+          ))}
         </ul>
-    );
+      )}
+    </section>
+  );
 }

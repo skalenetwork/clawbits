@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useState, type CSSProperties, type ReactElement } from "react";
 import {
   ArrowUpRight01Icon,
   Copy01Icon,
   Download01Icon,
   File01Icon,
   FileAudioIcon,
-  PlayCircleIcon,
+  VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 
 import { Icon } from "@/components/Icon";
@@ -17,6 +17,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { autoplay } from "@/components/video/autoplay";
 import { getMmFileDownloadUrl, type MmFile } from "@/lib/api";
 import {
   stableDownloadUrl,
@@ -32,15 +33,6 @@ import {
   openMediaWithTransition,
 } from "@/lib/viewTransition";
 
-interface MessageAttachmentsProps {
-  files: MmFile[];
-  /** Called after each image finishes loading. The composer uses this to
-   *  re-trigger scroll-to-bottom: images load asynchronously, so by the
-   *  time the bytes arrive the post height has grown and the user may
-   *  no longer be at the bottom. */
-  onImageLoaded?: () => void;
-}
-
 function isImage(f: MmFile) {
   return f.content_type.startsWith("image/");
 }
@@ -51,30 +43,12 @@ function isAudio(f: MmFile) {
   return f.content_type.startsWith("audio/");
 }
 
-/**
- * Render the ``files`` array of a single post.
- *
- * Layout: images first (grid), then video/audio (one-column stack), then
- * generic file cards (one-column stack). Single image goes wide (up to
- * 28rem); 2+ images fall into a 2-column grid so neighboring posts read
- * neatly. Click image → lightbox with prev/next over the image set.
- *
- * Image previews use ``thumbnail_url`` when available (the composer
- * uploads a 1024px JPEG alongside the original), falling back to
- * ``download_url`` for small images that skipped thumbnail generation.
- */
-export function MessageAttachments({ files, onImageLoaded }: MessageAttachmentsProps) {
-  const images = files.filter(isImage);
-  const videos = files.filter(isVideo);
+export function MessageAttachments({ files }: { files: MmFile[] }) {
+  const media = files.filter((f) => isImage(f) || isVideo(f));
   const audios = files.filter(isAudio);
-  const others = files.filter(
-    (f) => !isImage(f) && !isVideo(f) && !isAudio(f),
-  );
+  const others = files.filter((f) => !isImage(f) && !isVideo(f) && !isAudio(f));
+  const single = media.length === 1;
 
-  // Viewer state — the file set to page through, the selected index, and the
-  // tapped thumbnail element so the viewer can morph open/closed from it.
-  // Images page among images; a clicked file card pages among the other
-  // (non-media) attachments on this same post.
   const [viewer, setViewer] = useState<{
     files: MmFile[];
     index: number;
@@ -85,20 +59,22 @@ export function MessageAttachments({ files, onImageLoaded }: MessageAttachmentsP
 
   return (
     <div className="mt-1 flex flex-col gap-2">
-      {images.length > 0 && (
-        <ImageGrid
-          images={images}
-          onOpen={(idx, el) => {
-            openMediaWithTransition(el, () => {
-              setViewer({ files: images, index: idx, sourceEl: el });
-            });
-          }}
-          onImageLoaded={onImageLoaded}
-        />
+      {media.length > 0 && (
+        <div className={single ? undefined : "grid max-w-md grid-cols-2 gap-1.5"}>
+          {media.map((f, idx) => (
+            <MediaTile
+              key={f.file_id}
+              file={f}
+              single={single}
+              onOpen={(el) => {
+                openMediaWithTransition(el, () => {
+                  setViewer({ files: media, index: idx, sourceEl: el });
+                });
+              }}
+            />
+          ))}
+        </div>
       )}
-      {videos.map((f) => (
-        <VideoBlock key={f.file_id} file={f} />
-      ))}
       {audios.map((f) => (
         <AudioBlock key={f.file_id} file={f} />
       ))}
@@ -127,33 +103,10 @@ export function MessageAttachments({ files, onImageLoaded }: MessageAttachmentsP
   );
 }
 
-// ---------------------------------------------------------------------------
-// Images
-// ---------------------------------------------------------------------------
-
-// Inline single-image previews clamp their aspect ratio into this window and
-// center-crop (``object-cover``) anything outside it, so very tall or very
-// wide images don't show as a sliver framed by gray letterbox bars. The
-// lightbox still shows the full, uncropped image. 3:4 portrait to 2:1 landscape.
 const MIN_PREVIEW_RATIO = 3 / 4;
 const MAX_PREVIEW_RATIO = 2 / 1;
+const THUMB = "absolute inset-0 size-full object-cover";
 
-/**
- * Right-click (desktop) / long-press (touch) menu for an image tile.
- *
- * Two propagation guards make it coexist with the message row's own menu,
- * which wraps the whole post:
- *
- *  - ``contextmenu`` is stopped ABOVE this menu's trigger, so the event
- *    reaches the image's trigger first and never bubbles on to the row.
- *  - touch ``pointerdown`` is stopped for the same reason: Base UI opens this
- *    menu on a 500 ms hold while the row's ``useLongPress`` fires at 450 ms,
- *    so without the guard a long press would open both at once.
- *
- * Every action works on the ORIGINAL upload (not the 1024px thumbnail the tile
- * displays) via a freshly minted presigned URL - the cached one may be minutes
- * from expiry.
- */
 function ImageContextMenu({
   file,
   children,
@@ -164,20 +117,12 @@ function ImageContextMenu({
   const freshUrl = () => getMmFileDownloadUrl(file.file_id).then((r) => r.url);
 
   const onCopy = () => {
-    // NOT awaited before the call: copyImageToClipboard has to build its
-    // ClipboardItem inside this click, so it takes the URL promise itself.
     copyImageToClipboard(freshUrl()).then(
       () => { toast.success("Image copied"); },
       (e: unknown) => { toast.error(errMsg(e, "Could not copy image")); },
     );
   };
 
-  // A real save, not a navigation: the presigned URL is cross-origin, where
-  // the ``download`` attribute is ignored, so the bytes go through a
-  // same-origin blob URL to keep both the download AND the original filename.
-  // If the bucket's CORS policy refuses that read we hand the URL to the
-  // browser instead — the AttachmentViewer's Download button has always worked
-  // that way, so the action never dead-ends, it just loses the filename.
   const onSave = () => {
     void (async () => {
       let url: string;
@@ -199,7 +144,6 @@ function ImageContextMenu({
       } catch {
         await openExternal(url);
       } finally {
-        // Revoke late — immediately would race the click.
         if (objectUrl) {
           const revoke = objectUrl;
           window.setTimeout(() => { URL.revokeObjectURL(revoke); }, 10_000);
@@ -227,9 +171,6 @@ function ImageContextMenu({
       <ContextMenu>
         <ContextMenuTrigger render={children} />
         <ContextMenuContent className="min-w-44">
-          {/* Hidden rather than disabled where the browser can't do it at all
-              (no ClipboardItem, or an insecure context) - a permanently dead
-              row reads as a bug. */}
           {canCopyImages() && (
             <ContextMenuItem onClick={onCopy}>
               <Icon icon={Copy01Icon} className="size-4" />
@@ -251,123 +192,47 @@ function ImageContextMenu({
   );
 }
 
-function ImageGrid({
-  images,
-  onOpen,
-  onImageLoaded,
-}: {
-  images: MmFile[];
-  onOpen: (index: number, sourceEl: HTMLElement | null) => void;
-  onImageLoaded?: () => void;
-}) {
-  // Single image: one filled tile, clamped into a comfortable aspect-ratio
-  // window so very tall or very wide images don't render as a thin sliver
-  // boxed by big gray letterbox bars. Two+: 2-col grid with square tiles.
-  // Rounding lives on the ``<img>`` element itself so the literal pixel
-  // corners of the image are clipped, not just the parent container's
-  // outline. ``rounded-xl`` ~ 12 px - matches the theme's card-level radius
-  // (composer pill, popovers, dialogs).
-  const imgRadius = "rounded-xl";
-  if (images.length === 1) {
-    const f = images[0]!;
-    // Clamp the intrinsic ratio into [MIN, MAX] and fill the tile with
-    // ``object-cover``: images inside the window show in full, taller/wider
-    // ones are center-cropped to the window edge - never letterboxed. (The
-    // full, uncropped image is one tap away in the lightbox.) Backend probes
-    // dims on confirm, so the 1:1 fallback for unknown dims is exceptional.
-    //
-    // The box is driven by ``aspect-ratio`` + a computed ``max-width`` rather
-    // than a fixed height, so it scales down cleanly on narrow screens while
-    // staying inside the 28rem-wide / 24rem-tall (``max-w-md`` / ``max-h-96``)
-    // envelope: ``min(28rem, 24rem * ratio)`` is the widest box of this ratio
-    // that still fits under the height cap, which bounds tall tiles without a
-    // separate ``max-height``.
-    const natRatio = f.width && f.height ? f.width / f.height : 1;
-    const ratio = Math.min(
-      MAX_PREVIEW_RATIO,
-      Math.max(MIN_PREVIEW_RATIO, natRatio),
-    );
-    const maxWidthRem = Math.min(28, 24 * ratio);
-    return (
-      <ImageContextMenu file={f}>
-        <button
-          type="button"
-          style={{ maxWidth: `${String(maxWidthRem)}rem` }}
-          onClick={(e) => { onOpen(0, e.currentTarget.querySelector("img")); }}
-          className="group block w-full outline-none"
-        >
-          <div
-            style={{ aspectRatio: ratio }}
-            className={`relative w-full overflow-hidden bg-muted/30 ${imgRadius}`}
-          >
-            <ImageThumb
-              file={f}
-              className={`absolute inset-0 size-full object-cover ${imgRadius}`}
-              onLoaded={onImageLoaded}
-            />
-          </div>
-        </button>
-      </ImageContextMenu>
-    );
-  }
-  return (
-    <div className="grid max-w-md grid-cols-2 gap-1.5">
-      {images.map((f, idx) => (
-        <ImageContextMenu key={f.file_id} file={f}>
-          <button
-            type="button"
-            onClick={(e) => { onOpen(idx, e.currentTarget.querySelector("img")); }}
-            className="group relative aspect-square outline-none"
-          >
-            <ImageThumb
-              file={f}
-              className={`size-full object-cover ${imgRadius}`}
-              onLoaded={onImageLoaded}
-            />
-          </button>
-        </ImageContextMenu>
-      ))}
-    </div>
-  );
+function singleTileStyle(file: MmFile): CSSProperties {
+  const natural =
+    file.width && file.height ? file.width / file.height : isVideo(file) ? 16 / 9 : 1;
+  const ratio = Math.min(MAX_PREVIEW_RATIO, Math.max(MIN_PREVIEW_RATIO, natural));
+  return { aspectRatio: ratio, maxWidth: `${String(Math.min(28, 24 * ratio))}rem` };
 }
 
-function ImageThumb({
+function MediaTile({
   file,
-  className,
-  onLoaded,
+  single,
+  onOpen,
 }: {
   file: MmFile;
-  className?: string;
-  onLoaded?: () => void;
+  single: boolean;
+  onOpen: (sourceEl: HTMLElement) => void;
 }) {
-  // Resolve through the URL cache so periodic post-list polls don't
-  // change the src on every render (otherwise the browser cache misses
-  // and the image visibly flickers).
+  const tile = (
+    <button
+      type="button"
+      aria-label={file.filename}
+      style={single ? singleTileStyle(file) : { aspectRatio: 1 }}
+      onClick={(e) => { onOpen(e.currentTarget); }}
+      className="relative block w-full overflow-hidden rounded-xl bg-muted/30 outline-none"
+    >
+      {isVideo(file) ? <VideoThumb file={file} /> : <ImageThumb file={file} />}
+    </button>
+  );
+  return isImage(file) ? <ImageContextMenu file={file}>{tile}</ImageContextMenu> : tile;
+}
+
+function ImageThumb({ file }: { file: MmFile }) {
   const src =
-    stableThumbnailUrl(
-      file.file_id,
-      file.thumbnail_url,
-      file.thumbnail_url_expires_at,
-    ) ||
-    stableDownloadUrl(
-      file.file_id,
-      file.download_url,
-      file.download_url_expires_at,
-    ) ||
-    undefined;
+    stableThumbnailUrl(file.file_id, file.thumbnail_url, file.thumbnail_url_expires_at) ??
+    stableDownloadUrl(file.file_id, file.download_url, file.download_url_expires_at);
   if (!src) {
-    // Backend returned the file without a download URL (presigner offline,
-    // for example) — keep a neutral placeholder so the layout doesn't jump.
     return (
-      <div className={`flex items-center justify-center bg-muted ${className ?? ""}`}>
+      <div className={`flex items-center justify-center bg-muted ${THUMB}`}>
         <Icon icon={File01Icon} className="size-6 text-muted-foreground" />
       </div>
     );
   }
-  // Intrinsic width/height reserve aspect-ratio space *before* the bytes
-  // arrive, so the message height is correct on first paint and the
-  // composer's scroll-to-bottom call lands at the actual bottom. CSS
-  // ``object-contain`` / ``object-cover`` still drives the visual size.
   return (
     <img
       src={src}
@@ -375,127 +240,43 @@ function ImageThumb({
       loading="lazy"
       decoding="async"
       draggable={false}
-      width={file.width ?? undefined}
-      height={file.height ?? undefined}
-      onLoad={onLoaded}
-      className={className}
+      className={THUMB}
     />
   );
 }
 
-// ---------------------------------------------------------------------------
-// Video / audio
-// ---------------------------------------------------------------------------
-
-function formatClock(ms: number | null | undefined): string | null {
-  if (!ms || ms <= 0) return null;
-  const total = Math.round(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m)}:${s.toString().padStart(2, "0")}`;
+function formatClock(seconds: number) {
+  return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function VideoBlock({ file }: { file: MmFile }) {
-  const [src, setSrc] = useState<string | null>(file.download_url ?? null);
-  // Client-generated poster (uploaded alongside the video). Resolved
-  // through the URL cache so post-list polls don't churn the src.
-  const poster =
-    stableThumbnailUrl(
-      file.file_id,
-      file.thumbnail_url,
-      file.thumbnail_url_expires_at,
-    ) ?? undefined;
-  // Reserve the real aspect-ratio box up front (dims captured at upload),
-  // so the tile doesn't jump when the poster / video loads. 16:9 when unknown.
-  const aspectRatio =
-    file.width && file.height
-      ? `${String(file.width)} / ${String(file.height)}`
-      : "16 / 9";
-  const duration = formatClock(file.duration_ms);
-
-  // Pause a playing inline video once it scrolls out of view, so its audio
-  // doesn't keep going from a tile the user has scrolled past. (virtua only
-  // unmounts the row when it's well out of the overscan window; this stops
-  // playback as soon as it's mostly off-screen.) We don't auto-resume — the
-  // user taps play again, which is less surprising than sound resuming itself.
-  const videoRef = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    if (!src) return;
-    const v = videoRef.current;
-    if (!v) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (entry && entry.intersectionRatio < 0.25 && !v.paused) v.pause();
-      },
-      { threshold: 0.25 },
-    );
-    io.observe(v);
-    return () => { io.disconnect(); };
-  }, [src]);
-
-  // Reserve a *fixed* aspect-ratio box and absolutely position the poster /
-  // video inside it, so the row height is deterministic from first paint and
-  // never changes as the poster loads or playback swaps the <video> in. (A
-  // normal-flow <video> resizes from its 2:1 default to its metadata ratio on
-  // load, which mis-targets the channel's scroll-to-bottom and jumps the feed
-  // when playback starts.) Falls back to 16:9 when dims are unknown.
-  //
-  // Browsers won't autoplay a video without bytes; we resolve a presigned URL
-  // on demand the first time the user clicks Play. The poster shows the real
-  // first frame in the meantime.
+function VideoThumb({ file }: { file: MmFile }) {
+  const src =
+    stableDownloadUrl(file.file_id, file.download_url, file.download_url_expires_at) ?? undefined;
+  const [left, setLeft] = useState(Math.ceil((file.duration_ms ?? 0) / 1000));
   return (
-    <div
-      style={{ aspectRatio }}
-      className="relative max-h-96 w-full max-w-md overflow-hidden rounded-lg border border-border/40 bg-black"
-    >
-      {src ? (
-        <video
-          ref={videoRef}
-          src={src}
-          poster={poster}
-          controls
-          autoPlay
-          preload="metadata"
-          className="absolute inset-0 size-full object-contain"
-        />
-      ) : (
-        <button
-          type="button"
-          onClick={async () => {
-            try {
-              const r = await getMmFileDownloadUrl(file.file_id);
-              setSrc(r.url);
-            } catch (e) {
-              toast.error(e instanceof Error ? e.message : "Could not load video");
-            }
-          }}
-          className="group absolute inset-0 block size-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-          aria-label={`Play ${file.filename}`}
-        >
-          {poster && (
-            <img
-              src={poster}
-              alt={file.filename}
-              loading="lazy"
-              decoding="async"
-              draggable={false}
-              className="absolute inset-0 size-full object-contain"
-            />
-          )}
-          <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <span className="flex size-14 items-center justify-center rounded-full bg-black/40 backdrop-blur-md ring-1 ring-inset ring-white/15 transition-transform duration-200 group-hover:scale-105">
-              <Icon icon={PlayCircleIcon} className="size-8 text-white/95" />
-            </span>
-          </span>
-          {duration && (
-            <span className="pointer-events-none absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-white">
-              {duration}
-            </span>
-          )}
-        </button>
-      )}
-    </div>
+    <>
+      <video
+        key={src}
+        ref={autoplay}
+        src={src}
+        poster={
+          stableThumbnailUrl(file.file_id, file.thumbnail_url, file.thumbnail_url_expires_at) ??
+          undefined
+        }
+        muted
+        loop
+        playsInline
+        preload="none"
+        onTimeUpdate={({ currentTarget: { duration, currentTime } }) => {
+          setLeft(Math.ceil(duration - currentTime));
+        }}
+        className={THUMB}
+      />
+      <span className="pointer-events-none absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/50 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-white">
+        <Icon icon={VolumeMute02Icon} className="size-3" />
+        {Number.isFinite(left) && left > 0 && formatClock(left)}
+      </span>
+    </>
   );
 }
 
@@ -532,10 +313,6 @@ function AudioBlock({ file }: { file: MmFile }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Generic file card
-// ---------------------------------------------------------------------------
-
 function FileCard({ file, onPreview }: { file: MmFile; onPreview: () => void }) {
   const [downloading, setDownloading] = useState(false);
   const desc = fileDescriptor(file.filename, file.content_type);
@@ -545,9 +322,6 @@ function FileCard({ file, onPreview }: { file: MmFile; onPreview: () => void }) 
     setDownloading(true);
     try {
       const r = await getMmFileDownloadUrl(file.file_id);
-      // Open the presigned URL externally — system browser on desktop,
-      // new tab on web. Its Content-Disposition: attachment triggers a
-      // save with the original filename rather than an inline render.
       await openExternal(r.url);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Download failed");

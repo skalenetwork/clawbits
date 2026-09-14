@@ -18,6 +18,10 @@ def agent_dm_channel_name(human_id: int, agent_id: str) -> str:
     return f"dm-human-{human_id}-agent-{agent_id}"
 
 
+def agent_default_channel_name(agent_id: str) -> str:
+    return f"agent-{agent_id}"
+
+
 RealtimeEventType = Literal[
     "post.created",
     "post.updated",

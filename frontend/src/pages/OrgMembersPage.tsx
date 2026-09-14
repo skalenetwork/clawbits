@@ -220,8 +220,8 @@ export default function OrgMembersPage() {
                 title="Members"
                 count={members.length}
                 actions={
-                    <Button size="sm" onClick={() => { setInviteOpen(true); }}>
-                        <Icon icon={UserPlus} className="size-4"/>
+                    <Button size="compact" onClick={() => { setInviteOpen(true); }}>
+                        <Icon icon={UserPlus}/>
                         Invite people
                     </Button>
                 }

@@ -1,3 +1,5 @@
+import type { ReefHostAgent } from "@/lib/api";
+
 /** Backend timestamps are UTC, but SQLite emits them without a zone ("2026-04-16 17:06:00"), which Date reads as local. */
 export function parseUtcTimestamp(timestamp: string | number): Date {
   if (typeof timestamp === "number") return new Date(timestamp);
@@ -43,6 +45,22 @@ export function parseAgentImage(image: string): AgentImage {
 export function formatAgentVersion({ tag, label, scheme }: AgentImage, reported?: string | null): string {
   if (scheme === null) return tag || label;
   return `${scheme.engine} · plugin ${reported || scheme.plugin}`;
+}
+
+export const RUNTIME_LOGO: Record<string, string> = {
+  openclaw: "/openclaw.png",
+  hermes: "/hermes.png",
+  ironclaw: "/ironclaw.png",
+};
+
+export const fleetKey = (host: string, name: string) => `${host}/${name}`;
+
+export function reefAttention(row: ReefHostAgent): { bad?: boolean; label: string } | null {
+  if (row.state === "failed") return { bad: true, label: "failed" };
+  if (!row.role_current) return { label: "update pending" };
+  if (!row.synced) return { label: "syncing" };
+  if (row.state === "running") return null;
+  return { label: row.state === "pending" ? "starting" : row.state };
 }
 
 /** DM channels are stored as `DM: <human> ↔ <agent>`, search results as `DM: <name>`; both render as the peer. */
@@ -98,6 +116,12 @@ export function formatTimeOnly(ts: string): string {
   const d = parseUtcTimestamp(ts);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+export function formatFullDate(ts: string): string {
+  const d = parseUtcTimestamp(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" });
 }
 
 export function formatDayLabel(ts: string): string {

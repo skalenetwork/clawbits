@@ -587,7 +587,7 @@ export default function OrgUsagePage() {
                 title="Usage"
                 actions={
                     <Select value={range} onValueChange={(v) => { if (v) setRange(v); }}>
-                        <SelectTrigger size="sm" aria-label="Usage range">
+                        <SelectTrigger size="sm" aria-label="Usage range" className="h-7">
                             <SelectValue>{(v: UsageRange) => RANGES[v].label}</SelectValue>
                         </SelectTrigger>
                         <SelectContent>

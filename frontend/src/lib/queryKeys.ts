@@ -23,7 +23,7 @@ export const queryKeys = {
   /** One agent's AI usage. */
   agentUsage: (orgId: string, agentId: string, range: string) =>
     ["org", orgId, "usage", "agent", agentId, range] as const,
-  /** Org-wide automation list (across the caller's operated agents). */
+  /** Prefix covering every automation query in an org, for invalidation. */
   automations: (orgId: string) => ["automations", orgId] as const,
   /** One agent's automation list. */
   automationsForAgent: (orgId: string, agentId: string) =>
@@ -61,16 +61,13 @@ export const queryKeys = {
   reefRoles: (orgId: string) => ["org", orgId, "reef", "roles"] as const,
   /** Operator-only agent email inbox (Stalwart). */
   agentInbox: {
-    /** Prefix to invalidate every cache for one agent's inbox at once. */
-    all: (orgId: string, agentId: string) =>
-      ["agent-inbox", orgId, agentId] as const,
     count: (orgId: string, agentId: string) =>
       ["agent-inbox", orgId, agentId, "count"] as const,
-    list: (orgId: string, agentId: string, limit?: number, offset?: number, unreadOnly?: boolean) =>
-      ["agent-inbox", orgId, agentId, "list", { limit, offset, unreadOnly }] as const,
-    /** Prefix matching every paginated list variant — use for invalidation so
-     *  we refresh the list without touching the open message (which would
-     *  re-fetch + re-mark-read in a loop). */
+    list: (orgId: string, agentId: string, limit: number) =>
+      ["agent-inbox", orgId, agentId, "list", limit] as const,
+    /** Prefix matching every list limit, for invalidation: refreshes the list
+     *  without touching the open message (which would re-fetch and re-mark-read
+     *  in a loop). */
     listPrefix: (orgId: string, agentId: string) =>
       ["agent-inbox", orgId, agentId, "list"] as const,
     email: (orgId: string, agentId: string, uid: number) =>

@@ -171,9 +171,8 @@ export const LINKS = {
    * the updater artifacts. /download links here rather than pretending to be
    * the only way in. */
   releases: `${GITHUB}/releases`,
-  /* The hero badge target: the homepage's own Lobstertalk section. Becomes
-   * a dedicated /docs page if the spec ever goes public. */
-  lobstertalk: "/#lobstertalk",
+  /* The hero badge target: the homepage's own Reef section. */
+  reefSection: "/#reef",
   /* Reef is its own product with its own site and docs. */
   reef: "https://reef.clawbits.ai",
   blog: `${GITHUB}/tree/main/docs`, // Phase 5 -> "/blog"

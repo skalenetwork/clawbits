@@ -21,9 +21,9 @@
  * WHAT THIS CANNOT SEE
  *
  * Only attributes present in the built HTML. A library that injects a <style>
- * element at RUNTIME - which is how @paper-design/shaders broke the hero
- * canvas - appears nowhere in dist/ and passes this gate cleanly. Catching that
- * class needs a real page load collecting securitypolicyviolation events.
+ * element at RUNTIME appears nowhere in dist/ and passes this gate cleanly.
+ * Catching that class needs a real page load collecting securitypolicyviolation
+ * events.
  * Keep both.
  *
  * Usage:  bun run build && bun run verify:no-inline-styles
@@ -52,10 +52,9 @@ const html = walk(DIST).filter((f) => f.endsWith(".html"));
 /**
  * `style="…"` on any element.
  *
- * Deliberately NOT matched: `<style>` ELEMENTS. Astro hashes those, they are
- * allowed, and Base.astro ships one on purpose (the empty data-paper-shader
- * marker). The trailing `=` and quote are what separate the attribute from the
- * tag name.
+ * Deliberately NOT matched: `<style>` ELEMENTS. Astro hashes those and they
+ * are allowed. The trailing `=` and quote are what separate the attribute from
+ * the tag name.
  */
 const STYLE_ATTR = /\sstyle\s*=\s*"([^"]*)"/g;
 

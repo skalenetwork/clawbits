@@ -1,5 +1,4 @@
 import { useRef, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 
 import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
@@ -325,7 +324,6 @@ const BUTTON_TONE = {
 
 export function ModalButton({
   onClick,
-  to,
   tone = "quiet",
   type = "button",
   disabled,
@@ -333,21 +331,20 @@ export function ModalButton({
 }: {
   onClick?: () => void;
   tone?: keyof typeof BUTTON_TONE;
+  type?: "button" | "submit";
+  disabled?: boolean;
   children: ReactNode;
-} & (
-  | { to: string; type?: never; disabled?: never }
-  | { to?: never; type?: "button" | "submit"; disabled?: boolean }
-)) {
-  const className = cn(
-    "shrink-0 rounded-md px-2.5 py-1.5 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50",
-    BUTTON_TONE[tone],
-  );
-  return to ? (
-    <Link to={to} onClick={onClick} className={className}>
-      {children}
-    </Link>
-  ) : (
-    <button type={type} onClick={onClick} disabled={disabled} className={className}>
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "shrink-0 rounded-md px-2.5 py-1.5 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50",
+        BUTTON_TONE[tone],
+      )}
+    >
       {children}
     </button>
   );

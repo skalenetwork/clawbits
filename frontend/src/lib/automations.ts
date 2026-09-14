@@ -20,6 +20,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 
+import type { StatusTone } from "@/lib/status";
 import type { AgentLivenessStatus, Automation } from "@/lib/api";
 import {
   describeSchedule,
@@ -31,7 +32,7 @@ import {
 export type AutomationAccent = "blue" | "violet" | "teal";
 
 /** Runtimes with no Clawbits cron reconciler in their in-VM plugin. Mirrors
- *  the server's `_AUTOMATION_INCAPABLE_RUNTIMES` gate. */
+ *  the server's `AUTOMATION_INCAPABLE_RUNTIMES` gate. */
 const AUTOMATION_INCAPABLE_RUNTIMES = new Set(["ironclaw"]);
 
 const RUNTIME_LABELS: Record<string, string> = {
@@ -372,14 +373,14 @@ export function withEnabled(
 }
 
 /** One human sentence for a stored spec's schedule ("Every day", "At 9:00 AM,
- *  Monday through Friday", "Once on Mon, Jul 6 · 9:00 AM"), or "—". */
+ *  Monday through Friday", "Once on Mon, Jul 6 · 9:00 AM"), or "No schedule". */
 export function humanizeSchedule(spec: Record<string, unknown> | null): string {
   return describeSchedule(parseSchedule(spec?.schedule));
 }
 
 // ---------------------------------------------------------------------------
-// Visual state — the single state language shared by the card, the attention
-// shelf, and the detail page (see AUTOMATIONS_UI_PLAN.md "state language").
+// Visual state: the single state language shared by the automation rows and
+// the details panel (see AUTOMATIONS_UI_PLAN.md "state language").
 // Sync failure and run failure are DIFFERENT facts: a sync failure means the
 // agent couldn't apply the spec (red, needs attention); a failing run keeps
 // the automation active (amber pip + streak) because "green means the run
@@ -395,23 +396,17 @@ export type AutomationStateKey =
   | "running"
   | "active";
 
-export type AutomationDotColor = "emerald" | "amber" | "red" | "blue" | "zinc";
-
 export interface AutomationVisualState {
   key: AutomationStateKey;
-  dot: AutomationDotColor;
-  /** Chip icon pulses (running / applying-while-agent-online). */
-  pulse: boolean;
-  /** Label runs the t-shimmer sweep ("Applying…"). */
-  shimmer: boolean;
+  tone: StatusTone;
   label: string;
   /** Secondary sentence (sync error text, reconnect note). */
   detail: string | null;
-  /** `missing_since` drift — "changed outside Clawbits". */
+  /** `missing_since` drift: "changed outside Clawbits". */
   drifted: boolean;
   /** Consecutive failing runs (0 when the last run was fine). */
   failStreak: number;
-  /** Why the last run failed, as the runtime reported it — the mirror already
+  /** Why the last run failed, as the runtime reported it: the mirror already
    *  carries it, so a failing automation can say WHAT broke instead of only
    *  counting. Null unless the last run actually failed (the gateway keeps a
    *  stale `lastError` around after a recovery). */
@@ -426,11 +421,11 @@ export interface AutomationVisualState {
  *  One bad run is noise (a flaky fetch, a rate limit); two in a row is a
  *  pattern. Mirrors count too: Clawbits can't fix a job it doesn't manage, but
  *  a job that has failed dozens of times in a row is exactly what an operator
- *  needs told — leaving it in the recessed "Managed elsewhere" shelf is how it
- *  goes unnoticed for weeks. */
+ *  needs told. Leaving it in the "Managed elsewhere" section is how it goes
+ *  unnoticed for weeks. */
 const FAIL_STREAK_ATTENTION = 2;
 
-/** How long after a reported `runningAtMs` we still trust "running now" —
+/** How long after a reported `runningAtMs` we still trust "running now":
  *  reports arrive once per reconcile cycle, so an old marker is stale, not
  *  evidence of a 20-minute run. */
 const RUNNING_FRESH_MS = 10 * 60 * 1000;
@@ -462,23 +457,17 @@ export function automationVisualState(
   if (a.managed_by === "external") {
     return {
       key: "external",
-      dot: "zinc",
-      pulse: false,
-      shimmer: false,
+      tone: "idle",
       label: "Mirror",
-      detail: "Managed outside Clawbits",
+      detail: null,
       ...common,
-      // Read-only does not mean unwatched. Clawbits can't repair a mirror, but
-      // it can refuse to hide one that keeps failing.
       needsAttention: failing,
     };
   }
   if (a.sync_status === "removing") {
     return {
       key: "removing",
-      dot: "zinc",
-      pulse: false,
-      shimmer: true,
+      tone: "idle",
       label: "Removing…",
       detail: null,
       ...common,
@@ -488,9 +477,7 @@ export function automationVisualState(
   if (a.sync_status === "failed") {
     return {
       key: "failed",
-      dot: "red",
-      pulse: false,
-      shimmer: false,
+      tone: "bad",
       label: "Sync failed",
       detail: a.sync_error,
       ...common,
@@ -501,31 +488,20 @@ export function automationVisualState(
     const offline = agentStatus !== "available";
     return {
       key: "pending",
-      dot: "amber",
-      pulse: !offline,
-      shimmer: !offline,
+      tone: "warn",
       label: offline ? "Pending" : "Applying…",
       detail: offline ? `Will apply when ${agentName} reconnects` : null,
       ...common,
-      // Pending-on-offline is a waiting state, not a broken one — the card and
-      // the agent group header carry it; the attention shelf is for failures
-      // and drift only.
       needsAttention: false,
     };
   }
   if (a.enabled === false) {
     return {
       key: "paused",
-      dot: "zinc",
-      pulse: false,
-      shimmer: false,
+      tone: "idle",
       label: "Paused",
-      detail: "Keeps its configuration",
+      detail: null,
       ...common,
-      // Drift is drift even while sleeping — the live job disagrees with the
-      // stored intent, so the shelf should still surface it. A paused
-      // automation that was failing when it stopped keeps that flag too: the
-      // breakage is still there when it resumes.
       needsAttention: drifted || failing,
     };
   }
@@ -538,9 +514,7 @@ export function automationVisualState(
   ) {
     return {
       key: "running",
-      dot: "blue",
-      pulse: true,
-      shimmer: false,
+      tone: "info",
       label: "Running now",
       detail: null,
       ...common,
@@ -549,25 +523,21 @@ export function automationVisualState(
   }
   return {
     key: "active",
-    dot: "emerald",
-    pulse: false,
-    shimmer: false,
+    tone: "ok",
     label: "Active",
     detail: null,
     ...common,
-    // "Active" only means the schedule is live and in sync — a job can be
-    // perfectly synced and fail every single run. That is still attention.
     needsAttention: drifted || failing,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Accent tiles — the saturated Shortcuts-style register the automations UI
+// Accent tiles: the saturated Shortcuts-style register the automations UI
 // owns. Ad-hoc automations pick deterministically from the palette by id so a
 // card keeps its face across reloads.
 // ---------------------------------------------------------------------------
 
-/** Solid tile fills (white content) — readable in both modes. */
+/** Solid tile fills (white content), readable in both modes. */
 export const ACCENT_BG: Record<AutomationAccent, string> = {
   blue: "bg-blue-500",
   violet: "bg-violet-500",
@@ -576,16 +546,6 @@ export const ACCENT_BG: Record<AutomationAccent, string> = {
 
 const ACCENT_ORDER: AutomationAccent[] = ["blue", "violet", "teal"];
 
-/** Route to an automation's detail page. Pass ``scopeAgentId`` when
- *  navigating FROM an agent's Automations tab so the user stays in the agent
- *  context (same sidebar + breadcrumbs); the bare path is the org mount. */
-export function automationDetailPath(a: Automation, scopeAgentId?: string): string {
-  const id = encodeURIComponent(a.automation_id);
-  return scopeAgentId
-    ? `/agents/${encodeURIComponent(scopeAgentId)}/automations/${id}`
-    : `/automations/${id}`;
-}
-
 /** Stable accent for an automation without a template accent. */
 export function accentForId(id: string): AutomationAccent {
   let hash = 0;
@@ -593,4 +553,8 @@ export function accentForId(id: string): AutomationAccent {
     hash = (hash * 31 + id.charCodeAt(i)) | 0;
   }
   return ACCENT_ORDER[Math.abs(hash) % ACCENT_ORDER.length] ?? "blue";
+}
+
+export function automationAccent(a: Automation): AutomationAccent | null {
+  return a.managed_by === "external" ? null : accentForId(a.automation_id);
 }

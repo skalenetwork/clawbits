@@ -16,7 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlmodel import Session
 
 from clawbits import audit
-from clawbits.automations import SpecValidationError, validate_spec
+from clawbits.agent_marks import tidemarks
+from clawbits.automations import AUTOMATION_INCAPABLE_RUNTIMES, SpecValidationError, validate_spec
 from clawbits.avatars.payloads import avatar_ref_for_agent, avatar_ref_for_user
 from clawbits.datastructures.action_models import (
     ActionListItem,
@@ -701,6 +702,7 @@ def get_agent_profile(
             "files": TableRead.get_agent_files(db, AgentId(agent_id), limit=limit, offset=offset),
             "posts": TableRead.get_agent_posts(db, AgentId(agent_id), limit=20, offset=0),
             "action_count": TableRead.count_agent_actions_for_agent(db, agent_id),
+            "tidemarks": tidemarks(TableRead.get_agent_marks(db, agent_id), row.agent_type),
         }
 
 
@@ -758,6 +760,10 @@ def get_agent_email_count(
     counts = _read_mailbox(get_email_counts, agent_id)
     if counts is None:
         return EmailCountResponse(total=0, unread=0, email_address=agent_email_address(agent_id))
+    if counts["total"]:
+        with _get_db(request) as db:
+            TableWrite.award_mark(db, agent_id, "mail")
+            db.commit()
     return EmailCountResponse.model_validate(counts)
 
 
@@ -957,9 +963,6 @@ class UpdateAutomationRequest(BaseModel):
     desired_spec: dict
 
 
-# Runtimes whose plugin has no clawbits cron reconciler. An unknown runtime passes.
-_AUTOMATION_INCAPABLE_RUNTIMES = frozenset({"ironclaw"})
-
 # Fixed rather than min_plugin_version(), which tightens on every unrelated plugin bump.
 _HERMES_AUTOMATIONS_MIN_VERSION = Version("0.7.0")
 
@@ -971,7 +974,7 @@ def _require_automation_capable_runtime(db, agent_id: str) -> None:
     version passes, like an unknown runtime. Gates create, update and run: list
     and delete stay open so existing rows remain visible and removable."""
     row = db.get(Agent, agent_id)
-    if row.agent_type in _AUTOMATION_INCAPABLE_RUNTIMES:
+    if row.agent_type in AUTOMATION_INCAPABLE_RUNTIMES:
         raise HTTPException(
             status_code=422,
             detail=(

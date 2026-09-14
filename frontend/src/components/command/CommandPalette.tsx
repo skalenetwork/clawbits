@@ -26,7 +26,6 @@ import {
     Users,
     Waves,
     X,
-    Zap,
     type LucideIcon,
 } from "lucide-react";
 import {Dialog, DialogContent, DialogTitle} from "@/components/ui/dialog";
@@ -393,7 +392,6 @@ function Palette({mobile}: {mobile: boolean}) {
                 action("home", "Home", House, go("/home"), "", isDesktop && keycap("1")),
                 action("agents", "Agents", Bot, go("/agents"), "", isDesktop && keycap("2")),
                 action("skills", "Skills", BookOpen, go("/skills")),
-                action("automations", "Automations", Zap, go("/automations")),
             ],
         },
         {

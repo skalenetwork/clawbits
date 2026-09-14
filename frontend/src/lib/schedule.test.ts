@@ -93,7 +93,7 @@ describe("describeSchedule / humanizeEvery", () => {
   it("echoes cron in plain English and falls back to the raw expr", () => {
     expect(describeSchedule({ kind: "every", everyMs: DAY })).toBe("Every day");
     expect(describeSchedule({ kind: "cron", expr: "0 9 * * 1-5" })).toMatch(/9:00 AM/);
-    expect(describeSchedule(null)).toBe("—");
+    expect(describeSchedule(null)).toBe("No schedule");
   });
 
   it("names a foreign tz on cron sentences, omits the local one", () => {

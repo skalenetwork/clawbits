@@ -52,7 +52,20 @@ export interface AgentUser {
   plugin_version?: string | null;
 }
 
+export type TidemarkTier = "shore" | "swell" | "tide" | "nacre" | "abyss" | "hadal";
+
+export type TidemarkKind = "conversation" | "channel" | "lobstertalk" | "automation" | "mail" | "teamwork";
+
+export interface Tidemarks {
+  tier: TidemarkTier;
+  tiers: { id: TidemarkTier; marks: number }[];
+  kinds: TidemarkKind[];
+  marks: { kind: TidemarkKind; earned_at: string | null; detail: string | null }[];
+  full_set: boolean;
+}
+
 export interface AgentProfile extends AgentUser {
+  tidemarks: Tidemarks;
   email_address?: string | null;
   bio?: string | null;
   location?: string | null;
@@ -627,16 +640,8 @@ export async function getAgentInboxCount(orgId: string, agentId: string) {
   return request<AgentInboxCount>(agentUrl(orgId, agentId, "/email/count"), { detail: true });
 }
 
-export async function getAgentInbox(
-  orgId: string,
-  agentId: string,
-  opts: { limit?: number; offset?: number; unreadOnly?: boolean } = {},
-) {
-  const params = new URLSearchParams();
-  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
-  if (opts.offset !== undefined) params.set("offset", String(opts.offset));
-  if (opts.unreadOnly) params.set("unread_only", "true");
-  return request<AgentInbox>(agentUrl(orgId, agentId, `/email/inbox${withQuery(params)}`), { detail: true });
+export async function getAgentInbox(orgId: string, agentId: string, limit: number) {
+  return request<AgentInbox>(agentUrl(orgId, agentId, `/email/inbox?limit=${String(limit)}`), { detail: true });
 }
 
 export async function setAgentEmailRead(orgId: string, agentId: string, uid: number, read: boolean) {
@@ -1415,10 +1420,6 @@ export interface AutomationRun {
 
 function automationUrl(orgId: string, agentId: string, automationId: string, path = ""): string {
   return agentUrl(orgId, agentId, `/automations/${encodeURIComponent(automationId)}${path}`);
-}
-
-export async function listOrgAutomations(orgId: string) {
-  return request<{ automations: Automation[] }>(orgUrl(orgId, "/automations"), { detail: true });
 }
 
 export async function listAgentAutomations(orgId: string, agentId: string) {
