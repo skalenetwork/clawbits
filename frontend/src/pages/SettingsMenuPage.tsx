@@ -13,6 +13,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 
+import { Avatar } from "@/components/Avatar";
 import { Icon } from "@/components/Icon";
 import { UserAvatar } from "@/components/UserAvatar";
 import { PageHeader } from "@/components/PageHeader";
@@ -102,7 +103,7 @@ export default function SettingsMenuPage() {
                         {orgs.map(org => (
                             <SettingsRow
                                 key={org.org_id}
-                                leading={<OrgMark org={org} />}
+                                leading={<Avatar src={org.avatar?.url} name={org.display_name ?? org.name} size={26} className="rounded-md" />}
                                 title={orgLabel(org)}
                                 control={
                                     org.org_id === activeOrgId
@@ -136,22 +137,3 @@ function RowIcon({ icon }: { icon: IconSvgElement }) {
     return <Icon icon={icon} className="size-[19px] text-muted-foreground" />;
 }
 
-function OrgMark({ org }: { org: Org }) {
-    return (
-        <div
-            aria-hidden="true"
-            className="flex size-[26px] shrink-0 items-center justify-center rounded-md bg-foreground/10 text-[10px] font-semibold uppercase tracking-tight text-foreground"
-        >
-            {orgInitials(org)}
-        </div>
-    );
-}
-
-function orgInitials(org: Org): string {
-    const raw = (org.display_name ?? org.name).trim();
-    if (!raw) return "?";
-    const words = raw.split(/\s+/).filter(Boolean);
-    const initials =
-        words.length >= 2 ? words.slice(0, 2).map(w => w.charAt(0)).join("") : raw.slice(0, 2);
-    return initials.toUpperCase();
-}

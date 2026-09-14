@@ -632,6 +632,13 @@ class TableWrite:
             session.flush()
 
     @staticmethod
+    def update_org_display_name(session: Session, org_id: str, display_name: str) -> None:
+        row = session.get(Organization, org_id)
+        if row is not None:
+            row.display_name = display_name
+            session.flush()
+
+    @staticmethod
     def touch_human_last_seen(
         session: Session, human_id: int, when: datetime | None = None
     ) -> None:

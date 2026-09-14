@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { SettingsPage, SettingsRow, SettingsSection } from "@/components/settings/Settings";
 import { UserAvatar } from "@/components/UserAvatar";
 import { useAuth } from "@/context/AuthContext";
-import { deleteMyAccount, resetOwnAvatar, updateMyProfile } from "@/lib/api";
+import { deleteMyAccount, resetOwnAvatar, updateMyProfile, uploadOwnAvatar } from "@/lib/api";
 import { formatLastSeen } from "@/lib/formatting";
 import { errMsg, toast } from "@/lib/toast";
 import { confirm } from "@/lib/confirm";
@@ -208,7 +208,14 @@ export default function SettingsProfilePage() {
 
             {editorOpen && (
                 <Suspense fallback={null}>
-                    <AvatarEditorDialog open onOpenChange={setEditorOpen} user={user} />
+                    <AvatarEditorDialog
+                        open
+                        onOpenChange={setEditorOpen}
+                        title="Change profile picture"
+                        name={name}
+                        src={user.avatar?.url}
+                        onUpload={blob => uploadOwnAvatar(blob).then(avatar => { applyProfileUpdate({ ...user, avatar }); })}
+                    />
                 </Suspense>
             )}
         </SettingsPage>

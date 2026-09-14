@@ -8,10 +8,9 @@ Pipeline for a user-supplied avatar:
      ``TARGET_SIZE``, encode as WebP at quality 90 (transparency-safe,
      ~30% smaller than PNG, sharper than JPEG at the same size).
   3. Upload the resulting bytes to R2 under
-     ``avatars/users/{id}/v{n}.webp`` with the standard year-long
+     ``avatars/{users|orgs}/{id}/v{n}.webp`` with the standard year-long
      immutable cache header.
-  4. Caller bumps ``HumanUser.avatar_kind = 'uploaded'`` and
-     ``avatar_version = n`` in the same transaction.
+  4. Caller bumps the row's ``avatar_version = n`` in the same transaction.
 
 The DB row is the source of truth for "is this the current avatar"
 — old uploads stay in R2 (cheap; orphan sweep is a future cleanup).
@@ -24,11 +23,7 @@ from io import BytesIO
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from clawbits.avatars.config import make_avatars_r2_client
-from clawbits.avatars.storage import (
-    AVATAR_CACHE_CONTROL,
-    AVATAR_CONTENT_TYPE_WEBP,
-    user_avatar_object_key,
-)
+from clawbits.avatars.storage import AVATAR_CACHE_CONTROL, AVATAR_CONTENT_TYPE_WEBP
 
 logger = logging.getLogger(__name__)
 
@@ -98,19 +93,14 @@ def process_uploaded_avatar(raw: bytes) -> bytes:
     return out.getvalue()
 
 
-async def upload_user_avatar_to_r2(
-    *, user_id: int, version: int, processed_bytes: bytes
-) -> None:
-    """Upload the processed WebP to R2 at the user's versioned key.
+async def upload_avatar_to_r2(*, object_key: str, processed_bytes: bytes) -> None:
+    """Upload processed WebP bytes to a versioned avatar key.
 
-    Caller is responsible for bumping ``avatar_version`` + flipping
-    ``avatar_kind = 'uploaded'`` on the DB row *after* this returns
-    successfully. Doing the R2 upload first means a DB-only failure
-    leaves an orphan SVG (cheap) rather than a row pointing at a
+    Callers bump the row's ``avatar_version`` only after this returns, so a
+    failed commit leaves an orphan blob rather than a row pointing at a
     missing URL.
     """
     r2 = make_avatars_r2_client()
-    object_key = user_avatar_object_key(user_id, version, kind="uploaded")
     result = await r2.upload_file(
         object_key,
         processed_bytes,

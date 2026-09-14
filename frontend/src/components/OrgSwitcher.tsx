@@ -25,6 +25,7 @@ import {
     ModalPanel,
 } from "@/components/modals/Modal";
 import {Input} from "@/components/ui/input";
+import {Avatar} from "@/components/Avatar";
 import {UserAvatar} from "@/components/UserAvatar";
 import {CHANGELOG_URL} from "@/components/WordmarkLink";
 import {createOrg, getOrgs, markOrgVisited, type Org} from "@/lib/api";
@@ -38,11 +39,6 @@ function orgLabel(org: Org): string {
     return org.is_personal ? `${base} (Personal)` : base;
 }
 
-function orgInitials(org: Org): string {
-    const raw = (org.display_name ?? org.name).trim();
-    const words = raw.split(/\s+/);
-    return (words.length > 1 ? words.slice(0, 2).map(w => w.charAt(0)).join("") : raw.slice(0, 2)) || "?";
-}
 
 function slugifyOrgName(raw: string): string {
     return raw.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 39);
@@ -123,12 +119,7 @@ export function OrgSwitcher() {
                             const unread = isActive ? 0 : (org.unread_count ?? 0);
                             return (
                                 <DropdownMenuItem key={org.org_id} onClick={() => { switchOrg(org.org_id); }}>
-                                    <div
-                                        aria-hidden="true"
-                                        className="flex size-[18px] shrink-0 items-center justify-center rounded-md bg-sidebar-foreground/10 text-[10px] font-semibold uppercase tracking-tight text-sidebar-foreground"
-                                    >
-                                        {orgInitials(org)}
-                                    </div>
+                                    <Avatar src={org.avatar?.url} name={org.display_name ?? org.name} size={18} className="rounded-[5px]"/>
                                     <span className="min-w-0 flex-1 truncate">{orgLabel(org)}</span>
                                     {unread > 0 ? (
                                         <span

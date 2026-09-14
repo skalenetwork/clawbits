@@ -11,8 +11,8 @@ removes it.
 The file extension switches with ``kind``: ``generated`` avatars are
 SVG (DiceBear output, infinitely scalable), ``uploaded`` avatars are
 WebP (server-processed raster, smaller than PNG, sharper than JPEG).
-Only user avatars can be uploaded today — agents and channels are
-always generated.
+Users and orgs can upload; agents and channels are always generated,
+and orgs have no generated default.
 """
 from __future__ import annotations
 
@@ -46,6 +46,10 @@ def channel_avatar_object_key(channel_id: str, version: int) -> str:
     return f"avatars/channels/{channel_id}/v{version}.svg"
 
 
+def org_avatar_object_key(org_id: str, version: int) -> str:
+    return f"avatars/orgs/{org_id}/v{version}.webp"
+
+
 def public_url(object_key: str) -> str:
     # Read the domain at call time so tests / env-var overrides applied
     # after import time take effect immediately.
@@ -62,3 +66,7 @@ def agent_avatar_url(agent_id: str, version: int) -> str:
 
 def channel_avatar_url(channel_id: str, version: int) -> str:
     return public_url(channel_avatar_object_key(channel_id, version))
+
+
+def org_avatar_url(org_id: str, version: int) -> str:
+    return public_url(org_avatar_object_key(org_id, version))

@@ -377,6 +377,7 @@ class Organization(SQLModel, table=True):
     workos_org_id: str = Field(nullable=False, unique=True)
     name: str = Field(nullable=False, unique=True)
     display_name: str | None = None
+    avatar_version: int | None = None
     is_personal: bool = Field(default=False, nullable=False)
     created_by: int = Field(nullable=False, foreign_key="human_users.id")
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())

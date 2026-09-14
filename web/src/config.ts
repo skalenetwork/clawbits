@@ -50,6 +50,20 @@ export const SITE = {
   org: "SKALE Labs",
 } as const;
 
+/** Social cards rendered at /og/<key>.png: the lockup, then the page name. */
+export const OG_CARDS = {
+  clawbits: undefined,
+  docs: "Docs",
+  changelog: "Changelog",
+  brand: "Brand",
+  download: "Download",
+  privacy: "Privacy",
+  terms: "Terms",
+  agentpit: "AgentPit",
+} as const satisfies Record<string, string | undefined>;
+
+export type OgCard = keyof typeof OG_CARDS;
+
 export const APP_URL = APP_URL_ENV ?? "https://app.clawbits.ai";
 
 /**

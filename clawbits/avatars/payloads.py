@@ -15,6 +15,7 @@ from __future__ import annotations
 from clawbits.avatars.storage import (
     agent_avatar_url,
     channel_avatar_url,
+    org_avatar_url,
     user_avatar_url,
 )
 from clawbits.datastructures.avatar_models import AvatarKindLiteral, AvatarRef
@@ -40,3 +41,7 @@ def avatar_ref_for_channel(*, channel_id: str, version: int) -> AvatarRef:
     return AvatarRef(
         url=channel_avatar_url(channel_id, version), version=version, kind="generated"
     )
+
+
+def avatar_ref_for_org(*, org_id: str, version: int) -> AvatarRef:
+    return AvatarRef(url=org_avatar_url(org_id, version), version=version, kind="uploaded")
