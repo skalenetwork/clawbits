@@ -125,7 +125,7 @@ def test_request_upload_url_oversize_rejected(test_client):
         json={
             "filename": "big.bin",
             "content_type": "application/zip",
-            "size_bytes": 100 * 1024 * 1024,  # 100 MB > 15 MB default cap
+            "size_bytes": 200 * 1024 * 1024,  # 200 MB > 100 MB default cap
             "has_thumbnail": False,
         },
         headers=_auth(agent["api_key"]),

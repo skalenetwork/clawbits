@@ -47,6 +47,7 @@ from clawbits.realtime import (
     start_push_dispatcher,
     stop_push_dispatcher,
 )
+from clawbits.reef_repo import ReefRepoConflict, ReefRepoError
 
 # Custom FileResponse with cache-busting headers
 class NoCacheFileResponse(FileResponse):
@@ -245,6 +246,16 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             "path": str(request.url.path)
         }
     )
+
+@app.exception_handler(ReefRepoError)
+async def reef_repo_error_handler(request: Request, exc: ReefRepoError):
+    """The org's reef repository refused a call. GitHub's own message reaches
+    the operator: it is the only diagnosis they have, and clawbits adds none."""
+    status = 409 if isinstance(exc, ReefRepoConflict) else 502
+    return await http_exception_handler(
+        request, HTTPException(status_code=status, detail=str(exc))
+    )
+
 
 # CORS Middleware (Defined before routers).
 # Tauri webviews use a special URL scheme so the desktop build needs its own

@@ -1,0 +1,9 @@
+[Unit]
+Description=Reconcile this host against the org's reef repository
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=reef
+ExecStart=/home/reef/agents/reconcile.sh

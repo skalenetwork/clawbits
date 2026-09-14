@@ -1,7 +1,7 @@
 ---
 import Base from "../layouts/Base.astro";
 import Button from "../components/Button.astro";
-import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
+import SombraGradient from "../components/SombraGradient.astro";
 import { appLink, canonicalUrl } from "../config";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import HugeIcon from "../components/HugeIcon.astro";
@@ -31,7 +31,7 @@ import AutomateVisual from "../components/AutomateVisual.astro";
  * below are just the argument spelled out. Do not let the copy drift into
  * repeating their CLI.
  *
- * Structure follows /download: a shader canvas carrying the hero and the
+ * Structure follows /download: a gradient canvas carrying the hero and the
  * single CTA, then railed hairline-divided blocks. The difference is the
  * numbering - these blocks are a sequence, so each one leads with its step
  * number and they must stay in order.
@@ -246,27 +246,12 @@ const schema = [
   {/* ── Head canvas: the lockup, the claim, the one button ─────────────── */}
   <div class="frame">
     <section class="canvas">
-      {/* AgentPit's blue, owner-specified. The GROUND is the blue, with the
-          palette running light over it - so `colorBack` must stay in step with
-          --ap-ground below, or a seam appears at the shader's edge exactly the
-          way --color-canvas does on the dark heroes.
-
-          Three stops, white at both ends: the wave reads as light breaking
-          over the blue rather than as a colour sequence, which is why a fourth
-          hue was dropped rather than tuned.
-
-          Noise is dialled below the dark canvases' on purpose - grain that
-          reads as texture over warm black reads as dirt over pale blue. */}
-      <div class="shader" aria-hidden="true">
-        <ShaderBackdrop
-          client:only="react"
-          colors={["#ffffff", "#c2e1ff", "#ffffff"]}
-          colorBack="#add6ff"
-          softness={0.78}
-          intensity={0.16}
-          noise={0.1}
-          speed={0.5}
-        />
+      {/* AgentPit's blue, owner-specified. The GROUND is the blue (--ap-ground
+          below) and the ridge runs light over it, white and #c2e1ff only, so
+          it reads as light breaking over the blue rather than as a colour
+          sequence. */}
+      <div class="backdrop" aria-hidden="true">
+        <SombraGradient colors={["#ffffff", "#c2e1ff", "#ffffff", "#c2e1ff", "#ffffff"]} />
       </div>
 
       <div class="head">
@@ -736,19 +721,17 @@ const schema = [
 
 <style>
   /* ── Head canvas ──────────────────────────────────────────────────────
-   * /download's construction - inset frame, rounded canvas, a static gradient
-   * underneath the shader island so the page is never blank while React boots
-   * - with the palette inverted. See the frontmatter for the full list of what
+   * /download's construction - inset frame, rounded canvas, gradient ridge -
+   * with the palette inverted. See the frontmatter for the full list of what
    * that inversion drags with it. */
   .frame {
     padding: 1rem 1rem 0;
   }
 
   /* The one blue ground on the site, so it declares its own token rather
-   * than borrowing --color-ink (cream) and hoping. Keep --ap-ground in step
-   * with the shader's colorBack in the template above.
+   * than borrowing --color-ink (cream) and hoping.
    *
-   * Near-black type clears 12.9:1 on this blue, and the shader only ever
+   * Near-black type clears 12.9:1 on this blue, and the ridge only ever
    * paints LIGHTER than it (white and #c2e1ff), so that is the FLOOR rather
    * than an average - which is why the headline needs no scrim. Darken
    * --ap-ground and that guarantee is what you are spending.
@@ -792,81 +775,18 @@ const schema = [
     --color-signal-deep: #a82840;
   }
 
-  /* Pre-hydration gradient, in the same four values the shader runs and in
-   * the same direction: light pools ON the blue ground, not blue pools on
-   * white. Painted top-down because that is where the shader's wave crest
-   * sits, so the swap when React arrives is not a jump. */
-  .shader {
+  .backdrop {
     position: absolute;
     inset: 0;
     z-index: 0;
-    background:
-      radial-gradient(60% 55% at 50% 4%, rgb(255 255 255 / 0.92), transparent 70%),
-      radial-gradient(52% 54% at 12% 26%, rgb(194 225 255 / 0.85), transparent 70%),
-      radial-gradient(52% 54% at 88% 22%, rgb(255 255 255 / 0.7), transparent 70%),
-      var(--ap-ground);
-  }
-
-  /* The owner's 48px pixel grid, laid OVER the live shader rather than under
-   * it - the whole point is that the wave moves behind a fixed lattice, so a
-   * layer on `.shader`'s own background would be hidden the moment React
-   * paints its canvas. `::after` is a positioned descendant inside `.shader`'s
-   * stacking context, so it lands above the canvas and still below `.head`.
-   *
-   * Same asset convention as the homepage's agent tiles (/brand/patterns/*):
-   * a 48px tile with the source's opaque #fafafa plate stripped, so only the
-   * marks carry. It keeps the file's own 0.15 - dial THAT, not an opacity
-   * here, if it ever reads heavy, because the canvas's contrast floor is a
-   * property of the ground and the marks are 1px wide. */
-  .shader::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    background: url("/brand/patterns/agentpit-grid.svg") 0 0 / 48px 48px repeat;
-    pointer-events: none;
-    /* The marks take their weight FROM the wave instead of sitting on it at
-     * one flat strength: overlay darkens against the shader's mid blues and
-     * all but disappears into its white crests, so the lattice breathes with
-     * the motion behind it rather than screening it.
-     *
-     * Contained by construction - `.shader` is a stacking context (positioned,
-     * z-index 0), so the blend reaches its own gradient and the React canvas
-     * and stops there. The headline is in `.head` outside that context, so it
-     * is never a blend backdrop and its contrast floor is untouched.
-     *
-     * It also makes the SVG's own opacity no longer the whole story: the two
-     * compose. Overlay roughly halves the marks against the blue and cancels
-     * them entirely on the white crests, which is why the file carries 0.3 and
-     * not the source art's 0.15 - that pair lands back at about the weight a
-     * flat 15% black had before the blend. Retune ONE of them, not both. */
-    mix-blend-mode: overlay;
-    /* Arrives FIRST and slowest - it is the stage the tiles then rise onto, so
-     * its 120ms lead puts it under them rather than racing them (the tiles are
-     * at 420ms and 660ms). `both` fill holds it at zero through the delay.
-     *
-     * OPACITY ONLY, and no transform: any drift or scale would slide the tile
-     * seams and the lattice would stop reading as a fixed grid the wave moves
-     * behind, which is the whole effect. Plain `ease-out` rather than the
-     * page's expo - expo snaps opacity to near-full in the first fifth and
-     * then crawls, which on a texture reads as a pop followed by nothing. */
-    animation: ap-grid-in 1400ms ease-out 120ms both;
-  }
-
-  @keyframes ap-grid-in {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
+    background: var(--ap-ground);
   }
 
   /* NO SCRIM (owner, 2026-08-17). Every other canvas on the site pools a
-   * legibility wash under its headline; this one shows the shader clean and
+   * legibility wash under its headline; this one shows the gradient clean and
    * the type sits straight on it. Do not reintroduce one - if the headline
-   * ever stops reading, dial the shader's own `intensity` down instead, which
-   * costs the art nothing.  */
+   * ever stops reading, adjust the ridge colours instead, which costs the art
+   * nothing. */
 
   .head {
     /* One number, read by the tiles AND by the negative gap that overlaps
@@ -1096,15 +1016,15 @@ const schema = [
 
   /* SECONDARY (owner, 2026-08-18), reversing the near-black this carried.
    * Read the number before touching it again: with no scrim, this sits
-   * directly on the shader's blues, and the page's --color-muted (#6f7176)
+   * directly on the canvas blues, and the page's --color-muted (#6f7176)
    * measures about 3.3:1 there - under the 4.5:1 that AA asks of 16px text.
    * The near-black was the previous answer to exactly that, and the tier below
    * the headline was being carried by size and weight instead.
    *
    * It is a deliberate call, not an oversight, so it is written down rather
    * than quietly fixed. The lever if it needs rescuing without going back to
-   * black: darken the shader's `intensity`, which lifts every ratio on this
-   * canvas at once. */
+   * black: lighten --ap-ground, which lifts every ratio on this canvas at
+   * once. */
   .lede {
     margin: 1.25rem auto 0;
     max-width: 34rem;
@@ -1128,8 +1048,7 @@ const schema = [
      * scoping exists to prevent. This is the value; that is the opt-in.
      *
      * 4.50:1 on the page ground - it clears AA for small text with nothing to
-     * spare, so it can be darkened but never lightened. One of the hero
-     * shader's own blues. */
+     * spare, so it can be darkened but never lightened. */
     --ap-accent: #2463eb;
     --ap-accent-deep: #1d52c6;
 
@@ -1753,19 +1672,12 @@ const schema = [
     }
   }
 
-  /* Freeze, do not flatten - the same call ShaderBackdrop makes. The 3D pose
+  /* Freeze, do not flatten. The 3D pose
    * is art direction and it stays; only its drift is the optional part. The
    * still pose is each tile's own `transform`, which the animation was
    * overriding, so this needs nothing but turning the animation off. */
   @media (prefers-reduced-motion: reduce) {
     .tile {
-      animation: none;
-    }
-
-    /* The grid's end state IS its resting state, so dropping the animation
-     * leaves it fully painted rather than hidden - no `opacity: 1` needed
-     * here, and adding one would only be a second place to keep in step. */
-    .shader::after {
       animation: none;
     }
 

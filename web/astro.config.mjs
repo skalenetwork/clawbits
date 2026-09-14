@@ -1,6 +1,5 @@
 // @ts-check
 import { defineConfig, fontProviders } from "astro/config";
-import react from "@astrojs/react";
 import sitemap from "@astrojs/sitemap";
 import tailwindcss from "@tailwindcss/vite";
 import { satteri } from "@astrojs/markdown-satteri";
@@ -114,10 +113,6 @@ export default defineConfig({
   },
 
   integrations: [
-    // React exists for exactly one island: the GrainGradient hero/CTA shader
-    // (@paper-design/shaders-react, client:only). Everything else stays plain
-    // Astro with zero client JavaScript - do not add React to content sections.
-    react(),
     sitemap({
       // The .txt and .png endpoints are machine surfaces, not pages a search
       // engine should list. robots.txt points crawlers at llms.txt directly.
@@ -145,8 +140,7 @@ export default defineConfig({
   },
 
   // Built-in Fonts API: downloads, caches, self-hosts, generates optimized
-  // fallback metrics (kills hero CLS) and emits preload links. No @fontsource
-  // dependency, unlike frontend/.
+  // fallback metrics (kills hero CLS) and emits preload links.
   //
   // ONE face for display and body, per the 2026-08-04 art direction: Geist
   // covers both, with its variable weight axis carrying the difference. The
@@ -173,27 +167,22 @@ export default defineConfig({
       fallbacks: ["ui-monospace", "monospace"],
     },
     {
-      // The app's serif, used in ONE place: the hero demo's Home greeting -
-      // the product's "one editorial moment" recreated faithfully.
-      provider: fontProviders.fontsource(),
-      name: "Fraunces",
-      cssVariable: "--ff-serif",
-      weights: ["400 600"],
-      subsets: ["latin"],
-      styles: ["normal"],
-      fallbacks: ["ui-serif", "Georgia", "serif"],
-    },
-    {
-      // The product's own UI face (frontend uses Inter Variable), scoped to
-      // the hero demo window - the single biggest "feels like the real app"
-      // lever after icon stroke width. Variable weights: the app leans on
-      // 500/600 between the 400 body.
-      provider: fontProviders.fontsource(),
+      // The product's own UI face, scoped to the hero demo window. The app
+      // loads the optical-size cut (frontend/src/index.css:4), which renders
+      // 15px and up measurably narrower than the weight-only file the
+      // fontsource provider fetches, so the same file is served locally.
+      provider: fontProviders.local(),
       name: "Inter",
       cssVariable: "--ff-app",
-      weights: ["100 900"],
-      subsets: ["latin"],
-      styles: ["normal"],
+      options: {
+        variants: [
+          {
+            src: ["@fontsource-variable/inter/files/inter-latin-opsz-normal.woff2"],
+            weight: "100 900",
+            style: "normal",
+          },
+        ],
+      },
       fallbacks: ["ui-sans-serif", "system-ui", "sans-serif"],
     },
   ],

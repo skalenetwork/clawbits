@@ -6,9 +6,8 @@
  * Art direction v2 (owner, 2026-08-04): an editorial layout on a light page -
  * near-black text, hairline rails, generous spacing, one accent. The only dark
  * surfaces are the two rounded "canvases"
- * (hero + final CTA), which hold the GrainGradient shader in the candy
- * palette - that shader is the page's one big chroma moment, the way the
- * candy logo is on the OG card.
+ * (hero + final CTA), which hold the candy gradient (SombraGradient.astro) -
+ * the page's one big chroma moment, the way the candy logo is on the OG card.
  *
  * NAMING NOTE, read before "fixing" it: the token names predate the light
  * flip and are kept because Legal.astro / Docs.astro / RowMock / CodeBlock
@@ -57,15 +56,13 @@
   --color-signal-canvas-deep: #f2808a; /* 7.28:1 */
 
   /* The dark canvas surfaces (hero, final CTA, dark visual panels). Warm
-   * black, same hue family as the OG card, used as the shader's colorBack.
+   * black, same hue family as the OG card, the gradient's ground.
    *
    * Owner tried #0f0e0c and reverted, 2026-08-07.
    *
    * If it is ever changed again, change it HERE and nowhere else: <body>
    * carries this same value while the hero holds the top of the viewport -
-   * that is what colours Safari's chrome above the page - and
-   * ShaderBackdrop.tsx keeps its own copy as the shader's ground. All three
-   * have to move together or the seam where the canvas ends becomes visible. */
+   * that is what colours Safari's chrome above the page. */
   --color-canvas: #141311;
   --color-canvas-text: #f7f5f1;
 
@@ -75,8 +72,6 @@
   --font-display: var(--ff-sans), ui-sans-serif, system-ui, sans-serif;
   --font-body: var(--ff-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--ff-mono), ui-monospace, monospace;
-  /* The app's serif - only the hero demo's Home greeting uses it. */
-  --font-serif: var(--ff-serif), ui-serif, Georgia, serif;
 
   /* Motion. Slow, no bounce - unchanged from v1. */
   --ease-out-expo: cubic-bezier(0.22, 1, 0.36, 1);
@@ -114,7 +109,7 @@
    * card and the nav aligns to its frame instead. */
   --hero-gutter: 1.5rem;
 
-  /* How far the hero's app window carries on BELOW the shader canvas. Read in
+  /* How far the hero's app window carries on BELOW the gradient canvas. Read in
    * three places that have to agree: the stage pulls the canvas up by it, the
    * rails' first block reserves it so the window has somewhere to hang, and
    * the hairlines start at the canvas edge because of it. A token rather than
@@ -178,39 +173,6 @@ body > footer {
  * without the canvas. */
 body {
   timeline-scope: --hero-view;
-}
-
-/* Positions the shader canvas, replacing the stylesheet @paper-design/shaders
- * would otherwise inject at runtime.
- *
- * The library prepends its own <style data-paper-shader> on mount, which the
- * CSP refuses (its hash cannot exist at build time). Base.astro ships an empty
- * element carrying that attribute so the library's guard short-circuits and
- * never injects; these rules take its place, hashed normally by the build.
- *
- * Transcribed from `defaultStyle` in shader-mount.js. The library sets
- * data-paper-shader on the canvas's PARENT, not the canvas - hence the child
- * selector. `corner-shape` is dropped (border-radius: inherit carries the
- * rounding this design needs); everything else is verbatim, and must stay in
- * step with the library across upgrades.
- *
- * Unlayered on purpose: it has to beat Tailwind preflight's
- * `canvas { display: block }`, which would otherwise leave the canvas in
- * normal flow at its 2x attribute size. */
-[data-paper-shader] {
-  isolation: isolate;
-  position: relative;
-}
-
-[data-paper-shader] > canvas {
-  contain: strict;
-  display: block;
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
 }
 
 html {

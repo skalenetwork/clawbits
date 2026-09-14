@@ -7,7 +7,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { checkForUpdate, isDesktop, relaunchApp, type Update } from "@/lib/desktop";
+import type { Update } from "@tauri-apps/plugin-updater";
+import { checkForUpdate, isDesktop, relaunchApp } from "@/lib/desktop";
 import { toast } from "@/lib/toast";
 
 /**

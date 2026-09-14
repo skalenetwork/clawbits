@@ -25,13 +25,10 @@ from sqlmodel import Session
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
+from clawbits.fastapi.human_endpoints import _get_db
 from clawbits.fastapi.workos_auth import get_current_human_user
 
 contact_permissions_router = APIRouter(tags=["Agent Contact Permissions"])
-
-
-def _get_db(request: Request) -> Session:
-    return Session(request.app._engine)
 
 
 class ContactPermissionEntry(BaseModel):

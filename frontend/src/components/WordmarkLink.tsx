@@ -8,6 +8,7 @@ import { isDesktop, openExternal } from "@/lib/desktop";
  * starts behaving correctly on the day the flip happens, with no code change.
  */
 export const MARKETING_URL = "https://clawbits.ai";
+export const CHANGELOG_URL = `${MARKETING_URL}/changelog/`;
 
 /**
  * The wordmark, as a way back out to the marketing site.

@@ -7,8 +7,11 @@ deterministic but otherwise opaque to the tests.
 """
 from __future__ import annotations
 
+import time
+
 from starlette.testclient import TestClient
 
+from clawbits.fastapi.mm_file_helpers import load_file_config
 from tests.fastapi._auth_helpers import (
     add_human_to_org,
     auth_headers,
@@ -136,7 +139,7 @@ def test_request_upload_url_too_large(test_client):
         json={
             "filename": "huge.bin",
             "content_type": "application/octet-stream",
-            "size_bytes": 99 * 1024 * 1024,  # 99 MB, default cap is 15 MB
+            "size_bytes": 200 * 1024 * 1024,  # 200 MB, default cap is 100 MB
         },
         headers=auth_headers(reg["access_token"]),
     )
@@ -383,9 +386,26 @@ def test_post_create_with_non_image_file_no_inline_url(test_client):
     post = r.json()
     f = post["files"][0]
     assert f["content_type"] == "application/pdf"
-    # Non-image files don't get an inline URL — the client requests one
-    # on demand via /files/{id}/url.
     assert f["download_url"] is None
+
+
+def test_post_create_with_video_inlines_media_url(test_client):
+    reg = register_human(test_client, "alice13video@test.com")
+    cid = _make_channel(test_client, reg["access_token"], "files-post-video")
+    up = _request_upload(
+        test_client, reg["access_token"], cid,
+        filename="clip.mp4", content_type="video/mp4",
+    )
+    _confirm_upload(test_client, reg["access_token"], up["file_id"])
+    r = test_client.post(
+        f"/api/human/mm/channels/{cid}/posts",
+        json={"message": "clip", "file_ids": [up["file_id"]]},
+        headers=auth_headers(reg["access_token"]),
+    )
+    assert r.status_code == 200, r.text
+    f = r.json()["files"][0]
+    assert "X-Amz-Method=GET" in f["download_url"]
+    assert f["download_url_expires_at"] > time.time() + load_file_config().download_url_ttl
 
 
 def test_post_create_files_only_no_message(test_client):

@@ -6,7 +6,7 @@ import { SITE } from "../config";
  *
  * `clawbits-long.svg` is flat BLACK artwork, which is now correct as-is on
  * the light page. Dark contexts flip it to white by setting `--logo-invert: 1`
- * on any ancestor - the nav animates that flip as it leaves the shader canvas.
+ * on any ancestor - the nav animates that flip as it leaves the gradient canvas.
  *
  * SIZING IS THE CONSUMER'S JOB, from its stylesheet (e.g. Nav's
  * `.home :global(img) { height: ... }`). No height prop: it used to be an
@@ -17,7 +17,7 @@ import { SITE } from "../config";
  *
  * ASSET GAP, still open: the candy-textured colour logo exists only as raster
  * baked into the OG PNG. Until a colour SVG exists the wordmark stays
- * monochrome and the shader carries the chroma.
+ * monochrome and the gradient carries the chroma.
  */
 
 interface Props {

@@ -91,7 +91,7 @@ def test_owner_cascade_round_trip_key_write_only(test_client):
     plaintext = "sk-super-secret-123"
     r = _put(
         test_client, org_id, owner["access_token"],
-        # Trailing slash on base_url is normalized away, like reef-connection.
+        # Trailing slash on base_url is normalized away.
         {**_CASCADE_BODY, "base_url": "https://api.openai.com/v1/", "api_key": plaintext},
     )
     assert r.status_code == 200, r.text

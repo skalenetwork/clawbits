@@ -470,7 +470,7 @@ const sidebarMenuButtonVariants = cva(
   // Hover/press use the neutral ink-wash (--sb-hover / --sb-active) rather than
   // the warm --sidebar-accent, so every contextual sidebar shares ONE calm
   // hover language (the active state was already ink: sidebar-foreground/10).
-  "peer/menu-button group/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-[var(--sb-hover)] hover:text-sidebar-foreground focus-visible:ring-2 active:bg-[var(--sb-active)] active:text-sidebar-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-[var(--sb-hover)] data-open:hover:text-sidebar-foreground data-active:bg-sidebar-foreground/10 data-active:text-sidebar-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
+  "peer/menu-button group/menu-button flex w-full items-center gap-2.5 overflow-hidden rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-[var(--sb-hover)] hover:text-sidebar-foreground focus-visible:ring-2 active:bg-[var(--sb-active)] active:text-sidebar-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-[var(--sb-hover)] data-open:hover:text-sidebar-foreground data-active:bg-sidebar-foreground/10 data-active:text-sidebar-foreground [&>svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
   {
     variants: {
       variant: {
@@ -479,7 +479,7 @@ const sidebarMenuButtonVariants = cva(
           "bg-background shadow-[0_0_0_1px_hsl(var(--sidebar-border))] hover:bg-[var(--sb-hover)] hover:text-sidebar-foreground hover:shadow-[0_0_0_1px_hsl(var(--sidebar-accent))]",
       },
       size: {
-        default: "h-8",
+        default: "h-[34px]",
         sm: "h-7 text-xs",
         lg: "h-12 px-2.5 text-sm group-data-[collapsible=icon]:p-0!",
       },

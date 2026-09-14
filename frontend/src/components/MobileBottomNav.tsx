@@ -1,14 +1,6 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import {
-  Add01Icon,
-  CompassIcon,
-  HashtagIcon,
-  MessageAdd01Icon,
-  Robot02Icon,
-  Search01Icon,
-} from "@hugeicons/core-free-icons";
-import type { IconSvgElement } from "@hugeicons/react";
+import { Add01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 
 import { Icon } from "@/components/Icon";
 import { cn } from "@/lib/utils";
@@ -20,7 +12,7 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import { openCreate } from "@/components/command/createStore";
+import { CREATE_OPTIONS, openCreate } from "@/components/command/createStore";
 
 /**
  * Floating liquid-glass bottom navigation for mobile: ONE pill holding the
@@ -102,56 +94,13 @@ export function MobileBottomNav() {
   );
 }
 
-/** One row inside the compose sheet: tinted icon square + title over a hint. */
-function ComposeRow({
-  icon,
-  square,
-  color,
-  title,
-  description,
-  onSelect,
-}: {
-  icon: IconSvgElement;
-  square: string;
-  color: string;
-  title: string;
-  description: string;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-left transition active:scale-[0.99] active:bg-foreground/5"
-    >
-      <span
-        className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${square}`}
-      >
-        <Icon icon={icon} className="size-5" style={{ color }} />
-      </span>
-      <span className="flex min-w-0 flex-col">
-        <span className="text-sm font-medium text-foreground">{title}</span>
-        <span className="text-xs text-muted-foreground">{description}</span>
-      </span>
-    </button>
-  );
-}
-
 /**
- * The separate compose action beside the tab pill. Opens a bottom sheet of
- * create options, each of which launches the existing create dialog — so the
- * mobile compose flow reuses the exact same forms as the desktop rail menu.
+ * The separate compose action beside the tab pill: a bottom sheet of the same
+ * create options as the desktop sidebar's New menu, each over a one-line hint.
  */
 function MobileComposeButton() {
   const [sheetOpen, setSheetOpen] = useState(false);
-
-  // Close the sheet, then open the shared create dialog (mounted once in the
-  // app shell via CreateDialogs). openCreate defers to the next task, so the
-  // sheet's dismissal and the dialog's mount don't fight over the same tap.
-  const pick = (kind: Parameters<typeof openCreate>[0]) => {
-    setSheetOpen(false);
-    openCreate(kind);
-  };
+  const navigate = useNavigate();
 
   return (
     <>
@@ -172,46 +121,27 @@ function MobileComposeButton() {
             <DrawerTitle>Create</DrawerTitle>
           </DrawerHeader>
           <div className="flex flex-col gap-0.5 pb-2">
-            <ComposeRow
-              icon={MessageAdd01Icon}
-              square="bg-blue-500/15"
-              color="var(--color-blue-500)"
-              title="Open DM"
-              description="Start a private conversation"
-              onSelect={() => {
-                pick("dm");
-              }}
-            />
-            <ComposeRow
-              icon={HashtagIcon}
-              square="bg-emerald-500/15"
-              color="var(--color-emerald-500)"
-              title="New channel"
-              description="Start a group conversation by topic"
-              onSelect={() => {
-                pick("channel");
-              }}
-            />
-            <ComposeRow
-              icon={CompassIcon}
-              square="bg-amber-500/15"
-              color="var(--color-amber-500)"
-              title="Join channel"
-              description="Browse public channels in your org"
-              onSelect={() => {
-                pick("browse");
-              }}
-            />
-            <ComposeRow
-              icon={Robot02Icon}
-              square="bg-violet-500/15"
-              color="var(--color-violet-500)"
-              title="New agent"
-              description="Create an AI teammate"
-              onSelect={() => {
-                pick("agent");
-              }}
-            />
+            {CREATE_OPTIONS.map((option) => (
+              <button
+                key={option.title}
+                type="button"
+                onClick={() => {
+                  setSheetOpen(false);
+                  // openCreate defers a task, so the sheet's dismissal and the dialog's mount don't fight over the tap.
+                  if ("to" in option) void navigate(option.to);
+                  else openCreate(option.kind);
+                }}
+                className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-left transition active:scale-[0.99] active:bg-foreground/5"
+              >
+                <span className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${option.tint}`}>
+                  <Icon icon={option.icon} className="size-5" style={{ color: option.color }} />
+                </span>
+                <span className="flex min-w-0 flex-col">
+                  <span className="text-sm font-medium text-foreground">{option.title}</span>
+                  <span className="text-xs text-muted-foreground">{option.description}</span>
+                </span>
+              </button>
+            ))}
           </div>
         </DrawerContent>
       </Drawer>

@@ -7,8 +7,8 @@ import random
 import re
 import string
 import sys
-from datetime import UTC
-from typing import LiteralString
+import time
+from datetime import UTC, datetime, timedelta
 
 from fastapi import (
     Depends,
@@ -292,8 +292,6 @@ class ClawBitsServer(FastAPI):
 
         @self.middleware("http")
         async def request_duration_middleware(request: Request, call_next):
-            import time
-
             # ``x-clawbits-trace-id`` (when present) correlates this sync HTTP
             # leg with the frontend/plugin/openclaw spans of the same message
             # round-trip. See the end-to-end latency tracer; the structured
@@ -1188,8 +1186,6 @@ class ClawBitsServer(FastAPI):
             schema["fc-product-version"] = "2026.03.20"
             schema["fc-api-version"] = "1.0.0"
 
-            import re
-
             for route in self.routes:
                 if hasattr(route, "endpoint"):
                     endpoint = route.endpoint
@@ -1314,92 +1310,47 @@ class ClawBitsServer(FastAPI):
     @cost(1)
     def get_status(self) -> dict[str, str]:
         """Return service name, status, and API version."""
-        try:
-            return {
-                "service": "clawbits",
-                "status": "ok",
-                "version": "1.0.0",
-            }
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        return {"service": "clawbits", "status": "ok", "version": "1.0.0"}
 
     @cost(1)
     def get_cache_buster(self) -> dict[str, str]:
         """Return a random cache-busting parameter."""
-        try:
-            import random
-            import time
-
-            timestamp = int(time.time() * 1000)
-            random_num = random.randint(1000, 9999)
-            cache_buster = f"{timestamp}{random_num}"
-            return {
-                "cacheBuster": cache_buster,
-                "usage": f"Append ?v={cache_buster} to any URL to force refresh",
-                "example": f"http://localhost:8000/?v={cache_buster}",
-            }
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        cache_buster = f"{int(time.time() * 1000)}{random.randint(1000, 9999)}"
+        return {
+            "cacheBuster": cache_buster,
+            "usage": f"Append ?v={cache_buster} to any URL to force refresh",
+            "example": f"http://localhost:8000/?v={cache_buster}",
+        }
 
     def _sanitize_path(self, path: str, is_dir_operation: bool = False) -> str:
         """Sanitize path to prevent directory traversal and ensure safe paths."""
-
-        # Explicitly reject paths starting with / or containing //
         if path.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid path: cannot start with /")
         if "//" in path:
             raise HTTPException(status_code=400, detail="Invalid path: cannot contain //")
-
-        import re
-
-        # Remove whitespace
         path = path.strip()
-
-        if is_dir_operation:
-            if not path.endswith("/") and path != "":
-                raise HTTPException(
-                    status_code=400, detail="Directory path must end with a trailing slash"
-                )
-        else:
-            if path.endswith("/"):
-                raise HTTPException(
-                    status_code=400, detail="File path cannot end with a trailing slash"
-                )
-
-        # Strip trailing slash for downstream usage
+        if is_dir_operation and not path.endswith("/") and path != "":
+            raise HTTPException(
+                status_code=400, detail="Directory path must end with a trailing slash"
+            )
+        if not is_dir_operation and path.endswith("/"):
+            raise HTTPException(
+                status_code=400, detail="File path cannot end with a trailing slash"
+            )
         clean_path = path.rstrip("/")
-
-        # Prevent directory traversal
         if ".." in clean_path or "\\" in clean_path:
             raise HTTPException(
                 status_code=400, detail="Invalid path: directory traversal not allowed"
             )
-
-        # Ensure path is not empty
         if not clean_path:
             raise HTTPException(status_code=400, detail="Path cannot be empty")
-
-        # Check for valid characters (Latin alphabet, numbers, dash, underscore, dot, slash for directories)
         if not re.match(r"^[a-zA-Z0-9/_.\-]+$", clean_path):
             raise HTTPException(
                 status_code=400,
                 detail="Invalid path: only Latin alphabet, numbers, dash, underscore, dot, and slash allowed",
             )
-
-        # Prevent hidden files
-        parts = clean_path.split("/")
-        for part in parts:
-            if part.startswith("."):
-                raise HTTPException(status_code=400, detail="Hidden files/directories not allowed")
-
+        if any(part.startswith(".") for part in clean_path.split("/")):
+            raise HTTPException(status_code=400, detail="Hidden files/directories not allowed")
         return clean_path
 
     def _validate_challenge_response(
@@ -1459,23 +1410,14 @@ class ClawBitsServer(FastAPI):
                     self.AGENTIC_WRITE_CB_TOKENS_COST,
                 )
             except ValueError as exc:
-                detail = str(exc)
-                if "Insufficient CB_TOKENS" in detail:
-                    return JSONResponse(
-                        status_code=402,
-                        content={
-                            "error": True,
-                            "status_code": 402,
-                            "detail": detail,
-                            "path": request.url.path,
-                        },
-                    )
+                if "Insufficient CB_TOKENS" not in str(exc):
+                    raise
                 return JSONResponse(
-                    status_code=500,
+                    status_code=402,
                     content={
                         "error": True,
-                        "status_code": 500,
-                        "detail": detail,
+                        "status_code": 402,
+                        "detail": str(exc),
                         "path": request.url.path,
                     },
                 )
@@ -1488,50 +1430,22 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> ChallengeQuestionResponse:
         """Returns a challenge question and a session token. Requires `Authorization` (Bearer) header."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-
-            token = api_key.split(" ", 1)[1].strip()
-
-            # Verify the token exists in our DB
-            with Session(self._engine) as db:
-                user = TableRead.get_agent_by_api_key(db, token)
-                if user is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-            from datetime import datetime, timedelta
-
-            session_token = self.create_random_session_token() + "-" + user.agent_id.value
-
-            # Get a random question and answer from known questions
-            question, answer = get_random_question_answer()
-
-            # Store challenge session in database (expires in 10 minutes)
-            now = datetime.now(UTC)
-            expires_at = now + timedelta(minutes=10)
-
-            with Session(self._engine) as db:
-                # Clean up expired sessions first
-                TableWrite.cleanup_expired_challenge_sessions(db, now)
-
-                # Create new challenge session
-                TableWrite.create_challenge_session(db, session_token, question, answer, expires_at)
-                db.commit()
-
-            return ChallengeQuestionResponse(
-                session_token=session_token,
-                challenge_question=question,
+        user = extract_agent(self._engine, api_key)
+        nonce = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+        session_token = f"{nonce}-{user.agent_id.value}"
+        question, answer = get_random_question_answer()
+        now = datetime.now(UTC)
+        with Session(self._engine) as db:
+            TableWrite.cleanup_expired_challenge_sessions(db, now)
+            TableWrite.create_challenge_session(
+                db, session_token, question, answer, now + timedelta(minutes=10)
             )
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+            db.commit()
 
-    def create_random_session_token(self) -> LiteralString | str:
-        return "".join(random.choices(string.ascii_letters + string.digits, k=16))
+        return ChallengeQuestionResponse(
+            session_token=session_token,
+            challenge_question=question,
+        )
 
     # Ceiling, not an increment: a successful handshake raises the agent's
     # balance *to* this value. The handshake is repeatable and both legs are
@@ -1562,49 +1476,25 @@ class ClawBitsServer(FastAPI):
         On success the response carries an ``FC-RESPONSE`` header whose value is
         the validated challenge answer, proving the server received and accepted it.
         """
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-
-            token = api_key.split(" ", 1)[1].strip()
-
-            with Session(self._engine) as db:
-                agent = TableRead.get_agent_by_api_key(db, token)
-                if agent is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-            # Validate the challenge response (also marks session as used)
-            self._validate_challenge_response(
-                body.session_token, body.challenge_response, agent.agent_id
+        agent = extract_agent(self._engine, api_key)
+        self._validate_challenge_response(
+            body.session_token, body.challenge_response, agent.agent_id
+        )
+        with Session(self._engine) as db:
+            new_balance, minted = TableWrite.mint_cb_tokens(
+                db,
+                agent.agent_id,
+                self.CB_TOKENS_BALANCE_CEILING,
+                window_seconds=self.CB_TOKENS_MINT_WINDOW_SECONDS,
             )
+            db.commit()
+        response.headers["FC-RESPONSE"] = body.challenge_response
 
-            # Top the balance up to the ceiling. `minted` comes back from the
-            # same locked read-modify-write, so it reports what this call
-            # actually added rather than the ceiling it aimed at — and stays
-            # accurate when two handshakes race.
-            with Session(self._engine) as db:
-                new_balance, minted = TableWrite.mint_cb_tokens(
-                    db,
-                    agent.agent_id,
-                    self.CB_TOKENS_BALANCE_CEILING,
-                    window_seconds=self.CB_TOKENS_MINT_WINDOW_SECONDS,
-                )
-                db.commit()
-
-            # Echo the challenge answer back in the FC-RESPONSE header
-            response.headers["FC-RESPONSE"] = body.challenge_response
-
-            return MintCbTokensResponse(
-                agent_id=agent.agent_id.value,
-                minted=minted,
-                new_balance=new_balance,
-            )
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        return MintCbTokensResponse(
+            agent_id=agent.agent_id.value,
+            minted=minted,
+            new_balance=new_balance,
+        )
 
     def version_check(
         self,
@@ -1657,14 +1547,7 @@ class ClawBitsServer(FastAPI):
         self,
         payload: SignupRequest,
     ) -> ChallengeQuestionResponse:
-        try:
-            return AgentSignup.agents_signup_impl(self, payload)
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Signup failed: {str(e)}")
+        return AgentSignup.agents_signup_impl(self, payload)
 
     @cost(1)
     def agents_signup_get(
@@ -1683,27 +1566,15 @@ class ClawBitsServer(FastAPI):
             decoded = _json.loads(base64.urlsafe_b64decode(payload))
             signup_req = SignupRequest(**decoded)
             return AgentSignup.agents_signup_impl(self, signup_req)
-        except HTTPException:
-            raise
         except (ValueError, TypeError, _json.JSONDecodeError) as e:
             raise HTTPException(status_code=422, detail=f"Invalid payload: {e}")
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Signup failed: {str(e)}")
 
     @cost(1)
     async def agents_signup_commit(
         self,
         payload: CreateAgentRequest,
     ) -> CreateAgentResponse:
-        try:
-            return await AgentSignup.agents_signup_commit_impl(self, payload)
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Signup failed: {str(e)}")
+        return await AgentSignup.agents_signup_commit_impl(self, payload)
 
     @cost(1)
     async def agents_signup_commit_get(
@@ -1722,13 +1593,8 @@ class ClawBitsServer(FastAPI):
             decoded = _json.loads(base64.urlsafe_b64decode(payload))
             commit_req = CreateAgentRequest(**decoded)
             return await AgentSignup.agents_signup_commit_impl(self, commit_req)
-        except HTTPException:
-            raise
         except (ValueError, TypeError, _json.JSONDecodeError) as e:
             raise HTTPException(status_code=422, detail=f"Invalid payload: {e}")
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Signup failed: {str(e)}")
 
     def get_signup_request_status(self, request_id: str):
         """Poll the status of a signup request."""
@@ -1747,47 +1613,31 @@ class ClawBitsServer(FastAPI):
         the agent row as a pending rotation (10-minute TTL) — DB-backed, so the
         commit request may land on any worker. The old key stays valid until the
         client commits via POST /api/agentic/auth/rotate-key/commit."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+        import hashlib
 
-            token = api_key.split(" ", 1)[1].strip()
+        from clawbits.datastructures.api_key import ApiKey
+        from clawbits.db.models import Agent as _AgentRow
 
-            import hashlib
-            from datetime import datetime, timedelta
+        user = extract_agent(self._engine, api_key)
+        new_api_key = ApiKey.generate().value
 
-            from clawbits.datastructures.api_key import ApiKey
-            from clawbits.db.models import Agent as _AgentRow
+        with Session(self._engine) as db:
+            agent_row = db.get(_AgentRow, user.agent_id.value)
+            if agent_row is None:
+                raise HTTPException(status_code=401, detail="Invalid API key")
 
-            new_api_key = ApiKey.generate().value
+            # Only the hash is persisted — the plaintext exists solely in
+            # this response. Overwrites any previous pending rotation.
+            agent_row.pending_api_key_hash = hashlib.sha256(
+                new_api_key.encode()
+            ).hexdigest()
+            agent_row.pending_key_expires_at = datetime.now(UTC) + timedelta(minutes=10)
+            db.commit()
 
-            with Session(self._engine) as db:
-                user = TableRead.get_agent_by_api_key(db, token)
-                if user is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-                agent_row = db.get(_AgentRow, user.agent_id.value)
-                if agent_row is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-                # Only the hash is persisted — the plaintext exists solely in
-                # this response. Overwrites any previous pending rotation.
-                agent_row.pending_api_key_hash = hashlib.sha256(
-                    new_api_key.encode()
-                ).hexdigest()
-                agent_row.pending_key_expires_at = datetime.now(UTC) + timedelta(minutes=10)
-                db.commit()
-
-            return RotateApiKeyResponse(
-                agent_id=user.agent_id.value,
-                new_api_key=new_api_key,
-            )
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        return RotateApiKeyResponse(
+            agent_id=user.agent_id.value,
+            new_api_key=new_api_key,
+        )
 
     @cost(1)
     def rotate_api_key_commit(
@@ -1797,76 +1647,68 @@ class ClawBitsServer(FastAPI):
     ) -> RotateApiKeyResponse:
         """Commit a pending key rotation. The client confirms it received the new key
         by sending it in the request body. The old key is invalidated."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+        if not api_key or not api_key.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
 
-            new_api_key = payload.new_api_key
-            if not new_api_key:
+        new_api_key = payload.new_api_key
+        if not new_api_key:
+            raise HTTPException(
+                status_code=400, detail="new_api_key is required in request body"
+            )
+
+        token = api_key.split(" ", 1)[1].strip()
+
+        import hashlib
+
+        from clawbits.db.models import Agent as _AgentRow
+
+        with Session(self._engine) as db:
+            user = TableRead.get_agent_by_api_key(db, token)
+            if user is None:
+                raise HTTPException(status_code=401, detail="Invalid API key")
+
+            # Row-lock the agent so a concurrent commit or re-rotate on
+            # another worker serializes against the checks below.
+            agent_row = db.get(_AgentRow, user.agent_id.value, with_for_update=True)
+            if agent_row is None:
                 raise HTTPException(
-                    status_code=400, detail="new_api_key is required in request body"
+                    status_code=404, detail="Key rotation commit failed: user not found"
                 )
 
-            token = api_key.split(" ", 1)[1].strip()
+            if agent_row.pending_api_key_hash is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No pending key rotation found. Call POST /api/agentic/auth/rotate-key first.",
+                )
 
-            import hashlib
-            from datetime import datetime
-
-            from clawbits.db.models import Agent as _AgentRow
-
-            with Session(self._engine) as db:
-                user = TableRead.get_agent_by_api_key(db, token)
-                if user is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-                # Row-lock the agent so a concurrent commit or re-rotate on
-                # another worker serializes against the checks below.
-                agent_row = db.get(_AgentRow, user.agent_id.value, with_for_update=True)
-                if agent_row is None:
-                    raise HTTPException(
-                        status_code=404, detail="Key rotation commit failed: user not found"
-                    )
-
-                if agent_row.pending_api_key_hash is None:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="No pending key rotation found. Call POST /api/agentic/auth/rotate-key first.",
-                    )
-
-                expires_at = agent_row.pending_key_expires_at
-                if expires_at is None or datetime.now(UTC) > expires_at:
-                    agent_row.pending_api_key_hash = None
-                    agent_row.pending_key_expires_at = None
-                    db.commit()
-                    raise HTTPException(
-                        status_code=410,
-                        detail="Pending key rotation has expired. Call POST /api/agentic/auth/rotate-key again.",
-                    )
-
-                new_key_hash = hashlib.sha256(new_api_key.encode()).hexdigest()
-                if new_key_hash != agent_row.pending_api_key_hash:
-                    raise HTTPException(
-                        status_code=401, detail="new_api_key does not match the pending new key"
-                    )
-
-                # Swap the live key and clear the pending state in one
-                # transaction — a failed commit leaves the pending rotation
-                # (and the old key) intact for a retry.
-                agent_row.api_key_hash = new_key_hash
+            expires_at = agent_row.pending_key_expires_at
+            if expires_at is None or datetime.now(UTC) > expires_at:
                 agent_row.pending_api_key_hash = None
                 agent_row.pending_key_expires_at = None
                 db.commit()
+                raise HTTPException(
+                    status_code=410,
+                    detail="Pending key rotation has expired. Call POST /api/agentic/auth/rotate-key again.",
+                )
 
-            return RotateApiKeyResponse(
-                agent_id=user.agent_id.value,
-                new_api_key=new_api_key,
-            )
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+            new_key_hash = hashlib.sha256(new_api_key.encode()).hexdigest()
+            if new_key_hash != agent_row.pending_api_key_hash:
+                raise HTTPException(
+                    status_code=401, detail="new_api_key does not match the pending new key"
+                )
+
+            # Swap the live key and clear the pending state in one
+            # transaction — a failed commit leaves the pending rotation
+            # (and the old key) intact for a retry.
+            agent_row.api_key_hash = new_key_hash
+            agent_row.pending_api_key_hash = None
+            agent_row.pending_key_expires_at = None
+            db.commit()
+
+        return RotateApiKeyResponse(
+            agent_id=user.agent_id.value,
+            new_api_key=new_api_key,
+        )
 
     @cost(1)
     async def upload_file(
@@ -1876,81 +1718,47 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> dict:
         """Upload a file to Cloudflare R2. Requires `Authorization` header. Max file size: 64 KB."""
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-
-        token = api_key.split(" ", 1)[1].strip()
-        with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-
-        # Sanitize path
+        agent = extract_agent(self._engine, api_key)
         filename = self._sanitize_path(path)
-
-        # Check if R2 client is available
         if not self._r2_client:
             raise HTTPException(status_code=503, detail="File storage service unavailable")
 
-        # Read request body
-        try:
-            body = await request.body()
+        body = await request.body()
+        max_file_size = 64 * 1024
+        if len(body) > max_file_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large: {len(body)} bytes (max: {max_file_size} bytes)",
+            )
+        content_type = request.headers.get("content-type", "application/octet-stream")
+        object_key = f"{agent.agent_id}/{filename}"
+        result = await self._r2_client.upload_file(object_key, body, content_type)
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500, detail=f"Upload failed: {result.get('error', 'Unknown error')}"
+            )
+        public_url = f"https://{SHARE_DOMAIN}/{object_key}" if SHARE_DOMAIN else result.get("url")
+        with Session(self._engine) as db:
+            TableWrite.create_share_record(
+                db,
+                agent_id=agent.agent_id,
+                filename=filename,
+                object_key=object_key,
+                url=public_url,
+                content_type=content_type,
+                size=len(body),
+            )
+            db.commit()
 
-            # Check file size
-            max_file_size = 64 * 1024  # 64 KB limit
-            if len(body) > max_file_size:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large: {len(body)} bytes (max: {max_file_size} bytes)",
-                )
-
-            # Determine content type
-            content_type = request.headers.get("content-type", "application/octet-stream")
-
-            # Upload using R2 client
-            object_key = f"{agent.agent_id}/{filename}"
-            result = await self._r2_client.upload_file(object_key, body, content_type)
-
-            if not result.get("success"):
-                raise HTTPException(
-                    status_code=500, detail=f"Upload failed: {result.get('error', 'Unknown error')}"
-                )
-
-            # Use custom domain URL if available
-            custom_domain = SHARE_DOMAIN
-            if custom_domain:
-                public_url = f"https://{custom_domain}/{object_key}"
-            else:
-                public_url = result.get("url")
-
-            # Record the share in the database
-            with Session(self._engine) as db:
-                TableWrite.create_share_record(
-                    db,
-                    agent_id=agent.agent_id,
-                    filename=filename,
-                    object_key=object_key,
-                    url=public_url,
-                    content_type=content_type,
-                    size=len(body),
-                )
-                db.commit()
-
-            return {
-                "name": filename,
-                "path": object_key,
-                "url": public_url,
-                "status": "uploaded",
-                "agent_id": str(agent.agent_id),
-                "size": len(body),
-                "content_type": content_type,
-            }
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        return {
+            "name": filename,
+            "path": object_key,
+            "url": public_url,
+            "status": "uploaded",
+            "agent_id": str(agent.agent_id),
+            "size": len(body),
+            "content_type": content_type,
+        }
 
     @cost(1)
     async def get_or_list_files(
@@ -1961,136 +1769,77 @@ class ClawBitsServer(FastAPI):
         Use query parameter `?list=true` to explicitly request a directory listing.
         Without `?list=true`, the path is treated as a file download.
         """
+        user = extract_agent(self._engine, api_key)
+        is_dir = request.query_params.get("list", "").lower() == "true"
+        path = self._sanitize_path(path, is_dir_operation=is_dir)
+        if not self._r2_client:
+            raise HTTPException(status_code=503, detail="File storage service unavailable")
+        if is_dir:
+            return await self._list_files_internal(user, path.rstrip("/"))
         try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+            success, content = await self._r2_client.download_file(f"{user.agent_id}/{path}")
+            if success:
+                import mimetypes
 
-            token = api_key.split(" ", 1)[1].strip()
-
-            # Verify the token exists in our DB
-            with Session(self._engine) as db:
-                user = TableRead.get_agent_by_api_key(db, token)
-                if user is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-            # Determine if it's a directory listing before sanitizing to pass the right flag
-            list_param = request.query_params.get("list", "").lower()
-            is_dir = list_param == "true"
-
-            # Sanitize path
-            path = self._sanitize_path(path, is_dir_operation=is_dir)
-
-            # Check if R2 client is available
-            if not self._r2_client:
-                raise HTTPException(status_code=503, detail="File storage service unavailable")
-
-            # If it was a directory listing, handle it
-            if is_dir:
-                directory = path.rstrip("/")
-                return await self._list_files_internal(user, directory)
-
-            # Otherwise, treat as file download
-            try:
-                object_key = f"{user.agent_id}/{path}"
-                success, content = await self._r2_client.download_file(object_key)
-
-                if success:
-                    import mimetypes
-
-                    content_type, _ = mimetypes.guess_type(path)
-                    if not content_type:
-                        content_type = "application/octet-stream"
-
-                    import os as _os
-
-                    base_filename = _os.path.basename(path)
-                    headers = {"content-disposition": f'attachment; filename="{base_filename}"'}
-
-                    return Response(
-                        content=content, status_code=200, headers=headers, media_type=content_type
-                    )
-            except Exception:
-                pass
-
-            raise HTTPException(status_code=404, detail="File not found")
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+                content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+                disposition = f'attachment; filename="{os.path.basename(path)}"'
+                return Response(
+                    content=content,
+                    status_code=200,
+                    headers={"content-disposition": disposition},
+                    media_type=content_type,
+                )
+        except Exception:
+            pass
+        raise HTTPException(status_code=404, detail="File not found")
 
     async def _list_files_internal(self, user, directory: str = "") -> JSONResponse:
         """Internal helper for listing files in a directory."""
-        try:
-            prefix = f"{user.agent_id}/"
-            if directory:
-                prefix += directory
-                if not directory.endswith("/"):
-                    prefix += "/"
+        prefix = f"{user.agent_id}/"
+        if directory:
+            prefix += directory
+            if not directory.endswith("/"):
+                prefix += "/"
 
-            result = await self._r2_client.list_files(prefix)
+        result = await self._r2_client.list_files(prefix)
 
-            if not result.get("success"):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to list files: {result.get('error', 'Unknown error')}",
-                )
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to list files: {result.get('error', 'Unknown error')}",
+            )
 
-            custom_domain = SHARE_DOMAIN
-            processed_files = []
+        custom_domain = SHARE_DOMAIN
+        processed_files = []
 
-            for file_info in result.get("files", []):
-                file_copy = file_info.copy()
-                if custom_domain:
-                    object_key = file_info.get("key", "")
-                    if object_key:
-                        file_copy["url"] = f"https://{custom_domain}/{object_key}"
-                processed_files.append(file_copy)
+        for file_info in result.get("files", []):
+            file_copy = file_info.copy()
+            if custom_domain:
+                object_key = file_info.get("key", "")
+                if object_key:
+                    file_copy["url"] = f"https://{custom_domain}/{object_key}"
+            processed_files.append(file_copy)
 
-            data = {
-                "directory": directory + "/"
-                if directory and not directory.endswith("/")
-                else (directory if directory else "/"),
-                "files": processed_files,
-                "subdirectories": result.get("subdirectories", []),
-                "agent_id": str(user.agent_id),
-                "total_files": result.get("total_files", 0),
-                "total_subdirectories": result.get("total_subdirectories", 0),
-            }
-            return JSONResponse(content=data)
-
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        data = {
+            "directory": directory + "/"
+            if directory and not directory.endswith("/")
+            else (directory if directory else "/"),
+            "files": processed_files,
+            "subdirectories": result.get("subdirectories", []),
+            "agent_id": str(user.agent_id),
+            "total_files": result.get("total_files", 0),
+            "total_subdirectories": result.get("total_subdirectories", 0),
+        }
+        return JSONResponse(content=data)
 
     @cost(1)
     async def list_files(self, api_key: str = Security(api_key_header)) -> dict:
         """List files in the authenticated user's root directory."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+        user = extract_agent(self._engine, api_key)
+        if not self._r2_client:
+            raise HTTPException(status_code=503, detail="File storage service unavailable")
 
-            token = api_key.split(" ", 1)[1].strip()
-
-            with Session(self._engine) as db:
-                user = TableRead.get_agent_by_api_key(db, token)
-                if user is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-            if not self._r2_client:
-                raise HTTPException(status_code=503, detail="File storage service unavailable")
-
-            return await self._list_files_internal(user, "")
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        return await self._list_files_internal(user, "")
 
     @cost(1)
     async def delete_file(
@@ -2099,63 +1848,27 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> dict:
         """Delete a file from Cloudflare R2. Requires `Authorization` header."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+        agent = extract_agent(self._engine, api_key)
+        filename = self._sanitize_path(path)
+        if not self._r2_client:
+            raise HTTPException(status_code=503, detail="File storage service unavailable")
 
-            token = api_key.split(" ", 1)[1].strip()
-            with Session(self._engine) as db:
-                agent = TableRead.get_agent_by_api_key(db, token)
-                if agent is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-            # Sanitize path
-            filename = self._sanitize_path(path)
-
-            # Check if R2 client is available
-            if not self._r2_client:
-                raise HTTPException(status_code=503, detail="File storage service unavailable")
-
-            try:
-                # Delete using R2 client
-                object_key = f"{agent.agent_id.value}/{filename}"
-                result = await self._r2_client.delete_file(object_key)
-
-                if not result.get("success"):
-                    error = result.get("error", "Unknown error")
-                    if "not found" in error.lower():
-                        # Even if not found on R2, we might want to mark it as deleted if it exists in DB
-                        with Session(self._engine) as db:
-                            TableWrite.mark_share_deleted(db, agent.agent_id, filename)
-                            db.commit()
-                        raise HTTPException(status_code=404, detail="File not found")
-                    else:
-                        raise HTTPException(status_code=500, detail=f"Delete failed: {error}")
-
-                # Record the deletion in the database (soft delete)
-                with Session(self._engine) as db:
-                    TableWrite.mark_share_deleted(db, agent.agent_id, filename)
-                    db.commit()
-
-                return {
-                    "name": filename,
-                    "path": object_key,
-                    "status": "deleted",
-                    "agent_id": str(agent.agent_id.value),
-                }
-
-            except HTTPException as e:
-                logging.exception(f"Error: {e}")
-                raise
-            except Exception as e:
-                logging.exception(f"Error: {e}")
-                raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        object_key = f"{agent.agent_id.value}/{filename}"
+        result = await self._r2_client.delete_file(object_key)
+        error = None if result.get("success") else result.get("error", "Unknown error")
+        if error is not None and "not found" not in error.lower():
+            raise HTTPException(status_code=500, detail=f"Delete failed: {error}")
+        with Session(self._engine) as db:
+            TableWrite.mark_share_deleted(db, agent.agent_id, filename)
+            db.commit()
+        if error is not None:
+            raise HTTPException(status_code=404, detail="File not found")
+        return {
+            "name": filename,
+            "path": object_key,
+            "status": "deleted",
+            "agent_id": str(agent.agent_id.value),
+        }
 
     @cost(1)
     def post_post(
@@ -2164,32 +1877,15 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> PostResponse:
         """Post a post message. Requires `Authorization` header."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+        from clawbits.db.models import AgentPost as _AgentPostRow
 
-            token = api_key.split(" ", 1)[1].strip()
-            with Session(self._engine) as db:
-                agent = TableRead.get_agent_by_api_key(db, token)
-                if agent is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-            # Create the post
-            with Session(self._engine) as db:
-                post_id = TableWrite.create_agent_post(
-                    db, agent.agent_id, payload.message_type, payload.message
-                )
-                db.commit()
-
-            # Get the created post by its ID
-            from clawbits.db.models import AgentPost as _AgentPostRow
-
-            with Session(self._engine) as db:
-                row = db.get(_AgentPostRow, post_id)
-
-            if not row:
-                raise HTTPException(status_code=500, detail="Failed to retrieve created post")
-
+        agent = extract_agent(self._engine, api_key)
+        with Session(self._engine) as db:
+            post_id = TableWrite.create_agent_post(
+                db, agent.agent_id, payload.message_type, payload.message
+            )
+            db.commit()
+            row = db.get(_AgentPostRow, post_id)
             return PostResponse(
                 post_id=row.post_id,
                 agent_id=row.agent_id,
@@ -2197,13 +1893,6 @@ class ClawBitsServer(FastAPI):
                 message=row.message,
                 timestamp=format_db_timestamp(row.timestamp),
             )
-
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
 
     @cost(1)
     def get_all_posts(
@@ -2213,38 +1902,20 @@ class ClawBitsServer(FastAPI):
         offset: int = 0,
     ) -> dict:
         """Get recent posts from all agents. Requires `Authorization` header."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+        user = extract_agent(self._engine, api_key)
+        with Session(self._engine) as db:
+            # An agent sees its own org's posts, not the deployment's.
+            agent_org_id = TableRead.get_agent_org_id(db, str(user.agent_id))
+            org_ids = [agent_org_id] if agent_org_id else []
+            posts = TableRead.get_all_agent_posts(
+                db,
+                org_ids,
+                limit=limit,
+                offset=offset,
+                current_agent_id=str(user.agent_id),
+            )
 
-            token = api_key.split(" ", 1)[1].strip()
-
-            # Verify the token exists in our DB
-            with Session(self._engine) as db:
-                user = TableRead.get_agent_by_api_key(db, token)
-                if user is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-            with Session(self._engine) as db:
-                # An agent sees its own org's posts, not the deployment's.
-                agent_org_id = TableRead.get_agent_org_id(db, str(user.agent_id))
-                org_ids = [agent_org_id] if agent_org_id else []
-                posts = TableRead.get_all_agent_posts(
-                    db,
-                    org_ids,
-                    limit=limit,
-                    offset=offset,
-                    current_agent_id=str(user.agent_id),
-                )
-
-            return {"posts": posts, "total": len(posts)}
-
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        return {"posts": posts, "total": len(posts)}
 
     @cost(1)
     def get_agent_posts(
@@ -2255,29 +1926,11 @@ class ClawBitsServer(FastAPI):
         offset: int = 0,
     ) -> dict:
         """Get recent posts from a specific agent. Requires `Authorization` header."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+        extract_agent(self._engine, api_key)
+        with Session(self._engine) as db:
+            posts = TableRead.get_agent_posts(db, AgentId(agent_id), limit=limit, offset=offset)
 
-            token = api_key.split(" ", 1)[1].strip()
-
-            # Verify the token exists in our DB
-            with Session(self._engine) as db:
-                user = TableRead.get_agent_by_api_key(db, token)
-                if user is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-
-            with Session(self._engine) as db:
-                posts = TableRead.get_agent_posts(db, AgentId(agent_id), limit=limit, offset=offset)
-
-            return {"posts": posts, "total": len(posts)}
-
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        return {"posts": posts, "total": len(posts)}
 
     @cost(1)
     def get_agent_info(
@@ -2286,37 +1939,17 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> AgentInfoResponse:
         """Get the agent's org + operator context."""
-        try:
-            if not api_key or not api_key.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-
-            token = api_key.split(" ", 1)[1].strip()
-            with Session(self._engine) as db:
-                caller = TableRead.get_agent_by_api_key(db, token)
-                if caller is None:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
-                # Before the existence lookup, so a foreign handle 403s whether
-                # or not it exists — the 404 must not be an enumeration oracle.
-                require_own_agent(caller, agent_id)
-                info = TableRead.get_agent_info(db, agent_id)
-                if info is None:
-                    raise HTTPException(status_code=404, detail="Agent not found")
-                return AgentInfoResponse(**info)
-
-        except HTTPException as e:
-            logging.exception(f"Error: {e}")
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Operation failed: {str(e)}")
+        # Before the existence lookup, so the 404 cannot tell a foreign handle exists.
+        require_own_agent(extract_agent(self._engine, api_key), agent_id)
+        with Session(self._engine) as db:
+            info = TableRead.get_agent_info(db, agent_id)
+            if info is None:
+                raise HTTPException(status_code=404, detail="Agent not found")
+            return AgentInfoResponse(**info)
 
     # -----------------------------------------------------------------------
     # Mattermost-style messaging methods
     # -----------------------------------------------------------------------
-
-    def _mm_extract_agent(self, api_key: str):
-        """Parse bearer token and return the Agent, or raise 401."""
-        return extract_agent(self._engine, api_key)
 
     @staticmethod
     def _require_mm_member(db: Session, channel_id: str, agent_id: str) -> None:
@@ -2333,46 +1966,6 @@ class ClawBitsServer(FastAPI):
                 status_code=403, detail="Not permitted to contact this agent"
             )
 
-    @staticmethod
-    def _publish_post_and_agent_status(
-        channel_id: str,
-        agent_id: str,
-        post: dict,
-        status: str,
-        *,
-        kind: str,  # "created" | "updated"
-        member_human_ids: list[int] | None = None,
-    ) -> None:
-        """Fan out a new/updated post and bump the author's agent status.
-
-        `presence_set` writes the TTL'd hash used by snapshots on new
-        connections; `publish_member_status` drives the live SSE fan-out
-        for already-connected clients. Both are needed.
-
-        For ``post.created`` events, ``member_human_ids`` should list every
-        human member of the channel so each gets the event on their global
-        per-user topic (drives sidebar unread badges).
-        """
-        from clawbits.realtime import (
-            fire_and_forget,
-            get_bus,
-            publish_member_status,
-            publish_post_created,
-            publish_post_updated,
-        )
-
-        bus = get_bus()
-        if kind == "created":
-            fire_and_forget(
-                publish_post_created(
-                    bus, channel_id, post, member_human_ids=member_human_ids
-                )
-            )
-        else:
-            fire_and_forget(publish_post_updated(bus, channel_id, post))
-        fire_and_forget(bus.presence_set(channel_id, "agent", agent_id, status))
-        fire_and_forget(publish_member_status(bus, channel_id, "agent", agent_id, status))
-
     @cost(1)
     def mm_get_default_channel(
         self,
@@ -2381,7 +1974,7 @@ class ClawBitsServer(FastAPI):
     ) -> MmChannelResponse:
         """Get (or create) the default channel for an agent's organization."""
         try:
-            agent = self._mm_extract_agent(api_key)
+            agent = extract_agent(self._engine, api_key)
             # Self-scoped: ensure_* creates the channel on miss, so without
             # this check a read request is also a cross-org write.
             require_own_agent(agent, agent_id)
@@ -2391,11 +1984,6 @@ class ClawBitsServer(FastAPI):
             return MmChannelResponse(**channel)
         except ValueError:
             raise HTTPException(status_code=404, detail="Agent has no owner organization")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
 
     @cost(1)
     async def mm_get_operator_channel(
@@ -2405,7 +1993,7 @@ class ClawBitsServer(FastAPI):
     ) -> MmChannelResponse:
         """Get (or create) the operator-agent direct communication channel."""
         try:
-            agent = self._mm_extract_agent(api_key)
+            agent = extract_agent(self._engine, api_key)
             # Self-scoped: ensure_* creates the DM (and its membership rows) on
             # miss, so without this check a read request is also a cross-org
             # write — and the response previews the operator DM's last message.
@@ -2422,11 +2010,6 @@ class ClawBitsServer(FastAPI):
             raise HTTPException(
                 status_code=404, detail="Agent has no operator communication channel"
             )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
 
     @cost(1)
     async def mm_create_channel(
@@ -2435,40 +2018,34 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmChannelResponse:
         """Create a channel in the caller's organization."""
-        try:
-            import uuid as _uuid
+        import uuid as _uuid
 
-            agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
 
-            with Session(self._engine) as db:
-                org_id = TableRead.get_agent_org_id(db, agent.agent_id.value)
-                if org_id is None:
-                    raise HTTPException(
-                        status_code=404, detail="Agent does not have an organization"
-                    )
-                channel_id = str(_uuid.uuid4())
-                TableWrite.create_mm_channel(
-                    db,
-                    channel_id,
-                    body.name,
-                    body.channel_type,
-                    body.display_name,
-                    org_id=org_id,
-                    created_by_agent=agent.agent_id.value,
+        with Session(self._engine) as db:
+            org_id = TableRead.get_agent_org_id(db, agent.agent_id.value)
+            if org_id is None:
+                raise HTTPException(
+                    status_code=404, detail="Agent does not have an organization"
                 )
-                TableWrite.add_mm_channel_member(db, channel_id, agent.agent_id.value)
-                db.commit()
+            channel_id = str(_uuid.uuid4())
+            TableWrite.create_mm_channel(
+                db,
+                channel_id,
+                body.name,
+                body.channel_type,
+                body.display_name,
+                org_id=org_id,
+                created_by_agent=agent.agent_id.value,
+            )
+            TableWrite.add_mm_channel_member(db, channel_id, agent.agent_id.value)
+            db.commit()
 
-            await await_channel_avatar(channel_id=channel_id, channel_type=body.channel_type)
+        await await_channel_avatar(channel_id=channel_id, channel_type=body.channel_type)
 
-            with Session(self._engine) as db:
-                ch = TableRead.get_mm_channel(db, channel_id)
-            return MmChannelResponse(**ch)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        with Session(self._engine) as db:
+            ch = TableRead.get_mm_channel(db, channel_id)
+        return MmChannelResponse(**ch)
 
     @cost(1)
     def mm_list_channels(
@@ -2476,32 +2053,26 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmChannelListResponse:
         """List channels the calling agent belongs to."""
-        try:
-            from clawbits.db.models import Agent as _AgentRow
+        from clawbits.db.models import Agent as _AgentRow
 
-            agent = self._mm_extract_agent(api_key)
-            with Session(self._engine) as db:
-                channels = TableRead.get_mm_channels_for_agent(db, agent.agent_id.value)
-                agent_row = db.get(_AgentRow, agent.agent_id.value)
-                inter_agent_mode = bool(
-                    agent_row.inter_agent_mode_enabled if agent_row else False
-                )
-                snoozed = bool(agent_row.snoozed if agent_row else False)
-                inter_agent_message_limit = int(
-                    agent_row.inter_agent_message_limit if agent_row else 10
-                )
-            return MmChannelListResponse(
-                channels=[MmChannelResponse(**c) for c in channels],
-                total=len(channels),
-                inter_agent_mode_enabled=inter_agent_mode,
-                snoozed=snoozed,
-                inter_agent_message_limit=inter_agent_message_limit,
+        agent = extract_agent(self._engine, api_key)
+        with Session(self._engine) as db:
+            channels = TableRead.get_mm_channels_for_agent(db, agent.agent_id.value)
+            agent_row = db.get(_AgentRow, agent.agent_id.value)
+            inter_agent_mode = bool(
+                agent_row.inter_agent_mode_enabled if agent_row else False
             )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            snoozed = bool(agent_row.snoozed if agent_row else False)
+            inter_agent_message_limit = int(
+                agent_row.inter_agent_message_limit if agent_row else 10
+            )
+        return MmChannelListResponse(
+            channels=[MmChannelResponse(**c) for c in channels],
+            total=len(channels),
+            inter_agent_mode_enabled=inter_agent_mode,
+            snoozed=snoozed,
+            inter_agent_message_limit=inter_agent_message_limit,
+        )
 
     @cost(1)
     def mm_get_channel(
@@ -2510,19 +2081,13 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmChannelResponse:
         """Get channel info. Caller must be a member."""
-        try:
-            agent = self._mm_extract_agent(api_key)
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent.agent_id.value)
-                ch = TableRead.get_mm_channel(db, channel_id)
-            if ch is None:
-                raise HTTPException(status_code=404, detail="Channel not found")
-            return MmChannelResponse(**ch)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        agent = extract_agent(self._engine, api_key)
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent.agent_id.value)
+            ch = TableRead.get_mm_channel(db, channel_id)
+        if ch is None:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        return MmChannelResponse(**ch)
 
     @cost(1)
     def mm_add_member(
@@ -2532,62 +2097,56 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmChannelMembersListResponse:
         """Add a member to a channel. Caller must be a member already."""
-        try:
-            agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
 
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent.agent_id.value)
-                ch = TableRead.get_mm_channel(db, channel_id)
-                if ch is None:
-                    raise HTTPException(status_code=404, detail="Channel not found")
-                if ch.get("channel_type") == "direct":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot add members to a direct message channel",
-                    )
-                target = TableRead.get_agent_by_agentid(db, AgentId(body.agent_id))
-                if target is None:
-                    raise HTTPException(
-                        status_code=404, detail=f"Agent '{body.agent_id}' not found"
-                    )
-                # The agent must belong to the channel's org. ``can_tag`` below
-                # is a contact grant, not an org boundary: without this an
-                # agent could pull a peer from another org into this channel,
-                # which would then read everything posted in it.
-                target_org_id = TableRead.get_agent_org_id(db, body.agent_id)
-                if ch.get("org_id") and target_org_id != ch["org_id"]:
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Agent does not belong to this organization",
-                    )
-                # Bringing an agent into a channel is gated by the same
-                # ``can_tag`` grant as mentioning it (contact is closed by
-                # default). Adding yourself is always allowed.
-                if body.agent_id != agent.agent_id.value and not TableRead.can_tag_agent(
-                    db, body.agent_id, principal_agent_id=agent.agent_id.value
-                ):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Not permitted to add agent '{body.agent_id}'",
-                    )
-                try:
-                    TableWrite.add_mm_channel_member(db, channel_id, body.agent_id)
-                except ValueError as e:
-                    raise HTTPException(status_code=409, detail=str(e)) from e
-                members = TableRead.get_mm_channel_members(db, channel_id)
-                channel_payload = MmChannelResponse(**ch).model_dump()
-                db.commit()
-            from clawbits.realtime import fire_and_forget, get_bus, publish_agent_channel_added
-            fire_and_forget(publish_agent_channel_added(get_bus(), body.agent_id, channel_payload))
-            return MmChannelMembersListResponse(
-                members=[MmChannelMemberResponse(**m) for m in members],
-                total=len(members),
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent.agent_id.value)
+            ch = TableRead.get_mm_channel(db, channel_id)
+            if ch is None:
+                raise HTTPException(status_code=404, detail="Channel not found")
+            if ch.get("channel_type") == "direct":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot add members to a direct message channel",
+                )
+            target = TableRead.get_agent_by_agentid(db, AgentId(body.agent_id))
+            if target is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Agent '{body.agent_id}' not found"
+                )
+            # The agent must belong to the channel's org. ``can_tag`` below
+            # is a contact grant, not an org boundary: without this an
+            # agent could pull a peer from another org into this channel,
+            # which would then read everything posted in it.
+            target_org_id = TableRead.get_agent_org_id(db, body.agent_id)
+            if ch.get("org_id") and target_org_id != ch["org_id"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Agent does not belong to this organization",
+                )
+            # Bringing an agent into a channel is gated by the same
+            # ``can_tag`` grant as mentioning it (contact is closed by
+            # default). Adding yourself is always allowed.
+            if body.agent_id != agent.agent_id.value and not TableRead.can_tag_agent(
+                db, body.agent_id, principal_agent_id=agent.agent_id.value
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Not permitted to add agent '{body.agent_id}'",
+                )
+            try:
+                TableWrite.add_mm_channel_member(db, channel_id, body.agent_id)
+            except ValueError as e:
+                raise HTTPException(status_code=409, detail=str(e)) from e
+            members = TableRead.get_mm_channel_members(db, channel_id)
+            channel_payload = MmChannelResponse(**ch).model_dump()
+            db.commit()
+        from clawbits.realtime import fire_and_forget, get_bus, publish_agent_channel_added
+        fire_and_forget(publish_agent_channel_added(get_bus(), body.agent_id, channel_payload))
+        return MmChannelMembersListResponse(
+            members=[MmChannelMemberResponse(**m) for m in members],
+            total=len(members),
+        )
 
     @cost(1)
     def mm_remove_member(
@@ -2597,35 +2156,29 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmChannelMembersListResponse:
         """Remove a member from a channel. Caller must be a member."""
-        try:
-            agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
 
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent.agent_id.value)
-                TableWrite.remove_mm_channel_member(db, channel_id, member_agent_id)
-                members = TableRead.get_mm_channel_members(db, channel_id)
-                db.commit()
-            from clawbits.realtime import (
-                fire_and_forget,
-                get_bus,
-                publish_agent_channel_removed,
-                publish_member_removed,
-            )
-            # Channel topic too, so a live SSE subscriber is cut off now rather
-            # than at its next TTL re-check.
-            fire_and_forget(
-                publish_member_removed(get_bus(), channel_id, agent_id=member_agent_id)
-            )
-            fire_and_forget(publish_agent_channel_removed(get_bus(), member_agent_id, channel_id))
-            return MmChannelMembersListResponse(
-                members=[MmChannelMemberResponse(**m) for m in members],
-                total=len(members),
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent.agent_id.value)
+            TableWrite.remove_mm_channel_member(db, channel_id, member_agent_id)
+            members = TableRead.get_mm_channel_members(db, channel_id)
+            db.commit()
+        from clawbits.realtime import (
+            fire_and_forget,
+            get_bus,
+            publish_agent_channel_removed,
+            publish_member_removed,
+        )
+        # Channel topic too, so a live SSE subscriber is cut off now rather
+        # than at its next TTL re-check.
+        fire_and_forget(
+            publish_member_removed(get_bus(), channel_id, agent_id=member_agent_id)
+        )
+        fire_and_forget(publish_agent_channel_removed(get_bus(), member_agent_id, channel_id))
+        return MmChannelMembersListResponse(
+            members=[MmChannelMemberResponse(**m) for m in members],
+            total=len(members),
+        )
 
     @cost(1)
     def mm_list_members(
@@ -2634,20 +2187,14 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmChannelMembersListResponse:
         """List members of a channel. Caller must be a member."""
-        try:
-            agent = self._mm_extract_agent(api_key)
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent.agent_id.value)
-                members = TableRead.get_mm_channel_members(db, channel_id)
-            return MmChannelMembersListResponse(
-                members=[MmChannelMemberResponse(**m) for m in members],
-                total=len(members),
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        agent = extract_agent(self._engine, api_key)
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent.agent_id.value)
+            members = TableRead.get_mm_channel_members(db, channel_id)
+        return MmChannelMembersListResponse(
+            members=[MmChannelMemberResponse(**m) for m in members],
+            total=len(members),
+        )
 
     @cost(1)
     def mm_create_post(
@@ -2657,153 +2204,107 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmPostResponse:
         """Post a message to a channel. Caller must be a member."""
-        try:
-            from clawbits.db.models import MmPost as _MmPostRow
-            from clawbits.lobstertalk.attention import (
-                build_attention_context,
-                consider_post,
+        from clawbits.db.models import MmPost as _MmPostRow
+        from clawbits.lobstertalk.attention import (
+            build_attention_context,
+            consider_post,
+        )
+        from clawbits.realtime import (
+            fire_and_forget,
+            get_bus,
+            publish_member_status,
+            publish_post_created,
+        )
+
+        cfg = load_file_config()
+        if len(body.file_ids) > cfg.max_per_post:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Too many files: {len(body.file_ids)} "
+                    f"(max {cfg.max_per_post})"
+                ),
             )
 
-            cfg = load_file_config()
-            if len(body.file_ids) > cfg.max_per_post:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Too many files: {len(body.file_ids)} "
-                        f"(max {cfg.max_per_post})"
-                    ),
-                )
-
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent_id)
-                # Contact is closed by default: an agent may only ``@``-tag
-                # another agent it holds a ``can_tag`` grant for.
-                for tagged_id in TableRead.find_tagged_agents_in_channel(
-                    db, channel_id, body.message
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent_id)
+            # Contact is closed by default: an agent may only ``@``-tag
+            # another agent it holds a ``can_tag`` grant for.
+            for tagged_id in TableRead.find_tagged_agents_in_channel(
+                db, channel_id, body.message
+            ):
+                if tagged_id == agent_id:
+                    continue
+                if not TableRead.can_tag_agent(
+                    db, tagged_id, principal_agent_id=agent_id
                 ):
-                    if tagged_id == agent_id:
-                        continue
-                    if not TableRead.can_tag_agent(
-                        db, tagged_id, principal_agent_id=agent_id
-                    ):
-                        raise HTTPException(
-                            status_code=403,
-                            detail=f"Not permitted to tag agent '{tagged_id}'",
-                        )
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Not permitted to tag agent '{tagged_id}'",
+                    )
+            try:
+                post_id = TableWrite.create_mm_post(
+                    db, channel_id, agent_id, body.message,
+                    status=body.status,
+                    parent_post_id=body.parent_post_id,
+                    # The agent re-stamps the inbound post's trace id onto
+                    # its reply, so one id spans the whole turn end to end.
+                    trace_id=body.trace_id,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+
+            # Attach pre-uploaded files. The helper raises ValueError
+            # if any file is ineligible (wrong owner / channel, not
+            # uploaded, already attached); the surrounding session
+            # rolls back so the post insert is undone too.
+            if body.file_ids:
                 try:
-                    post_id = TableWrite.create_mm_post(
-                        db, channel_id, agent_id, body.message,
-                        status=body.status,
-                        parent_post_id=body.parent_post_id,
-                        # The agent re-stamps the inbound post's trace id onto
-                        # its reply, so one id spans the whole turn end to end.
-                        trace_id=body.trace_id,
+                    TableWrite.attach_files_to_post(
+                        db, post_id, body.file_ids, channel_id,
+                        uploader_agent_id=agent_id,
                     )
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=str(e)) from e
 
-                # Attach pre-uploaded files. The helper raises ValueError
-                # if any file is ineligible (wrong owner / channel, not
-                # uploaded, already attached); the surrounding session
-                # rolls back so the post insert is undone too.
-                if body.file_ids:
-                    try:
-                        TableWrite.attach_files_to_post(
-                            db, post_id, body.file_ids, channel_id,
-                            uploader_agent_id=agent_id,
-                        )
-                    except ValueError as e:
-                        raise HTTPException(status_code=400, detail=str(e)) from e
-
-                db.commit()
-                row = db.get(_MmPostRow, post_id)
-                # Snapshot member humans so post.created can fan out to
-                # their global SSE streams (sidebar unread badges).
-                member_human_ids = (
-                    TableRead.get_mm_channel_human_member_ids(db, channel_id)
-                    if (row and row.status == "published")
-                    else []
-                )
-                # Snapshot channel agents for the server-side attention pass
-                # while we still hold the session (the pass runs
-                # fire-and-forget, past the request). ``published`` only: a
-                # ``streaming`` create is an empty placeholder — group replies
-                # use that flow by default (groupChannelShimmer) and get their
-                # attention pass in mm_patch_post when ``done`` flips them to
-                # published. This site covers published-at-create posts (the
-                # legacy single-POST flow and direct API posts).
-                attention_ctx = (
-                    build_attention_context(db, channel_id)
-                    if (row and row.status == "published")
-                    else None
-                )
-            if not row:
-                raise HTTPException(status_code=500, detail="Failed to retrieve created post")
-            with Session(self._engine) as db:
-                resolved_name = TableRead.resolve_agent_display(db, row.agent_id) if row.agent_id else None
-                parent_preview = TableRead.mm_post_parent_preview(db, row.parent_post_id)
-                # Build the file payload from the freshly-attached rows so
-                # the response matches what the read path would return.
-                attached_files = TableRead.get_mm_files_for_post_dicts(db, row.post_id)
-                # Agent posts only on this path — helper picks the agent
-                # branch and reuses the session-cached Agent row.
-                avatar = TableRead._avatar_for_member(db, row.human_id, None, row.agent_id)
-            file_envelope = {"files": attached_files}
-            enrich_post_files_with_urls(
-                file_envelope, self._r2_presigner, ttl=cfg.download_url_ttl
+            if body.status in ("published", "draft"):
+                TableWrite.award_post_marks(db, agent_id, channel_id, post_id)
+            db.commit()
+            row = db.get(_MmPostRow, post_id)
+            post_dict = TableRead.hydrate_mm_posts(db, [row])[0]
+            member_human_ids = (
+                TableRead.get_mm_channel_human_member_ids(db, channel_id)
+                if row.status in ("published", "streaming")
+                else []
             )
-            response = MmPostResponse(
-                post_id=row.post_id,
-                channel_id=row.channel_id,
-                agent_id=row.agent_id,
-                human_id=row.human_id,
-                message=row.message,
-                created_at=format_db_timestamp(row.created_at),
-                poster_display_name=resolved_name,
-                avatar=avatar,
-                status=row.status,
-                updated_at=format_db_timestamp(row.updated_at) if row.updated_at else None,
-                parent_post_id=row.parent_post_id,
-                parent_preview=parent_preview,
-                files=[MmFileResponse(**f) for f in file_envelope["files"]],
-                trace_id=row.trace_id,
+            # A streaming create is an empty placeholder: mm_patch_post runs its attention pass on publish.
+            attention_ctx = (
+                build_attention_context(db, channel_id) if row.status == "published" else None
             )
-            # Streaming posts bump presence to "generating" (plugin is about
-            # to stream); finished posts bump to "online".
-            self._publish_post_and_agent_status(
-                channel_id,
-                agent_id,
-                response.model_dump(),
-                "generating" if body.status == "streaming" else "online",
-                kind="created",
-                member_human_ids=member_human_ids,
+        enrich_post_files_with_urls(post_dict, self._r2_presigner, cfg)
+        response = MmPostResponse(**post_dict)
+        status = "generating" if body.status == "streaming" else "online"
+        bus = get_bus()
+        fire_and_forget(
+            publish_post_created(
+                bus, channel_id, response.model_dump(), member_human_ids=member_human_ids
             )
-            # Server-side LobsterTalk: decide whether any *other* channel agent
-            # should look at this agent post. ``author_agent_id`` makes
-            # consider_post skip the author and require inter_agent_mode on
-            # each candidate; runaway chains are braked by the decoy route,
-            # the per-(agent, channel) cooldown, and the plugin's
-            # consecutive-agent-turn limit.
-            if attention_ctx is not None:
-                from clawbits.realtime import fire_and_forget
-
-                fire_and_forget(
-                    consider_post(
-                        post=response.model_dump(),
-                        channel_id=channel_id,
-                        context=attention_ctx,
-                        author_agent_id=agent_id,
-                        engine=self._engine,
-                    )
+        )
+        fire_and_forget(bus.presence_set(channel_id, "agent", agent_id, status))
+        fire_and_forget(publish_member_status(bus, channel_id, "agent", agent_id, status))
+        if attention_ctx is not None:
+            fire_and_forget(
+                consider_post(
+                    post=response.model_dump(),
+                    channel_id=channel_id,
+                    context=attention_ctx,
+                    author_agent_id=agent_id,
+                    engine=self._engine,
                 )
-            return response
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            )
+        return response
 
     @cost(1)
     def mm_list_posts(
@@ -2825,49 +2326,37 @@ class ClawBitsServer(FastAPI):
         is naive, second-granularity and not comparable against a guest VM's
         clock, whereas ``post_id`` is a serial.
         """
-        try:
-            cfg = load_file_config()
-            # Bound like `around` (50) and `search` (50) already are; the
-            # catch-up pager asks for pages of 50 and loops on has_more, so
-            # nothing legitimate needs more than this.
-            limit = max(1, min(limit, 200))
-            agent = self._mm_extract_agent(api_key)
-            has_more = False
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent.agent_id.value)
-                if after_post_id is not None:
-                    # Over-fetch by one to answer has_more without a COUNT.
-                    posts = TableRead.get_mm_posts(
-                        db,
-                        channel_id,
-                        limit + 1,
-                        offset,
-                        after_post_id=after_post_id,
-                    )
-                    has_more = len(posts) > limit
-                    posts = posts[:limit]
-                else:
-                    posts = TableRead.get_mm_posts(db, channel_id, limit, offset)
-            # Same enrichment as the human read path: presign GET URLs for
-            # image attachments inline so `<img src>` works without a per-
-            # image round trip. URLs are cached for ~ttl-60s, keeping
-            # response bodies stable across the safety-net poll.
-            for p in posts:
-                enrich_post_files_with_urls(
-                    p, self._r2_presigner, ttl=cfg.download_url_ttl
+        cfg = load_file_config()
+        # Bound like `around` (50) and `search` (50) already are; the
+        # catch-up pager asks for pages of 50 and loops on has_more, so
+        # nothing legitimate needs more than this.
+        limit = max(1, min(limit, 200))
+        agent = extract_agent(self._engine, api_key)
+        has_more = False
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent.agent_id.value)
+            if after_post_id is not None:
+                # Over-fetch by one to answer has_more without a COUNT.
+                posts = TableRead.get_mm_posts(
+                    db,
+                    channel_id,
+                    limit + 1,
+                    offset,
+                    after_post_id=after_post_id,
                 )
-            return MmPostListResponse(
-                posts=[MmPostResponse(**p) for p in posts],
-                total=len(posts),
-                limit=limit,
-                offset=offset,
-                has_more=has_more,
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+                has_more = len(posts) > limit
+                posts = posts[:limit]
+            else:
+                posts = TableRead.get_mm_posts(db, channel_id, limit, offset)
+        for p in posts:
+            enrich_post_files_with_urls(p, self._r2_presigner, cfg)
+        return MmPostListResponse(
+            posts=[MmPostResponse(**p) for p in posts],
+            total=len(posts),
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
 
     @cost(1)
     def mm_mark_channel_read(
@@ -2887,52 +2376,46 @@ class ClawBitsServer(FastAPI):
         (an acked post may have been deleted in flight, and the pointer
         carries an FK to ``mm_posts``).
         """
-        try:
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent_id)
-                target = TableRead.get_mm_channel_post_id_at_or_below(
-                    db, channel_id, body.post_id
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent_id)
+            target = TableRead.get_mm_channel_post_id_at_or_below(
+                db, channel_id, body.post_id
+            )
+            if target is None:
+                # Nothing at or below the ack in this channel (empty
+                # channel, or everything acked was deleted). Report the
+                # current pointer rather than inventing one.
+                current = TableRead.get_agent_channel_last_read(
+                    db, channel_id, agent_id
                 )
-                if target is None:
-                    # Nothing at or below the ack in this channel (empty
-                    # channel, or everything acked was deleted). Report the
-                    # current pointer rather than inventing one.
-                    current = TableRead.get_agent_channel_last_read(
-                        db, channel_id, agent_id
-                    )
-                    return MmMarkReadResponse(
-                        channel_id=channel_id,
-                        last_read_post_id=int(current or 0),
-                    )
-                new_last_read = TableWrite.mark_mm_channel_read_agent(
-                    db, channel_id, agent_id, target
+                return MmMarkReadResponse(
+                    channel_id=channel_id,
+                    last_read_post_id=int(current or 0),
                 )
-                db.commit()
+            new_last_read = TableWrite.mark_mm_channel_read_agent(
+                db, channel_id, agent_id, target
+            )
+            db.commit()
 
-            from clawbits.realtime import (
-                fire_and_forget,
-                get_bus,
-                publish_agent_member_read,
-            )
+        from clawbits.realtime import (
+            fire_and_forget,
+            get_bus,
+            publish_agent_member_read,
+        )
 
-            # Channel-topic read receipt so humans see the agent catch up.
-            # No personal-topic sync (publish_channel_read) — that lane
-            # drives browser-tab badges, which agents don't have.
-            fire_and_forget(
-                publish_agent_member_read(
-                    get_bus(), agent_id, channel_id, new_last_read
-                )
+        # Channel-topic read receipt so humans see the agent catch up.
+        # No personal-topic sync (publish_channel_read) — that lane
+        # drives browser-tab badges, which agents don't have.
+        fire_and_forget(
+            publish_agent_member_read(
+                get_bus(), agent_id, channel_id, new_last_read
             )
-            return MmMarkReadResponse(
-                channel_id=channel_id, last_read_post_id=new_last_read
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        )
+        return MmMarkReadResponse(
+            channel_id=channel_id, last_read_post_id=new_last_read
+        )
 
     @cost(1)
     def mm_list_posts_around(
@@ -2945,30 +2428,22 @@ class ClawBitsServer(FastAPI):
         """Window of posts around a post, for search deep-links. Caller must
         be a member. Equal in power to the plain posts read — no context
         scoping applies here."""
-        try:
-            cfg = load_file_config()
-            radius = max(1, min(radius, 50))
-            agent = self._mm_extract_agent(api_key)
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent.agent_id.value)
-                posts = TableRead.get_mm_posts_around_for_agent(
-                    db, channel_id, post_id, radius
-                )
-            for p in posts:
-                enrich_post_files_with_urls(
-                    p, self._r2_presigner, ttl=cfg.download_url_ttl
-                )
-            return MmPostListResponse(
-                posts=[MmPostResponse(**p) for p in posts],
-                total=len(posts),
-                limit=radius,
-                offset=0,
+        cfg = load_file_config()
+        radius = max(1, min(radius, 50))
+        agent = extract_agent(self._engine, api_key)
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent.agent_id.value)
+            posts = TableRead.get_mm_posts_around_for_agent(
+                db, channel_id, post_id, radius
             )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        for p in posts:
+            enrich_post_files_with_urls(p, self._r2_presigner, cfg)
+        return MmPostListResponse(
+            posts=[MmPostResponse(**p) for p in posts],
+            total=len(posts),
+            limit=radius,
+            offset=0,
+        )
 
     @cost(1)
     def mm_search(
@@ -2990,57 +2465,51 @@ class ClawBitsServer(FastAPI):
         """Context-scoped full-text search. ``context_channel_id`` is the
         channel the agent is responding in and decides the scope (see the
         route description); the caller must be a member of it."""
-        try:
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
-            sort = sort if sort in ("recent", "relevant") else "recent"
-            limit = max(1, min(limit, 50))
-            decoded = decode_search_cursor(cursor)
-            with Session(self._engine) as db:
-                # Membership (and DM-contact) gate on the context channel
-                # comes first — it also guarantees the context appears in
-                # the agent's gated channel listing used by the scope.
-                self._require_mm_member(db, context_channel_id, agent_id)
-                scope, scope_ids = TableRead.agent_search_scope(
-                    db, agent_id, context_channel_id
-                )
-                if channel_id is not None:
-                    if channel_id not in set(scope_ids):
-                        raise HTTPException(
-                            status_code=403,
-                            detail=(
-                                "channel_id is outside the search scope for "
-                                f"this context (scope: {scope})"
-                            ),
-                        )
-                    scope_ids = [channel_id]
-                results, next_cursor = TableRead.search_mm_posts_for_agent(
-                    db,
-                    agent_id,
-                    q,
-                    channel_ids=scope_ids,
-                    sort=sort,
-                    limit=limit,
-                    cursor=decoded,
-                    from_human_id=from_human_id,
-                    from_agent_id=from_agent_id,
-                    before=parse_search_date(before),
-                    after=parse_search_date(after),
-                    has_link=has_link,
-                    has_file=has_file,
-                )
-            return MmAgentSearchResponse(
-                results=[MmSearchResult(**r) for r in results],
-                next_cursor=encode_search_cursor(next_cursor),
-                query=q,
-                sort=sort,
-                scope=scope,
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
+        sort = sort if sort in ("recent", "relevant") else "recent"
+        limit = max(1, min(limit, 50))
+        decoded = decode_search_cursor(cursor)
+        with Session(self._engine) as db:
+            # Membership (and DM-contact) gate on the context channel
+            # comes first — it also guarantees the context appears in
+            # the agent's gated channel listing used by the scope.
+            self._require_mm_member(db, context_channel_id, agent_id)
+            scope, scope_ids = TableRead.agent_search_scope(
+                db, agent_id, context_channel_id
             )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            if channel_id is not None:
+                if channel_id not in set(scope_ids):
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "channel_id is outside the search scope for "
+                            f"this context (scope: {scope})"
+                        ),
+                    )
+                scope_ids = [channel_id]
+            results, next_cursor = TableRead.search_mm_posts_for_agent(
+                db,
+                agent_id,
+                q,
+                channel_ids=scope_ids,
+                sort=sort,
+                limit=limit,
+                cursor=decoded,
+                from_human_id=from_human_id,
+                from_agent_id=from_agent_id,
+                before=parse_search_date(before),
+                after=parse_search_date(after),
+                has_link=has_link,
+                has_file=has_file,
+            )
+        return MmAgentSearchResponse(
+            results=[MmSearchResult(**r) for r in results],
+            next_cursor=encode_search_cursor(next_cursor),
+            query=q,
+            sort=sort,
+            scope=scope,
+        )
 
     @cost(1)
     def mm_toggle_reaction(
@@ -3051,47 +2520,36 @@ class ClawBitsServer(FastAPI):
     ) -> MmPostResponse:
         """Toggle an emoji reaction on a channel post. Agent-side mirror of
         the human endpoint — same toggle semantics, same response shape."""
-        try:
-            from clawbits.db.models import HumanUser as _HumanUser
-            from clawbits.db.models import MmPost as _MmPostRow
-            from clawbits.realtime import fire_and_forget, get_bus, publish_post_updated
+        from clawbits.db.models import MmPost as _MmPostRow
+        from clawbits.realtime import fire_and_forget, get_bus, publish_post_updated
 
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
 
-            with Session(self._engine) as db:
-                post = db.get(_MmPostRow, post_id)
-                if post is None:
-                    raise HTTPException(status_code=404, detail="Post not found")
-                self._require_mm_member(db, post.channel_id, agent_id)
+        with Session(self._engine) as db:
+            post = db.get(_MmPostRow, post_id)
+            if post is None:
+                raise HTTPException(status_code=404, detail="Post not found")
+            self._require_mm_member(db, post.channel_id, agent_id)
 
-                try:
-                    TableWrite.toggle_mm_post_reaction(
-                        db, post_id, body.emoji, agent_id=agent_id,
-                    )
-                except ValueError as e:
-                    raise HTTPException(status_code=400, detail=str(e)) from e
-                db.commit()
+            try:
+                TableWrite.toggle_mm_post_reaction(
+                    db, post_id, body.emoji, agent_id=agent_id,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            db.commit()
 
-                row = db.get(_MmPostRow, post_id)
-                if row is None:
-                    raise HTTPException(status_code=500, detail="Failed to retrieve post")
-                u = db.get(_HumanUser, row.human_id) if row.human_id else None
-                post_dict = TableRead._mm_post_to_dict(db, row, u)
+            row = db.get(_MmPostRow, post_id)
+            if row is None:
+                raise HTTPException(status_code=500, detail="Failed to retrieve post")
+            post_dict = TableRead.hydrate_mm_posts(db, [row])[0]
 
-            cfg = load_file_config()
-            enrich_post_files_with_urls(
-                post_dict, self._r2_presigner, ttl=cfg.download_url_ttl
-            )
-            response = MmPostResponse(**post_dict)
-            bus = get_bus()
-            fire_and_forget(publish_post_updated(bus, response.channel_id, response.model_dump()))
-            return response
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        cfg = load_file_config()
+        enrich_post_files_with_urls(post_dict, self._r2_presigner, cfg)
+        response = MmPostResponse(**post_dict)
+        fire_and_forget(publish_post_updated(get_bus(), response.channel_id, response.model_dump()))
+        return response
 
     @cost(1)
     async def mm_create_or_get_direct(
@@ -3100,81 +2558,75 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmChannelResponse:
         """Get or create a DM channel between the caller and another agent."""
-        try:
-            import uuid as _uuid
+        import uuid as _uuid
 
-            agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
 
-            caller_id = agent.agent_id.value
-            target_id = body.target_agent_id
+        caller_id = agent.agent_id.value
+        target_id = body.target_agent_id
 
-            if caller_id == target_id:
-                raise HTTPException(
-                    status_code=400, detail="Cannot create a DM channel with yourself"
-                )
+        if caller_id == target_id:
+            raise HTTPException(
+                status_code=400, detail="Cannot create a DM channel with yourself"
+            )
 
-            # Contact is closed by default. Getting an *existing* DM is allowed
-            # for either participant as long as one side may contact the other
-            # (the recipient of a permitted DM keeps access); opening a *new*
-            # DM requires the initiator to hold ``can_dm`` on the target.
-            with Session(self._engine) as db:
-                target = TableRead.get_agent_by_agentid(db, AgentId(target_id))
-                if target is None:
-                    raise HTTPException(status_code=404, detail=f"Agent '{target_id}' not found")
-                existing = TableRead.find_dm_channel(db, caller_id, target_id)
-                if existing:
-                    if not TableRead.can_agent_access_dm(
-                        db, existing["channel_id"], caller_id
-                    ):
-                        raise HTTPException(
-                            status_code=403, detail="Not permitted to contact this agent"
-                        )
-                    return MmChannelResponse(**existing)
-                if not TableRead.can_dm_agent(
-                    db, target_id, principal_agent_id=caller_id
+        # Contact is closed by default. Getting an *existing* DM is allowed
+        # for either participant as long as one side may contact the other
+        # (the recipient of a permitted DM keeps access); opening a *new*
+        # DM requires the initiator to hold ``can_dm`` on the target.
+        with Session(self._engine) as db:
+            target = TableRead.get_agent_by_agentid(db, AgentId(target_id))
+            if target is None:
+                raise HTTPException(status_code=404, detail=f"Agent '{target_id}' not found")
+            existing = TableRead.find_dm_channel(db, caller_id, target_id)
+            if existing:
+                if not TableRead.can_agent_access_dm(
+                    db, existing["channel_id"], caller_id
                 ):
                     raise HTTPException(
                         status_code=403, detail="Not permitted to contact this agent"
                     )
-
-            # Create new DM channel in the caller's org
-            with Session(self._engine) as db:
-                existing = TableRead.find_dm_channel(db, caller_id, target_id)
-                if existing:
-                    return MmChannelResponse(**existing)
-
-                org_id = TableRead.get_agent_org_id(db, caller_id)
-                channel_id = str(_uuid.uuid4())
-                sorted_ids = sorted([caller_id, target_id])
-                dm_name = f"dm-{sorted_ids[0]}-{sorted_ids[1]}"
-                TableWrite.create_mm_channel(
-                    db,
-                    channel_id,
-                    dm_name,
-                    "direct",
-                    display_name=f"DM: {caller_id} ↔ {target_id}",
-                    org_id=org_id,
-                    created_by_agent=caller_id,
+                return MmChannelResponse(**existing)
+            if not TableRead.can_dm_agent(
+                db, target_id, principal_agent_id=caller_id
+            ):
+                raise HTTPException(
+                    status_code=403, detail="Not permitted to contact this agent"
                 )
-                TableWrite.add_mm_channel_member(db, channel_id, caller_id)
-                TableWrite.add_mm_channel_member(db, channel_id, target_id)
-                db.commit()
 
-            await await_channel_avatar(channel_id=channel_id, channel_type="direct")
+        # Create new DM channel in the caller's org
+        with Session(self._engine) as db:
+            existing = TableRead.find_dm_channel(db, caller_id, target_id)
+            if existing:
+                return MmChannelResponse(**existing)
 
-            with Session(self._engine) as db:
-                ch = TableRead.get_mm_channel(db, channel_id)
-            response = MmChannelResponse(**ch)
-            from clawbits.realtime import fire_and_forget, get_bus, publish_agent_channel_added
-            payload = response.model_dump()
-            fire_and_forget(publish_agent_channel_added(get_bus(), caller_id, payload))
-            fire_and_forget(publish_agent_channel_added(get_bus(), target_id, payload))
-            return response
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            org_id = TableRead.get_agent_org_id(db, caller_id)
+            channel_id = str(_uuid.uuid4())
+            sorted_ids = sorted([caller_id, target_id])
+            dm_name = f"dm-{sorted_ids[0]}-{sorted_ids[1]}"
+            TableWrite.create_mm_channel(
+                db,
+                channel_id,
+                dm_name,
+                "direct",
+                display_name=f"DM: {caller_id} ↔ {target_id}",
+                org_id=org_id,
+                created_by_agent=caller_id,
+            )
+            TableWrite.add_mm_channel_member(db, channel_id, caller_id)
+            TableWrite.add_mm_channel_member(db, channel_id, target_id)
+            db.commit()
+
+        await await_channel_avatar(channel_id=channel_id, channel_type="direct")
+
+        with Session(self._engine) as db:
+            ch = TableRead.get_mm_channel(db, channel_id)
+        response = MmChannelResponse(**ch)
+        from clawbits.realtime import fire_and_forget, get_bus, publish_agent_channel_added
+        payload = response.model_dump()
+        fire_and_forget(publish_agent_channel_added(get_bus(), caller_id, payload))
+        fire_and_forget(publish_agent_channel_added(get_bus(), target_id, payload))
+        return response
 
     # ------------------------------------------------------------------
     # Realtime (SSE + status) — agent-facing
@@ -3195,8 +2647,6 @@ class ClawBitsServer(FastAPI):
         membership — the backstop for revocation paths that publish nothing
         there (contact-grant revocation).
         """
-        import time
-
         from clawbits.db.models import Agent as _AgentRow
         from clawbits.realtime import (
             MEMBERSHIP_RECHECK_TTL_SECONDS,
@@ -3207,7 +2657,7 @@ class ClawBitsServer(FastAPI):
             stream_channel_events,
         )
 
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
         with Session(self._engine) as db:
             self._require_mm_member(db, channel_id, agent_id)
@@ -3229,7 +2679,7 @@ class ClawBitsServer(FastAPI):
                 # is intact — auth was otherwise resolved exactly once, at
                 # connect. Rotation changes ``agents.api_key_hash``, so the
                 # old key simply stops resolving.
-                if self._mm_extract_agent(api_key).agent_id.value != agent_id:
+                if extract_agent(self._engine, api_key).agent_id.value != agent_id:
                     raise StreamClosed()
                 with Session(self._engine) as db:
                     self._require_mm_member(db, channel_id, agent_id)
@@ -3280,7 +2730,7 @@ class ClawBitsServer(FastAPI):
         if query_key and not auth:
             auth = f"Bearer {query_key}"
         try:
-            agent = self._mm_extract_agent(auth or "")
+            agent = extract_agent(self._engine, auth or "")
         except HTTPException:
             await websocket.close(code=1008)
             return
@@ -3422,7 +2872,7 @@ class ClawBitsServer(FastAPI):
         """
         from clawbits.realtime import get_bus, publish_member_status
 
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
         with Session(self._engine) as db:
             self._require_mm_member(db, channel_id, agent_id)
@@ -3470,7 +2920,7 @@ class ClawBitsServer(FastAPI):
         from clawbits.db.models import Agent as _AgentRow
         from clawbits.realtime import get_bus, publish_agent_status
 
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
 
         with Session(self._engine) as db:
@@ -3524,7 +2974,7 @@ class ClawBitsServer(FastAPI):
         advances managed rows toward ``applied``, mirrors external jobs, and
         ingests recent runs.
         """
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
         managed = body.managed[: self.AUTOMATION_REPORT_MAX_ITEMS]
         external = body.external[: self.AUTOMATION_REPORT_MAX_ITEMS]
@@ -3551,7 +3001,7 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> AutomationDesiredResponse:
         """The desired automation set the plugin reconciles to (write path)."""
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
         with Session(self._engine) as db:
             desired = TableRead.get_desired_automations(db, agent_id)
@@ -3573,7 +3023,7 @@ class ClawBitsServer(FastAPI):
         """
         from clawbits.db.models import SKILL_SCHEMA_VERSION
 
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
         with Session(self._engine) as db:
             seen, mirrored = TableWrite.apply_skill_state_report(
@@ -3603,7 +3053,7 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> SkillDesiredResponse:
         """The desired skill set for this agent."""
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         with Session(self._engine) as db:
             return SkillDesiredResponse(
                 **TableRead.get_desired_skills(db, agent.agent_id.value)
@@ -3622,7 +3072,7 @@ class ClawBitsServer(FastAPI):
         from clawbits.db.models import Agent as _AgentRow
         from clawbits.skills.render import render_skill, resolve_runtime
 
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
         with Session(self._engine) as db:
             version = TableRead.get_agent_skill_version(db, agent_id, version_id)
@@ -3669,7 +3119,7 @@ class ClawBitsServer(FastAPI):
         from clawbits.db.models import AGENT_USAGE_SCHEMA_VERSION
         from clawbits.db.models import Agent as _AgentRow
 
-        agent = self._mm_extract_agent(api_key)
+        agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
         events = [
             e.model_dump() for e in body.events[: self.USAGE_REPORT_MAX_EVENTS]
@@ -3720,82 +3170,76 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmFileUploadResponse:
         """Reserve an ``mm_files`` row and return a presigned PUT URL."""
-        try:
-            cfg = load_file_config()
-            presigner = self._require_r2_presigner()
+        cfg = load_file_config()
+        presigner = self._require_r2_presigner()
 
-            if body.size_bytes > cfg.max_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=(
-                        f"File too large: {body.size_bytes} bytes "
-                        f"(max {cfg.max_bytes})"
-                    ),
-                )
-            content_type = resolve_content_type(body.filename, body.content_type)
-            if not is_mime_allowed(content_type, cfg.mime_allowlist):
-                raise HTTPException(
-                    status_code=415,
-                    detail=f"Content type not allowed: {content_type}",
-                )
-
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
-
-            file_id = new_file_id()
-            object_key = build_object_key(file_id, body.filename)
-            thumb_key = (
-                build_object_key(file_id, body.filename, thumbnail=True)
-                if body.has_thumbnail
-                else None
+        if body.size_bytes > cfg.max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"File too large: {body.size_bytes} bytes "
+                    f"(max {cfg.max_bytes})"
+                ),
+            )
+        content_type = resolve_content_type(body.filename, body.content_type)
+        if not is_mime_allowed(content_type, cfg.mime_allowlist):
+            raise HTTPException(
+                status_code=415,
+                detail=f"Content type not allowed: {content_type}",
             )
 
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent_id)
-                TableWrite.create_mm_file(
-                    db,
-                    file_id=file_id,
-                    channel_id=channel_id,
-                    uploader_agent_id=agent_id,
-                    filename=body.filename,
-                    content_type=content_type,
-                    size_bytes=body.size_bytes,
-                    object_key=object_key,
-                    thumbnail_object_key=thumb_key,
-                    sha256=body.sha256,
-                )
-                db.commit()
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
 
-            put = presigner.presign_put(
-                object_key,
-                content_type,
-                content_length=body.size_bytes,
+        file_id = new_file_id()
+        object_key = build_object_key(file_id, body.filename)
+        thumb_key = (
+            build_object_key(file_id, body.filename, thumbnail=True)
+            if body.has_thumbnail
+            else None
+        )
+
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent_id)
+            TableWrite.create_mm_file(
+                db,
+                file_id=file_id,
+                channel_id=channel_id,
+                uploader_agent_id=agent_id,
+                filename=body.filename,
+                content_type=content_type,
+                size_bytes=body.size_bytes,
+                object_key=object_key,
+                thumbnail_object_key=thumb_key,
+                sha256=body.sha256,
+            )
+            db.commit()
+
+        put = presigner.presign_put(
+            object_key,
+            content_type,
+            content_length=body.size_bytes,
+            expires=300,
+        )
+        thumb_put: dict | None = None
+        if thumb_key is not None and body.thumbnail_size_bytes is not None:
+            thumb_put = presigner.presign_put(
+                thumb_key,
+                "image/jpeg",
+                content_length=body.thumbnail_size_bytes,
                 expires=300,
             )
-            thumb_put: dict | None = None
-            if thumb_key is not None and body.thumbnail_size_bytes is not None:
-                thumb_put = presigner.presign_put(
-                    thumb_key,
-                    "image/jpeg",
-                    content_length=body.thumbnail_size_bytes,
-                    expires=300,
-                )
 
-            return MmFileUploadResponse(
-                file_id=file_id,
-                upload_url=put["url"],
-                upload_headers=put["headers"],
-                upload_expires_in=put["expires_in"],
-                object_key=object_key,
-                thumbnail_upload_url=thumb_put["url"] if thumb_put else None,
-                thumbnail_upload_headers=thumb_put["headers"] if thumb_put else None,
-                thumbnail_object_key=thumb_key,
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        return MmFileUploadResponse(
+            file_id=file_id,
+            upload_url=put["url"],
+            upload_headers=put["headers"],
+            upload_expires_in=put["expires_in"],
+            object_key=object_key,
+            thumbnail_upload_url=thumb_put["url"] if thumb_put else None,
+            thumbnail_upload_headers=thumb_put["headers"] if thumb_put else None,
+            thumbnail_object_key=thumb_key,
+        )
 
     @cost(1)
     async def mm_direct_file_upload(
@@ -3817,134 +3261,128 @@ class ClawBitsServer(FastAPI):
         upload leaves a ``pending`` row (visible to GC) rather than an
         unreferenced R2 object.
         """
-        try:
-            import hashlib as _hashlib
+        import hashlib as _hashlib
 
-            cfg = load_file_config()
-            if self._mm_r2 is None:
-                raise HTTPException(
-                    status_code=503,
-                    detail="File storage not configured (R2 credentials missing)",
-                )
-
-            content_type = resolve_content_type(
-                filename, request.headers.get("content-type", ""),
+        cfg = load_file_config()
+        if self._mm_r2 is None:
+            raise HTTPException(
+                status_code=503,
+                detail="File storage not configured (R2 credentials missing)",
             )
-            if not is_mime_allowed(content_type, cfg.mime_allowlist):
-                raise HTTPException(
-                    status_code=415,
-                    detail=f"Content type not allowed: {content_type}",
-                )
-            # Cheap reject before buffering the body when the client
-            # declares its size; re-checked on the actual bytes below.
-            declared = request.headers.get("content-length")
-            if declared is not None and declared.isdigit() and int(declared) > cfg.max_bytes:
+
+        content_type = resolve_content_type(
+            filename, request.headers.get("content-type", ""),
+        )
+        if not is_mime_allowed(content_type, cfg.mime_allowlist):
+            raise HTTPException(
+                status_code=415,
+                detail=f"Content type not allowed: {content_type}",
+            )
+        # Cheap reject before buffering the body when the client
+        # declares its size; re-checked on the actual bytes below.
+        declared = request.headers.get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > cfg.max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large: {declared} bytes (max {cfg.max_bytes})",
+            )
+
+        # Authenticate + authorize before buffering the body — an
+        # invalid key or non-member must not cost us max_bytes of RAM.
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent_id)
+
+        # Stream the body with a hard cap rather than ``request.body()``,
+        # which buffers the whole payload unbounded. A chunked upload
+        # sends no Content-Length, so the declared-size pre-check above
+        # is skipped — this early abort is the only thing that actually
+        # bounds memory, capping it at max_bytes + one transport chunk.
+        parts: list[bytes] = []
+        total = 0
+        async for part in request.stream():
+            total += len(part)
+            if total > cfg.max_bytes:
                 raise HTTPException(
                     status_code=413,
-                    detail=f"File too large: {declared} bytes (max {cfg.max_bytes})",
+                    detail=f"File too large: exceeds max {cfg.max_bytes} bytes",
                 )
+            parts.append(part)
+        data = b"".join(parts)
+        if not data:
+            raise HTTPException(status_code=400, detail="Empty file body")
 
-            # Authenticate + authorize before buffering the body — an
-            # invalid key or non-member must not cost us max_bytes of RAM.
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent_id)
+        file_id = new_file_id()
+        object_key = build_object_key(file_id, filename)
 
-            # Stream the body with a hard cap rather than ``request.body()``,
-            # which buffers the whole payload unbounded. A chunked upload
-            # sends no Content-Length, so the declared-size pre-check above
-            # is skipped — this early abort is the only thing that actually
-            # bounds memory, capping it at max_bytes + one transport chunk.
-            parts: list[bytes] = []
-            total = 0
-            async for part in request.stream():
-                total += len(part)
-                if total > cfg.max_bytes:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"File too large: exceeds max {cfg.max_bytes} bytes",
-                    )
-                parts.append(part)
-            data = b"".join(parts)
-            if not data:
-                raise HTTPException(status_code=400, detail="Empty file body")
+        # Hashing the body and decoding an image are both CPU-bound, so
+        # keep the pair off the event loop in one hop.
+        def _hash_and_decode() -> tuple[str, tuple[int, int, bytes | None] | None]:
+            digest = _hashlib.sha256(data).hexdigest()
+            if content_type.lower().startswith("image/"):
+                return digest, decode_image_and_thumbnail(data)
+            return digest, None
 
-            file_id = new_file_id()
-            object_key = build_object_key(file_id, filename)
+        sha256, decoded = await asyncio.to_thread(_hash_and_decode)
+        width: int | None = None
+        height: int | None = None
+        thumb: bytes | None = None
+        thumb_key: str | None = None
+        if decoded is not None:
+            width, height, thumb = decoded
+            if thumb is not None:
+                thumb_key = build_object_key(file_id, filename, thumbnail=True)
 
-            # Hashing 15 MiB and decoding an image are both CPU-bound —
-            # keep the pair off the event loop in one hop.
-            def _hash_and_decode() -> tuple[str, tuple[int, int, bytes | None] | None]:
-                digest = _hashlib.sha256(data).hexdigest()
-                if content_type.lower().startswith("image/"):
-                    return digest, decode_image_and_thumbnail(data)
-                return digest, None
+        # Reserve the row *before* the R2 PUT (presigned-flow parity):
+        # if the upload dies, the pending row still references the key,
+        # so GC can reap it instead of stranding an invisible object.
+        with Session(self._engine) as db:
+            TableWrite.create_mm_file(
+                db,
+                file_id=file_id,
+                channel_id=channel_id,
+                uploader_agent_id=agent_id,
+                filename=filename,
+                content_type=content_type,
+                size_bytes=len(data),
+                object_key=object_key,
+                thumbnail_object_key=thumb_key,
+                sha256=sha256,
+            )
+            db.commit()
 
-            sha256, decoded = await asyncio.to_thread(_hash_and_decode)
-            width: int | None = None
-            height: int | None = None
-            thumb: bytes | None = None
-            thumb_key: str | None = None
-            if decoded is not None:
-                width, height, thumb = decoded
-                if thumb is not None:
-                    thumb_key = build_object_key(file_id, filename, thumbnail=True)
-
-            # Reserve the row *before* the R2 PUT (presigned-flow parity):
-            # if the upload dies, the pending row still references the key,
-            # so GC can reap it instead of stranding an invisible object.
-            with Session(self._engine) as db:
-                TableWrite.create_mm_file(
-                    db,
-                    file_id=file_id,
-                    channel_id=channel_id,
-                    uploader_agent_id=agent_id,
-                    filename=filename,
-                    content_type=content_type,
-                    size_bytes=len(data),
-                    object_key=object_key,
-                    thumbnail_object_key=thumb_key,
-                    sha256=sha256,
-                )
-                db.commit()
-
-            result = await self._mm_r2.upload_file(object_key, data, content_type)
-            if not result.get("success"):
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Upload failed: {result.get('error', 'unknown error')}",
-                )
-            if thumb is not None and thumb_key is not None:
-                # Best-effort: a missing thumbnail only costs the client a
-                # full-size fetch (``ImageThumb`` falls back to download_url).
-                thumb_result = await self._mm_r2.upload_file(
-                    thumb_key, thumb, "image/jpeg"
-                )
-                if not thumb_result.get("success"):
-                    logging.warning(
-                        "direct upload: thumbnail upload failed for %s: %s",
-                        file_id,
-                        thumb_result.get("error"),
-                    )
-                    thumb_key = None
-
-            with Session(self._engine) as db:
-                row = TableWrite.confirm_mm_file(
-                    db,
+        result = await self._mm_r2.upload_file(object_key, data, content_type)
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upload failed: {result.get('error', 'unknown error')}",
+            )
+        if thumb is not None and thumb_key is not None:
+            # Best-effort: a missing thumbnail only costs the client a
+            # full-size fetch (``ImageThumb`` falls back to download_url).
+            thumb_result = await self._mm_r2.upload_file(
+                thumb_key, thumb, "image/jpeg"
+            )
+            if not thumb_result.get("success"):
+                logging.warning(
+                    "direct upload: thumbnail upload failed for %s: %s",
                     file_id,
-                    uploader_agent_id=agent_id,
-                    width=width,
-                    height=height,
-                    thumbnail_uploaded=thumb_key is not None,
+                    thumb_result.get("error"),
                 )
-                db.commit()
-                return build_file_response(row, presigner=None, ttl=0)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+                thumb_key = None
+
+        with Session(self._engine) as db:
+            row = TableWrite.confirm_mm_file(
+                db,
+                file_id,
+                uploader_agent_id=agent_id,
+                width=width,
+                height=height,
+                thumbnail_uploaded=thumb_key is not None,
+            )
+            db.commit()
+            return build_file_response(row, presigner=None, ttl=0)
 
     @cost(1)
     async def mm_confirm_file_upload(
@@ -3954,71 +3392,65 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> MmFileResponse:
         """Mark a pending file ``uploaded`` and record optional metadata."""
-        try:
-            from clawbits.db.models import MmFile as _MmFileRow
+        from clawbits.db.models import MmFile as _MmFileRow
 
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
-            with Session(self._engine) as db:
-                try:
-                    row = TableWrite.confirm_mm_file(
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            try:
+                row = TableWrite.confirm_mm_file(
+                    db,
+                    file_id,
+                    uploader_agent_id=agent_id,
+                    width=body.width,
+                    height=body.height,
+                    duration_ms=body.duration_ms,
+                    sha256=body.sha256,
+                    thumbnail_uploaded=body.thumbnail_uploaded,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            db.commit()
+            needs_probe = (
+                row.content_type.startswith("image/")
+                and (row.width is None or row.height is None)
+            )
+            # Prefer the thumbnail — a small fetch with the original's
+            # aspect ratio. Trade-off: the stored width/height are then
+            # thumbnail-scale (≤1024), not the original's absolute pixel
+            # size; the frontend only needs them for the aspect-ratio
+            # box, so approximate absolutes are acceptable.
+            probe_key = row.thumbnail_object_key or row.object_key
+
+        # Server-side dimension probe — parity with the human confirm
+        # route (see ``human_mm_endpoints.confirm_file_upload``). Agents
+        # are typically headless and rarely decode dimensions client-side;
+        # without this fallback their image posts render with a 0px-tall
+        # slot that reflows on byte arrival. Runs outside the DB context
+        # manager because it does network I/O.
+        if needs_probe and self._r2_presigner is not None:
+            dims = await probe_image_dimensions(self._r2_presigner, probe_key)
+            if dims is not None:
+                w, h = dims
+                with Session(self._engine) as db:
+                    # Metadata-only write-back: ``thumbnail_uploaded``
+                    # stays unset (None) so the client's just-confirmed
+                    # thumbnail key is not clobbered.
+                    TableWrite.confirm_mm_file(
                         db,
                         file_id,
                         uploader_agent_id=agent_id,
-                        width=body.width,
-                        height=body.height,
-                        duration_ms=body.duration_ms,
-                        sha256=body.sha256,
-                        thumbnail_uploaded=body.thumbnail_uploaded,
+                        width=w,
+                        height=h,
                     )
-                except ValueError as e:
-                    raise HTTPException(status_code=400, detail=str(e)) from e
-                db.commit()
-                needs_probe = (
-                    row.content_type.startswith("image/")
-                    and (row.width is None or row.height is None)
-                )
-                # Prefer the thumbnail — a small fetch with the original's
-                # aspect ratio. Trade-off: the stored width/height are then
-                # thumbnail-scale (≤1024), not the original's absolute pixel
-                # size; the frontend only needs them for the aspect-ratio
-                # box, so approximate absolutes are acceptable.
-                probe_key = row.thumbnail_object_key or row.object_key
+                    db.commit()
 
-            # Server-side dimension probe — parity with the human confirm
-            # route (see ``human_mm_endpoints.confirm_file_upload``). Agents
-            # are typically headless and rarely decode dimensions client-side;
-            # without this fallback their image posts render with a 0px-tall
-            # slot that reflows on byte arrival. Runs outside the DB context
-            # manager because it does network I/O.
-            if needs_probe and self._r2_presigner is not None:
-                dims = await probe_image_dimensions(self._r2_presigner, probe_key)
-                if dims is not None:
-                    w, h = dims
-                    with Session(self._engine) as db:
-                        # Metadata-only write-back: ``thumbnail_uploaded``
-                        # stays unset (None) so the client's just-confirmed
-                        # thumbnail key is not clobbered.
-                        TableWrite.confirm_mm_file(
-                            db,
-                            file_id,
-                            uploader_agent_id=agent_id,
-                            width=w,
-                            height=h,
-                        )
-                        db.commit()
-
-            with Session(self._engine) as db:
-                # Re-read so the response carries the probed dims.
-                row = db.get(_MmFileRow, file_id)
-                if row is None:
-                    raise HTTPException(status_code=404, detail="file disappeared")
-                return build_file_response(row, presigner=None, ttl=0)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        with Session(self._engine) as db:
+            # Re-read so the response carries the probed dims.
+            row = db.get(_MmFileRow, file_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="file disappeared")
+            return build_file_response(row, presigner=None, ttl=0)
 
     @cost(1)
     def mm_get_file_download_url(
@@ -4031,41 +3463,33 @@ class ClawBitsServer(FastAPI):
         Authz: caller must be a member of the channel the file is
         attached to. Soft-deleted files return 404.
         """
-        try:
-            cfg = load_file_config()
-            presigner = self._require_r2_presigner()
+        cfg = load_file_config()
+        presigner = self._require_r2_presigner()
 
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
 
-            with Session(self._engine) as db:
-                row = TableRead.get_mm_file(db, file_id)
-                if row is None:
-                    raise HTTPException(status_code=404, detail="File not found")
-                if row.status != "uploaded":
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"File not ready (status={row.status})",
-                    )
-                self._require_mm_member(db, row.channel_id, agent_id)
-                import time as _time
-
-                url, expires_at = cached_presigned_get(
-                    presigner,
-                    cache_key=f"{row.file_id}:original",
-                    object_key=row.object_key,
-                    ttl=cfg.download_url_ttl,
-                    download_filename=row.filename,
+        with Session(self._engine) as db:
+            row = TableRead.get_mm_file(db, file_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="File not found")
+            if row.status != "uploaded":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"File not ready (status={row.status})",
                 )
-                expires_in = max(0, expires_at - int(_time.time()))
-                return MmFileDownloadUrlResponse(
-                    url=url, expires_in=expires_in, expires_at=expires_at
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            self._require_mm_member(db, row.channel_id, agent_id)
+            url, expires_at = cached_presigned_get(
+                presigner,
+                cache_key=f"{row.file_id}:original",
+                object_key=row.object_key,
+                ttl=cfg.download_url_ttl_for(row.content_type),
+                download_filename=row.filename,
+            )
+            expires_in = max(0, expires_at - int(time.time()))
+            return MmFileDownloadUrlResponse(
+                url=url, expires_in=expires_in, expires_at=expires_at
+            )
 
     @cost(1)
     def mm_delete_file(
@@ -4074,22 +3498,16 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> Response:
         """Soft-delete a file owned by the calling agent."""
-        try:
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
-            with Session(self._engine) as db:
-                row = TableWrite.soft_delete_mm_file(
-                    db, file_id, uploader_agent_id=agent_id
-                )
-                db.commit()
-            if row is None:
-                raise HTTPException(status_code=404, detail="File not found")
-            return Response(status_code=204)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            row = TableWrite.soft_delete_mm_file(
+                db, file_id, uploader_agent_id=agent_id
+            )
+            db.commit()
+        if row is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        return Response(status_code=204)
 
     @cost(1)
     def mm_patch_post(
@@ -4106,179 +3524,98 @@ class ClawBitsServer(FastAPI):
         on its own is valid — e.g. to finalise without changing text).
         Mutual-exclusivity of the fields is enforced by the schema.
         """
-        try:
-            agent = self._mm_extract_agent(api_key)
-            agent_id = agent.agent_id.value
-            with Session(self._engine) as db:
-                self._require_mm_member(db, channel_id, agent_id)
-                # The PATCH path is billing-exempt in the middleware (the
-                # streaming lane must be free), so the per-reply charge
-                # moves here: finalize (``done``) bills once, in the same
-                # transaction as the flip - a 402 leaves the draft open and
-                # unbilled. ``cancel`` (no reply produced) stays free, as do
-                # the append/replace patches themselves.
-                if body.done:
-                    try:
-                        TableWrite.charge_cb_tokens(
-                            db, agent.agent_id, self.AGENTIC_WRITE_CB_TOKENS_COST
-                        )
-                    except ValueError as exc:
-                        if "Insufficient CB_TOKENS" in str(exc):
-                            raise HTTPException(status_code=402, detail=str(exc))
-                        raise HTTPException(status_code=500, detail=str(exc))
-                try:
-                    row = TableWrite.patch_mm_post(
-                        db,
-                        post_id,
-                        channel_id,
-                        agent_id,
-                        append=body.append,
-                        replace=body.replace,
-                        finalise=body.done,
-                        cancel=body.cancel,
-                    )
-                except LookupError:
-                    raise HTTPException(status_code=404, detail="Post not found")
-                except PermissionError:
-                    raise HTTPException(status_code=403, detail="Not the post owner")
-                except ValueError as exc:
-                    raise HTTPException(status_code=409, detail=str(exc))
-                db.commit()
-                if body.cancel:
-                    # Streaming row was deleted; no response body. Push the
-                    # deletion through the realtime feed so subscribers
-                    # drop the now-orphaned shimmer placeholder from their
-                    # rendered list (without this, the channel UI keeps
-                    # showing the streaming post until the next page
-                    # reload). Also flip the agent's presence back to
-                    # online so the "generating…" pill un-sticks.
-                    from clawbits.realtime import (
-                        fire_and_forget,
-                        get_bus,
-                        publish_member_status,
-                        publish_post_deleted,
-                    )
-                    member_human_ids = (
-                        TableRead.get_mm_channel_human_member_ids(db, channel_id)
-                    )
-                    bus = get_bus()
-                    fire_and_forget(
-                        publish_post_deleted(
-                            bus, channel_id, post_id,
-                            member_human_ids=member_human_ids,
-                        )
-                    )
-                    fire_and_forget(
-                        bus.presence_set(channel_id, "agent", agent_id, "online")
-                    )
-                    fire_and_forget(
-                        publish_member_status(
-                            bus, channel_id, "agent", agent_id, "online"
-                        )
-                    )
-                    return Response(status_code=204)
-                resolved_name = (
-                    TableRead.resolve_agent_display(db, row.agent_id) if row.agent_id else None
-                )
-                parent_preview = TableRead.mm_post_parent_preview(db, row.parent_post_id)
-                avatar = TableRead._avatar_for_member(db, row.human_id, None, row.agent_id)
-                response = MmPostResponse(
-                    post_id=row.post_id,
-                    channel_id=row.channel_id,
-                    agent_id=row.agent_id,
-                    human_id=row.human_id,
-                    message=row.message,
-                    created_at=format_db_timestamp(row.created_at),
-                    poster_display_name=resolved_name,
-                    avatar=avatar,
-                    status=row.status,
-                    updated_at=format_db_timestamp(row.updated_at) if row.updated_at else None,
-                    parent_post_id=row.parent_post_id,
-                    parent_preview=parent_preview,
-                )
-                # On finalise the streaming row becomes the first publicly
-                # visible reply — snapshot the channel's human members so
-                # we can fan post.created to their per-user topics for
-                # sidebar preview updates.
-                finalise_member_human_ids = (
-                    TableRead.get_mm_channel_human_member_ids(db, channel_id)
-                    if body.done
-                    else []
-                )
-                # Finalise is also where a streamed agent reply first has its
-                # real text. Group replies use the streaming-draft flow by
-                # default (gateway-adapter's groupChannelShimmer), so this —
-                # not create — is where the LobsterTalk attention pass runs for
-                # them; mm_create_post covers the published-at-create path and
-                # the two can't double-fire (patching a published row 409s).
-                from clawbits.lobstertalk.attention import (
-                    build_attention_context,
-                    consider_post,
-                )
+        from clawbits.lobstertalk.attention import build_attention_context, consider_post
+        from clawbits.realtime import (
+            fire_and_forget,
+            get_bus,
+            publish_member_status,
+            publish_post_created,
+            publish_post_deleted,
+            publish_post_updated_streaming,
+        )
 
-                # build_attention_context is the product gate now (org opt-in +
-                # eligible agents); it returns None cheaply when the org hasn't
-                # armed the feature. Still only run it for a finalised, published
-                # reply — a streaming/cancelled row has no real text to consider.
-                attention_ctx = (
-                    build_attention_context(db, channel_id)
-                    if (body.done and row.status == "published")
-                    else None
-                )
-
-            from clawbits.realtime import (
-                fire_and_forget,
-                get_bus,
-                publish_post_updated_streaming,
-            )
-
-            bus = get_bus()
-            # Rate-bounded per post while streaming; terminal payloads (the
-            # finalize below) always publish immediately. Human edit paths
-            # keep the direct publisher.
-            fire_and_forget(
-                publish_post_updated_streaming(bus, channel_id, response.model_dump())
-            )
+        agent = extract_agent(self._engine, api_key)
+        agent_id = agent.agent_id.value
+        with Session(self._engine) as db:
+            self._require_mm_member(db, channel_id, agent_id)
+            # The middleware exempts PATCH, so finalize bills here, in the flip's transaction.
             if body.done:
-                # Finalised agent reply: drive sidebar previews / unread on
-                # each member-human's global topic. The per-channel feed
-                # already got `post.updated` above and dedupes by post_id.
-                from clawbits.realtime import publish_post_created
-
+                try:
+                    TableWrite.charge_cb_tokens(
+                        db, agent.agent_id, self.AGENTIC_WRITE_CB_TOKENS_COST
+                    )
+                except ValueError as exc:
+                    if "Insufficient CB_TOKENS" not in str(exc):
+                        raise
+                    raise HTTPException(status_code=402, detail=str(exc))
+            try:
+                row = TableWrite.patch_mm_post(
+                    db,
+                    post_id,
+                    channel_id,
+                    agent_id,
+                    append=body.append,
+                    replace=body.replace,
+                    finalise=body.done,
+                    cancel=body.cancel,
+                )
+            except LookupError:
+                raise HTTPException(status_code=404, detail="Post not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Not the post owner")
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            if body.done:
+                TableWrite.award_post_marks(db, agent_id, channel_id, post_id)
+            db.commit()
+            if body.cancel:
+                bus = get_bus()
                 fire_and_forget(
-                    publish_post_created(
-                        bus, channel_id, response.model_dump(),
-                        member_human_ids=finalise_member_human_ids,
+                    publish_post_deleted(
+                        bus,
+                        channel_id,
+                        post_id,
+                        member_human_ids=TableRead.get_mm_channel_human_member_ids(db, channel_id),
                     )
                 )
-                # Reply finished — flip status back to online so the
-                # "generating…" pill disappears in the UI.
-                from clawbits.realtime import publish_member_status
-
                 fire_and_forget(bus.presence_set(channel_id, "agent", agent_id, "online"))
-                fire_and_forget(
-                    publish_member_status(bus, channel_id, "agent", agent_id, "online")
+                fire_and_forget(publish_member_status(bus, channel_id, "agent", agent_id, "online"))
+                return Response(status_code=204)
+            response = MmPostResponse(**TableRead.hydrate_mm_posts(db, [row])[0])
+            finalise_member_human_ids = (
+                TableRead.get_mm_channel_human_member_ids(db, channel_id) if body.done else []
+            )
+            # Group replies stream by default, so finalize, not create, is where their attention pass runs.
+            attention_ctx = (
+                build_attention_context(db, channel_id)
+                if body.done and row.status == "published"
+                else None
+            )
+
+        bus = get_bus()
+        fire_and_forget(publish_post_updated_streaming(bus, channel_id, response.model_dump()))
+        if body.done:
+            fire_and_forget(
+                publish_post_created(
+                    bus,
+                    channel_id,
+                    response.model_dump(),
+                    member_human_ids=finalise_member_human_ids,
                 )
-                # Server-side LobsterTalk on the finalised text (see the
-                # attention_ctx snapshot above): should any *other* channel
-                # agent look at this reply? consider_post skips the author and
-                # requires inter_agent_mode per candidate.
-                if attention_ctx is not None:
-                    fire_and_forget(
-                        consider_post(
-                            post=response.model_dump(),
-                            channel_id=channel_id,
-                            context=attention_ctx,
-                            author_agent_id=agent_id,
-                            engine=self._engine,
-                        )
+            )
+            fire_and_forget(bus.presence_set(channel_id, "agent", agent_id, "online"))
+            fire_and_forget(publish_member_status(bus, channel_id, "agent", agent_id, "online"))
+            if attention_ctx is not None:
+                fire_and_forget(
+                    consider_post(
+                        post=response.model_dump(),
+                        channel_id=channel_id,
+                        context=attention_ctx,
+                        author_agent_id=agent_id,
+                        engine=self._engine,
                     )
-            return response
-        except HTTPException:
-            raise
-        except Exception as e:
-            logging.exception(f"Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+                )
+        return response
 
     # -----------------------------------------------------------------------
     # Email inbox methods (Stalwart IMAP)
@@ -4399,24 +3736,11 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> ActionResponse:
         """Create or update an action document for an agent."""
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-        token = api_key.split(" ", 1)[1].strip()
-
-        with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-        require_own_agent(agent, agent_id)
-
+        require_own_agent(extract_agent(self._engine, api_key), agent_id)
         with Session(self._engine) as db:
             TableWrite.upsert_agent_action(db, agent_id, body.action_id, body.action_md)
             db.commit()
-
-        with Session(self._engine) as db:
-            row = TableRead.get_agent_action(db, agent_id, body.action_id)
-
-        return ActionResponse(**row)
+            return ActionResponse(**TableRead.get_agent_action(db, agent_id, body.action_id))
 
     def get_agent_actions(
         self,
@@ -4426,23 +3750,14 @@ class ClawBitsServer(FastAPI):
         offset: int = 0,
     ) -> AgentActionsResponse:
         """Get all action documents for a specific agent."""
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-        token = api_key.split(" ", 1)[1].strip()
-
+        require_own_agent(extract_agent(self._engine, api_key), agent_id)
         with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-            require_own_agent(agent, agent_id)
             items = TableRead.get_agent_actions(db, agent_id, limit=limit, offset=offset)
-            total = TableRead.count_agent_actions_for_agent(db, agent_id)
-
-        return AgentActionsResponse(
-            agent_id=agent_id,
-            actions=[ActionListItem(**i) for i in items],
-            total=total,
-        )
+            return AgentActionsResponse(
+                agent_id=agent_id,
+                actions=[ActionListItem(**i) for i in items],
+                total=TableRead.count_agent_actions_for_agent(db, agent_id),
+            )
 
     def get_action(
         self,
@@ -4451,17 +3766,9 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> ActionResponse:
         """Get a specific action document for an agent."""
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-        token = api_key.split(" ", 1)[1].strip()
-
+        require_own_agent(extract_agent(self._engine, api_key), agent_id)
         with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-            require_own_agent(agent, agent_id)
             row = TableRead.get_agent_action(db, agent_id, action_id)
-
         if row is None:
             raise HTTPException(
                 status_code=404, detail="No action document found with this ID for this agent"
@@ -4476,20 +3783,10 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> dict:
         """Delete a specific action document for an agent."""
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-        token = api_key.split(" ", 1)[1].strip()
-
-        with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-        require_own_agent(agent, agent_id)
-
+        require_own_agent(extract_agent(self._engine, api_key), agent_id)
         with Session(self._engine) as db:
             deleted = TableWrite.delete_agent_action(db, agent_id, action_id)
             db.commit()
-
         if not deleted:
             raise HTTPException(
                 status_code=404, detail="No action document found with this ID for this agent"
@@ -4502,27 +3799,16 @@ class ClawBitsServer(FastAPI):
         limit: int = 100,
         offset: int = 0,
     ) -> ActionListResponse:
-        """List all action documents across all agents."""
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-        token = api_key.split(" ", 1)[1].strip()
-
+        """List the action documents of the calling agent's own org, not the deployment's."""
+        agent = extract_agent(self._engine, api_key)
         with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-            # An agent sees the registry of its own org, not the deployment's.
-            # ``get_agent_by_api_key`` returns the datastructures Agent, which
-            # carries no org - resolve it from the row.
             agent_org_id = TableRead.get_agent_org_id(db, str(agent.agent_id))
             org_ids = [agent_org_id] if agent_org_id else []
             items = TableRead.list_agent_actions(db, org_ids, limit=limit, offset=offset)
-            total = TableRead.count_agent_actions(db, org_ids)
-
-        return ActionListResponse(
-            actions=[ActionListItem(**i) for i in items],
-            total=total,
-        )
+            return ActionListResponse(
+                actions=[ActionListItem(**i) for i in items],
+                total=TableRead.count_agent_actions(db, org_ids),
+            )
 
     # ------------------------------------------------------------------
     # Agent Profile
@@ -4536,16 +3822,7 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> AgentProfileResponse:
         """Create or update an agent's public profile."""
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-        token = api_key.split(" ", 1)[1].strip()
-
-        with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-        require_own_agent(agent, agent_id)
-
+        require_own_agent(extract_agent(self._engine, api_key), agent_id)
         with Session(self._engine) as db:
             TableWrite.upsert_agent_profile(
                 db,
@@ -4558,11 +3835,7 @@ class ClawBitsServer(FastAPI):
                 header_url=body.header_url,
             )
             db.commit()
-
-        with Session(self._engine) as db:
-            row = TableRead.get_agent_profile(db, agent_id)
-
-        return AgentProfileResponse(**row)
+            return AgentProfileResponse(**TableRead.get_agent_profile(db, agent_id))
 
     @cost(1)
     def put_agent_description(
@@ -4578,16 +3851,7 @@ class ClawBitsServer(FastAPI):
         ``auto``, and clear any pending owner regenerate request. Other profile
         fields are left untouched.
         """
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-        token = api_key.split(" ", 1)[1].strip()
-
-        with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
-        require_own_agent(agent, agent_id)
-
+        require_own_agent(extract_agent(self._engine, api_key), agent_id)
         with Session(self._engine) as db:
             TableWrite.set_agent_description(db, agent_id, body.description, source="auto")
             db.commit()
@@ -4606,21 +3870,10 @@ class ClawBitsServer(FastAPI):
         api_key: str = Security(api_key_header),
     ) -> AgentProfileResponse:
         """Get an agent's public profile."""
-
-        if not api_key or not api_key.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
-        token = api_key.split(" ", 1)[1].strip()
-
+        extract_agent(self._engine, api_key)
         with Session(self._engine) as db:
-            agent = TableRead.get_agent_by_api_key(db, token)
-            if agent is None:
-                raise HTTPException(status_code=401, detail="Invalid API key")
             row = TableRead.get_agent_profile(db, agent_id)
-
-        if row is None:
-            # Return empty profile with just the agent_id
-            return AgentProfileResponse(agent_id=agent_id)
-        return AgentProfileResponse(**row)
+        return AgentProfileResponse(**row) if row else AgentProfileResponse(agent_id=agent_id)
 
     def shutdown(self) -> None:
         if self._engine is not None:

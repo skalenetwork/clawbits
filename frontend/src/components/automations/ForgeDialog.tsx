@@ -3,7 +3,6 @@ import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
 import {Clock05Icon as Clock, RepeatIcon as Repeat} from "@hugeicons/core-free-icons";
 import {Icon} from "@/components/Icon";
 import {AgentFaceAvatar} from "@/components/AgentFaceAvatar";
-import {useAuth} from "@/context/AuthContext";
 import {useIsMobile} from "@/hooks/use-mobile";
 import {useAgentStatus} from "@/hooks/useAgentPresence";
 import {useNow} from "@/hooks/useNow";
@@ -55,17 +54,12 @@ interface SpecShape {
     delivery?: {to?: string};
 }
 
-/** Option label for a delivery-target channel: ``# name`` / ``🔒 name`` for
- *  channels, the DM title for direct messages. */
 function channelOptionLabel(c: AgentDeliveryChannel): string {
     if (c.channel_type === "direct") return c.display_name ?? c.name;
     const prefix = c.channel_type === "private" ? "🔒 " : "# ";
     return prefix + (c.display_name ?? c.name);
 }
 
-/** The schedule the form opens with: the stored one when editing, else the
- *  template's. Cron presets pin the operator's tz at open time — "9:00" is
- *  the operator's 9:00, never a silent agent-host assumption. */
 function initialForgeSchedule(
     editing: Automation | null,
     editSpec: SpecShape | undefined,
@@ -78,7 +72,6 @@ function initialForgeSchedule(
     return s.kind === "cron" && !s.tz ? {...s, tz: localTimezone()} : s;
 }
 
-/** Whether a schedule can be sent as-is right now. */
 function scheduleIsSaveable(s: Schedule, nowMs: number): boolean {
     switch (s.kind) {
         case "cron":
@@ -90,27 +83,21 @@ function scheduleIsSaveable(s: Schedule, nowMs: number): boolean {
     }
 }
 
-/**
- * The Forge — create OR edit a managed automation. A centered dialog on
- * desktop, a bottom drawer on mobile; the form is styled as the automation
- * card being made (accent well + seamless name field + live cadence line).
- * Open by passing a ``template`` (create) or ``editing`` (edit). PATCH is
- * full-replace, so editing spreads the stored spec and overwrites only
- * authored fields.
- */
-export function ForgeDialog({template, editing, agents, onOpenChange}: {
-    template?: AutomationTemplate | null;
-    editing?: Automation | null;
-    agents: AgentUser[];
+interface ForgeProps {
+    orgId: string;
+    template: AutomationTemplate | null;
+    editing: Automation | null;
+    agent: AgentUser;
     onOpenChange: (open: boolean) => void;
-}) {
+}
+
+export function ForgeDialog({orgId, template, editing, agent, onOpenChange}: ForgeProps) {
     const isMobile = useIsMobile();
     const open = template != null || editing != null;
-    // Cache the source across the close transition + key a fresh form per open.
     const [cached, setCached] = useState<{
-        template?: AutomationTemplate | null;
-        editing?: Automation | null;
-    }>({});
+        template: AutomationTemplate | null;
+        editing: Automation | null;
+    }>({template: null, editing: null});
     const [epoch, setEpoch] = useState(0);
     const [wasOpen, setWasOpen] = useState(false);
     if (open !== wasOpen) {
@@ -124,9 +111,10 @@ export function ForgeDialog({template, editing, agents, onOpenChange}: {
     const form = (cached.template ?? cached.editing) ? (
         <ForgeForm
             key={`${keyId}:${String(epoch)}`}
-            template={cached.template ?? null}
-            editing={cached.editing ?? null}
-            agents={agents}
+            orgId={orgId}
+            template={cached.template}
+            editing={cached.editing}
+            agent={agent}
             onOpenChange={onOpenChange}
         />
     ) : null;
@@ -138,9 +126,6 @@ export function ForgeDialog({template, editing, agents, onOpenChange}: {
             </Drawer>
         );
     }
-    // Desktop: a centered dialog styled as the card being made. The frosted
-    // dialog is the app's premium surface; a focused modal beats an edge
-    // sheet for a single creative act.
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
@@ -153,21 +138,12 @@ export function ForgeDialog({template, editing, agents, onOpenChange}: {
     );
 }
 
-function ForgeForm({template, editing, agents, onOpenChange}: {
-    template: AutomationTemplate | null;
-    editing: Automation | null;
-    agents: AgentUser[];
-    onOpenChange: (open: boolean) => void;
-}) {
-    const {activeOrgId} = useAuth();
+function ForgeForm({orgId, template, editing, agent, onOpenChange}: ForgeProps) {
     const isMobile = useIsMobile();
     const queryClient = useQueryClient();
     const isEdit = editing != null;
     const editSpec = (editing?.desired_spec ?? undefined) as SpecShape | undefined;
 
-    const [agentId, setAgentId] = useState(
-        editing?.agent_id ?? agents[0]?.agent_id ?? "",
-    );
     const [name, setName] = useState(
         editing ? editSpec?.name ?? editing.name ?? "" : template?.defaultName ?? "",
     );
@@ -177,33 +153,22 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
     const [schedule, setSchedule] = useState<Schedule>(() =>
         initialForgeSchedule(editing, editSpec, template),
     );
-    // Seed validity from the actual initial schedule — a stored cron that no
-    // longer parses (or a one-shot already in the past) must not be
-    // re-saveable as-is.
-    const [scheduleValid, setScheduleValid] = useState(() =>
-        scheduleIsSaveable(initialForgeSchedule(editing, editSpec, template), Date.now()),
-    );
-    // Delivery target: a channel/DM the agent is in, or "" = the owner DM default.
+    const [scheduleValid, setScheduleValid] = useState(() => scheduleIsSaveable(schedule, Date.now()));
     const [channelId, setChannelId] = useState(editSpec?.delivery?.to ?? "");
 
     const now = useNow(30_000);
-    const selectedAgent = agents.find(a => a.agent_id === agentId);
-    // Fallback keeps the offline note honest on mounts that never seeded the
-    // presence provider (e.g. editing from the detail page).
-    const agentStatus = useAgentStatus(agentId, selectedAgent?.last_alive_at ?? null);
-    const agentName = selectedAgent ? agentDisplay(selectedAgent) : agentId;
+    const agentStatus = useAgentStatus(agent.agent_id, agent.last_alive_at ?? null);
+    const agentName = agentDisplay(agent);
 
-    // Channels the (currently selected) agent can post to — the pickable targets.
     const channelsQuery = useQuery({
-        queryKey: queryKeys.agentChannels(activeOrgId ?? "", agentId),
-        queryFn: () => listAgentChannels(activeOrgId ?? "", agentId),
-        enabled: Boolean(activeOrgId) && Boolean(agentId),
+        queryKey: queryKeys.agentChannels(orgId, agent.agent_id),
+        queryFn: () => listAgentChannels(orgId, agent.agent_id),
     });
     const channels = channelsQuery.data?.channels ?? [];
-    const realChannels = channels.filter(c => c.channel_type !== "direct");
-    const dms = channels.filter(c => c.channel_type === "direct");
-    // A previously-saved target the agent is no longer in (left the channel).
-    // Gated on SUCCESS: a loading or failed channels query proves nothing.
+    const channelGroups = [
+        {label: "Channels", channels: channels.filter(c => c.channel_type !== "direct")},
+        {label: "Direct messages", channels: channels.filter(c => c.channel_type === "direct")},
+    ];
     const targetMissing =
         channelId !== "" &&
         channelsQuery.isSuccess &&
@@ -211,13 +176,6 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
     const channelItems: Record<string, ReactNode> = {"": "Direct message with you (default)"};
     for (const c of channels) channelItems[c.channel_id] = channelOptionLabel(c);
     if (targetMissing) channelItems[channelId] = "⚠ Previously selected channel";
-
-    // The agent is fixed when editing, or when scoped to a single agent.
-    const fixedAgent = editing
-        ? agents.find(a => a.agent_id === editing.agent_id)
-        : agents.length === 1
-          ? agents[0]
-          : undefined;
 
     const mutation = useMutation({
         mutationFn: () => {
@@ -229,17 +187,13 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
                 base: editing?.desired_spec ?? null,
             });
             return editing
-                ? updateAutomation(activeOrgId ?? "", editing.agent_id, editing.automation_id, spec)
-                : createAutomation(activeOrgId ?? "", agentId, spec);
+                ? updateAutomation(orgId, editing.agent_id, editing.automation_id, spec)
+                : createAutomation(orgId, agent.agent_id, spec);
         },
         onSuccess: () => {
-            if (activeOrgId) {
-                bumpAutomationsBurst();
-                void queryClient.invalidateQueries({
-                    queryKey: queryKeys.automations(activeOrgId),
-                });
-            }
-            toast.success(`Sent to ${agentName} - pending until it confirms`);
+            bumpAutomationsBurst();
+            void queryClient.invalidateQueries({queryKey: queryKeys.automations(orgId)});
+            toast.success(`Sent to ${agentName}, pending until it confirms`);
             onOpenChange(false);
         },
         onError: (err: unknown) => {
@@ -248,12 +202,9 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
     });
 
     const canSave =
-        (isEdit || agentId !== "") &&
         name.trim().length > 0 &&
         prompt.trim().length > 0 &&
         scheduleValid &&
-        // One-shot validity decays with the clock — recheck against now, not
-        // the input-time flag.
         (schedule.kind !== "at" || schedule.at > now) &&
         !mutation.isPending;
 
@@ -261,7 +212,14 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
         ? accentForId(editing.automation_id)
         : template?.accent ?? "blue";
 
-    const fields = (
+    const title = isEdit ? "Edit automation" : "New automation";
+    return (
+        <>
+            {isMobile ? (
+                <DrawerTitle className="sr-only">{title}</DrawerTitle>
+            ) : (
+                <DialogTitle className="sr-only">{title}</DialogTitle>
+            )}
             <form
                 id="forge-form"
                 className={cn(
@@ -273,9 +231,6 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
                     if (canSave) mutation.mutate();
                 }}
             >
-                {/* The card head — the modal IS the automation card being made:
-                    accent well with the agent badge, a big seamless name field,
-                    and the live cadence line beneath it. */}
                 <div className="flex items-start gap-4 pr-8">
                     <span
                         className={cn(
@@ -287,7 +242,7 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
                         <AgentFaceAvatar
                             size={20}
                             name={agentName}
-                            src={selectedAgent?.avatar?.url}
+                            src={agent.avatar?.url}
                             className="absolute -bottom-1 -right-1 rounded-full ring-2 ring-popover"
                         />
                     </span>
@@ -310,40 +265,9 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
                     </div>
                 </div>
 
-                {!fixedAgent && agents.length > 1 && (
-                    <div className="flex items-center gap-3">
-                        <Label htmlFor="forge-agent" className="shrink-0 text-muted-foreground">Runs on</Label>
-                        <Select
-                            value={agentId}
-                            onValueChange={(next: string | null) => {
-                                setAgentId(next ?? "");
-                                // A target from the previous agent won't be valid
-                                // for the new one — reset to the owner-DM default.
-                                setChannelId("");
-                            }}
-                            items={Object.fromEntries(agents.map(a => [a.agent_id, agentDisplay(a)]))}
-                        >
-                            <SelectTrigger id="forge-agent" className="h-8 w-auto min-w-40 flex-none">
-                                <SelectValue/>
-                            </SelectTrigger>
-                            <SelectContent>
-                                {agents.map(a => (
-                                    <SelectItem key={a.agent_id} value={a.agent_id}>
-                                        {agentDisplay(a)} <span className="text-muted-foreground">@{a.agent_id}</span>
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-                )}
-                {agents.length === 0 && !isEdit && (
-                    <p className="text-xs text-muted-foreground">
-                        You don't operate any agents in this organization yet.
-                    </p>
-                )}
-                {agentId !== "" && agentStatus !== "available" && (
+                {agentStatus !== "available" && (
                     <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-snug text-amber-700 dark:text-amber-400">
-                        {agentName} is offline - the automation applies when it reconnects.
+                        {agentName} is offline. The automation applies when it reconnects.
                     </p>
                 )}
 
@@ -388,38 +312,22 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
                             {targetMissing && (
                                 <SelectItem value={channelId}>⚠ Previously selected channel (agent may have left)</SelectItem>
                             )}
-                            {realChannels.length > 0 && (
-                                <SelectGroup>
-                                    <SelectGroupLabel>Channels</SelectGroupLabel>
-                                    {realChannels.map(c => (
+                            {channelGroups.map(g => g.channels.length > 0 && (
+                                <SelectGroup key={g.label}>
+                                    <SelectGroupLabel>{g.label}</SelectGroupLabel>
+                                    {g.channels.map(c => (
                                         <SelectItem key={c.channel_id} value={c.channel_id}>
                                             {channelOptionLabel(c)}
                                         </SelectItem>
                                     ))}
                                 </SelectGroup>
-                            )}
-                            {dms.length > 0 && (
-                                <SelectGroup>
-                                    <SelectGroupLabel>Direct messages</SelectGroupLabel>
-                                    {dms.map(c => (
-                                        <SelectItem key={c.channel_id} value={c.channel_id}>
-                                            {channelOptionLabel(c)}
-                                        </SelectItem>
-                                    ))}
-                                </SelectGroup>
-                            )}
+                            ))}
                         </SelectContent>
                     </Select>
                 </div>
-
             </form>
-    );
-
-    const footer = (
             <div className={cn(
                 "flex shrink-0 items-center justify-end gap-2",
-                // Mobile: the footer lives inside the drawer's scroll region, so
-                // pin it with sticky + a glass fill so Save is always reachable.
                 isMobile
                     ? "sticky bottom-0 -mx-1 bg-popover/95 px-2 py-3 supports-backdrop-filter:bg-popover/80 supports-backdrop-filter:backdrop-blur-xl"
                     : "px-6 pb-6 pt-2",
@@ -428,26 +336,6 @@ function ForgeForm({template, editing, agents, onOpenChange}: {
                     {mutation.isPending ? "Sending…" : isEdit ? "Save" : "Automate"}
                 </Button>
             </div>
-    );
-
-    // The modal IS the card — no visible chrome header; a screen-reader title
-    // keeps the dialog announced.
-    const titleText = isEdit ? "Edit automation" : "New automation";
-    if (isMobile) {
-        return (
-            <>
-                <DrawerTitle className="sr-only">{titleText}</DrawerTitle>
-                {fields}
-                {footer}
-            </>
-        );
-    }
-    return (
-        <>
-            <DialogTitle className="sr-only">{titleText}</DialogTitle>
-            {fields}
-            {footer}
         </>
     );
 }
-

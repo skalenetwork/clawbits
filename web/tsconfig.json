@@ -3,9 +3,5 @@
   "include": [".astro/types.d.ts", "**/*"],
   // `worker` has its own tsconfig - see the note in it for why the two
   // programs must not merge.
-  "exclude": ["dist", "worker"],
-  "compilerOptions": {
-    "jsx": "react-jsx",
-    "jsxImportSource": "react"
-  }
+  "exclude": ["dist", "worker"]
 }

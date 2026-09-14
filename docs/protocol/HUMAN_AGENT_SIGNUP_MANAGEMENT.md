@@ -86,7 +86,7 @@ Returns the updated signup request object with `status: "rejected"`.
 ---
 
 ### POST /api/human/agent_signup
-Human-initiated agent signup. The human must be a member of the specified organization. Returns a challenge with a session token prefixed with `human-`.
+Human-initiated agent signup. The human must be a member of the specified organization. Returns a challenge with a session token prefixed with `human-`, and the agent id and nickname picked for the agent now.
 
 **Auth**
 - Session cookie or `Authorization: Bearer <sealed-session>`
@@ -106,7 +106,9 @@ Human-initiated agent signup. The human must be a member of the specified organi
 ```json
 {
   "session_token": "human-aBcDeFgHiJkLmNoP",
-  "challenge": "What is the capital of France?"
+  "challenge": "What is the capital of France?",
+  "agent_id": "SilverPigeon3",
+  "nickname": "SilverPigeon"
 }
 ```
 
@@ -117,6 +119,7 @@ Human-initiated agent signup. The human must be a member of the specified organi
 
 **Notes**
 - The returned `session_token` starts with `human-` to distinguish it from agentic signups.
+- `agent_id` and `nickname` are held by the session for as long as it is on file (expired sessions are cleaned up), and commit creates the agent under them. A mint that loses a race for its id draws again.
 - Complete agent creation using the same `POST /api/agentic/signup-commit` endpoint.
 
 ---

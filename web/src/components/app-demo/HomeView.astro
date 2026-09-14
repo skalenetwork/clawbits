@@ -1,0 +1,305 @@
+---
+import { CAST, type Chat, type Presence } from "../../content/demo-chats";
+
+interface Props {
+  chats: Chat[];
+}
+
+interface Tile {
+  src: string;
+  label: string;
+  value: string;
+  keys: string[];
+  presence?: Presence;
+  view?: string;
+  wide?: boolean;
+}
+
+const { chats } = Astro.props;
+
+/** |x|^5 + |y|^5 = 1 in objectBoundingBox units: the native icon corner (frontend/src/components/home/tiles.tsx:10-17). */
+const SQUIRCLE = `M${Array.from({ length: 160 }, (_, i) => {
+  const t = (i / 160) * Math.PI * 2;
+  const x = 0.5 + 0.5 * Math.sign(Math.cos(t)) * Math.abs(Math.cos(t)) ** 0.4;
+  const y = 0.5 + 0.5 * Math.sign(Math.sin(t)) * Math.abs(Math.sin(t)) ** 0.4;
+  return `${x.toFixed(5)},${y.toFixed(5)}`;
+}).join("L")}Z`;
+
+const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** The app ranks dm-able agents by frecency (AgentHomePage.tsx:70-77); recency of their DM stands in for it here. */
+const top = chats.find((c) => c.peer && CAST[c.peer].agent?.dm);
+const picks = [
+  top,
+  ...chats
+    .filter((c) => c !== top)
+    .sort((a, b) => Number(!a.unread) - Number(!b.unread))
+    .slice(0, 2),
+].filter((c) => c !== undefined);
+
+const tiles: Tile[] = [
+  { src: "/cmd.webp", label: "Agents, chats and actions", value: "Find or do anything", keys: ["⌘", "K"], wide: true },
+  {
+    src: "/reef-light.webp",
+    label: "Manage Reef",
+    value: count(Object.values(CAST).filter((p) => p.agent?.host === "reef").length, "agent"),
+    keys: ["1"],
+  },
+  ...picks.map((c, i) => ({
+    src: c.src,
+    label: c.unread
+      ? count(c.unread, "new message")
+      : c === top
+        ? "Work with"
+        : c.species === "channel"
+          ? "Open channel"
+          : "Open DM",
+    value: c.name,
+    keys: [String(i + 2)],
+    presence: c.peer && CAST[c.peer].presence,
+    view: `v-${c.id}`,
+  })),
+];
+---
+
+<section class="view view-home" aria-label="Home">
+  <svg class="defs" aria-hidden="true">
+    <defs>
+      <clipPath id="demo-squircle" clipPathUnits="objectBoundingBox"><path d={SQUIRCLE} /></clipPath>
+      <path id="demo-squircle-d" d={SQUIRCLE} vector-effect="non-scaling-stroke" />
+      <linearGradient id="demo-squircle-rim" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#fff" stop-opacity="0.55" />
+        <stop offset="0.34" stop-color="#fff" stop-opacity="0.12" />
+        <stop offset="0.6" stop-color="#fff" stop-opacity="0" />
+        <stop offset="1" stop-color="#000" stop-opacity="0.16" />
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <div class="tiles">
+    {
+      tiles.map((t) => {
+        const Tag = t.view ? "label" : "div";
+        return (
+          <Tag class:list={["tile", { wide: t.wide }]} for={t.view}>
+            <span class="glyph">
+              {t.view ? (
+                <span class="sq">
+                  <img src={t.src} alt="" width="42" height="42" />
+                  <svg class="rim" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+                    <use href="#demo-squircle-d" fill="none" stroke="url(#demo-squircle-rim)" stroke-width="2" />
+                  </svg>
+                </span>
+              ) : (
+                <img src={t.src} alt="" width="42" height="42" />
+              )}
+              {t.presence && <span class:list={["pd", `pd-${t.presence}`]} />}
+            </span>
+            <span class="text">
+              <span class="label trunc">{t.label}</span>
+              <span class="value trunc">{t.value}</span>
+            </span>
+            <span class="keys" aria-hidden="true">
+              {t.keys.map((k) => (
+                <kbd>{k}</kbd>
+              ))}
+            </span>
+          </Tag>
+        );
+      })
+    }
+  </div>
+</section>
+
+<style>
+  .view-home {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 78px 24px 40px;
+  }
+
+  .defs {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    width: 100%;
+    max-width: 672px;
+    margin-inline: auto;
+  }
+
+  .tile {
+    display: flex;
+    grid-column: span 2;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    min-height: 64px;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in oklab, var(--line) 60%, transparent);
+    border-radius: 18px;
+    background: var(--panel);
+    transition:
+      transform 300ms cubic-bezier(0.33, 1, 0.68, 1),
+      border-color 300ms cubic-bezier(0.33, 1, 0.68, 1);
+  }
+
+  label.tile {
+    cursor: pointer;
+  }
+
+  .tile:hover {
+    border-color: var(--line);
+  }
+
+  .tile:active {
+    transform: scale(0.99);
+  }
+
+  .wide {
+    grid-column: span 4;
+  }
+
+  .glyph {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .glyph img,
+  .sq {
+    width: 42px;
+    height: 42px;
+  }
+
+  .sq {
+    position: relative;
+    display: block;
+    background: var(--muted);
+    clip-path: url(#demo-squircle);
+  }
+
+  .sq img {
+    object-fit: cover;
+  }
+
+  .rim {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    background:
+      radial-gradient(116% 74% at 50% -16%, rgb(255 255 255 / 0.3), rgb(255 255 255 / 0.05) 46%, transparent 66%),
+      linear-gradient(180deg, rgb(255 255 255 / 0.09), transparent 52%);
+  }
+
+  .pd {
+    right: -1px;
+    bottom: -1px;
+    width: 10px;
+    height: 10px;
+    box-shadow: 0 0 0 1.5px var(--panel);
+  }
+
+  .text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .label,
+  .value {
+    line-height: 1.15;
+  }
+
+  .label {
+    font-size: 13px;
+    color: var(--mut);
+  }
+
+  .value {
+    font-size: 17px;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .keys {
+    display: flex;
+    flex-shrink: 0;
+    gap: 3px;
+    margin-left: auto;
+    padding-left: 8px;
+  }
+
+  kbd {
+    display: grid;
+    place-items: center;
+    min-width: 32px;
+    height: 32px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: linear-gradient(var(--panel), var(--bg));
+    font-family: inherit;
+    font-size: 15.5px;
+    font-weight: 500;
+    color: var(--mut);
+    transition: color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .tile:hover kbd {
+    color: var(--ink);
+  }
+
+  @keyframes tile-in {
+    from {
+      opacity: 0;
+      transform: scale(0.92) translateY(8px);
+    }
+    55% {
+      opacity: 1;
+      transform: scale(1.02) translateY(0);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  /* Keyed to the radio so it replays on every visit (frontend/src/index.css:729-744); backwards keeps the press scale free. */
+  @media (prefers-reduced-motion: no-preference) {
+    .tile {
+      animation: 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    }
+
+    :global(.win:has(#v-home:checked)) .tile {
+      animation-name: tile-in;
+    }
+
+    .tile:nth-child(2) {
+      animation-delay: 60ms;
+    }
+
+    .tile:nth-child(3) {
+      animation-delay: 120ms;
+    }
+
+    .tile:nth-child(4) {
+      animation-delay: 180ms;
+    }
+
+    .tile:nth-child(5) {
+      animation-delay: 240ms;
+    }
+  }
+</style>

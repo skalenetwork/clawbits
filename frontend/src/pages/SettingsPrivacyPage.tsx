@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LockIcon as LockShieldIcon } from "@hugeicons/core-free-icons";
 
 import { PageHeader } from "@/components/PageHeader";
+import { SettingsPage, SettingsRow, SettingsSection } from "@/components/settings/Settings";
 import { Switch } from "@/components/ui/switch";
 import {
   getPrivacySettings,
@@ -11,46 +12,39 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 
-interface PrivacyToggleRow {
-  /** Flag name on :class:`PrivacySettings`. */
-  key: keyof PrivacySettings;
+const SECTIONS: {
   label: string;
-  /** Short caption under the label explaining what flipping it does. */
-  description: string;
-}
-
-const SECTIONS: { heading: string; rows: PrivacyToggleRow[] }[] = [
+  footer?: string;
+  rows: { key: keyof PrivacySettings; title: string; description: string }[];
+}[] = [
   {
-    heading: "Presence",
+    label: "Presence",
     rows: [
       {
         key: "last_seen_visible",
-        label: "Show my last seen time",
-        description:
-          "When off, others see \"Last seen recently\" instead of the exact time you were last online.",
+        title: "Show last seen time",
+        description: "When off, others see “Last seen recently”",
       },
       {
         key: "online_status_visible",
-        label: "Show my online status",
-        description:
-          "When off, your presence dot always appears offline to other members of channels and DMs.",
+        title: "Show online status",
+        description: "When off, you always appear offline",
       },
     ],
   },
   {
-    heading: "Messaging",
+    label: "Messaging",
+    footer: "Changes apply to new activity.",
     rows: [
       {
         key: "read_receipts_enabled",
-        label: "Send read receipts",
-        description:
-          "When off, others won't see \"Read\" under their outgoing messages once you've caught up. Your own unread badge still works.",
+        title: "Send read receipts",
+        description: "When off, others won't see that you read their messages",
       },
       {
         key: "typing_indicators_enabled",
-        label: "Send typing indicators",
-        description:
-          "When off, others won't see \"…is typing\" while you're composing a message.",
+        title: "Send typing indicators",
+        description: "When off, others won't see you typing",
       },
     ],
   },
@@ -88,64 +82,41 @@ export default function SettingsPrivacyPage() {
   });
 
   const settings = settingsQuery.data;
-  const loading = settingsQuery.isLoading;
 
   return (
-    <div className="space-y-6">
+    <SettingsPage>
       <PageHeader icon={LockShieldIcon} title="Privacy" />
-
-      <p className="text-sm text-muted-foreground">
-        Choose which signals other members of your organization can see
-        about you. Changes take effect immediately for new events;
-        already-rendered content updates when peers refresh.
-      </p>
-
-      {SECTIONS.map(section => (
-        <section
-          key={section.heading}
-          className="space-y-5 rounded-xl border border-border/50 bg-card p-5"
-        >
-          <div className="space-y-0.5">
-            <h2 className="text-sm font-semibold">{section.heading}</h2>
-          </div>
-
-          <div className="space-y-4">
-            {section.rows.map((row, idx) => {
-              const checked = settings ? settings[row.key] : true;
-              const inputId = `privacy-${row.key}`;
-              return (
-                <div
-                  key={row.key}
-                  className={
-                    "flex items-center gap-4" +
-                    (idx > 0 ? " border-t border-border/40 pt-4" : "")
-                  }
-                >
-                  <div className="min-w-0 flex-1 space-y-0.5">
-                    <label
-                      htmlFor={inputId}
-                      className="block text-sm font-medium"
-                    >
-                      {row.label}
-                    </label>
-                    <p className="text-xs text-muted-foreground">
-                      {row.description}
-                    </p>
-                  </div>
+      {settingsQuery.isError ? (
+        <SettingsSection>
+          <SettingsRow
+            title="Couldn't load privacy settings"
+            error={errMsg(settingsQuery.error)}
+          />
+        </SettingsSection>
+      ) : (
+        SECTIONS.map(section => (
+          <SettingsSection key={section.label} label={section.label} footer={section.footer}>
+            {section.rows.map(row => (
+              <SettingsRow
+                key={row.key}
+                title={row.title}
+                description={row.description}
+                htmlFor={`privacy-${row.key}`}
+                control={
                   <Switch
-                    id={inputId}
-                    checked={checked}
-                    disabled={loading || mutation.isPending}
-                    onCheckedChange={(next: boolean) => {
+                    id={`privacy-${row.key}`}
+                    checked={settings?.[row.key] ?? true}
+                    disabled={!settings || mutation.isPending}
+                    onCheckedChange={(next) => {
                       mutation.mutate({ [row.key]: next });
                     }}
                   />
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      ))}
-    </div>
+                }
+              />
+            ))}
+          </SettingsSection>
+        ))
+      )}
+    </SettingsPage>
   );
 }

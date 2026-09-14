@@ -1,7 +1,7 @@
 ---
 import Base from "../layouts/Base.astro";
 import Button from "../components/Button.astro";
-import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
+import SombraGradient from "../components/SombraGradient.astro";
 import { appLink, LINKS, canonicalUrl } from "../config";
 import { PLATFORM_ICONS } from "../lib/platform-icons";
 import { getDesktopRelease } from "../lib/releases";
@@ -9,7 +9,7 @@ import { getDesktopRelease } from "../lib/releases";
 /**
  * /download - the desktop app.
  *
- * Structure follows the changelog's: a shader canvas head over railed,
+ * Structure follows the changelog's: a gradient canvas head over railed,
  * hairline-divided blocks. The difference is that the canvas carries the
  * PRIMARY ACTION rather than a title - on a download page the button is the
  * content, and burying it under a headline to preserve symmetry would be
@@ -62,14 +62,8 @@ const schema = [
   {/* ── Head canvas: the primary action ────────────────────────────────── */}
   <div class="frame">
     <section class="canvas" data-theme-anchor>
-      <div class="shader" aria-hidden="true">
-        <ShaderBackdrop
-          client:only="react"
-          softness={0.78}
-          intensity={0.14}
-          noise={0.16}
-          speed={0.5}
-        />
+      <div class="backdrop" aria-hidden="true">
+        <SombraGradient />
       </div>
 
       <div class="head">
@@ -360,18 +354,14 @@ const schema = [
     view-timeline-name: --hero-view;
   }
 
-  .shader {
+  .backdrop {
     position: absolute;
     inset: 0;
     z-index: 0;
-    background:
-      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
-      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
-      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
-      var(--color-canvas);
+    background: var(--color-canvas);
   }
 
-  .shader::after {
+  .backdrop::after {
     content: "";
     position: absolute;
     inset: 0;
@@ -661,7 +651,7 @@ const schema = [
       font-size: 0.9375rem;
     }
 
-    .shader::after {
+    .backdrop::after {
       background: linear-gradient(
         to bottom,
         rgb(20 19 17 / 0.68) 0%,

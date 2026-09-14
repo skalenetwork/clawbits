@@ -1,11 +1,11 @@
 import {useCallback, useState} from "react";
 import {
-    BookOpen01Icon,
-    Globe02Icon,
-    Robot02Icon,
-    UserIcon,
+  BookOpen01Icon,
+  Globe02Icon,
+  UserIcon,
 } from "@hugeicons/core-free-icons";
-import type {IconSvgElement} from "@hugeicons/react";
+import { Bot } from "lucide-react";
+import type {AppIcon} from "@/components/Icon";
 import type {Skill} from "@/lib/api";
 
 /**
@@ -28,7 +28,7 @@ export interface SkillScopeDescriptor {
     id: SkillScope;
     /** Menu row label. Doubles as the sidebar title when selected. */
     label: string;
-    icon: IconSvgElement;
+    icon: AppIcon;
     /** Listed in the menu but not pickable — see the note above. */
     disabled?: boolean;
 }
@@ -36,7 +36,7 @@ export interface SkillScopeDescriptor {
 export const SKILL_SCOPES: SkillScopeDescriptor[] = [
     {id: "org", label: "Org library", icon: BookOpen01Icon},
     {id: "mine", label: "Mine", icon: UserIcon},
-    {id: "agents", label: "On agents", icon: Robot02Icon},
+    {id: "agents", label: "On agents", icon: Bot},
     {id: "public", label: "Public", icon: Globe02Icon, disabled: true},
 ];
 

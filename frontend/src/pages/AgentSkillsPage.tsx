@@ -27,7 +27,7 @@ import { formatRelativeAgo } from "@/lib/formatting";
 /** What skills this agent actually has, as it last reported them. */
 export default function AgentSkillsPage() {
   const { orgId, agentId, profile, isLoading } = useOutletContext<AgentOutletContext>();
-  const breadcrumb = agentBreadcrumbs(agentId, profile, "skills");
+  const breadcrumb = agentBreadcrumbs(agentId, profile);
 
   const queryClient = useQueryClient();
   const query = useQuery({

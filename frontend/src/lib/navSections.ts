@@ -1,63 +1,19 @@
-import {
-    BubbleChatIcon,
-    Home03Icon,
-    Robot02Icon,
-    Settings01Icon,
-    UserCircleIcon,
-} from "@hugeicons/core-free-icons";
-import type {IconSvgElement} from "@hugeicons/react";
+import {BubbleChatIcon, UserCircleIcon} from "@hugeicons/core-free-icons";
+import type {AppIcon} from "@/components/Icon";
+import {Bot, House, type LucideIcon} from "lucide-react";
 
-/** The top-level navigation sections, one per rail icon. Each owns a
- *  contextual sidebar inside the content card. (Chats was merged into Home.) */
-export type SectionId = "home" | "agents" | "skills" | "settings";
-
-export interface NavSection {
-    id: SectionId;
-    label: string;
-    icon: IconSvgElement;
-    /** Where clicking the rail icon lands. */
-    landingPath: string;
-}
-
-/** Primary rail cluster, top → bottom. The org switcher sits above these
- *  (rendered separately at the very top); Settings is pinned at the bottom.
- *
- *  Skills is hidden for now: the section and its routes still exist, they just
- *  have no rail icon (re-add the entry to bring it back). */
-export const NAV_SECTIONS: NavSection[] = [
-    {id: "home", label: "Home", icon: Home03Icon, landingPath: "/home"},
-    {id: "agents", label: "Agents", icon: Robot02Icon, landingPath: "/agents"},
+/** The sidebar's primary nav, top to bottom, numbered from ⌘1 on desktop.
+ *  Skills is hidden for now: its routes still exist, it just has no nav entry. */
+export const NAV_SECTIONS: {to: string; label: string; icon: LucideIcon}[] = [
+    {to: "/home", label: "Home", icon: House},
+    {to: "/agents", label: "Agents", icon: Bot},
 ];
 
-/** Bottom-pinned rail icon. */
-export const SETTINGS_SECTION: NavSection = {
-    id: "settings",
-    label: "Settings",
-    icon: Settings01Icon,
-    landingPath: "/settings/profile",
-};
-
-/**
- * Maps the current route to its rail section. The rail is the mode switcher.
- * Chats was merged into Home, so ``/home`` and ``/channels/*`` (plus the
- * dropped ``/feed`` / ``/townsquare``) all resolve to ``home`` — the hub that
- * hosts the chat list and the channel view.
- */
-export function deriveSection(pathname: string): SectionId {
-    if (pathname.startsWith("/agents")) return "agents";
-    if (pathname.startsWith("/skills")) return "skills";
-    if (pathname.startsWith("/settings")) return "settings";
-    return "home";
-}
-
-/** Home shows the chat list, Agents the roster, Settings the nav, Skills the
- *  org's library (the selected skill opens in the pane beside it). */
-export function sectionHasSidebar(section: SectionId): boolean {
-    return ["home", "agents", "skills", "settings"].includes(section);
-}
+/** Where the sidebar footer's Settings button and ⌘, land. */
+export const SETTINGS_PATH = "/settings/profile";
 
 // ── Mobile navigation ─────────────────────────────────────────────────────
-// The mobile shell has no rail/contextual-sidebar; it navigates via a floating
+// The mobile shell has no desktop sidebar; it navigates via a floating
 // 4-tab bottom-nav pill (+ a separate compose FAB). Tabs map to the SAME shared
 // routes the desktop uses (no /m/* duplication) — the "stack" is browser
 // history: tapping a chat pushes /channels/:id over the list, back pops.
@@ -65,7 +21,7 @@ export function sectionHasSidebar(section: SectionId): boolean {
 export interface MobileTab {
     id: string;
     label: string;
-    icon: IconSvgElement;
+    icon: AppIcon;
     /** Where tapping the tab lands. */
     path: string;
     /** Whether this tab is the active one for the given route. */
@@ -83,7 +39,7 @@ export const MOBILE_TABS: MobileTab[] = [
     {
         id: "agents",
         label: "Agents",
-        icon: Robot02Icon,
+        icon: Bot,
         path: "/agents",
         match: (p) => p.startsWith("/agents"),
     },

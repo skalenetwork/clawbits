@@ -1,6 +1,5 @@
 // AI-provider brand glyphs (single `currentColor` paths, so they follow the
-// surrounding text colour). Mirrors reef/admin-ui's agent-icons.tsx - the two
-// UIs render the same provider picker language.
+// surrounding text colour).
 
 /** The full-color Codex mark (with its own white rounded background baked in) -
  *  rendered as an <img> from /public, not a currentColor glyph, so it keeps its

@@ -148,10 +148,9 @@ try {
     // next line is still the pre-scroll one.
     el.scrollIntoView({ block: "center", behavior: "instant" });
 
-    // SPEED, and not a small effect. The hero runs a WebGL shader on a rAF
-    // loop and every other card animates on its own timer; all of it repaints
-    // between screenshots even though none of it is inside the clip.
-    for (const c of document.querySelectorAll("canvas")) if (!el.contains(c)) c.remove();
+    // SPEED, and not a small effect. Every other card animates on its own
+    // timer, and all of it repaints between screenshots even though none of it
+    // is inside the clip.
     for (const a of document.getAnimations()) a.pause();
 
     // PlayOnView gates these on an IntersectionObserver; adding the class

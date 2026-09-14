@@ -1,0 +1,725 @@
+---
+import { ArrowUp, ChevronDown, Plus } from "lucide";
+import {
+  AttachmentIcon,
+  Download01Icon,
+  Edit02Icon,
+  File01Icon,
+  Pdf01Icon,
+  PinIcon,
+  Tick02Icon,
+  TickDouble02Icon,
+  UserMultiple02Icon,
+} from "@hugeicons/core-free-icons";
+import { CAST, type Chat, type Msg, type Person } from "../../content/demo-chats";
+import { ico } from "../../lib/appicon";
+import type { DesktopFacts } from "../../lib/releases";
+import ReleaseOg from "../ReleaseOg.astro";
+
+interface Props {
+  chat: Chat;
+  release: DesktopFacts;
+}
+
+const { chat, release } = Astro.props;
+
+const face = ({ name, ava, species }: Person) => ({ name, ava, species });
+const peer = chat.peer && CAST[chat.peer];
+const replier = CAST[chat.peer ?? chat.msgs.findLast((m) => CAST[m.by].species === "agent")?.by ?? "atlas"];
+const placeholder = chat.species === "channel" ? `Message #${chat.name}` : `Message ${chat.name}`;
+
+const minutes = (time: string) => {
+  const [h = 0, m = 0] = time.split(/\D+/).map(Number);
+  return (h % 12) * 60 + m + (time.endsWith("PM") ? 720 : 0);
+};
+
+/** A post continues its group only for the same author, same day, under 5 minutes, unedited (frontend/src/lib/channelTimeline.ts:117-125). */
+const startsGroup = (m: Msg, prev: Msg | undefined) =>
+  !prev || !!m.day || m.edited || m.by !== prev.by || minutes(m.time) - minutes(prev.time) >= 5;
+
+/** A single image is min(28rem, 24rem x ratio) wide (frontend/src/components/MessageAttachments.tsx:285-309). */
+const imgBox = ({ w, h }: NonNullable<Msg["img"]>) => {
+  const width = Math.round(Math.min(448, (384 * w) / h));
+  return { width, height: Math.round((width * h) / w) };
+};
+---
+
+<section
+  class={`view view-${chat.id}`}
+  aria-label={`${chat.name} conversation`}
+  data-authors={JSON.stringify({ you: face(CAST.you), reply: face(replier) })}
+>
+  <header class="bar">
+    <div class="scrim"><i></i><i></i><i></i><i></i><i></i></div>
+    <img class={`ava s20 ava-${chat.species}`} src={chat.src} alt="" width="20" height="20" />
+    <span class="title">
+      {chat.name}
+      {peer?.species === "human" && <span class:list={["pd", `pd-${peer.presence}`]} />}
+    </span>
+    <span class="tools">
+      {!!chat.pins && (
+        <span class="tool">{chat.pins}<span class="ic s14" set:html={ico(PinIcon)} /></span>
+      )}
+      <span class="tool">
+        {chat.members}
+        <span class="ic s14" set:html={ico(UserMultiple02Icon)} />
+      </span>
+      <span class="tool"><span class="ic s14" set:html={ico(AttachmentIcon)} /></span>
+    </span>
+  </header>
+
+  <div class="feed">
+    <div class="col">
+      {
+        chat.msgs.map((m, i) => {
+          const author = CAST[m.by];
+          const start = startsGroup(m, chat.msgs[i - 1]);
+          const ext = m.file?.name.split(".").pop();
+          return (
+            <>
+              {m.day && <div class="day">{m.day}</div>}
+              <div class:list={["row", { start }]}>
+                {start && (
+                  <div class="head">
+                    <img class={`ava s20 ava-${author.species}`} src={author.ava} alt="" width="20" height="20" />
+                    <span class="who trunc">{author.name}</span>
+                    <span class="at">{m.time}</span>
+                    {m.edited && <span class="ic s12" set:html={ico(Edit02Icon)} />}
+                  </div>
+                )}
+                {m.html && <div class="body" set:html={m.html} />}
+                {m.card && (
+                  <a class="card" href={release.url} target="_blank" rel="noopener noreferrer">
+                    <ReleaseOg tag={release.tag} title={release.title} sha={release.sha} channel={release.channel} />
+                    <span class="card-body">
+                      <span class="card-top">
+                        <b class="card-title">Release {release.title}</b>
+                        <span class="site">GitHub</span>
+                      </span>
+                      {release.sha && (
+                        <span class="card-desc">Built from {release.sha} on channel {release.channel}.</span>
+                      )}
+                    </span>
+                  </a>
+                )}
+                {m.img && <img class="shot" src={m.img.src} alt="" {...imgBox(m.img)} loading="lazy" decoding="async" />}
+                {m.file && (
+                  <div class="file">
+                    <span class:list={["ftype", ext]} set:html={ico(ext === "pdf" ? Pdf01Icon : File01Icon)} />
+                    <span class="fname">
+                      <b class="trunc">{m.file.name}</b>
+                      <span>{m.file.meta}</span>
+                    </span>
+                    <span class="fget"><span class="ic s16" set:html={ico(Download01Icon)} /></span>
+                  </div>
+                )}
+                {m.reactions && (
+                  <div class="reacts">
+                    {m.reactions.map((r) => (
+                      <span class:list={["react", { mine: r.mine }]}><span class="emoji">{r.e}</span>{r.n}</span>
+                    ))}
+                  </div>
+                )}
+                {m.receipt && (
+                  <span
+                    class:list={["ic s14 receipt", m.receipt]}
+                    set:html={ico(m.receipt === "read" ? TickDouble02Icon : Tick02Icon)}
+                  />
+                )}
+              </div>
+            </>
+          );
+        })
+      }
+    </div>
+  </div>
+
+  <div class="composer">
+    <div class="pill">
+      <span class="plus"><span class="ic s16" set:html={ico(Plus)} /></span>
+      <p class="field" contenteditable="true" role="textbox" aria-label={placeholder} data-ph={placeholder} spellcheck="false">{chat.draft}</p>
+      {chat.species === "channel" && <span class="agent">Agent<span class="ic s12" set:html={ico(ChevronDown)} /></span>}
+      <span class="send"><span class="ic s16" set:html={ico(ArrowUp)} /></span>
+    </div>
+  </div>
+</section>
+
+<script>
+  import type { Person } from "../../content/demo-chats";
+
+  type Author = Pick<Person, "name" | "ava" | "species">;
+
+  const win = document.querySelector<HTMLElement>(".win");
+  const feeds = win?.querySelectorAll<HTMLElement>(".feed") ?? [];
+  const signup = win?.dataset.signup ?? "/";
+  const scope = [...(feeds[0]?.attributes ?? [])].map((a) => a.name).find((n) => n.startsWith("data-astro-cid-"));
+  const seeded = new WeakMap<HTMLElement, number>();
+
+  const seed = () => {
+    for (const feed of feeds) {
+      const last = seeded.get(feed);
+      if (last !== undefined && Math.abs(feed.scrollTop - last) > 1) continue;
+      feed.scrollTop = feed.scrollHeight;
+      seeded.set(feed, feed.scrollTop);
+    }
+  };
+
+  const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className = "", props: Partial<HTMLElementTagNameMap[K]> = {}) => {
+    const node = Object.assign(document.createElement(tag), { className }, props);
+    if (scope) node.setAttribute(scope, "");
+    return node;
+  };
+
+  const post = (view: HTMLElement, author: Author, paragraphs: (string | Node)[][]) => {
+    const feed = view.querySelector<HTMLElement>(".feed");
+    const col = feed?.firstElementChild;
+    if (!feed || !col) return;
+    const names = col.querySelectorAll(".who");
+    const continues = names[names.length - 1]?.textContent === author.name;
+    const row = el("div", continues ? "row arrive" : "row start arrive");
+    if (!continues) {
+      const head = el("div", "head");
+      head.append(
+        el("img", `ava s20 ava-${author.species}`, { src: author.ava, alt: "", width: 20, height: 20 }),
+        el("span", "who trunc", { textContent: author.name }),
+        el("span", "at", { textContent: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) }),
+      );
+      row.append(head);
+    }
+    const body = el("div", "body");
+    for (const parts of paragraphs) {
+      const p = el("p");
+      p.append(...parts);
+      body.append(p);
+    }
+    row.append(body);
+    col.append(row);
+    feed.scrollTop = feed.scrollHeight;
+  };
+
+  const send = (field: HTMLElement) => {
+    const text = field.textContent?.trim();
+    const view = field.closest<HTMLElement>(".view");
+    if (!text || !view) return;
+    const authors: Record<"you" | "reply", Author> = JSON.parse(view.dataset.authors!);
+    field.replaceChildren();
+    post(view, authors.you, [[text]]);
+    window.setTimeout(() => {
+      const link = el("a", "lnk", { href: signup });
+      link.append(el("b", "", { textContent: "Get started" }));
+      post(view, authors.reply, [
+        ["That's the kind of thing your own agent would pick up."],
+        ["This one is only a preview - ", link],
+      ]);
+    }, 650);
+  };
+
+  for (const field of win?.querySelectorAll<HTMLElement>(".field") ?? []) {
+    field.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      send(field);
+    });
+    field.addEventListener("input", () => {
+      if (!field.textContent) field.replaceChildren();
+    });
+    field.addEventListener("paste", (event) => {
+      event.preventDefault();
+      const flat = event.clipboardData?.getData("text/plain").replace(/\s+/g, " ").trim();
+      if (flat) document.execCommand("insertText", false, flat);
+    });
+    field.parentElement?.querySelector(".send")?.addEventListener("click", () => {
+      send(field);
+    });
+  }
+
+  seed();
+  window.addEventListener("load", seed, { once: true });
+  void document.fonts.ready.then(seed);
+</script>
+
+<style>
+  .bar {
+    pointer-events: none;
+  }
+
+  .title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--mut);
+    white-space: nowrap;
+  }
+
+  .title .pd {
+    position: static;
+    width: 8px;
+    height: 8px;
+    box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--bg) 40%, transparent);
+  }
+
+  .tools {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+    color: var(--mut);
+  }
+
+  .tool {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .feed {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    padding-left: 6px;
+  }
+
+  .feed::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .feed::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    background-clip: content-box;
+    background-color: color-mix(in oklab, var(--ink) 7%, transparent);
+  }
+
+  .feed::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--ink) 16%, transparent);
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    .feed {
+      scrollbar-gutter: stable both-edges;
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in oklab, var(--ink) 7%, transparent) transparent;
+      padding-left: 0;
+    }
+  }
+
+  .col {
+    width: 100%;
+    max-width: 672px;
+    margin: auto auto 0;
+    padding: 64px 0 70px;
+  }
+
+  .day {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 16px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    color: var(--mut);
+  }
+
+  .day::before,
+  .day::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: color-mix(in oklab, var(--line) 60%, transparent);
+  }
+
+  .row {
+    position: relative;
+    margin: 6px 2px 0;
+    padding: 2px 12px 2px 10px;
+    border-radius: 10px;
+  }
+
+  .start {
+    margin-top: 16px;
+    padding-top: 6px;
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 20px;
+    margin-bottom: 6px;
+    font-size: 13px;
+    color: var(--mut);
+  }
+
+  .who {
+    font-weight: 500;
+  }
+
+  .at {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .body {
+    font-size: 15px;
+    line-height: 1.6;
+    letter-spacing: -0.01em;
+    text-wrap: pretty;
+    overflow-wrap: break-word;
+  }
+
+  .body :global(p) {
+    margin: 4px 0;
+  }
+
+  .body :global(p:first-child) {
+    margin-top: 0;
+  }
+
+  .body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .body :global(.lnk) {
+    color: var(--link);
+    text-decoration: none;
+    text-underline-offset: 2px;
+  }
+
+  .body :global(.lnk:hover) {
+    text-decoration: underline;
+  }
+
+  .body :global(.mention) {
+    font-weight: 500;
+    color: var(--mention);
+  }
+
+  .body :global(table) {
+    width: 100%;
+    margin: 10px 0;
+    border-spacing: 0;
+    border-radius: 10px;
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 60%, transparent);
+    font-size: 0.9em;
+  }
+
+  .body :global(th) {
+    padding: 6px 10px;
+    background: color-mix(in oklab, var(--muted) 50%, transparent);
+    text-align: left;
+    font-size: 0.92em;
+    font-weight: 600;
+    color: var(--mut);
+  }
+
+  .body :global(th:first-child) {
+    border-top-left-radius: 10px;
+  }
+
+  .body :global(th:last-child) {
+    border-top-right-radius: 10px;
+  }
+
+  .body :global(td) {
+    padding: 6px 10px;
+    vertical-align: top;
+  }
+
+  .body :global(tbody tr:not(:last-child) td) {
+    border-bottom: 1px solid color-mix(in oklab, var(--line) 40%, transparent);
+  }
+
+  .card {
+    display: block;
+    max-width: 340px;
+    margin-top: 8px;
+    overflow: hidden;
+    border: 1px solid color-mix(in oklab, var(--line) 40%, transparent);
+    border-radius: 14px;
+    background: color-mix(in oklab, var(--muted) 50%, transparent);
+    color: inherit;
+    text-decoration: none;
+    transition: transform 150ms ease-out;
+  }
+
+  .card:active {
+    transform: scale(0.99);
+  }
+
+  .card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+  }
+
+  .card-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .card-title,
+  .card-desc {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .card-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.375;
+  }
+
+  .site {
+    flex-shrink: 0;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--ink) 10%, transparent);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--mut);
+  }
+
+  .card-desc {
+    font-size: 13px;
+    line-height: 1.625;
+    color: var(--mut);
+  }
+
+  .shot {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin-top: 4px;
+    border-radius: 14px;
+    object-fit: cover;
+    background: color-mix(in oklab, var(--muted) 30%, transparent);
+  }
+
+  .file {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 448px;
+    margin-top: 4px;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in oklab, var(--line) 40%, transparent);
+    border-radius: 10px;
+    background: color-mix(in oklab, var(--muted) 30%, transparent);
+    line-height: 1.25;
+  }
+
+  .ftype {
+    --tone: var(--mut);
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: color-mix(in oklab, var(--tone) 10%, transparent);
+    color: var(--tone);
+  }
+
+  .ftype :global(svg) {
+    width: 20px;
+    height: 20px;
+  }
+
+  .md {
+    --tone: oklch(55.4% 0.046 257.417);
+  }
+
+  .pdf {
+    --tone: oklch(63.7% 0.237 25.331);
+  }
+
+  .fname {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .fname b {
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .fname span {
+    font-size: 12px;
+    color: var(--mut);
+  }
+
+  .fget {
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    color: var(--mut);
+  }
+
+  .reacts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0 8px;
+  }
+
+  .react {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--muted) 35%, transparent);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--mut);
+  }
+
+  .mine {
+    background: color-mix(in oklab, var(--ink) 14%, transparent);
+    color: var(--ink);
+  }
+
+  .emoji {
+    font-size: 17px;
+  }
+
+  .receipt {
+    position: absolute;
+    right: 12px;
+    bottom: 4px;
+    color: color-mix(in oklab, var(--mut) 80%, transparent);
+  }
+
+  .read {
+    color: var(--sky);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .arrive {
+      animation: chat-row-in 300ms var(--ease-out-expo) backwards;
+    }
+  }
+
+  @keyframes chat-row-in {
+    from {
+      opacity: 0;
+      translate: 0 8px;
+    }
+  }
+
+  /** The pill spans the message text column, a row's mx-0.5 pl-2.5 pr-3 inside the 672px chat column (frontend/src/components/MessageComposer.tsx:476-480). */
+  .composer {
+    position: absolute;
+    inset: auto 0 10px;
+    z-index: 1;
+    padding: 0 26px 0 24px;
+    pointer-events: none;
+  }
+
+  .pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 646px;
+    margin-inline: auto;
+    padding: 7px;
+    border: 1px solid color-mix(in oklab, var(--line) 60%, transparent);
+    border-radius: 22px;
+    background: color-mix(in oklab, var(--bg) 70%, transparent);
+    backdrop-filter: blur(12px);
+    pointer-events: auto;
+  }
+
+  .pill:focus-within {
+    border-color: color-mix(in oklab, var(--line) 80%, transparent);
+  }
+
+  .plus,
+  .send {
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    color: var(--mut);
+  }
+
+  .plus {
+    background: color-mix(in oklab, var(--ink) 6%, transparent);
+  }
+
+  .send {
+    background: color-mix(in oklab, var(--ink) 10%, transparent);
+    transition:
+      background-color 150ms,
+      color 150ms,
+      scale 150ms;
+  }
+
+  .pill:has(.field:not(:empty)) .send {
+    background: var(--primary);
+    color: var(--primary-fg);
+    cursor: pointer;
+  }
+
+  .pill:has(.field:not(:empty)) .send:active {
+    scale: 0.95;
+  }
+
+  .field {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    padding: 0 4px;
+    overflow: hidden;
+    font-size: 14px;
+    line-height: 20px;
+    white-space: nowrap;
+    outline: none;
+    cursor: text;
+  }
+
+  .field:empty::before {
+    content: attr(data-ph);
+    color: var(--mut);
+  }
+
+  .agent {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 6px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--mut);
+  }
+</style>

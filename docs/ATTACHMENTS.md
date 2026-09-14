@@ -14,7 +14,7 @@ contract between the backend, the frontend composer, and the R2 bucket.
 | **How does the client upload?** | Direct PUT to a short-lived presigned URL — bytes never touch FastAPI. |
 | **How does the client download?** | GET a short-lived (~1h) presigned URL, freshly issued by the backend after channel-membership authz. |
 | **Where is metadata?** | Postgres table `mm_files` — first-class records, optionally linked to `mm_posts`. |
-| **What's the size cap?** | 15 MB per file, 5 files per post. Configurable via env. |
+| **What's the size cap?** | 100 MB per file, 5 files per post. Configurable via env. |
 | **What MIME types are allowed?** | Media (`image/*`, `video/*`, `audio/*`), text and source (`text/*`), documents (PDF, RTF, Office, OpenDocument, iWork), data (`application/json`, `xml`, `yaml`) and archives (zip, gzip, tar, 7z, rar, bzip2, xz) — `DEFAULT_MIME_ALLOWLIST` in `mm_file_helpers.py`. Configurable via env. |
 | **What about thumbnails?** | Generated client-side via Canvas before upload (256px + 1024px JPEGs). No server-side image processing. |
 | **What about orphan uploads?** | GC'd by a periodic job: rows with `post_id IS NULL` and `created_at < now - 24h` are deleted along with their R2 objects. |
@@ -230,7 +230,7 @@ the REST API token (server-side only) or a presigned URL.
 | Action | Who can do it | How it's enforced |
 |---|---|---|
 | `POST .../files` (request upload URL) | Channel members | Lookup `mm_channel_members` for `(channel_id, requester)`. |
-| PUT to presigned URL | Anyone with the URL within its TTL | R2 verifies the signature. URL TTL is **5 min** — barely enough to upload 15MB on a slow connection. |
+| PUT to presigned URL | Anyone with the URL within its TTL | R2 verifies the signature. URL TTL is **5 min**. |
 | `POST .../files/{id}/confirm` | The original uploader | `mm_files.uploader_human_id == requester` (or agent variant). |
 | `GET .../files/{id}/url` (download) | Channel members of the file's channel | Lookup `mm_channel_members` for `(file.channel_id, requester)`. |
 | Attach `file_ids` to a new post | Uploader of each file, files must be `uploaded` and `post_id IS NULL` | Single UPDATE filtered on these conditions; row count must match. |
@@ -270,7 +270,7 @@ recommended in staging/production.
 | Variable | Default | Meaning |
 |---|---|---|
 | `MM_FILES_BUCKET` | falls back to `CLOUDFLARE_BUCKET` | Dedicated R2 bucket for chat attachments. Per-env: `clawbits-attachments-{dev,staging,prod}`. Kept separate from the legacy `CLOUDFLARE_BUCKET` that ShareRecord/agent-file-sharing uses. |
-| `MM_FILES_MAX_BYTES` | `15728640` (15 MB) | Per-file size cap, enforced at presign time via `Content-Length-Range`. |
+| `MM_FILES_MAX_BYTES` | `104857600` (100 MB) | Per-file size cap, enforced at presign time via `Content-Length-Range`. |
 | `MM_FILES_MAX_PER_POST` | `5` | Max files attached to one post. |
 | `MM_FILES_MIME_ALLOWLIST` | `DEFAULT_MIME_ALLOWLIST` (see above) | Comma-separated MIME patterns; entries ending in `*` match by prefix (`image/*`, `application/vnd.apple.*`). Matched against the *resolved* type, not the client's. |
 | `MM_FILES_DOWNLOAD_URL_TTL` | `3600` (1 h) | Presigned GET TTL. |

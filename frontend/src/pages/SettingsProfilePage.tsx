@@ -1,57 +1,75 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
-import {
-    UserIcon as User,
-    Camera01Icon as CameraIcon,
-    Logout01Icon as LogOutIcon,
-    RefreshIcon as RefreshIcon,
-    Delete02Icon as TrashIcon,
-} from "@hugeicons/core-free-icons";
+import { UserIcon as User } from "@hugeicons/core-free-icons";
 
-import { Avatar } from "@/components/Avatar";
 import { Button } from "@/components/ui/button";
-import { Icon } from "@/components/Icon";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
+import { SettingsPage, SettingsRow, SettingsSection } from "@/components/settings/Settings";
+import { UserAvatar } from "@/components/UserAvatar";
 import { useAuth } from "@/context/AuthContext";
 import { deleteMyAccount, resetOwnAvatar, updateMyProfile } from "@/lib/api";
 import { formatLastSeen } from "@/lib/formatting";
 import { errMsg, toast } from "@/lib/toast";
 import { confirm } from "@/lib/confirm";
 
-// Lazy-load the editor — it pulls in ``react-easy-crop`` for the
-// pan/zoom UI, which we don't want in the main settings chunk.
 const AvatarEditorDialog = lazy(() =>
-    import("@/components/settings/AvatarEditorDialog").then(m => ({
-        default: m.AvatarEditorDialog,
-    })),
+    import("@/components/settings/AvatarEditorDialog").then(m => ({ default: m.AvatarEditorDialog })),
 );
 
-// Hard cap on the display name. Keep in sync with DISPLAY_NAME_MAX_LENGTH
-// in clawbits/db/models.py (enforced server-side too).
+// Keep in sync with DISPLAY_NAME_MAX_LENGTH in clawbits/db/models.py.
 const DISPLAY_NAME_MAX_LENGTH = 32;
 
-function formatJoined(ts: string | null | undefined): string {
-    if (!ts) return "—";
-    const d = new Date(ts);
-    if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+const VALUE = "truncate text-[13px] text-muted-foreground";
+
+function DisplayNameForm({ saved }: { saved: string }) {
+    const { applyProfileUpdate } = useAuth();
+    const [draft, setDraft] = useState(saved);
+
+    const mutation = useMutation({
+        mutationFn: (name: string) => updateMyProfile(name === "" ? null : name),
+        onSuccess: (profile) => {
+            applyProfileUpdate(profile);
+            toast.success("Display name saved");
+        },
+        onError: (err) => {
+            toast.error(errMsg(err, "Failed to save profile"));
+        },
+    });
+
+    const trimmed = draft.trim();
+    const canSave = trimmed !== saved && !mutation.isPending;
+
+    return (
+        <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => {
+                e.preventDefault();
+                if (canSave) mutation.mutate(trimmed);
+            }}
+        >
+            <Input
+                id="profile-display-name"
+                size="sm"
+                value={draft}
+                placeholder="How others see you"
+                maxLength={DISPLAY_NAME_MAX_LENGTH}
+                disabled={mutation.isPending}
+                onChange={(e) => { setDraft(e.target.value); }}
+            />
+            <Button type="submit" size="sm" disabled={!canSave}>
+                {mutation.isPending ? "Saving…" : "Save"}
+            </Button>
+        </form>
+    );
 }
 
 export default function SettingsProfilePage() {
     const { user, applyProfileUpdate, logout } = useAuth();
     const navigate = useNavigate();
-    const [displayName, setDisplayName] = useState(user?.display_name ?? "");
     const [editorOpen, setEditorOpen] = useState(false);
-    const [saving, setSaving] = useState(false);
-
-    useEffect(() => {
-        setDisplayName(user?.display_name ?? "");
-    }, [user?.display_name]);
-
-    const dirty = (user?.display_name ?? "") !== displayName.trim();
-    const hasCustomAvatar = user?.avatar?.kind === "uploaded";
+    const [deleting, setDeleting] = useState(false);
 
     const resetMutation = useMutation({
         mutationFn: resetOwnAvatar,
@@ -65,21 +83,7 @@ export default function SettingsProfilePage() {
         },
     });
 
-    const handleSave = async (e: React.SubmitEvent) => {
-        e.preventDefault();
-        if (!dirty) return;
-        setSaving(true);
-        try {
-            const trimmed = displayName.trim();
-            const updated = await updateMyProfile(trimmed === "" ? null : trimmed);
-            applyProfileUpdate(updated);
-            toast.success("Profile updated");
-        } catch (err) {
-            toast.error(errMsg(err, "Failed to save profile"));
-        } finally {
-            setSaving(false);
-        }
-    };
+    if (!user) return null;
 
     const handleSignOut = async () => {
         try {
@@ -90,221 +94,123 @@ export default function SettingsProfilePage() {
         }
     };
 
-    const [deleting, setDeleting] = useState(false);
     const handleDeleteAccount = async () => {
         const ok = await confirm({
             title: "Delete your account?",
             description:
-                "This permanently deletes your account and all of your data - "
-                + "messages, reactions, files, and any chat where you're the "
-                + "only person. This cannot be undone.",
+                "This permanently deletes your account and all of your data: messages, reactions, files, and any chat where you're the only person. This cannot be undone.",
             confirmLabel: "Delete account",
         });
         if (!ok) return;
         setDeleting(true);
         try {
             await deleteMyAccount();
-            // The server cleared the session cookies; do a full reload onto the
-            // logged-out surface so no stale auth state remains.
+            // A full reload, not navigate: the server cleared the session cookies.
             window.location.href = "/login";
         } catch (err) {
-            // 409 when the user still operates agents or solely owns an org —
-            // the message says what to resolve first.
             toast.error(errMsg(err, "Couldn't delete account"));
             setDeleting(false);
         }
     };
 
-    if (!user) {
-        return <div className="text-sm text-muted-foreground">Loading…</div>;
-    }
-
-    const fallbackName = user.display_name ?? user.email;
+    const name = user.display_name ?? user.email;
+    const joined = new Date(user.created_at ?? "");
 
     return (
-        <div>
+        <SettingsPage>
             <PageHeader icon={User} title="Profile" />
 
-            {/* Sub-sections are separated by divider lines + spacing rather than
-                nested cards - the content card itself is the surface. */}
-            <div className="divide-y divide-border/60">
-            {/* Hero — avatar + identity + edit affordances. */}
-            <section className="py-6 first:pt-0">
-                <div className="flex flex-col items-start gap-5 sm:flex-row sm:items-center">
-                    <div className="relative shrink-0">
-                        <Avatar
-                            src={user.avatar?.url}
-                            name={fallbackName}
-                            size={88}
-                            className="rounded-xl"
-                        />
-                        <button
-                            type="button"
-                            aria-label="Change profile picture"
-                            onClick={() => { setEditorOpen(true); }}
-                            className="absolute -bottom-1.5 -right-1.5 grid size-7 place-items-center rounded-full bg-background text-foreground shadow-sm ring-1 ring-border/60 transition-colors hover:bg-muted"
-                        >
-                            <Icon icon={CameraIcon} className="size-3.5"/>
-                        </button>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                        <p className="truncate text-base font-semibold">{fallbackName}</p>
-                        <p className="truncate text-xs text-muted-foreground">{user.email}</p>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                            <Button
-                                type="button"
-                                size="sm"
-                                onClick={() => { setEditorOpen(true); }}
-                            >
-                                <Icon icon={CameraIcon} className="size-4"/>
-                                Change avatar
-                            </Button>
-                            {hasCustomAvatar && (
+            <SettingsSection label="Profile picture">
+                <SettingsRow
+                    leading={<UserAvatar src={user.avatar?.url} name={name} size={44} />}
+                    title={name}
+                    description={user.email}
+                    control={
+                        <>
+                            {user.avatar?.kind === "uploaded" && (
                                 <Button
-                                    type="button"
-                                    size="sm"
                                     variant="outline"
+                                    size="sm"
                                     disabled={resetMutation.isPending}
                                     onClick={() => { resetMutation.mutate(); }}
                                 >
-                                    <Icon icon={RefreshIcon} className="size-4"/>
-                                    {resetMutation.isPending ? "Resetting…" : "Reset to default"}
+                                    {resetMutation.isPending ? "Resetting…" : "Reset"}
                                 </Button>
                             )}
-                        </div>
-                    </div>
-                </div>
-            </section>
+                            <Button variant="outline" size="sm" onClick={() => { setEditorOpen(true); }}>
+                                Change picture
+                            </Button>
+                        </>
+                    }
+                />
+            </SettingsSection>
 
-            {/* Identity — editable display name + locked email. */}
-            <form onSubmit={handleSave} className="space-y-5 py-6">
-                <div className="space-y-0.5">
-                    <h2 className="text-sm font-semibold">Identity</h2>
-                    <p className="text-xs text-muted-foreground">
-                        How others see you in channels, mentions, and member lists.
-                    </p>
-                </div>
+            <SettingsSection label="Identity">
+                <SettingsRow
+                    title="Display name"
+                    description="Leave blank to show your email"
+                    htmlFor="profile-display-name"
+                    control={<DisplayNameForm key={user.display_name ?? ""} saved={user.display_name ?? ""} />}
+                />
+                <SettingsRow
+                    title="Email"
+                    description="Contact support to change it"
+                    control={<span className={VALUE}>{user.email}</span>}
+                />
+            </SettingsSection>
 
-                <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                        <label htmlFor="profile-display-name" className="text-xs font-medium text-muted-foreground">
-                            Display name
-                        </label>
-                        <span
-                            className={`text-xs tabular-nums ${
-                                displayName.length >= DISPLAY_NAME_MAX_LENGTH
-                                    ? "text-destructive"
-                                    : "text-muted-foreground"
-                            }`}
-                            aria-live="polite"
-                        >
-                            {displayName.length}/{DISPLAY_NAME_MAX_LENGTH}
+            <SettingsSection label="Account">
+                <SettingsRow
+                    title="Member since"
+                    control={
+                        <span className={VALUE}>
+                            {Number.isNaN(joined.getTime())
+                                ? "Unknown"
+                                : joined.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}
                         </span>
-                    </div>
-                    <Input
-                        id="profile-display-name"
-                        value={displayName}
-                        onChange={(e) => { setDisplayName(e.target.value); }}
-                        placeholder="How others see you"
-                        maxLength={DISPLAY_NAME_MAX_LENGTH}
-                        disabled={saving}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                        Leave blank to show your email instead.
-                    </p>
-                </div>
+                    }
+                />
+                <SettingsRow
+                    title="Last active"
+                    control={<span className={VALUE}>{formatLastSeen(user.last_seen_at)}</span>}
+                />
+                <SettingsRow
+                    title="User ID"
+                    control={<span className={`${VALUE} font-mono`}>{user.id}</span>}
+                />
+                <SettingsRow
+                    title="Sign out"
+                    description="End this session on this device"
+                    control={
+                        <Button variant="outline" size="sm" onClick={() => { void handleSignOut(); }}>
+                            Sign out
+                        </Button>
+                    }
+                />
+            </SettingsSection>
 
-                <div className="space-y-1.5">
-                    <label htmlFor="profile-email" className="text-xs font-medium text-muted-foreground">
-                        Email address
-                    </label>
-                    <Input id="profile-email" value={user.email} disabled readOnly className="font-mono"/>
-                    <p className="text-xs text-muted-foreground">
-                        Contact support to change your email.
-                    </p>
-                </div>
+            <SettingsSection label="Danger zone">
+                <SettingsRow
+                    title="Delete account"
+                    description="Removes your account and its data. Hand off agents and orgs first"
+                    control={
+                        <Button
+                            variant="destructive"
+                            size="sm"
+                            disabled={deleting}
+                            onClick={() => { void handleDeleteAccount(); }}
+                        >
+                            {deleting ? "Deleting…" : "Delete"}
+                        </Button>
+                    }
+                />
+            </SettingsSection>
 
-                <div className="flex items-center gap-3">
-                    <Button type="submit" disabled={!dirty || saving}>
-                        {saving ? "Saving…" : "Save changes"}
-                    </Button>
-                </div>
-            </form>
-
-            {/* Account — read-only meta + sign-out. */}
-            <section className="space-y-5 py-6">
-                <div className="space-y-0.5">
-                    <h2 className="text-sm font-semibold">Account</h2>
-                    <p className="text-xs text-muted-foreground">
-                        Snapshot of this account on Clawbits.
-                    </p>
-                </div>
-
-                <dl className="grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-0.5">
-                        <dt className="text-xs font-medium text-muted-foreground">Member since</dt>
-                        <dd className="text-sm font-medium">{formatJoined(user.created_at ?? null)}</dd>
-                    </div>
-                    <div className="space-y-0.5">
-                        <dt className="text-xs font-medium text-muted-foreground">Last active</dt>
-                        <dd className="text-sm font-medium">{formatLastSeen(user.last_seen_at ?? null)}</dd>
-                    </div>
-                    <div className="space-y-0.5">
-                        <dt className="text-xs font-medium text-muted-foreground">User ID</dt>
-                        <dd className="font-mono text-sm">{user.id}</dd>
-                    </div>
-                </dl>
-
-                <div className="flex items-center gap-3 border-t border-border/40 pt-4">
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => { void handleSignOut(); }}
-                        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    >
-                        <Icon icon={LogOutIcon} className="size-4"/>
-                        Sign out
-                    </Button>
-                </div>
-            </section>
-
-            {/* Danger zone — permanent, irreversible account deletion. */}
-            <section className="space-y-4 py-6">
-                <div className="space-y-0.5">
-                    <h2 className="text-sm font-semibold text-destructive">Danger zone</h2>
-                    <p className="text-xs text-muted-foreground">
-                        Permanently delete your account and all of your data. If
-                        you operate agents or solely own a shared organization,
-                        hand those off first.
-                    </p>
-                </div>
-                <div className="flex items-center gap-3 border-t border-destructive/20 pt-4">
-                    <Button
-                        type="button"
-                        variant="destructive"
-                        size="sm"
-                        disabled={deleting}
-                        onClick={() => { void handleDeleteAccount(); }}
-                    >
-                        <Icon icon={TrashIcon} className="size-4"/>
-                        {deleting ? "Deleting…" : "Delete account"}
-                    </Button>
-                </div>
-            </section>
-            </div>
-
-            {/* Only mount the dialog (and thus pay the lazy chunk cost)
-                once the user actually opens it. */}
             {editorOpen && (
                 <Suspense fallback={null}>
-                    <AvatarEditorDialog
-                        open={editorOpen}
-                        onOpenChange={setEditorOpen}
-                        user={user}
-                    />
+                    <AvatarEditorDialog open onOpenChange={setEditorOpen} user={user} />
                 </Suspense>
             )}
-        </div>
+        </SettingsPage>
     );
 }

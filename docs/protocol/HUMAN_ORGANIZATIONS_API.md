@@ -11,7 +11,7 @@ Two roles, stored in `org_members.role`:
 | `owner` | **Admin** | `admin` | everything a member can, plus invite/remove people, change roles, and every other org-admin surface (Reef connection, LobsterTalk settings, channel management) |
 | `member` | **Member** | `member` | read the member directory, use channels and agents |
 
-The wire and database vocabulary is `owner`/`member` — only the presentation layer says "Admin". Every org keeps at least one `owner`: the last one can be neither demoted nor removed.
+The wire and database vocabulary is `owner`/`member`; only the presentation layer says "Admin". Every org keeps at least one `owner`: the last one can be neither demoted nor removed.
 
 Agents are owned by organizations. When adding an owner via `POST /api/agentic/agents/{agent_id}/owners`, you can specify either an `email` (which resolves to that user's personal organization) or an `org_id` directly.
 
@@ -99,7 +99,7 @@ Returns a single organization object (same shape as above).
 ---
 
 ### POST /api/human/orgs/{org_id}/visit
-Mark an organization as visited by the caller, bumping `last_visited_at` to now. Idempotent — the org switcher calls this whenever the user activates an org to clear the "New" pill.
+Mark an organization as visited by the caller, bumping `last_visited_at` to now. Idempotent: the org switcher calls this whenever the user activates an org to clear the "New" pill.
 
 **Headers**
 - `Authorization`: `Bearer <JWT>` (required)
@@ -111,8 +111,19 @@ Mark an organization as visited by the caller, bumping `last_visited_at` to now.
 
 ---
 
-### GET /api/human/orgs/{org_id}/reef-connection
-Get the org's connected self-hosted Reef API URL. Any member can read it.
+### GET /api/human/orgs/{org_id}/reef
+The org's reef repository, what every host last pushed, and the agents declared
+but not yet enrolled. Any member.
+
+Git is the bus: clawbits writes one fleet file per agent on the `fleet` branch
+and reads what each host pushes to `status`. It never talks to a reef host, and
+nothing on the network reaches one: the host pulls on a 30-second timer. Host
+setup is [`reef/README.md`](../../reef/README.md).
+
+Hosts are cached per org for five seconds, so an agent shows up within seconds
+of its host reporting it. A refresh is one listing plus one read per host, all
+conditional, so a file that has not changed answers 304 and costs no GitHub
+rate limit.
 
 **Headers**
 - `Authorization`: `Bearer <JWT>` (required)
@@ -120,56 +131,220 @@ Get the org's connected self-hosted Reef API URL. Any member can read it.
 **Response (200 OK)**
 ```json
 {
-  "api_url": "https://reef.example.com"
+  "repo": "acme/agents",
+  "connected": true,
+  "hosts": [
+    {
+      "host": "prod-eu",
+      "reef": "0.11.0",
+      "last_seen": "2026-09-11T12:30:00Z",
+      "health": "live",
+      "applied": { "main": "4f2c…", "fleet": "9a1e…" },
+      "error": null,
+      "agents": [
+        {
+          "name": "ana-bot",
+          "role": "clawbits-openclaw",
+          "image": "ghcr.io/skalenetwork/clawbits-openclaw@sha256:…",
+          "desired": "running",
+          "state": "running",
+          "vm": "running",
+          "synced": true,
+          "role_current": true
+        }
+      ],
+      "events": [
+        { "agent": "ana-bot", "at": "2026-09-11T12:21:07Z", "kind": "start", "detail": "…" }
+      ]
+    }
+  ],
+  "declared": [
+    { "host": "prod-eu", "name": "bob-bot", "expires_at": "2026-09-18T12:00:00Z" }
+  ]
 }
 ```
-`api_url` is `null` when no Reef is connected.
+Hosts are ordered by name, one per `status/<host>.json`. `last_seen` is the
+reconciler's heartbeat, the UTC time rounded down to ten minutes, so an idle
+host commits about every ten minutes. `health` is `failing` when the host's last
+apply failed (`error` says why), `live` when `last_seen` is under 25 minutes
+old, and `stale` otherwise; a host whose reconciler predates the heartbeat has
+`last_seen: null` and reads `stale`. `applied` is the `main` and `fleet` HEADs
+it last applied in full, `null` until one lands. `agents` and `events` are rows
+of `reef agent list --json` and the last 100 of `reef events --json`, newest
+first. An agent's `image` is the one its VM runs, so after a role bump
+`role_current: false` marks the agents still on the old one; a host whose reef
+predates the field reports `""`. A `declared` entry is an agent whose fleet file
+is written and whose one-time signup token is still unspent.
+
+`repo` is `null` when none is connected. `connected` is `false` when no
+repository is stored, or when its token can no longer be unsealed (the server's
+secrets key rotated): reconnecting is the fix in both cases.
 
 **Error Responses**
 - `403 Forbidden`: Not a member of this organization.
 
 ---
 
-### PUT /api/human/orgs/{org_id}/reef-connection
-Connect (or re-point) the org's self-hosted Reef. Only the URL is stored — no token or secret is persisted. Caller must be an owner.
+### PUT /api/human/orgs/{org_id}/reef
+Connect the org's reef repository. Caller must be an owner.
 
-**Headers**
-- `Authorization`: `Bearer <JWT>` (required)
+The token is proven against GitHub before anything is stored, and sealed at rest
+(Fernet). It is never returned by any endpoint.
+
+**Request Body**
+```json
+{ "repo": "acme/agents", "token": "github_pat_…" }
+```
+
+**Field constraints**
+- `repo`: `owner/name` on github.com (required)
+- `token`: a fine-grained token scoped to that one repository, Contents read and
+  write, max 512 characters (required)
+
+**Response (200 OK)**: the same shape as `GET`, with `hosts` and `declared` empty.
+
+**Error Responses**
+- `403 Forbidden`: Only organization admins can change this setting.
+- `404 Not Found`: Organization not found.
+- `502 Bad Gateway`: GitHub refused the call; the detail is GitHub's own message.
+- `503 Service Unavailable`: The server has no durable secrets key configured.
+
+---
+
+### DELETE /api/human/orgs/{org_id}/reef
+Disconnect the repository. Caller must be an owner. Agents already declared keep
+running: their fleet files stay on the branch, untouched.
+
+**Response (204 No Content)**
+
+---
+
+### GET /api/human/orgs/{org_id}/reef/roles
+The role catalog, parsed from `main:roles/*.toml`. Any member.
+
+Roles whose `env.CLAWBITS_ENDPOINT` names a different clawbits are left out: an
+agent created from one would boot, run, and enrol somewhere else.
+
+**Response (200 OK)**
+```json
+[
+  {
+    "name": "clawbits-openclaw",
+    "image": "ghcr.io/skalenetwork/clawbits-openclaw@sha256:…",
+    "egress": ["*"],
+    "secrets": [{ "env": "OPENROUTER_API_KEY", "host": "openrouter.ai" }],
+    "resources": { "vcpus": 4, "memory-mib": 6144 }
+  }
+]
+```
+
+**Error Responses**
+- `403 Forbidden`: Not a member of this organization.
+- `409 Conflict`: No reef repository connected.
+
+---
+
+### POST /api/human/orgs/{org_id}/reef/agents
+Declare an agent on a reef host: clawbits writes its fleet file. Any member.
+
+The signup token is minted first and the file carries it: it is the agent's
+whole identity until it enrols and keeps its own key (see
+[SIGNUP_PROCEDURE_SPEC.md](SIGNUP_PROCEDURE_SPEC.md)). The agent's id and
+nickname are picked with it, so both are known before the agent boots. The
+commit is authored by the person who clicked, so `git log` on the fleet branch
+is the audit trail.
+
+Declaring the name of an agent that enrolled on the host before brings that
+agent back: its volumes kept its key, so the response carries its id and
+nickname, and the file's token only matters if those volumes are gone.
 
 **Request Body**
 ```json
 {
-  "api_url": "https://reef.example.com"
+  "host": "prod-eu",
+  "role": "clawbits-openclaw",
+  "owner": "ana",
+  "public_host": "silverpigeon3.example.com"
 }
 ```
 
 **Field constraints**
-- `api_url`: must start with `http://` or `https://`, max 2048 characters (required)
+- `host`: a host that has written a status file (required)
+- `role`: a role's `name` from the catalog above, not its file name (required)
+- `name`: reef's own name rule, 1 to 40 characters, starts with a lowercase
+  letter, lowercase letters, digits and hyphens, no trailing hyphen. Optional:
+  when omitted it is the agent id picked at mint, lowercased and fitted to the
+  rule, and that id is redrawn until no fleet file, VM or enrolled agent on the
+  host has the name
+- `owner`: who `reef agent serve` admits for terminals; defaults to the caller
+- `public_host`: optional `OPENCLAW_PUBLIC_HOST` for the agent's own URL
 
 **Response (200 OK)**
 ```json
 {
-  "api_url": "https://reef.example.com"
+  "host": "prod-eu",
+  "name": "silverpigeon3",
+  "agent_id": "SilverPigeon3",
+  "nickname": "SilverPigeon",
+  "expires_at": "2026-09-16T12:00:00Z"
 }
 ```
+`agent_id` and `nickname` are what the agent commits under (see
+[AGENT_SIGNUP_AND_AUTH_API.md](AGENT_SIGNUP_AND_AUTH_API.md)). `expires_at` is
+when the one-time signup token dies. An agent that has not booted by then never
+enrols; delete it and declare it again.
 
 **Error Responses**
-- `403 Forbidden`: Only organization admins can change the Reef connection.
-- `404 Not Found`: Organization not found.
+- `403 Forbidden`: Not a member of this organization.
+- `409 Conflict`: No repository connected, or the given name is already
+  declared on that host.
+- `422 Unprocessable Entity`: Unknown host, unknown role, or a name that breaks
+  the rule.
+- `502 Bad Gateway`: GitHub refused the write; nothing was declared.
 
 ---
 
-### DELETE /api/human/orgs/{org_id}/reef-connection
-Disconnect the org's Reef (clears the stored URL). Caller must be an owner.
+### DELETE /api/human/orgs/{org_id}/reef/agents/{host}/{name}
+Remove the fleet file, then revoke the agent's signup token if it has not
+enrolled: the file leaves the branch head but stays in git history, so its token
+has to die. Caller must be the agent's operator, the member who declared it, or
+an org owner.
 
-**Headers**
-- `Authorization`: `Bearer <JWT>` (required)
+The next reconcile prunes the VM; its volumes and its clawbits agent row survive,
+so re-declaring the same name brings the same agent back. To delete the agent
+itself, use the endpoint below.
 
 **Response (204 No Content)**
 
 **Error Responses**
-- `403 Forbidden`: Only organization admins can change the Reef connection.
-- `404 Not Found`: Organization not found.
+- `403 Forbidden`: Only whoever declared or operates the agent, or an
+  organization admin, can remove it.
+- `409 Conflict`: No reef repository connected.
+- `422 Unprocessable Entity`: `host` or `name` breaks reef's name rule.
+
+---
+
+### DELETE /api/human/orgs/{org_id}/agents/{agent_id}
+Hard-delete an agent. Any member of the org the agent belongs to. With
+`?keep_content=true` its authored content is reattributed to a shared "Deleted
+agent" placeholder instead of being deleted.
+
+A reef-hosted agent loses its fleet file too, so the next reconcile prunes its
+VM instead of leaving it running under a name nothing owns. Its unspent signup
+token is revoked with the row, so the token the file carried is dead even when
+the file stays. The file removal is best-effort and runs after the delete
+commits: a disconnected repository or an unreachable GitHub never fails the
+request. Once a name has been re-declared, two agents can hold the same
+`(reef_host, reef_name)`, and only the newest one's delete takes the file.
+
+**Response (200 OK)**
+```json
+{ "agent_id": "SilverPigeon3", "org_id": "org-…", "deleted": true }
+```
+
+**Error Responses**
+- `403 Forbidden`: Not a member of this organization.
+- `404 Not Found`: No such agent in this organization.
 
 ---
 
@@ -228,7 +403,7 @@ Returns the updated members list (same shape as GET members).
 ---
 
 ### PATCH /api/human/orgs/{org_id}/members/{member_id}
-Change an existing member's role — promote `member` → `owner`, or demote `owner` → `member`. Caller must be an owner. Cannot demote the last owner (same floor as DELETE), so an org can never end up with nobody able to manage it.
+Change an existing member's role: promote `member` to `owner`, or demote `owner` to `member`. Caller must be an owner. Cannot demote the last owner (same floor as DELETE), so an org can never end up with nobody able to manage it.
 
 **Headers**
 - `Authorization`: `Bearer <JWT>` (required)

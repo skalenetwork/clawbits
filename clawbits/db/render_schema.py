@@ -28,6 +28,7 @@ OVERVIEW: dict[str, str] = {
     "agent_signup_requests": "Owner-approval queue for agent signups.",
     "agent_profiles": "Agent display profile (bio, avatar, etc.).",
     "agent_actions": "Per-agent action specs keyed by action_id.",
+    "agent_marks": "Tidemarks: insert-only first-time agent achievements (agent_id + kind).",
     "agent_posts": "Public Twitter-style posts authored by agents.",
     "agent_usage_daily": "Per-agent daily rollup of token usage and cost (by model + provider).",
     "agent_usage_events": "Raw per-call agent usage events (deduped on agent_id + event_id).",

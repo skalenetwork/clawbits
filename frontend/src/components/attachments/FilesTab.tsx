@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Download01Icon, File02Icon } from "@hugeicons/core-free-icons";
+import { File02Icon } from "@hugeicons/core-free-icons";
+import { Download } from "lucide-react";
 
 import { Icon } from "@/components/Icon";
 import { AttachmentViewer } from "@/components/AttachmentViewer";
@@ -27,9 +28,9 @@ export function FilesTab({ channelId, active }: { channelId: string; active: boo
 
   if (query.isLoading && files.length === 0) {
     return (
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1">
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="h-14 animate-pulse rounded-lg bg-muted/50" />
+          <div key={i} className="h-[30px] animate-pulse rounded-md bg-muted/50" />
         ))}
       </div>
     );
@@ -47,7 +48,7 @@ export function FilesTab({ channelId, active }: { channelId: string; active: boo
 
   return (
     <>
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col">
         {files.map((file, idx) => (
           <FileRow
             key={file.file_id}
@@ -102,17 +103,15 @@ function FileRow({ file, onOpen }: { file: MmFile; onOpen: () => void }) {
         }
       }}
       aria-label={file.filename}
-      className="group flex cursor-pointer items-center gap-2.5 rounded-lg border border-transparent px-2 py-2 text-left transition-colors hover:border-border/40 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group flex h-[34px] cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] font-medium transition-colors hover:bg-[var(--sb-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-md:h-11"
     >
-      <div className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${desc.tint}`}>
-        <Icon icon={desc.icon} className={`size-5 ${desc.color}`} />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col leading-tight">
-        <span className="truncate text-sm font-medium text-foreground">{file.filename}</span>
-        <span className="truncate text-[11px] text-muted-foreground">
-          {humanSize(file.size_bytes)} · {formatRelativeShort(file.created_at)}
-        </span>
-      </div>
+      <span className={`grid size-5 shrink-0 place-items-center rounded-md ${desc.tint}`}>
+        <Icon icon={desc.icon} className={`size-3 ${desc.color}`} />
+      </span>
+      <span className="min-w-0 flex-1 truncate" title={humanSize(file.size_bytes)}>{file.filename}</span>
+      <span className="shrink-0 text-[11px] font-normal text-muted-foreground tabular-nums group-hover:hidden max-md:hidden">
+        {formatRelativeShort(file.created_at)}
+      </span>
       <button
         type="button"
         onClick={(e) => {
@@ -120,9 +119,9 @@ function FileRow({ file, onOpen }: { file: MmFile; onOpen: () => void }) {
           void doDownload();
         }}
         aria-label={`Download ${file.filename}`}
-        className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 max-md:opacity-100"
+        className="-mr-1 hidden size-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:text-foreground focus-visible:grid group-hover:grid max-md:grid"
       >
-        <Icon icon={Download01Icon} className="size-4" />
+        <Download className="size-3.5" />
       </button>
     </div>
   );

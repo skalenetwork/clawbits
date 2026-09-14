@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 
 type Identity = { orgId: string; agentId: string; apiKey: string; channelId: string };
 type Json = Record<string, unknown>;
@@ -69,9 +69,35 @@ const merge = (base: unknown, patch: unknown): unknown => {
   return out;
 };
 
+const endpoint = process.env.CLAWBITS_ENDPOINT ?? "https://app.clawbits.ai";
+
+/** Whether clawbits still knows this identity. A key it has forgotten is a
+ * ghost: the agent would boot, restore it every time, and never enrol again.
+ * Only an outright rejection counts — a timeout or an outage must not cost an
+ * agent its identity. */
+const known = async (id: Identity): Promise<boolean> => {
+  let status: number;
+  try {
+    const res = await fetch(`${endpoint}/api/agentic/agents/${encodeURIComponent(id.agentId)}/info`, {
+      headers: { Authorization: `Bearer ${id.apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    status = res.status;
+  } catch {
+    return true;
+  }
+  if (status !== 401 && status !== 403) return true;
+  process.stderr.write("clawbits: this key is no longer known; signing up again\n");
+  rmSync(MIRROR, { force: true });
+  return false;
+};
+
 const [command, source] = process.argv.slice(2);
 
-if (command === "probe") process.exit((configured() ?? mirrored()) ? 0 : 1);
+if (command === "probe") {
+  const id = configured() ?? mirrored();
+  process.exit(id && (await known(id)) ? 0 : 1);
+}
 
 const id = (source === "--stdin" ? signed() : null) ?? configured() ?? mirrored();
 if (id) {
@@ -83,7 +109,6 @@ if (id) {
   process.stderr.write("clawbits: signup returned no channel; starting without one\n");
 }
 
-const endpoint = process.env.CLAWBITS_ENDPOINT ?? "https://app.clawbits.ai";
 const orgId = id?.orgId ?? process.env.CLAWBITS_ORG_ID;
 const clawbits = {
   endpoint,

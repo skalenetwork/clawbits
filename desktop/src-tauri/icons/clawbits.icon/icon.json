@@ -1,0 +1,82 @@
+{
+  "fill-specializations" : [
+    {
+      "value" : {
+        "automatic-gradient" : "display-p3:1.00000,1.00000,1.00000,1.00000"
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : {
+        "automatic-gradient" : "display-p3:0.36589,0.07859,0.08743,1.00000"
+      }
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "display-p3:0.69760,0.04028,0.12618,1.00000",
+                  "display-p3:0.52893,0.00000,0.03829,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 1,
+                    "y" : 0
+                  },
+                  "stop" : {
+                    "x" : 0.12469913561177229,
+                    "y" : 1
+                  }
+                }
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "automatic-gradient" : "display-p3:0.97056,0.95879,1.00000,1.00000",
+                "orientation" : {
+                  "start" : {
+                    "x" : 1,
+                    "y" : 0
+                  },
+                  "stop" : {
+                    "x" : 0.09304043342604301,
+                    "y" : 1
+                  }
+                }
+              }
+            }
+          ],
+          "image-name" : "clawbits-short.svg",
+          "name" : "clawbits-short",
+          "position" : {
+            "scale" : 0.9,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 0.3
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

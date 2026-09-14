@@ -22,7 +22,7 @@ interface Props {
   schema?: Record<string, unknown>[];
   /**
    * Nav treatment. The homepage passes "overlay" so the fixed nav starts
-   * transparent over the hero shader canvas; every other page keeps the
+   * transparent over the hero gradient canvas; every other page keeps the
    * sticky solid bar. "overlay-light" is the same overlay over a canvas that
    * is light rather than dark - see Nav.astro.
    */
@@ -78,7 +78,7 @@ const trackAnalytics = import.meta.env.PROD && ANALYTICS.hosts.includes(Astro.si
  * white band over the hero.
  *
  * Light is the real page ground (--color-ink), not #fff. Pages that open on
- * the shader canvas (nav="overlay") start dark so the canvas reads as running
+ * the gradient canvas (nav="overlay") start dark so the canvas reads as running
  * to the top of the screen, then flip back once the canvas scrolls away - see
  * the observer below, which keys off [data-theme-anchor].
  */
@@ -164,30 +164,6 @@ const jsonLd = {
     {/* Per-route head additions, e.g. a doc page's Markdown twin. */}
     <slot name="head" />
 
-    {/* CLAIMS the marker @paper-design/shaders looks for before injecting its
-        own stylesheet, so it never injects one.
-
-        shader-mount.js:49 guards on `querySelector("style[data-paper-shader]")`
-        and, finding none, prepends a <style> to <head> at runtime. That
-        stylesheet is the ONLY thing that positions the canvas
-        (position:absolute; inset:0; width:100%; height:100%) - and its hash is
-        not in the CSP Astro computes at build time, because it does not exist
-        at build time. The browser refuses it, the canvas falls into normal flow
-        at its attribute size (2x CSS px via minPixelRatio), and the hero paints
-        a giant canvas OVER the copy instead of behind it.
-
-        Invisible in `astro dev`, which does not emit the meta CSP at all. Only
-        `astro build` + `astro preview` reproduces it.
-
-        Empty on purpose: the equivalent rules live in global.css, where the
-        build hashes them like any other stylesheet. An empty style element
-        hashes to sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=, which is
-        already in every page's style-src.
-
-        If @paper-design/shaders is ever upgraded, re-check that
-        `defaultStyle` in shader-mount.js still matches the global.css rules. */}
-    <style is:inline data-paper-shader></style>
-
     <link rel="icon" type="image/png" href="/brand/favicon.png" />
     <link rel="apple-touch-icon" href="/brand/apple-touch-icon-180.png" />
     <meta
@@ -200,12 +176,10 @@ const jsonLd = {
     {/* Self-hosted, preloaded, with generated fallback metrics so the hero
         does not shift when the face lands. Geist carries the site; Inter is
         the product's UI face inside the hero demo window (preloaded - the
-        window is the hero visual); Fraunces exists solely for the demo's
-        Home greeting. */}
+        window is the hero visual). */}
     <Font cssVariable="--ff-sans" preload />
     <Font cssVariable="--ff-app" preload />
     <Font cssVariable="--ff-mono" />
-    <Font cssVariable="--ff-serif" />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content={SITE.name} />
@@ -264,7 +238,7 @@ const jsonLd = {
     <Footer />
 
     {/* Keeps the browser chrome AND the document canvas background in step
-        with what is actually under them: dark while the shader canvas holds
+        with what is actually under them: dark while the gradient canvas holds
         the top of the viewport, the page ground after it leaves. body's
         background is the only thing that reaches the band above the page on
         iOS - see the note in global.css. No-ops on every page without a

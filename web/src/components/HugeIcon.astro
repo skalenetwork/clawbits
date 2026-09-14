@@ -2,10 +2,10 @@
 /**
  * Renders a @hugeicons/core-free-icons glyph as plain inline SVG.
  *
- * The app draws these through @hugeicons/react, but this site keeps React for
- * exactly one island (the hero shader) - shipping a component runtime to draw
- * two footer glyphs would be the wrong trade. The icon data is a plain array,
- * so it renders server-side to static markup with zero client JavaScript.
+ * The app draws these through @hugeicons/react, but this site ships no
+ * component runtime at all - adding one to draw two footer glyphs would be the
+ * wrong trade. The icon data is a plain array, so it renders server-side to
+ * static markup with zero client JavaScript.
  *
  * Shape is `[tagName, attrs][]`, where attrs are REACT-style camelCase
  * (strokeWidth, strokeLinecap) plus a `key` React needs and SVG does not.

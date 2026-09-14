@@ -78,12 +78,13 @@ src/
     Legal.astro          frame for /privacy and /terms
   components/
     Section.astro        the ONE layout primitive
-    AppDemo.astro        the hero's zero-JS recreation of the real app;
-                         bracketed by the bot:demo markers in index.astro
-    ShaderBackdrop.tsx   the only React island (GrainGradient, client:only)
+    AppDemo.astro        the hero's recreation of the real app, views in
+                         app-demo/; bracketed by the bot:demo markers in
+                         index.astro
+    SombraGradient.astro the gradient ridge on every rounded canvas
     *Visual.astro        one per feature section
     LegalSection.astro   one numbered section; index and body share one object
-    Nav / Footer / Button / Logo / Eyebrow / HugeIcon / AppWindow
+    Nav / Footer / Button / Logo / Eyebrow / HugeIcon
   pages/                 index, privacy, terms, brand, download, 404,
                          docs/, changelog/, robots.txt, llms.txt, llms-full.txt
 scripts/
@@ -103,10 +104,9 @@ to the same variable face), Geist Mono for code. The scale leans on in-between
 weights - 450, 550 - which only work because it is served as a variable font,
 so do not swap in static instances.
 
-Two further faces exist and are scoped to one place each, both inside the hero
-demo, where the point is to look like the real app rather than like the site:
-**Fraunces** for the Home greeting and **Inter** (`--ff-app`) for the demo
-window's UI. Neither belongs anywhere else on the page.
+One further face exists and is scoped to the hero demo, where the point is to
+look like the real app rather than like the site: **Inter** (`--ff-app`) for
+the demo window's UI. It belongs nowhere else on the page.
 
 **Nothing on this site is uppercased.** No `text-transform: uppercase`, no
 tracked-out mono micro-labels. Both are the most overused devices on AI landing
@@ -257,8 +257,9 @@ component**, as `lt-*` does. To audit:
 cd web && bun run build && python3 -c "import re,glob,collections; d=collections.defaultdict(set); [d[m.group(1)].add(f) for f in glob.glob('dist/_astro/*.css') for m in re.finditer(r'@keyframes ([\w-]+)\{', open(f).read())]; print({k:v for k,v in d.items() if len(v)>1} or 'no collisions')"
 ```
 
-**Grain is invisible in downscaled screenshots.** It is 1px noise at 0.055
-opacity; any 2x-downscaled capture averages it away. Judge it on a real display.
+**Grain is invisible in downscaled screenshots.** The gradient's grain is a
+per-pixel dither (`SombraGradient.astro`); any 2x-downscaled capture averages it
+away. Judge it on a real display.
 
 **There is no colour logo SVG.** `clawbits-long.svg` is flat black artwork for
 light backgrounds, inverted to white here. The candy-textured mark exists only

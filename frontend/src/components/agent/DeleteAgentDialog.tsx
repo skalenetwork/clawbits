@@ -1,42 +1,15 @@
 import {useState} from "react";
-import {Icon} from "@/components/Icon";
-import {Delete02Icon as Trash} from "@hugeicons/core-free-icons";
 import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
-import {Button} from "@/components/ui/button";
+    ModalButton,
+    ModalFooter,
+    ModalHeader,
+    ModalPanel,
+} from "@/components/modals/Modal";
+import {DialogDescription} from "@/components/ui/dialog";
 import {Switch} from "@/components/ui/switch";
 import {Label} from "@/components/ui/label";
 import {ExtraActionButton, type ExtraAction} from "@/components/ExtraActionButton";
 
-interface DeleteAgentDialogProps {
-    open: boolean;
-    onOpenChange: (open: boolean) => void;
-    /** Display name shown in bold in the prompt. */
-    agentName: string;
-    /** Delete in flight — disables the controls and swaps the button label. */
-    isPending: boolean;
-    /** Called with the operator's "keep messages" choice when they confirm. */
-    onConfirm: (keepContent: boolean) => void;
-    /** Optional "save the DM first" action. Null when the operator has no DM
-     *  with this agent, in which case no export button is offered. */
-    exportAction?: ExtraAction | null;
-}
-
-/**
- * Confirmation dialog for deleting an agent, shared by the agents list and the
- * agent profile so the wording and the "keep messages" choice stay identical.
- *
- * The toggle defaults to ON, so the safer outcome is the default: everything
- * the agent wrote is re-homed to a shared "Deleted agent" placeholder and
- * conversations survive for the other members who shared those channels.
- * Flipping it off opts into the full, irreversible delete.
- */
 export function DeleteAgentDialog({
     open,
     onOpenChange,
@@ -44,12 +17,15 @@ export function DeleteAgentDialog({
     isPending,
     onConfirm,
     exportAction,
-}: DeleteAgentDialogProps) {
+}: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    agentName: string;
+    isPending: boolean;
+    onConfirm: (keepContent: boolean) => void;
+    exportAction?: ExtraAction | null;
+}) {
     const [keepContent, setKeepContent] = useState(true);
-
-    // Reset the toggle each time the dialog (re)opens so a prior choice doesn't
-    // silently carry into the next agent's delete. Done during render via
-    // React's "adjust state when a prop changes" pattern rather than an effect.
     const [wasOpen, setWasOpen] = useState(open);
     if (open !== wasOpen) {
         setWasOpen(open);
@@ -57,73 +33,55 @@ export function DeleteAgentDialog({
     }
 
     return (
-        <Dialog
+        <ModalPanel
             open={open}
-            onOpenChange={(next) => { if (!next && !isPending) onOpenChange(false); }}
+            onOpenChange={next => { if (!next && !isPending) onOpenChange(false); }}
+            kind="confirm"
         >
-            <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                    <DialogTitle>
-                        <Icon icon={Trash} className="text-destructive"/>
-                        Delete agent?
-                    </DialogTitle>
-                    <DialogDescription>
-                        <strong className="break-words">{agentName}</strong>{" "}
-                        and its account, API key, and identity will be permanently
-                        deleted. This can't be undone.
-                    </DialogDescription>
-                </DialogHeader>
-
-                <div className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/30 p-3">
+            <ModalHeader title="Delete agent?"/>
+            <div className="px-4 pb-4">
+                <DialogDescription className="text-[13px]">
+                    <span className="font-medium break-words text-foreground">{agentName}</span>{" "}
+                    and its account, API key, and identity will be permanently
+                    deleted. This can't be undone.
+                </DialogDescription>
+                <div className="mt-4 flex items-start gap-2.5">
                     <Switch
                         id="keep-agent-content"
-                        className="mt-0.5"
+                        size="sm"
+                        className="mt-px"
                         checked={keepContent}
                         onCheckedChange={setKeepContent}
                         disabled={isPending}
                     />
-                    <div className="space-y-0.5">
-                        <Label htmlFor="keep-agent-content" className="text-sm font-medium">
+                    <div className="min-w-0">
+                        <Label htmlFor="keep-agent-content" className="text-[13px]">
                             Keep its messages &amp; content
                         </Label>
-                        <p className="text-xs text-muted-foreground">
+                        <p className="mt-1 text-[12px] text-muted-foreground">
                             {keepContent
                                 ? "Its posts, files, and conversations stay, reattributed to “Deleted agent.”"
-                                : exportAction
-                                    ? "Its posts, files, and conversations will also be permanently deleted — export your chat first if you want to keep it."
-                                    : "Its posts, files, and conversations will also be permanently deleted."}
+                                : `Its posts, files, and conversations will also be permanently deleted.${exportAction ? " Export your chat first if you want to keep it." : ""}`}
                         </p>
                     </div>
                 </div>
-
-                <DialogFooter>
-                    {exportAction && (
-                        // Reset on reopen so a previous agent's "Exported"
-                        // doesn't greet the next delete.
-                        <ExtraActionButton
-                            action={exportAction}
-                            resetKey={open}
-                            disabled={isPending}
-                        />
-                    )}
-                    <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={() => { onOpenChange(false); }}
-                        disabled={isPending}
-                    >
-                        Cancel
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="destructive"
-                        onClick={() => { onConfirm(keepContent); }}
-                        disabled={isPending}
-                    >
-                        {isPending ? "Deleting…" : "Delete agent"}
-                    </Button>
-                </DialogFooter>
-            </DialogContent>
-        </Dialog>
+            </div>
+            <ModalFooter
+                left={exportAction && (
+                    <ExtraActionButton action={exportAction} resetKey={open} disabled={isPending}/>
+                )}
+            >
+                <ModalButton onClick={() => { onOpenChange(false); }} disabled={isPending}>
+                    Cancel
+                </ModalButton>
+                <ModalButton
+                    tone="destructive"
+                    onClick={() => { onConfirm(keepContent); }}
+                    disabled={isPending}
+                >
+                    {isPending ? "Deleting…" : "Delete agent"}
+                </ModalButton>
+            </ModalFooter>
+        </ModalPanel>
     );
 }

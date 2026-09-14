@@ -193,40 +193,6 @@ jobs:
         run: bun --bun run lint
 
 
-  admin-ui-build:
-    name: Reef Admin UI Build
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: reef/admin-ui
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Cache bun dependencies
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.bun/install/cache
-            reef/admin-ui/node_modules
-          key: ${{ runner.os }}-bun-admin-ui-${{ hashFiles('reef/admin-ui/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-admin-ui-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build (tsc + vite)
-        run: bun --bun run build
-
-
   plugin-test:
     name: Plugin Test
     # The publish workflow (publish-clawhub-plugin.yaml) runs plugin tests

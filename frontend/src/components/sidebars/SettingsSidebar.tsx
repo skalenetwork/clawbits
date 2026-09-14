@@ -1,144 +1,68 @@
 import {NavLink, useLocation} from "react-router-dom";
 import {
-    UserMultiple02Icon as UserGroup,
-    UserIcon as User,
-    PaintBrush01Icon as PaintBrush,
-    LockIcon as PrivacyLock,
-    Notification03Icon as Bell,
-    HashtagIcon as Hash,
-    ChartHistogramIcon as UsageChart,
-    Link01Icon as LinkIcon,
-    Megaphone01Icon as Megaphone,
+    ChartHistogramIcon,
+    HashtagIcon,
+    Link01Icon,
+    LockIcon,
+    Megaphone01Icon,
+    Notification03Icon,
+    PaintBrush01Icon,
+    UserIcon,
+    UserMultiple02Icon,
 } from "@hugeicons/core-free-icons";
 import {Icon} from "@/components/Icon";
 import {ReefIcon} from "@/components/ReefIcon";
+import {SIDEBAR_SCROLL} from "@/components/ProgressiveBlur";
 import {useActiveOrg} from "@/hooks/useActiveOrg";
-import {SidebarMenuButton, SidebarMenuItem} from "@/components/ui/sidebar";
-import {CollapsibleGroup} from "./CollapsibleGroup";
-import {ContextualHeader} from "./ContextualHeader";
+import {SidebarMenu, SidebarMenuButton, SidebarMenuItem} from "@/components/ui/sidebar";
+import {cn} from "@/lib/utils";
 
-/**
- * The Settings contextual sidebar — Organization (owner-only) + Account.
- * Lifted verbatim from the old SidebarLayout "settings" mode.
- */
+const GROUPS = [
+    {
+        label: "Organization",
+        ownersOnly: true,
+        links: [
+            {to: "/settings/members", label: "Members", icon: <Icon icon={UserMultiple02Icon}/>},
+            {to: "/settings/usage", label: "Usage", icon: <Icon icon={ChartHistogramIcon}/>},
+            {to: "/settings/channels", label: "Channels", icon: <Icon icon={HashtagIcon}/>},
+            {to: "/settings/lobstertalk", label: "LobsterTalk", icon: <Icon icon={Megaphone01Icon}/>},
+            {to: "/settings/reef", label: "Reef", icon: <ReefIcon/>},
+        ],
+    },
+    {
+        label: "Account",
+        ownersOnly: false,
+        links: [
+            {to: "/settings/profile", label: "Profile", icon: <Icon icon={UserIcon}/>},
+            {to: "/settings/connectors", label: "Connectors", icon: <Icon icon={Link01Icon}/>},
+            {to: "/settings/notifications", label: "Notifications", icon: <Icon icon={Notification03Icon}/>},
+            {to: "/settings/privacy", label: "Privacy", icon: <Icon icon={LockIcon}/>},
+            {to: "/settings/appearance", label: "Appearance", icon: <Icon icon={PaintBrush01Icon}/>},
+        ],
+    },
+];
+
+/** Replaces the main sidebar in Settings; Back sits in the shell's footer. */
 export function SettingsSidebar() {
-    const location = useLocation();
-    const pathname = location.pathname;
-    // Gate the Organization group on the caller's role (reads ``my_role`` off
-    // the active org — no extra fetch, no leaked member data for non-owners).
-    const {isOwner: isOrgOwner} = useActiveOrg();
-
+    const {pathname} = useLocation();
+    const {isOwner} = useActiveOrg();
     return (
-        <>
-            <ContextualHeader title="Settings"/>
-            <div data-vt-contextual="" className="no-scrollbar flex-1 overflow-y-auto p-1 pt-13">
-                {isOrgOwner && (
-                    <CollapsibleGroup id="organization-settings" label="Organization">
-                        <SidebarMenuItem>
-                            <SidebarMenuButton
-                                render={<NavLink to="/settings/members" viewTransition/>}
-                                isActive={pathname === "/settings/members"}
-                                tooltip="Members"
-                            >
-                                <Icon icon={UserGroup}/>
-                                <span>Members</span>
-                            </SidebarMenuButton>
-                        </SidebarMenuItem>
-                        <SidebarMenuItem>
-                            <SidebarMenuButton
-                                render={<NavLink to="/settings/usage" viewTransition/>}
-                                isActive={pathname === "/settings/usage"}
-                                tooltip="Usage"
-                            >
-                                <Icon icon={UsageChart}/>
-                                <span>Usage</span>
-                            </SidebarMenuButton>
-                        </SidebarMenuItem>
-                        <SidebarMenuItem>
-                            <SidebarMenuButton
-                                render={<NavLink to="/settings/channels" viewTransition/>}
-                                isActive={pathname === "/settings/channels"}
-                                tooltip="Channels"
-                            >
-                                <Icon icon={Hash}/>
-                                <span>Channels</span>
-                            </SidebarMenuButton>
-                        </SidebarMenuItem>
-                        <SidebarMenuItem>
-                            <SidebarMenuButton
-                                render={<NavLink to="/settings/lobstertalk" viewTransition/>}
-                                isActive={pathname === "/settings/lobstertalk"}
-                                tooltip="LobsterTalk"
-                            >
-                                <Icon icon={Megaphone}/>
-                                <span>LobsterTalk</span>
-                            </SidebarMenuButton>
-                        </SidebarMenuItem>
-                        <SidebarMenuItem>
-                            <SidebarMenuButton
-                                render={<NavLink to="/settings/reef" viewTransition/>}
-                                isActive={pathname === "/settings/reef"}
-                                tooltip="Reef"
-                            >
-                                <ReefIcon/>
-                                <span>Reef</span>
-                            </SidebarMenuButton>
-                        </SidebarMenuItem>
-                    </CollapsibleGroup>
-                )}
-                <CollapsibleGroup id="account" label="Account">
-                    <SidebarMenuItem>
-                        <SidebarMenuButton
-                            render={<NavLink to="/settings/profile" viewTransition/>}
-                            isActive={pathname === "/settings/profile"}
-                            tooltip="Profile"
-                        >
-                            <Icon icon={User}/>
-                            <span>Profile</span>
-                        </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                        <SidebarMenuButton
-                            render={<NavLink to="/settings/connectors" viewTransition/>}
-                            isActive={pathname === "/settings/connectors"}
-                            tooltip="Connectors"
-                        >
-                            <Icon icon={LinkIcon}/>
-                            <span>Connectors</span>
-                        </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                        <SidebarMenuButton
-                            render={<NavLink to="/settings/notifications" viewTransition/>}
-                            isActive={pathname === "/settings/notifications"}
-                            tooltip="Notifications"
-                        >
-                            <Icon icon={Bell}/>
-                            <span>Notifications</span>
-                        </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                        <SidebarMenuButton
-                            render={<NavLink to="/settings/privacy" viewTransition/>}
-                            isActive={pathname === "/settings/privacy"}
-                            tooltip="Privacy"
-                        >
-                            <Icon icon={PrivacyLock}/>
-                            <span>Privacy</span>
-                        </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                        <SidebarMenuButton
-                            render={<NavLink to="/settings/appearance" viewTransition/>}
-                            isActive={pathname === "/settings/appearance"}
-                            tooltip="Appearance"
-                        >
-                            <Icon icon={PaintBrush}/>
-                            <span>Appearance</span>
-                        </SidebarMenuButton>
-                    </SidebarMenuItem>
-                </CollapsibleGroup>
-            </div>
-        </>
+        <div className={cn(SIDEBAR_SCROLL, "flex flex-col gap-4")}>
+            {GROUPS.filter((group) => isOwner || !group.ownersOnly).map((group) => (
+                <div key={group.label}>
+                    <p className="flex h-7 items-center px-2 text-[13px] font-medium text-muted-foreground">{group.label}</p>
+                    <SidebarMenu>
+                        {group.links.map((link) => (
+                            <SidebarMenuItem key={link.to}>
+                                <SidebarMenuButton render={<NavLink to={link.to} viewTransition/>} isActive={pathname === link.to}>
+                                    {link.icon}
+                                    <span>{link.label}</span>
+                                </SidebarMenuButton>
+                            </SidebarMenuItem>
+                        ))}
+                    </SidebarMenu>
+                </div>
+            ))}
+        </div>
     );
 }

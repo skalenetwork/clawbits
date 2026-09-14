@@ -29,8 +29,7 @@ interface PresenceDotProps {
  *
  * Offline renders as a muted gray dot rather than hiding; this gives a
  * consistent affordance and makes "we know they're offline"
- * distinguishable from "we have no presence info yet". "setup" (an agent
- * onboarding, not yet pinged) pulses to read as "connecting…".
+ * distinguishable from "we have no presence info yet".
  */
 export function PresenceDot({
   status,
@@ -53,9 +52,8 @@ export function PresenceDot({
       aria-label={`Status: ${text}`}
       title={text}
       className={cn(
-        "block rounded-full ring-2",
+        "block rounded-full ring-[1.5px]",
         color,
-        status === "setup" && "animate-pulse",
         ringClassName ?? "ring-background",
         className,
       )}

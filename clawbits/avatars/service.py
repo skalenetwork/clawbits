@@ -286,9 +286,8 @@ async def ensure_channel_avatar(
 
     - ``"public"`` → hash glyph
     - ``"private"`` → padlock glyph
-    - ``"direct"`` → no overlay (DM tiles are rendered as a stacked
-      member-avatar via the frontend ``ChatAvatar`` — the underlying
-      channel avatar is hidden in practice)
+    - ``"direct"`` → no overlay (DM tiles render the peer's avatar via the
+      frontend ``ChannelGlyph``, so the channel avatar is hidden in practice)
     """
     overlay = None
     if channel_type == "public":

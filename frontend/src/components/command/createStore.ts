@@ -1,37 +1,40 @@
 /**
- * Global open-state for the create dialogs (new DM / channel / agent), decoupled
- * from any one trigger so the ⌘K palette actions (and any future caller) can drive
- * a single set of dialogs mounted once in the app shell — see {@link CreateDialogs}.
- * Mirrors paletteStore's atom pattern (@tanstack/store).
+ * Open-state for the create dialogs, mounted once in the app shell (see
+ * {@link CreateDialogs}) so any trigger, the ⌘K palette included, can drive them.
  */
 import {createAtom, type Atom} from "@tanstack/store";
-import {minimizeOrCloseWizard, openOrRestoreWizard} from "@/components/new-agent/wizardSessionStore";
+import {CompassIcon, HashtagIcon, MessageAdd01Icon} from "@hugeicons/core-free-icons";
+import { Bot } from "lucide-react";
+import type {AppIcon} from "@/components/Icon";
 
-export type CreateDialogKind = "dm" | "channel" | "agent" | "browse";
+export type CreateDialogKind = "dm" | "channel" | "browse";
 
-/** Holds the open PLAIN create dialog. "agent" never occupies it — the wizard
- *  is session-based (wizardSessionStore) so it can minimize instead of reset. */
 export const createDialogAtom: Atom<CreateDialogKind | null> = createAtom<CreateDialogKind | null>(null);
 
 export function openCreate(kind: CreateDialogKind): void {
-    // Defer to the next task (like openCommandPalette) so the click that
-    // triggered this has settled before Base UI's Dialog mounts — otherwise the
-    // dialog's outside-press dismissal catches the opening pointerdown.
+    // Deferred so the opening click has finished before the dialog's outside-press listener mounts.
     setTimeout(() => {
-        if (kind === "agent") {
-            // Any plain create dialog yields; a minimized wizard session is
-            // RESTORED (state intact), not restarted.
-            createDialogAtom.set(() => null);
-            openOrRestoreWizard();
-        } else {
-            // One modal at a time: an open wizard steps aside — dirty sessions
-            // minimize to their chip instead of losing progress.
-            minimizeOrCloseWizard();
-            createDialogAtom.set(() => kind);
-        }
+        createDialogAtom.set(() => kind);
     }, 0);
 }
 
 export function closeCreate(): void {
     createDialogAtom.set(() => null);
 }
+
+/** The create menu, shared by the desktop sidebar and the mobile compose sheet:
+ *  each row opens a create dialog, or a page for New agent. */
+export type CreateOption = ({kind: CreateDialogKind} | {to: string}) & {
+    title: string;
+    description: string;
+    icon: AppIcon;
+    tint: string;
+    color: string;
+};
+
+export const CREATE_OPTIONS: CreateOption[] = [
+    {kind: "dm", title: "Open DM", description: "Start a private conversation", icon: MessageAdd01Icon, tint: "bg-blue-500/15", color: "var(--color-blue-500)"},
+    {kind: "channel", title: "New channel", description: "Start a group conversation by topic", icon: HashtagIcon, tint: "bg-emerald-500/15", color: "var(--color-emerald-500)"},
+    {kind: "browse", title: "Join channel", description: "Browse public channels in your org", icon: CompassIcon, tint: "bg-amber-500/15", color: "var(--color-amber-500)"},
+    {to: "/setup/agent", title: "New agent", description: "Create an AI teammate", icon: Bot, tint: "bg-violet-500/15", color: "var(--color-violet-500)"},
+];

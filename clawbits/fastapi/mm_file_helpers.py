@@ -217,21 +217,16 @@ def decode_image_and_thumbnail(
 
 @dataclass(frozen=True)
 class MmFileConfig:
-    """Resolved limits/policy for chat attachments.
-
-    Constructed at request time from env vars; safe defaults match what's
-    in ``.env.example`` so unset envs still produce a working surface.
-    """
     max_bytes: int
     max_per_post: int
     mime_allowlist: tuple[str, ...]
     download_url_ttl: int
-    # Longer-lived presigned GET for video/audio: playback can outlast a
-    # 1h URL (a long recording, or open → pause → resume later), and the
-    # ``<video>`` element keeps the *original* signed URL it was given — a
-    # mid-playback expiry 403s with no recovery beyond a re-fetch. Sign
-    # media URLs for a span comfortably longer than any plausible watch.
     media_download_url_ttl: int
+
+    def download_url_ttl_for(self, content_type: str) -> int:
+        if content_type.lower().startswith(("video/", "audio/")):
+            return self.media_download_url_ttl
+        return self.download_url_ttl
 
 
 # Media, plain text and source, plus the document, data and archive families
@@ -276,7 +271,7 @@ _EXT_TYPES = {
 def load_file_config() -> MmFileConfig:
     raw_allowlist = os.getenv("MM_FILES_MIME_ALLOWLIST")
     return MmFileConfig(
-        max_bytes=int(os.getenv("MM_FILES_MAX_BYTES", str(15 * 1024 * 1024))),
+        max_bytes=int(os.getenv("MM_FILES_MAX_BYTES", str(100 * 1024 * 1024))),
         max_per_post=int(os.getenv("MM_FILES_MAX_PER_POST", "5")),
         mime_allowlist=(
             tuple(p.strip() for p in raw_allowlist.split(",") if p.strip())
@@ -375,52 +370,33 @@ def new_file_id() -> str:
 def enrich_post_files_with_urls(
     post_dict: dict,
     presigner: R2Presigner | None,
-    *,
-    ttl: int,
+    cfg: MmFileConfig,
 ) -> None:
-    """In-place enrichment of a post's ``files`` list with presigned URLs.
-
-    Each file dict in ``post_dict["files"]`` carries ``_object_key`` and
-    ``_thumbnail_object_key`` from the DB layer. For images we presign a
-    GET URL (so ``<img src>`` works without a round trip); the underscore
-    keys are silently dropped by Pydantic when the dict is turned into
-    :class:`MmFileResponse`.
-
-    Skip the work when no presigner is configured — clients will still
-    get the metadata, just no download URLs (they can request via
-    ``/files/{id}/url`` later).
-    """
     if presigner is None:
         return
     files = post_dict.get("files") or []
     for f in files:
         ct = (f.get("content_type") or "").lower()
-        is_image = ct.startswith("image/")
         file_id = f.get("file_id")
-        # Eagerly inline the full download URL only for images (``<img src>``
-        # needs it without a round trip). Other types resolve on demand.
-        if is_image:
+        if ct.startswith(("image/", "video/")):
             obj_key = f.get("_object_key")
             if obj_key and file_id:
                 url, expires_at = cached_presigned_get(
                     presigner,
                     cache_key=f"{file_id}:original",
                     object_key=obj_key,
-                    ttl=ttl,
+                    ttl=cfg.download_url_ttl_for(ct),
                     download_filename=f.get("filename"),
                 )
                 f["download_url"] = url
                 f["download_url_expires_at"] = expires_at
-        # Thumbnail/poster: present for images *and* videos (the composer
-        # captures a client-side poster frame for video). Surface it for any
-        # file that has one so video tiles render a real frame, not a blank.
         thumb_key = f.get("_thumbnail_object_key")
         if thumb_key and file_id:
             url, expires_at = cached_presigned_get(
                 presigner,
                 cache_key=f"{file_id}:thumb",
                 object_key=thumb_key,
-                ttl=ttl,
+                ttl=cfg.download_url_ttl,
             )
             f["thumbnail_url"] = url
             f["thumbnail_url_expires_at"] = expires_at
