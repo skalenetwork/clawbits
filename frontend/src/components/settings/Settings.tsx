@@ -78,6 +78,7 @@ export function SettingsRow({
   to,
   replace,
   selected,
+  expanded,
 }: {
   title: ReactNode;
   description?: ReactNode;
@@ -89,6 +90,7 @@ export function SettingsRow({
   to?: string;
   replace?: boolean;
   selected?: boolean;
+  expanded?: boolean;
 }) {
   const body = (
     <>
@@ -133,6 +135,7 @@ export function SettingsRow({
       type="button"
       onClick={onClick}
       aria-current={selected}
+      aria-expanded={expanded}
       className={cn(
         ROW,
         PRESSABLE,

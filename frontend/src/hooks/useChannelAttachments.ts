@@ -30,12 +30,11 @@ export interface PendingAttachment {
   error?: string;
 }
 
-/** Default in-code mirrors of ``MM_FILES_*`` server env. These are the
- *  *minimum* — the server enforces the authoritative caps and will reject
- *  uploads beyond them with 413/415, so this is purely for friendlier UX
- *  (we reject obviously bad files locally before hitting the wire). */
-const MAX_BYTES = 15 * 1024 * 1024;
-const MAX_PER_POST = 5;
+/** Mirrors of the server's ``MM_FILES_*`` defaults, so an oversized file fails
+ *  in the composer instead of on the wire. The server stays authoritative. */
+export const MAX_ATTACHMENT_MB = 100;
+export const MAX_PER_POST = 5;
+const MAX_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024;
 
 interface UseChannelAttachmentsOptions {
   channelId: string;
@@ -226,28 +225,24 @@ export function useChannelAttachments(
 
   const addFiles = useCallback(
     (input: File[] | FileList) => {
-      const incoming = Array.from(input);
-      // Drop oversize / dup-name files quickly — server would reject them
-      // anyway. We don't surface per-file errors here because the user
-      // didn't ask for an error pipeline; just silently skip.
-      const accepted = incoming.filter((f) => f.size > 0 && f.size <= MAX_BYTES);
+      const accepted = Array.from(input).filter((f) => f.size > 0);
 
       setAttachments((prev) => {
-        const remaining = Math.max(0, MAX_PER_POST - prev.length);
-        const slice = accepted.slice(0, remaining);
-        const next: PendingAttachment[] = slice.map((file) => ({
-          localId: newLocalId(),
-          file,
-          status: "pending",
-          progress: null,
-          fileId: null,
-        }));
-        // Kick off uploads after the state update commits — using the
-        // returned localIds straight from ``next`` (closure-safe).
+        const next = accepted
+          .slice(0, Math.max(0, MAX_PER_POST - prev.length))
+          .map((file): PendingAttachment => {
+            const tooLarge = file.size > MAX_BYTES;
+            return {
+              localId: newLocalId(),
+              file,
+              status: tooLarge ? "failed" : "pending",
+              progress: null,
+              fileId: null,
+              error: tooLarge ? `Over ${String(MAX_ATTACHMENT_MB)} MB limit` : undefined,
+            };
+          });
         for (const a of next) {
-          // Defer to a microtask so we don't pile uploads onto the same
-          // tick as the state set.
-          queueMicrotask(() => { void runUpload(a.localId, a.file); });
+          if (a.status === "pending") queueMicrotask(() => { void runUpload(a.localId, a.file); });
         }
         return [...prev, ...next];
       });

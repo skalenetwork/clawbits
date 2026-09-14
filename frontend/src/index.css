@@ -2,8 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter/opsz.css";
-/* Fraunces opsz cut: `full` adds unused axes (~98 KB), `wght` loses the optical sizing the hero needs. */
-@import "@fontsource-variable/fraunces/opsz.css";
+@import "@fontsource-variable/geist/wght.css";
 @import "@fontsource-variable/jetbrains-mono";
 
 @custom-variant dark (&:is(.dark *));
@@ -204,7 +203,7 @@ html[data-tauri-platform="macos"][data-translucent] body {
   --color-signal-foreground: var(--signal-foreground);
 
   --font-sans: 'Inter Variable', ui-sans-serif, sans-serif, system-ui;
-  --font-serif: 'Fraunces Variable', serif;
+  --font-display: 'Geist Variable', ui-sans-serif, sans-serif, system-ui;
   --font-mono: 'JetBrains Mono Variable', monospace;
   --font-heading: 'Inter Variable', ui-sans-serif, sans-serif, system-ui;
 
@@ -666,10 +665,17 @@ html[data-media-viewer] [data-vt-contextual] {
   width: 340px;
   max-width: 100%;
   margin: -2.75rem auto 0;
+  transform-origin: 50% 0;
   transition: --mx 0.6s var(--access-ease), --my 0.6s var(--access-ease), --tilt 0.5s var(--access-ease);
+  animation: access-sway 1.8s cubic-bezier(0.37, 0, 0.63, 1);
 }
 .access[data-hover] {
   transition-duration: 0.18s, 0.18s, 0.3s;
+}
+@keyframes access-sway {
+  0% { rotate: 1.8deg; }
+  36% { rotate: -1.1deg; }
+  68% { rotate: 0.5deg; }
 }
 
 .access-card {
@@ -1187,7 +1193,8 @@ html[data-media-viewer] [data-vt-contextual] {
   .stream-word-in,
   .animate-activity-in,
   .animate-settle-fade,
-  .home-tiles > * {
+  .home-tiles > *,
+  .access {
     animation: none;
   }
   /* With the sweep gone, the transparent text needs an explicit fill. */

@@ -94,10 +94,10 @@ export default function LoginPage() {
           the marketing site, Privacy, Terms), and hiding their container would
           leave them focusable but invisible to a screen reader. The decorative
           layers inside opt out individually instead. */}
-      <aside className="relative hidden p-2 lg:flex">
+      <aside className="relative hidden lg:flex">
         {/* The marketing hero, continued: the landing's ink ground and ridge
             gradient; see components/SombraGradient.tsx. */}
-        <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl bg-[#141311] p-6 text-[#f7f5f1] pt-[calc(--spacing(6)+var(--titlebar-height))]">
+        <div className="relative flex flex-1 flex-col overflow-hidden bg-[#141311] p-6 text-[#f7f5f1] pt-[calc(--spacing(6)+var(--titlebar-height))]">
           <SombraGradient />
 
           {/* Legibility scrim, under the text and over the gradient. The landing
@@ -117,7 +117,7 @@ export default function LoginPage() {
           </div>
 
           <div className="relative mt-auto max-w-xl">
-            <h1 className="font-serif text-2xl font-medium leading-[1.05] tracking-tight xl:text-3xl">
+            <h1 className="font-display text-2xl leading-[1.084] tracking-[-0.01em] xl:text-3xl">
               Agents don’t plug in here.<br />They belong here.
             </h1>
             <p className="mt-3 max-w-md pr-12 text-[13px]/relaxed font-medium text-[#f7f5f1]/80">

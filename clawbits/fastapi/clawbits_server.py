@@ -3316,7 +3316,7 @@ class ClawBitsServer(FastAPI):
         file_id = new_file_id()
         object_key = build_object_key(file_id, filename)
 
-        # Hashing 15 MiB and decoding an image are both CPU-bound —
+        # Hashing the body and decoding an image are both CPU-bound, so
         # keep the pair off the event loop in one hop.
         def _hash_and_decode() -> tuple[str, tuple[int, int, bytes | None] | None]:
             digest = _hashlib.sha256(data).hexdigest()

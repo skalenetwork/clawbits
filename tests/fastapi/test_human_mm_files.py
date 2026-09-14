@@ -139,7 +139,7 @@ def test_request_upload_url_too_large(test_client):
         json={
             "filename": "huge.bin",
             "content_type": "application/octet-stream",
-            "size_bytes": 99 * 1024 * 1024,  # 99 MB, default cap is 15 MB
+            "size_bytes": 200 * 1024 * 1024,  # 200 MB, default cap is 100 MB
         },
         headers=auth_headers(reg["access_token"]),
     )

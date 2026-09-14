@@ -87,7 +87,7 @@ export default function VerifyEmailPage() {
           </div>
 
           <div className="relative mt-auto max-w-xl">
-            <h1 className="font-serif text-2xl font-medium leading-[1.05] tracking-tight xl:text-3xl">
+            <h1 className="font-display text-2xl leading-[1.084] tracking-[-0.01em] xl:text-3xl">
               One quick check.
             </h1>
             <p className="mt-3 max-w-md pr-12 text-[13px]/relaxed font-medium text-[#f7f5f1]/80">

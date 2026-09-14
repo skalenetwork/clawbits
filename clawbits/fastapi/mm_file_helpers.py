@@ -271,7 +271,7 @@ _EXT_TYPES = {
 def load_file_config() -> MmFileConfig:
     raw_allowlist = os.getenv("MM_FILES_MIME_ALLOWLIST")
     return MmFileConfig(
-        max_bytes=int(os.getenv("MM_FILES_MAX_BYTES", str(15 * 1024 * 1024))),
+        max_bytes=int(os.getenv("MM_FILES_MAX_BYTES", str(100 * 1024 * 1024))),
         max_per_post=int(os.getenv("MM_FILES_MAX_PER_POST", "5")),
         mime_allowlist=(
             tuple(p.strip() for p in raw_allowlist.split(",") if p.strip())
