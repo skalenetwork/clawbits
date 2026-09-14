@@ -63,6 +63,7 @@ from clawbits.datastructures.org_models import (
     SetOrgLobstertalkRequest,
     SetReefRepoRequest,
     UpdateOrgMemberRoleRequest,
+    UpdateOrgRequest,
 )
 from clawbits.db.models import (
     AGENT_USAGE_SCHEMA_VERSION,
@@ -1405,6 +1406,24 @@ def get_org(
     """Get organization details. Caller must be a member."""
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
+        org = TableRead.get_organization(db, org_id, viewer_human_id=user["id"])
+        if org is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        return OrgResponse(**org)
+
+
+@human_router.patch("/api/human/orgs/{org_id}", response_model=OrgResponse)
+def update_org(
+    org_id: str,
+    body: UpdateOrgRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Rename the organization's public display name. Admin only."""
+    with _get_db(request) as db:
+        _require_org_owner(db, org_id, user, "rename the organization")
+        TableWrite.update_org_display_name(db, org_id, body.display_name)
+        db.commit()
         org = TableRead.get_organization(db, org_id, viewer_human_id=user["id"])
         if org is None:
             raise HTTPException(status_code=404, detail="Organization not found")

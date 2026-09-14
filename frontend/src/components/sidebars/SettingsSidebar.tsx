@@ -1,5 +1,6 @@
 import {NavLink, useLocation} from "react-router-dom";
 import {
+    Building03Icon,
     ChartHistogramIcon,
     HashtagIcon,
     Link01Icon,
@@ -22,6 +23,7 @@ const GROUPS = [
         label: "Organization",
         ownersOnly: true,
         links: [
+            {to: "/settings/organization", label: "General", icon: <Icon icon={Building03Icon}/>},
             {to: "/settings/members", label: "Members", icon: <Icon icon={UserMultiple02Icon}/>},
             {to: "/settings/usage", label: "Usage", icon: <Icon icon={ChartHistogramIcon}/>},
             {to: "/settings/channels", label: "Channels", icon: <Icon icon={HashtagIcon}/>},

@@ -265,25 +265,12 @@ away. Judge it on a real display.
 light backgrounds, inverted to white here. The candy-textured mark exists only
 as raster inside `og-default.png`. See the note in `Logo.astro`.
 
-**OG cards ship palette-quantised, and a new one should too.** The hand-made
-cards exported at ~885 KB each; re-encoding to a dithered 256-colour PNG takes
-them to ~340 KB with a mean per-channel error of 0.26/255 - invisible on grain
-and on letterform edges, both checked at 1:1. Plain lossless recompression only
-reaches 710 KB, and JPEG, which would reach 100 KB, visibly smooths the grain
-out of the flat black areas, and the grain is the art direction. Run this on any
-card you add (sharp comes with Astro, so there is nothing to install):
-
-```bash
-cd web && node -e "const s=require('sharp'),f=process.argv[1];s(f).png({palette:true,quality:100,dither:1,effort:10,compressionLevel:9}).toFile(f+'.tmp').then(()=>require('fs').renameSync(f+'.tmp',f))" public/og/og-clawbits-NEW.png
-```
-
-Careful reading sharp's PNG options: passing `effort`, `quality`, `colours` or
-`dither` **implies `palette: true`**. There is no way to ask for "lossless but
-high effort" - `png({compressionLevel: 9})` alone is the lossless path, and
-anything that looks like a quality knob is quantising.
+**OG cards are rendered at build time.** `src/pages/og/[card].png.ts` draws
+every card in `OG_CARDS` (`src/config.ts`) with satori + resvg over
+`src/assets/og-base.png`; pages pick one with Base's `og` prop. To add a card,
+add a key there. The app's `frontend/index.html` points at `/og/clawbits.png`.
 
 **`public/og/og-default.png` is unreferenced ON PURPOSE - do not delete it.** No
-page points at it (`Base.astro` defaults to `og-clawbits.png`, which uses the
-flat logo), so every unused-asset sweep flags it. It is the only surviving
+page points at it, so every unused-asset sweep flags it. It is the only surviving
 raster of the candy-textured wordmark described above, and there is no vector to
 regenerate it from.

@@ -27,6 +27,7 @@ from clawbits.agent_marks import Mark
 from clawbits.avatars.payloads import (
     avatar_ref_for_agent,
     avatar_ref_for_channel,
+    avatar_ref_for_org,
     avatar_ref_for_user,
 )
 from clawbits.datastructures.agent import Agent as AgentDS
@@ -1153,6 +1154,7 @@ class TableRead:
             "workos_org_id": o.workos_org_id,
             "name": o.name,
             "display_name": o.display_name,
+            "avatar": avatar_ref_for_org(org_id=o.org_id, version=o.avatar_version) if o.avatar_version else None,
             "is_personal": bool(o.is_personal),
             "created_by": o.created_by,
             "created_at": _iso(o.created_at),

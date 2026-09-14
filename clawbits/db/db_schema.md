@@ -571,6 +571,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `workos_org_id` | `VARCHAR` | NOT NULL, unique |
 | `name` | `VARCHAR` | NOT NULL, unique |
 | `display_name` | `VARCHAR` | — |
+| `avatar_version` | `INTEGER` | — |
 | `is_personal` | `BOOLEAN` | NOT NULL |
 | `created_by` | `INTEGER` | NOT NULL, → `human_users.id` |
 | `created_at` | `TIMESTAMP WITH TIME ZONE` | default `now()` |

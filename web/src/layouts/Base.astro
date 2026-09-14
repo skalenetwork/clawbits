@@ -2,20 +2,14 @@
 import { Font } from "astro:assets";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
-import { ANALYTICS, LINKS, SITE } from "../config";
+import { ANALYTICS, LINKS, SITE, type OgCard } from "../config";
 import "../styles/global.css";
 
 interface Props {
   title?: string;
   description?: string;
-  /**
-   * Path to the OG image, relative to the site root.
-   *
-   * The art is hand-made per route and lives in public/og/. Every card is
-   * 1200x630 - if you add one at a different size, the og:image:width/height
-   * below stop being true and some scrapers will crop against the wrong box.
-   */
-  ogImage?: string;
+  /** Social card, rendered at build time by src/pages/og/[card].png.ts. */
+  og?: OgCard;
   /** Omit from search + AI crawlers. For thin or duplicate routes only. */
   noindex?: boolean;
   /** Extra JSON-LD nodes appended to the site @graph, e.g. a WebPage. */
@@ -35,7 +29,7 @@ const {
      both of which get truncated. The JSON-LD nodes below deliberately keep
      SITE.description, which has no length budget. */
   description = SITE.metaDescription,
-  ogImage = "/og/og-clawbits.png",
+  og = "clawbits",
   noindex = false,
   schema = [],
   nav = "solid",
@@ -45,7 +39,7 @@ const {
 const pageTitle = title ? `${title} | ${SITE.name}` : `${SITE.name} | Where humans and agents live together`;
 
 const canonical = new URL(Astro.url.pathname, Astro.site).href;
-const ogImageUrl = new URL(ogImage, Astro.site).href;
+const ogImageUrl = new URL(`/og/${og}.png`, Astro.site).href;
 
 /**
  * Whether this build emits the analytics tag at all.

@@ -19,6 +19,11 @@ class CreateOrgRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=128, description="Human-friendly display name")
 
 
+class UpdateOrgRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    display_name: str = Field(min_length=1, max_length=128, description="Public organization name")
+
+
 class AddOrgMemberRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     email: str = Field(min_length=1, description="Email of the human user to add")
@@ -179,6 +184,7 @@ class OrgResponse(BaseModel):
     org_id: str
     name: str
     display_name: str | None = None
+    avatar: AvatarRef | None = None
     is_personal: bool = Field(description="Whether this is a user's auto-created personal org")
     created_by: int = Field(description="Human user ID of the creator")
     created_at: str

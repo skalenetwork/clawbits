@@ -19,31 +19,23 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog";
-import { useAuth } from "@/context/AuthContext";
-import { uploadOwnAvatar, type AvatarRef, type HumanUser } from "@/lib/api";
 import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 const ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
 const MAX_MB = 5;
-// Edge length of the JPEG we upload after the client-side crop. 1024px
-// is 2× the largest render site (88px profile header @2x retina = 176px,
-// plus headroom for future @3x or hero treatments) and keeps the upload
-// well under 200KB at quality 92 — well below the 5MB endpoint cap.
 const EXPORT_SIZE = 1024;
 const EXPORT_QUALITY = 0.92;
 
 interface AvatarEditorDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    /** Current user — used for the "before" preview + initial-letter
-     *  fallback. After upload completes, the parent typically refetches
-     *  /api/auth/me so this prop updates on its own. */
-    user: HumanUser;
+    title: string;
+    name: string;
+    src?: string | null;
+    onUpload: (blob: Blob) => Promise<unknown>;
 }
 
-/** Validate locally before we waste a network round-trip on a file that
- *  the backend would reject anyway. Mirrors the server's checks. */
 function validateLocally(file: File): string | null {
     if (!ACCEPT.split(",").includes(file.type)) {
         return "Use a PNG, JPEG, WebP, or GIF.";
@@ -54,15 +46,6 @@ function validateLocally(file: File): string | null {
     return null;
 }
 
-/** Bake the user's crop + zoom into a square JPEG ``Blob``.
- *
- *  ``croppedAreaPixels`` comes from react-easy-crop's ``onCropComplete``
- *  callback in source-image pixel coordinates, so we can ``drawImage``
- *  directly from those numbers without re-deriving from the zoom/crop
- *  state. Uses ``createImageBitmap`` for decode — it offloads to a
- *  worker thread on every modern browser (Chrome 50+, Safari 15+,
- *  Firefox 90+) so a multi-megapixel decode doesn't jank the main
- *  thread. */
 async function bakeCrop(file: File, area: Area): Promise<Blob> {
     const bitmap = await createImageBitmap(file);
     try {
@@ -71,15 +54,9 @@ async function bakeCrop(file: File, area: Area): Promise<Blob> {
         canvas.height = EXPORT_SIZE;
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("Canvas 2D context unavailable");
-        // Smooth high-quality downscale — matters because the source
-        // may be 4000×4000 and we're outputting 1024×1024.
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(
-            bitmap,
-            area.x, area.y, area.width, area.height,   // source rect
-            0, 0, EXPORT_SIZE, EXPORT_SIZE,             // dest rect
-        );
+        ctx.drawImage(bitmap, area.x, area.y, area.width, area.height, 0, 0, EXPORT_SIZE, EXPORT_SIZE);
         return await new Promise<Blob>((resolve, reject) => {
             canvas.toBlob(
                 blob => { if (blob) resolve(blob); else reject(new Error("toBlob returned null")); },
@@ -92,21 +69,15 @@ async function bakeCrop(file: File, area: Area): Promise<Blob> {
     }
 }
 
-export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDialogProps) {
-    const { applyProfileUpdate } = useAuth();
+export function AvatarEditorDialog({ open, onOpenChange, title, name, src, onUpload }: AvatarEditorDialogProps) {
     const [file, setFile] = useState<File | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [isDragging, setIsDragging] = useState(false);
     const [crop, setCrop] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
     const [zoom, setZoom] = useState(1);
-    // Latest ``croppedAreaPixels`` reported by the Cropper — used by the
-    // Save handler to bake the export. Held in a ref so we don't
-    // re-render on every drag.
     const croppedAreaRef = useRef<Area | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Build / tear down an object URL for the local preview. Without
-    // revoke we'd leak the URL on every file change.
     useEffect(() => {
         if (!file) {
             setPreviewUrl(null);
@@ -117,8 +88,6 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
         return () => { URL.revokeObjectURL(url); };
     }, [file]);
 
-    // Reset transient state every time the dialog re-opens so the
-    // previous attempt's preview doesn't leak into the new session.
     useEffect(() => {
         if (!open) {
             setFile(null);
@@ -130,16 +99,13 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
     }, [open]);
 
     const uploadMutation = useMutation({
-        mutationFn: async (blob: Blob): Promise<AvatarRef> => uploadOwnAvatar(blob),
-        onSuccess: (avatar) => {
-            // Merge the new avatar into the cached user so the hero
-            // card refreshes without waiting on a /me refetch.
-            applyProfileUpdate({ ...user, avatar });
-            toast.success("Profile picture updated");
+        mutationFn: onUpload,
+        onSuccess: () => {
+            toast.success("Picture updated");
             onOpenChange(false);
         },
         onError: (err) => {
-            toast.error(errMsg(err, "Couldn't update profile picture"));
+            toast.error(errMsg(err, "Couldn't update picture"));
         },
     });
 
@@ -150,8 +116,6 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
             return;
         }
         setFile(next);
-        // Reset crop transform whenever a fresh file enters — without
-        // this, a previous image's zoom would carry over.
         setCrop({ x: 0, y: 0 });
         setZoom(1);
         croppedAreaRef.current = null;
@@ -172,22 +136,17 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
         if (!file) return;
         const area = croppedAreaRef.current;
         if (!area) {
-            // Defensive — onCropComplete fires synchronously after the
-            // Cropper mounts, so this would only happen if the user
-            // managed to click Save before the layout pass.
             toast.error("Couldn't read crop - try again");
             return;
         }
         try {
-            const blob = await bakeCrop(file, area);
-            uploadMutation.mutate(blob);
+            uploadMutation.mutate(await bakeCrop(file, area));
         } catch (err) {
             toast.error(errMsg(err, "Couldn't process image"));
         }
     };
 
     const busy = uploadMutation.isPending;
-    const fallbackName = user.display_name ?? user.email;
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -195,7 +154,7 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
                 <DialogHeader>
                     <DialogTitle>
                         <Icon icon={CameraIcon} className="text-muted-foreground" />
-                        Change profile picture
+                        {title}
                     </DialogTitle>
                     <DialogDescription>
                         {file
@@ -217,8 +176,8 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
                     />
                 ) : (
                     <DropZone
-                        fallbackUserName={fallbackName}
-                        fallbackUserAvatar={user.avatar?.url}
+                        name={name}
+                        src={src}
                         isDragging={isDragging}
                         setIsDragging={setIsDragging}
                         onDrop={handleDrop}
@@ -234,8 +193,6 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
                     onChange={(e) => {
                         const picked = e.target.files?.[0];
                         if (picked) acceptFile(picked);
-                        // Reset so picking the same file twice still
-                        // fires onChange the second time.
                         e.target.value = "";
                     }}
                 />
@@ -262,21 +219,16 @@ export function AvatarEditorDialog({ open, onOpenChange, user }: AvatarEditorDia
     );
 }
 
-// ---------------------------------------------------------------------------
-// Sub-components — split so the file is easier to scan, and so the
-// Cropper-bearing branch doesn't re-mount each time the user types.
-// ---------------------------------------------------------------------------
-
 function DropZone({
-    fallbackUserName,
-    fallbackUserAvatar,
+    name,
+    src,
     isDragging,
     setIsDragging,
     onDrop,
     onPick,
 }: {
-    fallbackUserName: string;
-    fallbackUserAvatar?: string | null;
+    name: string;
+    src?: string | null;
     isDragging: boolean;
     setIsDragging: (v: boolean) => void;
     onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
@@ -286,11 +238,11 @@ function DropZone({
         <>
             <div className="flex items-center justify-center py-2">
                 <img
-                    src={fallbackUserAvatar ?? undefined}
-                    alt={fallbackUserName}
+                    src={src ?? undefined}
+                    alt={name}
                     className={cn(
                         "size-32 rounded-2xl object-cover ring-1 ring-border/60",
-                        !fallbackUserAvatar && "bg-muted",
+                        !src && "bg-muted",
                     )}
                     draggable={false}
                 />
@@ -351,10 +303,6 @@ function CropperPanel({
 }) {
     return (
         <div className="space-y-3">
-            {/* Fixed-height cropping viewport. react-easy-crop measures
-                its parent so we MUST give the container an explicit size
-                - without ``relative`` + height it renders 0×0 and silently
-                shows nothing. */}
             <div className="relative h-64 overflow-hidden rounded-xl bg-black/90">
                 <Cropper
                     image={imageUrl}
@@ -371,9 +319,6 @@ function CropperPanel({
                     onCropChange={onCropChange}
                     onZoomChange={onZoomChange}
                     onCropComplete={onCropComplete}
-                    // Rounded-corner square mask matches the actual
-                    // avatar render (``rounded-lg`` on Avatar.tsx) so
-                    // what the user crops is what they'll see.
                     style={{
                         cropAreaStyle: {
                             borderRadius: 14,
@@ -384,8 +329,6 @@ function CropperPanel({
                 />
             </div>
 
-            {/* Zoom slider — native range input so we don't pull in
-                another component lib. Tailwind handles the look. */}
             <div className="flex items-center gap-3 px-1">
                 <Icon icon={ZoomOutIcon} className="size-4 shrink-0 text-muted-foreground"/>
                 <input

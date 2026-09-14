@@ -90,6 +90,7 @@ export interface Org {
   org_id: string;
   name: string;
   display_name?: string;
+  avatar?: AvatarRef | null;
   is_personal: boolean;
   created_at?: string;
   my_role?: OrgRole | null;
@@ -269,6 +270,20 @@ export async function uploadOwnAvatar(file: File | Blob) {
 
 export async function resetOwnAvatar() {
   return request<AvatarRef>("/api/human/avatars/users/me", { method: "DELETE" });
+}
+
+export async function updateOrg(orgId: string, displayName: string) {
+  return request<Org>(orgUrl(orgId), { ...json("PATCH", { display_name: displayName }), detail: true });
+}
+
+export async function uploadOrgAvatar(orgId: string, file: Blob) {
+  const body = new FormData();
+  body.append("file", file);
+  return request<AvatarRef>(`/api/human/avatars/orgs/${encodeURIComponent(orgId)}/upload`, { method: "POST", body, detail: true });
+}
+
+export async function removeOrgAvatar(orgId: string) {
+  await send(`/api/human/avatars/orgs/${encodeURIComponent(orgId)}`, { method: "DELETE", detail: true });
 }
 
 export async function getOrgs() {

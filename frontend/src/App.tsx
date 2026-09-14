@@ -48,6 +48,7 @@ const SettingsConnectorsPage = lazy(() => import("./pages/SettingsConnectorsPage
 const SettingsAppearancePage = lazy(() => import("./pages/SettingsAppearancePage"));
 const SettingsPrivacyPage = lazy(() => import("./pages/SettingsPrivacyPage"));
 const SettingsNotificationsPage = lazy(() => import("./pages/SettingsNotificationsPage"));
+const SettingsOrganizationPage = lazy(() => import("./pages/SettingsOrganizationPage"));
 const AgentsPage = lazy(() => import("./pages/AgentsPage"));
 const SettingsChannelsPage = lazy(() => import("./pages/SettingsChannelsPage"));
 const SettingsLobstertalkPage = lazy(() => import("./pages/SettingsLobstertalkPage"));
@@ -110,6 +111,7 @@ function AppShell() {
             <Route path="/settings/privacy" element={<SettingsPrivacyPage />} />
             <Route path="/settings/appearance" element={<SettingsAppearancePage />} />
             <Route path="/settings/notifications" element={<SettingsNotificationsPage />} />
+            <Route path="/settings/organization" element={<SettingsOrganizationPage />} />
             <Route path="/settings/members" element={<OrgMembersPage />} />
             <Route path="/settings/usage" element={<OrgUsagePage />} />
             <Route path="/settings/channels" element={<SettingsChannelsPage />} />
