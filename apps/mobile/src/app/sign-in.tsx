@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
+  StyleSheet,
   Text,
   useColorScheme,
   View,
@@ -76,81 +77,93 @@ export default function SignIn() {
     <SafeAreaView style={styles.screen}>
       <KeyboardAvoidingView
         behavior="padding"
-        style={{ flex: 1, justifyContent: "center", padding: 28, gap: 18 }}
+        style={layout.screen}
       >
-        <Image
-          source={require("../../assets/images/clawbits-long-current.svg")}
-          accessibilityLabel="Clawbits"
-          style={{ width: 168, height: 28, alignSelf: "center", marginBottom: 8 }}
-          contentFit="contain"
-          tintColor={dark ? "#f7f5f1" : "#000000"}
-        />
-        {error && <Text style={styles.error}>{error}</Text>}
-        <GlassField
-          placeholder="Email"
-          onChangeText={setEmail}
-          disabled={sent || busy}
-          keyboard="email-address"
-          contentType="emailAddress"
-          submit="continue"
-          onSubmit={() => {
-            if (!sent && email.trim()) void submit();
-          }}
-        />
-        {sent && (
-          <GlassField
-            placeholder="Code from your email"
-            onChangeText={setCode}
-            autoFocus
-            disabled={busy}
-            keyboard="numeric"
-            contentType="oneTimeCode"
-            submit="go"
-            onSubmit={() => {
-              if (code) void submit();
-            }}
+        <View style={layout.stack}>
+          <Image
+            source={require("../../assets/images/clawbits-long-current.svg")}
+            accessibilityLabel="Clawbits"
+            style={layout.logo}
+            contentFit="contain"
+            tintColor={dark ? "#f7f5f1" : "#000000"}
           />
-        )}
-        <GlassButton
-          label={busy ? "Please wait…" : sent ? "Sign In" : "Continue with Email"}
-          prominent
-          disabled={busy || !email.trim() || (sent && !code)}
-          onPress={() => {
-            void submit();
-          }}
-        />
-        {sent ? (
-          <GlassButton
-            label="Use another email"
-            disabled={busy}
-            onPress={() => {
-              setSent(false);
-              setCode("");
-            }}
-          />
-        ) : (
-          <View style={{ gap: 12 }}>
-            {providers.map(([provider, label, icon]) => (
-              <GlassButton
-                key={provider}
-                label={`Continue with ${label}`}
-                icon={icon}
-                iconTint={
-                  provider === "github"
-                    ? dark
-                      ? "#f7f5f1"
-                      : "#000000"
-                    : undefined
-                }
+          {error && <Text style={styles.error}>{error}</Text>}
+          <View style={layout.block}>
+            <GlassField
+              placeholder="Email"
+              onChangeText={setEmail}
+              disabled={sent || busy}
+              keyboard="email-address"
+              contentType="emailAddress"
+              submit="continue"
+              onSubmit={() => {
+                if (!sent && email.trim()) void submit();
+              }}
+            />
+            {sent && (
+              <GlassField
+                placeholder="Code from your email"
+                onChangeText={setCode}
+                autoFocus
                 disabled={busy}
-                onPress={() => {
-                  void social(provider);
+                keyboard="numeric"
+                contentType="oneTimeCode"
+                submit="go"
+                onSubmit={() => {
+                  if (code) void submit();
                 }}
               />
-            ))}
+            )}
+            <GlassButton
+              label={busy ? "Please wait…" : sent ? "Sign In" : "Continue with Email"}
+              prominent
+              disabled={busy || !email.trim() || (sent && !code)}
+              onPress={() => {
+                void submit();
+              }}
+            />
+            {sent && (
+              <GlassButton
+                label="Use another email"
+                disabled={busy}
+                onPress={() => {
+                  setSent(false);
+                  setCode("");
+                }}
+              />
+            )}
           </View>
-        )}
+          {!sent && (
+            <View style={layout.block}>
+              {providers.map(([provider, label, icon]) => (
+                <GlassButton
+                  key={provider}
+                  label={`Continue with ${label}`}
+                  icon={icon}
+                  iconTint={
+                    provider === "github"
+                      ? dark
+                        ? "#f7f5f1"
+                        : "#000000"
+                      : undefined
+                  }
+                  disabled={busy}
+                  onPress={() => {
+                    void social(provider);
+                  }}
+                />
+              ))}
+            </View>
+          )}
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
+
+const layout = StyleSheet.create({
+  screen: { flex: 1, justifyContent: "center", paddingHorizontal: 28 },
+  stack: { gap: 28 },
+  logo: { width: 132, height: 22, alignSelf: "center" },
+  block: { gap: 10 },
+});

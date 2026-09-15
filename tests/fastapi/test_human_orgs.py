@@ -45,6 +45,7 @@ def test_registration_creates_personal_org(test_client):
     assert len(personal_orgs) == 1
     assert personal_orgs[0]["org_id"] == f"user-{user_id}"
     assert personal_orgs[0]["name"] == "alice"
+    assert personal_orgs[0]["member_count"] == 1
 
 
 def test_personal_org_name_from_email_prefix(test_client):

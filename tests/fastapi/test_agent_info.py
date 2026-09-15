@@ -730,6 +730,7 @@ def test_delete_agent_keep_content_reassigns_to_placeholder(test_client):
         # DM with "Deleted agent"), and the deleted agent holds no membership
         # rows anywhere.
         assert kept_channel.channel_type == "direct"
+        assert kept_channel.name == f"deleted-{channel_id}"
         dm_membership = s.exec(
             select(MmChannelMember).where(
                 MmChannelMember.channel_id == channel_id,
@@ -798,8 +799,7 @@ def test_delete_agent_endpoint_keep_content_query_param(test_client):
 def test_ensure_owner_agent_comm_channel_reuses_canonical_name_squatter(test_client):
     """When a channel already exists under the canonical operator-DM name
     in the agent's org but has lost its membership rows (orphan from a
-    previous partially-committed approval, or an ``agent_id`` re-used
-    after deletion), ``ensure_owner_agent_comm_channel`` must reuse the
+    previous partially-committed approval), ``ensure_owner_agent_comm_channel`` must reuse the
     existing channel and reconcile membership — not blow up on the
     ``uq_mm_channels_org_name`` unique constraint with a fresh INSERT.
 

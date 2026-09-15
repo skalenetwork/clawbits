@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { filterChannelsByTab, previewText } from "./chatFilters";
+import { filterChannelsByTab, glyphKind, previewText } from "./chatFilters";
 import type { Channel } from "./models";
 
 const channel = (
@@ -74,5 +74,17 @@ describe("previewText", () => {
         1,
       ),
     ).toBe("Kai: shipped");
+  });
+});
+
+describe("glyphKind", () => {
+  test("rooms are channel tiles", () => {
+    expect(glyphKind(pub)).toBe("channel");
+    expect(glyphKind(priv)).toBe("channel");
+  });
+
+  test("directs pick human vs agent", () => {
+    expect(glyphKind(dm)).toBe("human");
+    expect(glyphKind(agent)).toBe("agent");
   });
 });

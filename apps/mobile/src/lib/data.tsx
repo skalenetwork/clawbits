@@ -156,8 +156,7 @@ export function useOrganizations() {
   const organizations = query.data?.organizations ?? [];
   const selected =
     organizations.find((org) => org.org_id === session?.org) ??
-    organizations.find((org) => org.is_personal) ??
-    organizations[0];
+    (session?.org ? organizations[0] : undefined);
   return { ...query, organizations, selected };
 }
 

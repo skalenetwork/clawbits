@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
-import { FlatList, Text, View } from "react-native";
+import { useAnimatedHeaderHeight } from "expo-router/build/react-navigation/native-stack/utils/useAnimatedHeaderHeight";
+import { Animated, FlatList, View } from "react-native";
 import { api, ApiError } from "@/lib/api";
 import {
   CHAT_TAB_LABEL,
@@ -25,7 +26,10 @@ const emptyTitle: Record<ChatTab, string> = {
 export default function Chats() {
   const { session } = useSession();
   const orgs = useOrganizations();
+  const headerHeight = useAnimatedHeaderHeight();
   const [tab, setTab] = useState<ChatTab>("all");
+  const [filterHeight, setFilterHeight] = useState(52);
+  const [pulling, setPulling] = useState(false);
   const org = orgs.selected?.org_id ?? "";
   const query = useQuery({
     queryKey: ["channels", org],
@@ -42,38 +46,20 @@ export default function Chats() {
     tab,
   );
   return (
-    <View style={styles.screen}>
-      <Stack.Screen
-        options={{
-          headerLeft: () => <OrgMenu />,
-          headerRight: () => (
-            <IconButton
-              name="square.and.pencil"
-              label="New message"
-              disabled={!org}
-              onPress={() => router.push("/new")}
-            />
-          ),
-        }}
-      />
+    <>
       <FlatList
+        style={styles.screen}
         data={channels}
         contentInsetAdjustmentBehavior="automatic"
         keyExtractor={(item) => item.channel_id}
         contentContainerStyle={channels.length ? undefined : { flexGrow: 1 }}
-        refreshing={query.isRefetching}
+        refreshing={pulling}
         onRefresh={() => {
-          void query.refetch();
+          setPulling(true);
+          void query.refetch().finally(() => setPulling(false));
         }}
+        ListHeaderComponent={<View style={{ height: filterHeight }} />}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
-        ListHeaderComponent={
-          <>
-            <ChatFilter value={tab} onChange={setTab} />
-            {failed && channels.length ? (
-              <Text style={styles.detail}>Offline · Showing saved chats</Text>
-            ) : null}
-          </>
-        }
         ListEmptyComponent={
           <Empty
             loading={
@@ -102,6 +88,43 @@ export default function Chats() {
           <ChatRow channel={item} userId={session!.user.id} />
         )}
       />
-    </View>
+      <Animated.View
+        onLayout={(event) => {
+          setFilterHeight(event.nativeEvent.layout.height);
+        }}
+        style={[
+          {
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 1,
+            backgroundColor: "transparent",
+          },
+          { transform: [{ translateY: headerHeight }] },
+        ]}
+        pointerEvents="box-none"
+      >
+        <ChatFilter
+          value={tab}
+          onChange={setTab}
+          offline={failed && channels.length > 0}
+        />
+      </Animated.View>
+      <Stack.Screen
+        options={{
+          headerShadowVisible: false,
+          headerLeft: () => <OrgMenu />,
+          headerRight: () => (
+            <IconButton
+              name="square.and.pencil"
+              label="New message"
+              disabled={!org}
+              onPress={() => router.push("/new")}
+            />
+          ),
+        }}
+      />
+    </>
   );
 }

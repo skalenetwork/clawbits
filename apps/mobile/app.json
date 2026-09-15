@@ -21,7 +21,7 @@
         "tinted": "./assets/images/ios-icon-tinted.png"
       },
       "supportsTablet": false,
-      "appleTeamId": "PA74L5ZKS7"
+      "appleTeamId": "KNNT2S5R84"
     },
     "plugins": [
       "expo-router",

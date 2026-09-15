@@ -70,7 +70,11 @@ export default function NewMessage() {
             onPress={() => open.mutate(item)}
             style={styles.row}
           >
-            <AvatarView name={item.name} avatar={item.avatar} />
+            <AvatarView
+              name={item.name}
+              avatar={item.avatar}
+              shape={item.kind === "agent" ? "agent" : "human"}
+            />
             <View>
               <Text style={styles.name}>{item.name}</Text>
               <Text style={styles.preview}>
