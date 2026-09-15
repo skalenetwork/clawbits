@@ -18,8 +18,8 @@ import { DesktopShell } from "./DesktopShell";
 import { MobileShell } from "./MobileShell";
 import { captureReturnPath, loginPathFor } from "@/lib/returnPath";
 
-const ReleaseNotesDialog = lazy(() =>
-  import("@/components/ReleaseNotesDialog").then((module) => ({ default: module.ReleaseNotesDialog })),
+const ReleaseNotesCard = lazy(() =>
+  import("@/components/ReleaseNotesCard").then((module) => ({ default: module.ReleaseNotesCard })),
 );
 
 /** Right-edge panels on desktop, bottom sheets on mobile; one open at a time. */
@@ -80,7 +80,7 @@ export default function AppShell() {
       {isMobile ? <MobileShell /> : <DesktopShell />}
       {releaseNotesDue && (
         <Suspense fallback={null}>
-          <ReleaseNotesDialog />
+          <ReleaseNotesCard />
         </Suspense>
       )}
     </>

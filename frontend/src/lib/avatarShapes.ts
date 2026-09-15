@@ -5,13 +5,13 @@ import { cn } from "@/lib/utils";
  * before color or art does, everywhere an entity tile renders:
  *
  * - **Channels** are sharp tiles (structural — rooms, not beings).
- * - **Humans** are fully soft (≈ circular at list sizes).
- * - **Agents** are human-round with one machined bottom-left corner —
+ * - **Humans** are circles at every size.
+ * - **Agents** are soft squares with one machined bottom-left corner —
  *   the "bot tail". Bottom-left specifically: the bottom-right corner
  *   belongs to presence dots, so the two signals never collide.
  */
 export const AGENT_AVATAR_SHAPE = "rounded-2xl rounded-bl-sm";
-export const HUMAN_AVATAR_SHAPE = "rounded-2xl";
+export const HUMAN_AVATAR_SHAPE = "rounded-full";
 export const CHANNEL_AVATAR_SHAPE = "rounded-sm";
 
 /**

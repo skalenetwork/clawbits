@@ -25,10 +25,10 @@ export function GeneratingRow({
   const [time] = useState(() => formatTimeOnly(new Date().toISOString()));
 
   return (
-    <div className="mx-0.5 mt-4 pl-2.5 pr-3 pt-1.5 pb-0.5">
-      <div className="mb-1 flex h-5 items-center gap-2 text-[13px]">
-        <AgentFaceAvatar size={20} name={name} src={member?.avatar?.url} animated className="shrink-0" />
-        <span className="relative -top-px truncate font-medium text-muted-foreground">{name}</span>
+    <div className="relative mx-0.5 mt-4 pl-14 pr-3 pt-1.5 pb-0.5">
+      <AgentFaceAvatar size={36} name={name} src={member?.avatar?.url} animated className="absolute top-2.5 left-2.5" />
+      <div className="flex h-5 items-center gap-2 text-[13px]">
+        <span className="truncate font-medium text-muted-foreground">{name}</span>
         <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{time}</span>
       </div>
       <div className="text-message text-muted-foreground">

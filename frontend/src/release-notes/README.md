@@ -2,7 +2,8 @@
 
 One markdown file per prod release. This folder feeds two surfaces, with nothing copied or synced:
 
-1. the in-app "What's new" modal (`src/components/ReleaseNotesDialog.tsx`, `src/hooks/useReleaseNotes.ts`), and
+1. the in-app "What's new" card, a non-blocking panel pinned bottom-left (`src/components/ReleaseNotesCard.tsx`,
+   `src/hooks/useReleaseNotes.ts`), and
 2. the public changelog at **clawbits.ai/changelog**, which reads this folder through `web/src/content.config.ts`.
 
 Two consequences:
@@ -15,7 +16,7 @@ Two consequences:
 ## Adding a release
 
 Name the file after the released version, matching the prod semantic-release tag without its `v` (`prod` cuts
-`vX.Y.Z`). The filename is the version the modal shows and dedupes on. Files not named like a version (this
+`vX.Y.Z`). The filename is the version the card shows and dedupes on. Files not named like a version (this
 README, drafts) are ignored by both surfaces.
 
 A short user-facing body (what changed for users, not commit-speak), usually a bullet list:
