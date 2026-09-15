@@ -25,10 +25,13 @@ export interface Channel {
   display_name: string | null;
   channel_type: "public" | "private" | "direct";
   dm_peer: { display_name: string | null; avatar: Avatar | null } | null;
+  dm_peer_agent_id?: string | null;
   avatar: Avatar | null;
   last_message_at: string | null;
   last_message_text: string | null;
   last_message_attachment_count: number;
+  last_message_author_human_id?: number | null;
+  last_message_author_display_name?: string | null;
   unread_count: number;
 }
 
