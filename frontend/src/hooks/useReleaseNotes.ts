@@ -37,7 +37,7 @@ export function useReleaseNotes() {
     try {
       localStorage.setItem(SEEN_KEY, LATEST_RELEASE.version);
     } catch {
-      /* storage blocked: the modal reappears next load */
+      /* storage blocked: the card reappears next load */
     }
   };
 
