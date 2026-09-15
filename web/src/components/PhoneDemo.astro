@@ -725,35 +725,18 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
     }
   }
 
-  /* ── Liquid Glass ─────────────────────────────────────────────────────────
+  /* ── Liquid Glass, flattened ──────────────────────────────────────────────
    *
-   * iOS 26/27's material is four things stacked, and only the first is a
-   * one-liner in CSS:
-   *
-   *   1. a blurred, saturated backdrop                       - backdrop-filter
-   *   2. a tint that reads as glass, not as a grey chip      - background
-   *   3. a specular rim, brightest where the light lands     - the ::after ring
-   *   4. REFRACTION: content near the edge displaced inward  - see below
-   *
-   * (4) is the one that makes Apple's version look wet, and it is the one the
-   * web cannot do here. The technique the articles describe - an SVG
-   * feDisplacementMap fed to `backdrop-filter: url(#…)` - is Chromium-only:
-   * Safari does not support SVG filters in backdrop-filter at all, and this
-   * demo renders on phones, which is overwhelmingly iOS Safari. It would be
-   * complexity spent on an effect our actual audience never sees, so the rim
-   * below fakes the edge lensing instead: a gradient ring, bright at the two
-   * corners the light would catch and nearly gone along the sides. That is
-   * what reads as a bevel picking up light.
-   *
-   * The tint is Apple's systemFill grey rather than a translucent white. Over
-   * the white feed a white tint renders as… white; the grey is what produces
-   * the light-grey pill the reference crop actually shows. */
+   * No backdrop-filter: five live blurs repainted on every scroll frame while
+   * the feed runs under the bar, on the phones this demo exists for. The fill
+   * is what the blurred glass composites to over the white feed (systemFill
+   * grey on white), kept slightly translucent so content still reads under it.
+   * The rim below fakes the edge lensing: a gradient ring, bright at the two
+   * corners the light would catch and nearly gone along the sides. */
   .glass {
     position: relative;
     isolation: isolate;
-    background: rgb(120 120 128 / 0.08);
-    -webkit-backdrop-filter: blur(calc(13 * var(--pu))) saturate(190%) brightness(1.04);
-    backdrop-filter: blur(calc(13 * var(--pu))) saturate(190%) brightness(1.04);
+    background: rgb(244 244 245 / 0.8);
     box-shadow:
       /* Lift off the surface behind it. */
       0 calc(0.5 * var(--pu)) calc(1.5 * var(--pu)) rgb(0 0 0 / 0.05),
@@ -1693,11 +1676,9 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
     flex-direction: column;
     border-radius: calc(44 * var(--pu)) calc(44 * var(--pu)) 0 0;
     overflow: hidden;
-    /* systemGroupedBackground, thinned so the pushed-back chat shows through
-     * as light and colour rather than as a picture. */
-    background: rgb(244 244 248 / 0.82);
-    -webkit-backdrop-filter: blur(calc(26 * var(--pu))) saturate(180%);
-    backdrop-filter: blur(calc(26 * var(--pu))) saturate(180%);
+    /* systemGroupedBackground, thinned just enough that the pushed-back chat
+     * shows through as light rather than as a picture. */
+    background: rgb(244 244 248 / 0.94);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.75),
       0 calc(-8 * var(--pu)) calc(30 * var(--pu)) rgb(0 0 0 / 0.14);

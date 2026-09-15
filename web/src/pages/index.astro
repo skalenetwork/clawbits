@@ -47,7 +47,7 @@ const [ledeLead, ledeRest] = HERO.lede.split(" - ");
 // Presentation-only lookups for the copy blocks (assets, links, glyphs stay
 // out of home.ts - machines don't need them).
 const AGENT_MARKS: Record<string, string> = {
-  OpenClaw: "openclaw.png",
+  OpenClaw: "openclaw.webp",
   Hermes: "hermes.svg",
   IronClaw: "ironclaw.webp",
 };
@@ -86,7 +86,7 @@ const ENDOWMENT_VISUALS = [MailboxVisual, GitVisual, AutomationVisual, AgencyVis
   <div class="frame">
     <section class="canvas" data-theme-anchor>
       <div class="backdrop" aria-hidden="true">
-        <SombraGradient />
+        <SombraGradient shape="tall" />
       </div>
 
       <div class="hero-head">

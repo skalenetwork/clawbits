@@ -68,18 +68,18 @@ interface Judged {
  * above the messages. Everything above the crop is free.
  */
 const SETTLED: Judged[] = [
-  { text: "sounds good to me", avatar: "/avatars/human-2.png" },
-  { text: "nice, appreciate it", avatar: "/avatars/human-1.png" },
-  { text: "ok cool", avatar: "/avatars/human-3.png" },
-  { text: "will do", avatar: "/avatars/human-4.png" },
-  { text: "thanks, that worked!", avatar: "/avatars/human-2.png" },
+  { text: "sounds good to me", avatar: "/avatars/human-2.webp" },
+  { text: "nice, appreciate it", avatar: "/avatars/human-1.webp" },
+  { text: "ok cool", avatar: "/avatars/human-3.webp" },
+  { text: "will do", avatar: "/avatars/human-4.webp" },
+  { text: "thanks, that worked!", avatar: "/avatars/human-2.webp" },
 ];
 
 /** What arrives during the cycle: two more dropped, then the one that lands. */
 const ARRIVING: Judged[] = [
-  { text: "good morning everyone", avatar: "/avatars/human-1.png" },
-  { text: "see you tomorrow", avatar: "/avatars/human-4.png" },
-  { text: "we're blocked on this", avatar: "/avatars/human-3.png", wake: true },
+  { text: "good morning everyone", avatar: "/avatars/human-1.webp" },
+  { text: "see you tomorrow", avatar: "/avatars/human-4.webp" },
+  { text: "we're blocked on this", avatar: "/avatars/human-3.webp", wake: true },
 ];
 
 const ALL = [...SETTLED, ...ARRIVING];
@@ -165,7 +165,7 @@ const ALL = [...SETTLED, ...ARRIVING];
     aspect-ratio: 4 / 5;
     border-radius: 1rem;
     overflow: hidden;
-    background: linear-gradient(150deg, #f2ecfd, #ded0f4);
+    background: linear-gradient(150deg, #f4ebff, #e2cdff);
 
     /* Real app tokens (frontend/src/index.css, sRGB-converted). */
     /* ── Shared card tokens ──────────────────────────────────────────────
@@ -215,8 +215,6 @@ const ALL = [...SETTLED, ...ARRIVING];
     flex-direction: column;
     border-radius: inherit;
     background: rgb(247 245 240 / 0.52);
-    -webkit-backdrop-filter: blur(28px) saturate(150%);
-    backdrop-filter: blur(28px) saturate(150%);
     overflow: hidden;
     /* The rim AppDemo gives the window: without it the panel has no edge and
      * the card reads as a tinted field rather than a surface. */

@@ -1,5 +1,5 @@
 ---
-import { Font } from "astro:assets";
+import { Font, fontData } from "astro:assets";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
 import { ANALYTICS, LINKS, SITE, type OgCard } from "../config";
@@ -39,6 +39,7 @@ const {
 const pageTitle = title ? `${title} | ${SITE.name}` : `${SITE.name} | Where humans and agents live together`;
 
 const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const appFont = fontData["--ff-app"][0].src[0].url;
 const ogImageUrl = new URL(`/og/${og}.png`, Astro.site).href;
 
 /**
@@ -169,10 +170,11 @@ const jsonLd = {
 
     {/* Self-hosted, preloaded, with generated fallback metrics so the hero
         does not shift when the face lands. Geist carries the site; Inter is
-        the product's UI face inside the hero demo window (preloaded - the
-        window is the hero visual). */}
+        the product's UI face inside the hero demo window, preloaded only where
+        that window shows (phones get the phone, set in the system face). */}
     <Font cssVariable="--ff-sans" preload />
-    <Font cssVariable="--ff-app" preload />
+    <Font cssVariable="--ff-app" />
+    <link rel="preload" href={appFont} as="font" type="font/woff2" crossorigin media="(min-width: 40.0625rem)" />
     <Font cssVariable="--ff-mono" />
 
     <meta property="og:type" content="website" />

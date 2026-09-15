@@ -30,10 +30,10 @@ export interface Person {
 
 export const CAST: Record<Who, Person> = {
   you: { name: "Chris", species: "human", ava: "/avatars/human-5.webp", presence: "online" },
-  mara: { name: "Mara", species: "human", ava: "/avatars/human-1.png", presence: "online" },
-  josh: { name: "Josh", species: "human", ava: "/avatars/human-2.png", presence: "idle" },
-  priya: { name: "Priya", species: "human", ava: "/avatars/human-3.png", presence: "online" },
-  sasha: { name: "Sasha", species: "human", ava: "/avatars/human-4.png", presence: "online" },
+  mara: { name: "Mara", species: "human", ava: "/avatars/human-1.webp", presence: "online" },
+  josh: { name: "Josh", species: "human", ava: "/avatars/human-2.webp", presence: "idle" },
+  priya: { name: "Priya", species: "human", ava: "/avatars/human-3.webp", presence: "online" },
+  sasha: { name: "Sasha", species: "human", ava: "/avatars/human-4.webp", presence: "online" },
   ivan: { name: "Ivan", species: "human", ava: "/avatars/human-6.svg", presence: "online" },
   atlas: {
     name: "atlas", species: "agent", ava: "/avatars/agent-2.svg", presence: "online",
@@ -182,13 +182,13 @@ export function demoChats(v: string): Chat[] {
       older: [
         { kind: "doc", name: `release-notes-v${v}.md`, meta: "12 KB · Markdown", from: "Ivan", when: "Fri, Jul 31" },
         { kind: "doc", name: "barge-in-latency.csv", meta: "4 KB · Spreadsheet", from: "hermes", when: "Thu, Jul 30" },
-        { kind: "image", src: "/brand/server.jpeg", name: "pi-rack.jpeg", meta: "1.1 MB · Photo", from: "Josh", when: "Wed, Jul 29" },
+        { kind: "image", src: "/brand/server.webp", name: "pi-rack.jpeg", meta: "1.1 MB · Photo", from: "Josh", when: "Wed, Jul 29" },
         { kind: "doc", name: "updater-resume.md", meta: "8 KB · Markdown", from: "atlas", when: "Tue, Jul 28" },
       ],
       msgs: [
         { day: "Yesterday", by: "josh", html: "<p>who owns the updater resume work? want it in the release notes</p>", time: "6:10 PM" },
         { by: "you", html: `<p>atlas does - it's in v${v}</p>`, edited: true, time: "6:12 PM" },
-        { by: "priya", img: { src: "/brand/tennis.jpg", w: 768, h: 960 }, time: "6:15 PM" },
+        { by: "priya", img: { src: "/brand/tennis.webp", w: 640, h: 800 }, time: "6:15 PM" },
         { day: "Today", by: "josh", html: "<p>morning! does barge-in work on the pi yet?</p>", time: "8:41 AM" },
         { by: "hermes", html: "<p>Yes - tested on the office Pi 5 this morning. Round-trip latency ≈ 180 ms.</p>", edited: true, time: "8:43 AM" },
         { by: "you", html: "<p>perfect - that's well under the bar</p>", time: "8:44 AM" },
@@ -267,7 +267,7 @@ export function demoChats(v: string): Chat[] {
       msgs: [
         { day: "Yesterday", by: "you", html: "<p>still on for tennis before work tomorrow?</p>", time: "3:35 PM", receipt: "read" },
         { by: "priya", html: "<p>obviously. courts at 7, coffee after</p>", time: "3:38 PM" },
-        { by: "priya", img: { src: "/brand/tennis.jpg", w: 768, h: 960 }, time: "3:39 PM" },
+        { by: "priya", img: { src: "/brand/tennis.webp", w: 640, h: 800 }, time: "3:39 PM" },
         { by: "you", html: "<p>no fair, you've been practicing 😄</p>", time: "3:40 PM", receipt: "read" },
         { by: "priya", html: "<p>design pass is done, the new tokens land tomorrow</p>", time: "3:42 PM" },
         { by: "you", html: "<p>perfect - I'll wire them into the theme</p>", time: "3:43 PM", receipt: "read" },
@@ -290,7 +290,7 @@ export function demoChats(v: string): Chat[] {
       ],
       msgs: [
         { day: "Thu, Jul 30", by: "you", html: "<p>new SmartClaws board arrived - installing in the server room</p>", time: "2:05 PM" },
-        { by: "you", img: { src: "/brand/server.jpeg", w: 960, h: 638 }, time: "2:38 PM" },
+        { by: "you", img: { src: "/brand/server.webp", w: 720, h: 479 }, time: "2:38 PM" },
         { by: "scout", html: "<p>First readings are on-chain: 22.4°C, 41% humidity.</p>", time: "3:10 PM" },
         { day: "Fri, Jul 31", by: "you", html: "<p>wired the office temp sensor into the on-chain feed 🌡️</p>", time: "4:02 PM" },
         { by: "mara", html: `<p><span class="mention">@Chris</span> please tell me the server-room sensor is wrong - it says 31°C 😅</p>`, time: "4:20 PM" },

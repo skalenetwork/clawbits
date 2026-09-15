@@ -10,6 +10,7 @@
     "dev": "astro dev --port ${PORT:-4321}",
     "brand:assets": "node scripts/build-brand-assets.mjs",
     "demo": "node scripts/make-demo.mjs",
+    "sombra": "bun scripts/bake-sombra.ts",
     "build": "bun run brand:assets && astro build && node scripts/build-headers.mjs && node scripts/build-bot-page.mjs",
     "preview": "astro preview",
     "check": "astro check && tsc -p worker",

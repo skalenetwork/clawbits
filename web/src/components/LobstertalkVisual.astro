@@ -115,10 +115,10 @@ const AGENTS = {
 const ROSTER = [AGENTS.pulse, AGENTS.quill, AGENTS.scout];
 
 const PEOPLE = {
-  mara: { name: "mara", avatar: "/avatars/human-1.png" },
-  josh: { name: "josh", avatar: "/avatars/human-2.png" },
-  priya: { name: "priya", avatar: "/avatars/human-3.png" },
-  sasha: { name: "sasha", avatar: "/avatars/human-4.png" },
+  mara: { name: "mara", avatar: "/avatars/human-1.webp" },
+  josh: { name: "josh", avatar: "/avatars/human-2.webp" },
+  priya: { name: "priya", avatar: "/avatars/human-3.webp" },
+  sasha: { name: "sasha", avatar: "/avatars/human-4.webp" },
 } as const;
 
 type Row =
@@ -280,7 +280,7 @@ const ROWS: Row[] = [
     /* The grape tint AgencyVisual carries. These two cards are the same
      * feature at two sizes, so they share a ground - a red card here read as a
      * different subject. Keep them in step. */
-    background: linear-gradient(150deg, #f2ecfd, #ded0f4);
+    background: linear-gradient(150deg, #f4ebff, #e2cdff);
 
     /* ── Shared card tokens ──────────────────────────────────────────────
      * One value per role across every visual on this page, chosen to match the
@@ -334,8 +334,6 @@ const ROWS: Row[] = [
     flex-direction: column;
     border-radius: inherit;
     background: rgb(247 245 240 / 0.52);
-    -webkit-backdrop-filter: blur(28px) saturate(150%);
-    backdrop-filter: blur(28px) saturate(150%);
     overflow: hidden;
     /* The rim AppDemo gives the window: without it the panel has no edge and
      * the card reads as a tinted field rather than a surface. */
