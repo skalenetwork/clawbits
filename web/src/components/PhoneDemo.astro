@@ -1,6 +1,7 @@
 ---
 import {
   attachmentsOf,
+  CAST,
   demoChats,
   lastAuthor,
   type About,
@@ -33,7 +34,7 @@ import ReleaseOg from "./ReleaseOg.astro";
  *               element #F2F2F7, selected #E5E5EA, secondary #6B6B70,
  *               input #F2F2F7/#D1D1D6, red #FF3B30. Owner call: light, even
  *               though the app defaults to the system scheme - a near-black
- *               screen disappears against the hero's dark shader, and the
+ *               screen disappears against the hero's dark canvas, and the
  *               desktop window next to it is bright glass.
  *   list      - channel-list-pane.tsx: tabs capsule r999 min-h 44 pad 5 gap 5,
  *               tab min-h 34 gap 6, symbol 17 semibold, label 13/600, selected
@@ -144,10 +145,8 @@ const CHATS = demoChats(release.version);
 const DMS = CHATS.filter((c) => c.species !== "channel");
 const CHANNELS = CHATS.filter((c) => c.species === "channel");
 
-/** Same-author run detection - the phone groups exactly as the desktop does
- *  (name only on group start, avatar only on group end). */
-const sameAuthor = (a?: Msg, b?: Msg) =>
-  !!a && !!b && !!a.own === !!b.own && a.name === b.name;
+/** Same-author run detection (name only on group start, avatar only on group end). */
+const sameAuthor = (a?: Msg, b?: Msg) => !!a && !!b && a.by === b.by;
 
 /** Unread total carried by the back button's badge on a pushed route: what is
  *  still waiting in the OTHER conversations. */
@@ -155,9 +154,6 @@ const totalUnread = CHATS.reduce((n, c) => n + (c.unread ?? 0), 0);
 
 /** The composer's resting placeholder, native-style ("Message", flat). */
 const PLACEHOLDER = "Message";
-
-/** Rows render the last message's author above the preview (channels only). */
-const rowPreview = (c: Chat) => c.preview;
 
 /* ── The details sheet ──────────────────────────────────────────────────────
  *
@@ -296,7 +292,7 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
                 {lastAuthor(c) && <span class="lsender">{lastAuthor(c)}</span>}
                 <span class:list={["lprev", { one: !!lastAuthor(c) }]}>
                   {c.clip && <i class="lclip" set:html={SF.clip} />}
-                  {rowPreview(c)}
+                  {c.preview}
                 </span>
               </span>
               <span class="lmeta">
@@ -325,27 +321,22 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
                   // real grouping does.
                   const startsRun = !!m.day || !sameAuthor(prev, m);
                   const endsRun = !!next?.day || !sameAuthor(m, next);
+                  const gut = isChannel && m.by !== "you";
                   return (
                     <>
                       {m.day && <div class="cday">{m.day}</div>}
                       <div
                         class:list={[
                           "crow",
-                          m.own ? "own" : "in",
-                          { gut: isChannel && !m.own, tail: endsRun, tight: !startsRun },
+                          m.by === "you" ? "own" : "in",
+                          { gut, tail: endsRun, tight: !startsRun },
                         ]}
                       >
-                        {isChannel && !m.own && endsRun && (
-                          m.ava ? (
-                            <img class="cgav" src={m.ava} alt="" width="112" height="112" loading="lazy" />
-                          ) : (
-                            <i class="cgav cgletter">{m.letter}</i>
-                          )
+                        {gut && endsRun && (
+                          <img class="cgav" src={CAST[m.by].ava} alt="" width="112" height="112" loading="lazy" />
                         )}
                         <div class="cbub">
-                          {startsRun && !m.own && isChannel && m.name && (
-                            <span class="csender">{m.name}</span>
-                          )}
+                          {gut && startsRun && <span class="csender">{CAST[m.by].name}</span>}
                           {m.html && <div class="ctext" set:html={m.html} />}
                           {m.img && (
                             <img
@@ -734,35 +725,18 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
     }
   }
 
-  /* ── Liquid Glass ─────────────────────────────────────────────────────────
+  /* ── Liquid Glass, flattened ──────────────────────────────────────────────
    *
-   * iOS 26/27's material is four things stacked, and only the first is a
-   * one-liner in CSS:
-   *
-   *   1. a blurred, saturated backdrop                       - backdrop-filter
-   *   2. a tint that reads as glass, not as a grey chip      - background
-   *   3. a specular rim, brightest where the light lands     - the ::after ring
-   *   4. REFRACTION: content near the edge displaced inward  - see below
-   *
-   * (4) is the one that makes Apple's version look wet, and it is the one the
-   * web cannot do here. The technique the articles describe - an SVG
-   * feDisplacementMap fed to `backdrop-filter: url(#…)` - is Chromium-only:
-   * Safari does not support SVG filters in backdrop-filter at all, and this
-   * demo renders on phones, which is overwhelmingly iOS Safari. It would be
-   * complexity spent on an effect our actual audience never sees, so the rim
-   * below fakes the edge lensing instead: a gradient ring, bright at the two
-   * corners the light would catch and nearly gone along the sides. That is
-   * what reads as a bevel picking up light.
-   *
-   * The tint is Apple's systemFill grey rather than a translucent white. Over
-   * the white feed a white tint renders as… white; the grey is what produces
-   * the light-grey pill the reference crop actually shows. */
+   * No backdrop-filter: five live blurs repainted on every scroll frame while
+   * the feed runs under the bar, on the phones this demo exists for. The fill
+   * is what the blurred glass composites to over the white feed (systemFill
+   * grey on white), kept slightly translucent so content still reads under it.
+   * The rim below fakes the edge lensing: a gradient ring, bright at the two
+   * corners the light would catch and nearly gone along the sides. */
   .glass {
     position: relative;
     isolation: isolate;
-    background: rgb(120 120 128 / 0.08);
-    -webkit-backdrop-filter: blur(calc(13 * var(--pu))) saturate(190%) brightness(1.04);
-    backdrop-filter: blur(calc(13 * var(--pu))) saturate(190%) brightness(1.04);
+    background: rgb(244 244 245 / 0.8);
     box-shadow:
       /* Lift off the surface behind it. */
       0 calc(0.5 * var(--pu)) calc(1.5 * var(--pu)) rgb(0 0 0 / 0.05),
@@ -860,7 +834,7 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
   #ph-list:checked ~ .screen .listview,
   #ph-v-mara:checked ~ .screen .cv-mara,
   #ph-v-hermes:checked ~ .screen .cv-hermes,
-  #ph-v-lena:checked ~ .screen .cv-lena,
+  #ph-v-priya:checked ~ .screen .cv-priya,
   #ph-v-allhands:checked ~ .screen .cv-allhands,
   #ph-v-scout:checked ~ .screen .cv-scout,
   #ph-v-eng:checked ~ .screen .cv-eng,
@@ -1178,16 +1152,6 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
     background: rgb(0 0 0 / 0.13);
   }
 
-  .cgletter {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(13 * var(--pu));
-    font-weight: 600;
-    font-style: normal;
-    color: var(--ph-sec);
-  }
-
   .cbub {
     max-width: 78%;
     display: flex;
@@ -1246,6 +1210,29 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
   .ctext :global(.mention) {
     font-weight: 600;
     color: var(--ph-blue);
+  }
+
+  .ctext :global(table) {
+    margin-top: calc(6 * var(--pu));
+    border-collapse: collapse;
+    font-size: calc(15 * var(--pu));
+    line-height: calc(20 * var(--pu));
+  }
+
+  .ctext :global(th),
+  .ctext :global(td) {
+    padding: calc(4 * var(--pu)) calc(10 * var(--pu)) calc(4 * var(--pu)) 0;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .ctext :global(th) {
+    font-weight: 600;
+    color: var(--ph-sec);
+  }
+
+  .ctext :global(tbody tr) {
+    border-top: calc(0.5 * var(--pu)) solid color-mix(in srgb, currentColor 18%, transparent);
   }
 
   /* An image-only message IS the bubble: no padding, and the picture runs the
@@ -1689,11 +1676,9 @@ const actionsOf = (c: Chat): [keyof typeof SF, string][] => [
     flex-direction: column;
     border-radius: calc(44 * var(--pu)) calc(44 * var(--pu)) 0 0;
     overflow: hidden;
-    /* systemGroupedBackground, thinned so the pushed-back chat shows through
-     * as light and colour rather than as a picture. */
-    background: rgb(244 244 248 / 0.82);
-    -webkit-backdrop-filter: blur(calc(26 * var(--pu))) saturate(180%);
-    backdrop-filter: blur(calc(26 * var(--pu))) saturate(180%);
+    /* systemGroupedBackground, thinned just enough that the pushed-back chat
+     * shows through as light rather than as a picture. */
+    background: rgb(244 244 248 / 0.94);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.75),
       0 calc(-8 * var(--pu)) calc(30 * var(--pu)) rgb(0 0 0 / 0.14);

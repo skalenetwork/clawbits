@@ -1,106 +1,45 @@
 import { useState } from "react";
-import { LATEST_RELEASE, RELEASES, compareVersions, type Release } from "@/lib/releaseNotes";
+import { LATEST_RELEASE, compareVersions } from "@/lib/releaseNotes";
 
 const SEEN_KEY = "fc_release_notes_seen_version";
-const FORCE_KEY = "fc_release_notes_force";
 
-/** Production web only. Same signal as the backend's IS_PRODUCTION (domain.py).
- *  The staging build serves the identical bundle on app.freeclaws.ai, so
- *  import.meta.env.PROD can't tell them apart — the host can. (Desktop/Tauri
- *  runs on tauri://localhost and is out of scope for v1.)
- *
- *  The apex was listed alongside app.* across the cutover so the gate could not
- *  go dark on either side of the flip. That condition is met — clawbits.ai has
- *  served the marketing site since 2026-08-12 — so the union collapses back to
- *  the one host this bundle is actually served from. */
-const PRODUCTION_WEB_HOSTS = ["app.clawbits.ai"];
-
-function isProductionWeb(): boolean {
-  if (typeof window === "undefined") return false;
-  return PRODUCTION_WEB_HOSTS.includes(window.location.hostname);
-}
-
-/** Off-prod preview escape hatch: ``?releaseNotes=force`` or a localStorage
- *  flag. Lets us see the modal on localhost/staging where the prod gate hides
- *  it. */
 function isForced(): boolean {
-  if (typeof window === "undefined") return false;
   try {
-    const qs = new URLSearchParams(window.location.search);
-    if (qs.get("releaseNotes") === "force") return true;
-    return localStorage.getItem(FORCE_KEY) === "1";
+    return (
+      new URLSearchParams(window.location.search).get("releaseNotes") === "force" ||
+      localStorage.getItem("fc_release_notes_force") === "1"
+    );
   } catch {
     return false;
   }
 }
 
-/**
- * Decide, once at mount, which releases (if any) to surface:
- * - no record (new device / first rollout) → just the latest, then seed
- * - record older than latest → everything newer than it (the delta)
- * - record === latest → nothing
- *
- * Pure + synchronous — bundled releases, localStorage, and the hostname are all
- * available during render, so this runs in a lazy ``useState`` initialiser
- * rather than an effect (avoids the cascading-render anti-pattern).
- */
-function computeInitial(): { open: boolean; releases: Release[] } {
-  const none = { open: false, releases: [] as Release[] };
-  if (!LATEST_RELEASE) return none;
-
-  // Shown in production (clawbits.ai) and on the local Vite dev server (so
-  // developers can see it), but NOT on the built staging site (app.freeclaws.ai) —
-  // ``import.meta.env.DEV`` is true only for ``vite dev``, false for any build.
-  // ``?releaseNotes=force`` overrides everywhere.
-  const forced = isForced();
-  if (!forced && !import.meta.env.DEV && !isProductionWeb()) return none;
-
-  let lastSeen: string | null = null;
+/** Latest release newer than this device's record. Shown on prod web and `vite dev`, never on the staging
+ *  build, which serves the same bundle, so the gate is the hostname. `?releaseNotes=force` overrides. */
+export function hasUnseenRelease(): boolean {
+  if (!LATEST_RELEASE) return false;
+  if (isForced()) return true;
+  if (!import.meta.env.DEV && window.location.hostname !== "app.clawbits.ai") return false;
   try {
-    lastSeen = localStorage.getItem(SEEN_KEY);
+    const lastSeen = localStorage.getItem(SEEN_KEY);
+    return lastSeen == null || compareVersions(LATEST_RELEASE.version, lastSeen) > 0;
   } catch {
-    lastSeen = null;
+    return true;
   }
-
-  // Forced preview, or first run: show just the latest so existing users aren't
-  // hit with the whole back-catalogue.
-  if (forced || lastSeen == null) return { open: true, releases: [LATEST_RELEASE] };
-
-  if (compareVersions(LATEST_RELEASE.version, lastSeen) > 0) {
-    const unseen = RELEASES.filter((r) => compareVersions(r.version, lastSeen) > 0);
-    return { open: true, releases: unseen.length > 0 ? unseen : [LATEST_RELEASE] };
-  }
-  return none;
 }
 
-export interface ReleaseNotesState {
-  open: boolean;
-  /** Releases to render, newest first. */
-  releases: Release[];
-  /** Close the modal and mark the latest version as seen. */
-  dismiss: () => void;
-}
-
-/**
- * Drives the "What's new" modal. Mount ``ReleaseNotesDialog`` once in the authed
- * layout; it shows itself (prod web only) when a release is newer than what this
- * device last saw. See ``src/release-notes/``.
- */
-export function useReleaseNotes(): ReleaseNotesState {
-  const [state, setState] = useState(computeInitial);
+export function useReleaseNotes() {
+  const [open, setOpen] = useState(hasUnseenRelease);
 
   const dismiss = () => {
-    // Keep ``releases`` so the content stays through the close animation; just
-    // flip ``open`` and persist the seen marker.
-    setState((s) => ({ ...s, open: false }));
-    if (LATEST_RELEASE) {
-      try {
-        localStorage.setItem(SEEN_KEY, LATEST_RELEASE.version);
-      } catch {
-        /* ignore — non-fatal, modal may just reappear next load */
-      }
+    setOpen(false);
+    if (!LATEST_RELEASE) return;
+    try {
+      localStorage.setItem(SEEN_KEY, LATEST_RELEASE.version);
+    } catch {
+      /* storage blocked: the modal reappears next load */
     }
   };
 
-  return { open: state.open, releases: state.releases, dismiss };
+  return { open, dismiss };
 }

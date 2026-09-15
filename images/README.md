@@ -41,8 +41,10 @@ separately.
 
 Versions are resolved before the build (npm for the engine, ClawHub for the
 plugins) and passed in as build args, so the tag, the labels and the installed
-packages are equal by construction. The engine's ghcr tag is checked first: not
-every release publishes a `-browser` variant.
+packages are equal by construction. The tag also carries the short commit of the
+tree that built it (`oc2026.9.3-pl0.17.24-g563b35bd`), so a recipe change with no
+version bump publishes a new tag instead of moving the old one. The engine's ghcr
+tag is checked first: not every release publishes a `-browser` variant.
 
 The build asserts both plugins report `loaded`, which catches a plugin whose
 files copied but whose runtime dependencies did not. It does not prove the

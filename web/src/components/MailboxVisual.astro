@@ -68,7 +68,7 @@ const MAIL: Mail[] = [
     subject: "Can you pull yesterday's deploy log?",
     time: "2m",
     kind: "human",
-    avatar: "/avatars/human-1.png",
+    avatar: "/avatars/human-1.webp",
     fresh: true,
   },
   {
@@ -92,7 +92,7 @@ const MAIL: Mail[] = [
     subject: "Re: Q3 numbers, one correction",
     time: "41m",
     kind: "human",
-    avatar: "/avatars/human-3.png",
+    avatar: "/avatars/human-3.webp",
   },
   {
     name: "The Standup",
@@ -106,7 +106,7 @@ const MAIL: Mail[] = [
     subject: "Invoice 0142 approved",
     time: "3h",
     kind: "human",
-    avatar: "/avatars/human-2.png",
+    avatar: "/avatars/human-2.webp",
   },
   {
     name: "Ledger Digest",
@@ -127,7 +127,7 @@ const MAIL: Mail[] = [
     subject: "Thanks for the notes",
     time: "9h",
     kind: "human",
-    avatar: "/avatars/human-4.png",
+    avatar: "/avatars/human-4.webp",
   },
 ];
 
@@ -221,7 +221,7 @@ const initials = (name: string) => {
     aspect-ratio: 4 / 5;
     border-radius: 1rem;
     overflow: hidden;
-    background: linear-gradient(150deg, #fdeaec, #f8ccd4);
+    background: linear-gradient(150deg, #ffe8eb, #ffc7d3);
 
     /* Real app tokens (frontend/src/index.css, sRGB-converted) - same set
      * AppDemo carries. */
@@ -264,13 +264,10 @@ const initials = (name: string) => {
     }
   }
 
-  /* Full bleed - no frame. The surface is translucent glass over the candy
-   * tint, the same treatment AppDemo gives the desktop window (--bg at 0.72
-   * with a blur behind it), so the card still reads as a member of the pastel
-   * row rather than a white panel sitting in one. Kept as its own layer above
-   * .mbox rather than folded into it: backdrop-filter samples what is painted
-   * BEHIND the element, and .mbox's gradient is its own background, so moving
-   * this up a level would blur the page instead of the tint. */
+  /* Full bleed - no frame. The surface is a translucent layer over the candy
+   * tint, so the card still reads as a member of the pastel row rather than a
+   * white panel sitting in one. No backdrop blur: over a smooth gradient it
+   * only ever added saturation, which the tint now carries itself. */
   .mpanel {
     position: absolute;
     inset: 0;
@@ -283,14 +280,11 @@ const initials = (name: string) => {
      * real UI at a real scale, and a proportional inset would make the chrome
      * grow with the column. */
     --pad: 20.5px;
-    /* 0.52, not AppDemo's 0.72: the window there sits over a dark shader and
-     * only needs to not be opaque, whereas this card has to hold its place in
-     * a row of saturated pastels - above ~0.6 the tint washes out and the
+    /* 0.52: this card has to hold its place in a row of saturated pastels -
+     * above ~0.6 the tint washes out and the
      * card reads white next to its three siblings. Measured at 0.52: muted
      * text 5.5:1 on the tinted surface, ink 13.5:1. */
     background: rgb(247 245 240 / 0.52);
-    -webkit-backdrop-filter: blur(28px) saturate(150%);
-    backdrop-filter: blur(28px) saturate(150%);
     overflow: hidden;
     /* The rim AppDemo gives the window: without it the panel has no edge and
      * the card reads as a tinted field rather than a surface. */

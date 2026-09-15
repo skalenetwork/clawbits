@@ -5,8 +5,8 @@ before inserting the membership row — no channel-type guard and no org check.
 Any member of a channel could therefore POST an arbitrary (trivially
 enumerable) user id and hand a complete stranger, from any organization, the
 channel's entire backlog and every attachment. On a 1:1 DM it was worse: a
-human<->human DM has no secondary gate at all, because
-``_require_agent_dm_contact`` only engages when ``dm_agent_peer`` finds an
+human<->human DM has no secondary gate at all, because the agent-DM contact
+check in ``_require_human_member`` only engages when ``dm_agent_peer`` finds an
 agent member, so the membership row alone granted read.
 
 The invariant these tests pin — *every member of a channel belongs to that

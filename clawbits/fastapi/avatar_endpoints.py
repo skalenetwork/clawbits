@@ -1,11 +1,9 @@
-"""HTTP endpoints for user avatar upload + reset.
+"""HTTP endpoints for avatar upload + reset.
 
-POST /api/human/avatars/users/me/upload   — multipart, set custom avatar
-DELETE /api/human/avatars/users/me        — revert to generated default
-
-Only one-per-self for now. Org-admin upload of other users' avatars
-isn't a real product need yet and adds an authz surface that's better
-defined when we actually want it.
+POST   /api/human/avatars/users/me/upload       set the caller's custom avatar
+DELETE /api/human/avatars/users/me              revert to the generated default
+POST   /api/human/avatars/orgs/{org_id}/upload  set the org avatar, admins only
+DELETE /api/human/avatars/orgs/{org_id}         remove the org avatar, admins only
 """
 from __future__ import annotations
 
@@ -15,33 +13,59 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from clawbits.avatars import AvatarKind, ensure_user_avatar
 from clawbits.avatars.config import CURRENT_AVATAR_VERSION, make_avatars_r2_client
-from clawbits.avatars.payloads import avatar_ref_for_user
+from clawbits.avatars.payloads import avatar_ref_for_org, avatar_ref_for_user
+from clawbits.avatars.storage import org_avatar_object_key, user_avatar_object_key
 from clawbits.avatars.upload import (
     ACCEPTED_CONTENT_TYPES,
     AvatarProcessError,
     process_uploaded_avatar,
-    upload_user_avatar_to_r2,
+    upload_avatar_to_r2,
 )
 from clawbits.datastructures.avatar_models import AvatarRef
-from clawbits.db.models import HumanUser
-from clawbits.fastapi.human_endpoints import _get_db, get_current_human_user
+from clawbits.db.models import HumanUser, Organization
+from clawbits.fastapi.human_endpoints import _get_db, _require_org_owner
+from clawbits.fastapi.workos_auth import get_current_human_user
 
 logger = logging.getLogger(__name__)
 
-# 5 MB — covers any sensible profile picture, rejects accidental
-# 4K raw uploads before we bother decoding them.
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 avatar_router = APIRouter(tags=["Human", "Avatars"])
 
 
 class _AvatarResponse(AvatarRef):
-    """Thin wrapper around AvatarRef for OpenAPI to name the schema.
+    """Names the response schema apart from the embedded ``avatar`` field."""
 
-    Keeps the response model distinct from the embedded ``avatar``
-    field on user/agent/channel payloads, which is convenient for
-    SDK generators downstream.
-    """
+
+async def _processed_upload(file: UploadFile) -> bytes:
+    if file.content_type and file.content_type not in ACCEPTED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"unsupported content-type {file.content_type!r}; "
+                f"accepted: {', '.join(sorted(ACCEPTED_CONTENT_TYPES))}"
+            ),
+        )
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
+        )
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty upload")
+    try:
+        return process_uploaded_avatar(raw)
+    except AvatarProcessError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _store(object_key: str, processed: bytes) -> None:
+    try:
+        await upload_avatar_to_r2(object_key=object_key, processed_bytes=processed)
+    except Exception as exc:
+        logger.exception("avatar upload failed for %s", object_key)
+        raise HTTPException(status_code=502, detail="avatar storage failed") from exc
 
 
 @avatar_router.post(
@@ -54,52 +78,14 @@ async def upload_my_avatar(
     file: UploadFile = File(..., description="PNG / JPEG / WebP / GIF, ≤5 MB"),
     user: dict = Depends(get_current_human_user),
 ) -> AvatarRef:
-    if file.content_type and file.content_type not in ACCEPTED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=415,
-            detail=(
-                f"unsupported content-type {file.content_type!r}; "
-                f"accepted: {', '.join(sorted(ACCEPTED_CONTENT_TYPES))}"
-            ),
-        )
-
-    # Read with a hard cap so a malicious client can't OOM us by
-    # streaming a 10GB file. ``UploadFile.read`` returns the whole body
-    # at once — fine here because we're capped to 5MB.
-    raw = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
-        )
-    if not raw:
-        raise HTTPException(status_code=400, detail="empty upload")
-
-    try:
-        processed = process_uploaded_avatar(raw)
-    except AvatarProcessError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+    processed = await _processed_upload(file)
     user_id = int(user["id"])
     with _get_db(request) as db:
         row = db.get(HumanUser, user_id)
         if row is None:
             raise HTTPException(status_code=404, detail="user not found")
-        # Bump version before upload so the URL we return (built from
-        # the new version) points at the bytes we're about to PUT.
-        # Upload-first means a failed DB commit leaves an orphan blob
-        # rather than a row claiming an avatar that never landed.
         next_version = max(row.avatar_version, CURRENT_AVATAR_VERSION) + 1
-        try:
-            await upload_user_avatar_to_r2(
-                user_id=user_id,
-                version=next_version,
-                processed_bytes=processed,
-            )
-        except Exception as exc:
-            logger.exception("avatar upload failed for user %s", user_id)
-            raise HTTPException(status_code=502, detail="avatar storage failed") from exc
-
+        await _store(user_avatar_object_key(user_id, next_version, kind="uploaded"), processed)
         row.avatar_kind = AvatarKind.UPLOADED.value
         row.avatar_version = next_version
         db.commit()
@@ -125,15 +111,7 @@ async def reset_my_avatar(
         row = db.get(HumanUser, user_id)
         if row is None:
             raise HTTPException(status_code=404, detail="user not found")
-        # Bump version on reset too — the stitched-glass URL needs a
-        # new cache key so the browser refetches; if we kept the same
-        # version, the prior custom-avatar URL would still be in CDN
-        # cache for a year.
         next_version = max(row.avatar_version, CURRENT_AVATAR_VERSION) + 1
-
-        # Regenerate the stitched glass at the new version *before*
-        # flipping the DB so the URL is live when the response
-        # returns. Same edge-caching reasoning as for new channels.
         r2 = make_avatars_r2_client()
         try:
             await ensure_user_avatar(
@@ -155,3 +133,47 @@ async def reset_my_avatar(
         version=next_version,
         kind=AvatarKind.GENERATED.value,
     )
+
+
+@avatar_router.post(
+    "/api/human/avatars/orgs/{org_id}/upload",
+    response_model=_AvatarResponse,
+    summary="Upload the organization avatar",
+)
+async def upload_org_avatar(
+    org_id: str,
+    request: Request,
+    file: UploadFile = File(..., description="PNG / JPEG / WebP / GIF, ≤5 MB"),
+    user: dict = Depends(get_current_human_user),
+) -> AvatarRef:
+    processed = await _processed_upload(file)
+    with _get_db(request) as db:
+        _require_org_owner(db, org_id, user, "change the organization picture")
+        row = db.get(Organization, org_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        next_version = (row.avatar_version or 0) + 1
+        await _store(org_avatar_object_key(org_id, next_version), processed)
+        row.avatar_version = next_version
+        db.commit()
+
+    return avatar_ref_for_org(org_id=org_id, version=next_version)
+
+
+@avatar_router.delete(
+    "/api/human/avatars/orgs/{org_id}",
+    status_code=204,
+    summary="Remove the organization avatar",
+)
+def remove_org_avatar(
+    org_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> None:
+    with _get_db(request) as db:
+        _require_org_owner(db, org_id, user, "change the organization picture")
+        row = db.get(Organization, org_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        row.avatar_version = None
+        db.commit()

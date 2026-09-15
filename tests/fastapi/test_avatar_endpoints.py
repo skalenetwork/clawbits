@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 from starlette.testclient import TestClient
 
-from tests.fastapi._auth_helpers import login_human
+from tests.fastapi._auth_helpers import add_human_to_org, auth_headers, login_human
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +37,7 @@ def _stub_r2(monkeypatch):
         return ""
 
     import clawbits.fastapi.avatar_endpoints as _ep
-    monkeypatch.setattr(_ep, "upload_user_avatar_to_r2", _noop_upload)
+    monkeypatch.setattr(_ep, "upload_avatar_to_r2", _noop_upload)
     monkeypatch.setattr(_ep, "ensure_user_avatar", _noop_ensure)
     # The reset endpoint also builds a fresh R2 client to pass to
     # ``ensure_user_avatar``. Construction touches Cloudflare env;
@@ -150,3 +150,59 @@ def test_reset_requires_authentication(test_client: TestClient):
     test_client.cookies.clear()
     resp = test_client.delete("/api/human/avatars/users/me")
     assert resp.status_code == 401, resp.text
+
+
+def _team_org(tc: TestClient, token: str, name: str) -> str:
+    resp = tc.post("/api/human/orgs", json={"name": name}, headers=auth_headers(token))
+    assert resp.status_code == 200, resp.text
+    return resp.json()["org_id"]
+
+
+def test_org_avatar_upload_then_remove(test_client: TestClient):
+    token, _ = login_human(test_client, "org-owner@avatar-test.com")
+    org_id = _team_org(test_client, token, "avatar-team")
+    headers = auth_headers(token)
+
+    up = test_client.post(
+        f"/api/human/avatars/orgs/{org_id}/upload",
+        files={"file": ("org.png", _png_bytes(), "image/png")},
+        headers=headers,
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()["url"].endswith(f"/avatars/orgs/{org_id}/v1.webp")
+    assert test_client.get(f"/api/human/orgs/{org_id}", headers=headers).json()["avatar"] == up.json()
+
+    removed = test_client.delete(f"/api/human/avatars/orgs/{org_id}", headers=headers)
+    assert removed.status_code == 204, removed.text
+    assert test_client.get(f"/api/human/orgs/{org_id}", headers=headers).json()["avatar"] is None
+
+
+def test_org_avatar_and_rename_are_admin_only(test_client: TestClient):
+    owner_token, _ = login_human(test_client, "org-admin@avatar-test.com")
+    org_id = _team_org(test_client, owner_token, "avatar-admins")
+    member_token, _ = login_human(test_client, "org-member@avatar-test.com")
+    add_human_to_org(test_client, owner_token, org_id, "org-member@avatar-test.com")
+    headers = auth_headers(member_token)
+
+    upload = test_client.post(
+        f"/api/human/avatars/orgs/{org_id}/upload",
+        files={"file": ("org.png", _png_bytes(), "image/png")},
+        headers=headers,
+    )
+    assert upload.status_code == 403, upload.text
+    assert test_client.delete(f"/api/human/avatars/orgs/{org_id}", headers=headers).status_code == 403
+    rename = test_client.patch(f"/api/human/orgs/{org_id}", json={"display_name": "Nope"}, headers=headers)
+    assert rename.status_code == 403, rename.text
+
+
+def test_org_rename(test_client: TestClient):
+    token, _ = login_human(test_client, "org-rename@avatar-test.com")
+    org_id = _team_org(test_client, token, "rename-team")
+    headers = auth_headers(token)
+
+    resp = test_client.patch(f"/api/human/orgs/{org_id}", json={"display_name": "  Acme Inc.  "}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["display_name"] == "Acme Inc."
+
+    blank = test_client.patch(f"/api/human/orgs/{org_id}", json={"display_name": "   "}, headers=headers)
+    assert blank.status_code == 422, blank.text

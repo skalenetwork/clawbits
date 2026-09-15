@@ -215,20 +215,15 @@ describe("clawbits companion plugin", () => {
     assert.ok(Object.values(manifest.toolMetadata ?? {}).every((tool) => tool.optional === true));
   });
 
-  it("keeps every companion tool in the agent images' optional-tool allowlists", () => {
+  it("keeps every companion tool in the agent image's optional-tool allowlist", () => {
     // OpenClaw does not auto-allow optional plugin tools: one missing from
     // tools.alsoAllow ships invisible to the agent, which is how a working
     // tool surface still reads as "broken in production".
     const defaults = readJson("../../images/openclaw/defaults.json") as {
       tools?: { alsoAllow?: string[] };
     };
-    const entrypoint = readFileSync(
-      new URL("../../reef/images/openclaw-runtime/entrypoint.sh", import.meta.url),
-      "utf8",
-    );
     for (const name of CLAWBITS_TOOL_NAMES) {
       assert.ok(defaults.tools?.alsoAllow?.includes(name), `${name} in image defaults.json`);
-      assert.ok(entrypoint.includes(`"${name}"`), `${name} in the reef entrypoint tool policy`);
     }
   });
 
@@ -272,23 +267,6 @@ describe("clawbits companion plugin", () => {
     assert.equal(pkg.openclaw?.compat?.pluginApi, `>=${floor}`);
     assert.equal(pkg.peerDependencies?.["openclaw"], `>=${floor}`);
     assert.ok(compareVersions(floor, build) <= 0);
-  });
-
-  it("pins tools compatibility to Reef's reviewed OpenClaw floor", () => {
-    const expectedFloor = "2026.6.10";
-    const dockerfile = readFileSync(
-      new URL("../../reef/images/openclaw-runtime/Dockerfile", import.meta.url),
-      "utf8",
-    );
-    assert.equal(
-      /^ARG OPENCLAW_VERSION=(\S+)/mu.exec(dockerfile)?.[1],
-      expectedFloor,
-      "review tools compatibility when Reef changes",
-    );
-    const pkg = readJson("../package.tools.json") as {
-      openclaw?: { compat?: { minGatewayVersion?: string } };
-    };
-    assert.equal(pkg.openclaw?.compat?.minGatewayVersion, expectedFloor);
   });
 
   it("registers services only in full runtime mode", () => {

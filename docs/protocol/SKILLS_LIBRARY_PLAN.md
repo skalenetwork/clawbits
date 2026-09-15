@@ -375,8 +375,8 @@ Per pass, on a **single claimed owner loop**:
    Rename keeps the watcher from seeing a half-written skill. Explicit directory
    diff: local files absent from the manifest are deleted.
 9. `disabled` -> delete the directory. Presence is the enable mechanism, because
-   a `skills.*` config write is reported to be a no-op until gateway restart
-   (`docs/REEF_AGENT_ENV_PLAN.md:515`) - unverified, see §9.
+   a `skills.*` config write is reported to be a no-op until gateway restart -
+   unverified, see §9.
 10. Batch the report, chunked at exactly the server cap. **The report carries
     both lanes**: `managed[]` for our rows and `external[]` for everything the
     scan found elsewhere. Both are capped and truncation is signalled in the ack -

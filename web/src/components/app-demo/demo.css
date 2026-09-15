@@ -1,0 +1,223 @@
+/**
+ * The demo window's shared layer. Light tokens resolved from
+ * frontend/src/index.css:13-83 and PresenceDot.tsx:41-48. `.win` sits at 16px
+ * so -0.025em computes to the -0.4px every app text inherits (index.css:79,258).
+ * --side-glass and --side-filter stand in for the macOS sidebar vibrancy
+ * (index.css:116-123) and are tuned by eye over the gradient. The view crossfade
+ * is the app's root transition (index.css:458-462).
+ */
+
+.win {
+  --bg: #ffffff;
+  --ink: #1e1e1e;
+  --panel: #f6f5f4;
+  --muted: #d8d6d2;
+  --mut: #67635b;
+  --line: #c5c2bd;
+  --primary: #2e2e2e;
+  --primary-fg: #f8f7f1;
+  --unread: #ff3b30;
+  --mention: #5486d4;
+  --link: #007aff;
+  --signal: #b9324a;
+  --sky: #00a6f4;
+  --hover: rgb(30 30 30 / 0.06);
+  --press: rgb(30 30 30 / 0.09);
+  --active: rgb(30 30 30 / 0.1);
+  --on: #00bc7d;
+  --idle: #ffb900;
+  --setup: #2b7fff;
+  --off: #9f9fa9;
+  --side-glass: rgb(246 245 244 / 0.9);
+  --side-filter: blur(40px) saturate(130%);
+
+  font-family: var(--ff-app);
+  font-size: 16px;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+}
+
+.win .ic {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.win .ic svg {
+  width: 100%;
+  height: 100%;
+}
+
+.win .trunc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.win .ava {
+  display: block;
+  flex-shrink: 0;
+  object-fit: cover;
+  background: var(--muted);
+}
+
+.win .ava-human {
+  border-radius: 16px;
+}
+
+.win .ava-agent {
+  border-radius: 16px 16px 16px 6px;
+}
+
+.win .ava-channel {
+  border-radius: 6px;
+}
+
+.win .s12 {
+  width: 12px;
+  height: 12px;
+}
+
+.win .s14 {
+  width: 14px;
+  height: 14px;
+}
+
+.win .s16 {
+  width: 16px;
+  height: 16px;
+}
+
+.win .s20 {
+  width: 20px;
+  height: 20px;
+}
+
+.win .s28 {
+  width: 28px;
+  height: 28px;
+}
+
+.win .s40 {
+  width: 40px;
+  height: 40px;
+}
+
+.win .pd {
+  position: absolute;
+  border-radius: 50%;
+  background: var(--on);
+}
+
+.win .pd-idle {
+  background: var(--idle);
+}
+
+.win .pd-setup {
+  background: var(--setup);
+}
+
+.win .pd-offline {
+  background: var(--off);
+}
+
+.win .bar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+}
+
+/** The page header's top fade: tint eased over its last 40px, five backdrop blurs each masked shorter (frontend/src/components/ProgressiveBlur.tsx:15-37,61-70). */
+.win .scrim {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: -1;
+  height: calc(100% + 32px);
+  pointer-events: none;
+  background: linear-gradient(
+    color-mix(in oklab, var(--bg) 85%, transparent) 30px,
+    color-mix(in oklab, var(--bg) 51%, transparent) 46px,
+    color-mix(in oklab, var(--bg) 21%, transparent) 58px,
+    color-mix(in oklab, var(--bg) 7%, transparent) 66px,
+    transparent
+  );
+}
+
+.win .scrim i {
+  position: absolute;
+  inset: 0;
+  backdrop-filter: blur(var(--blur));
+  mask-image: linear-gradient(#000 calc(var(--reach) * 50%), transparent calc(var(--reach) * 100%));
+}
+
+.win .scrim i:nth-child(1) {
+  --blur: 0.5px;
+  --reach: 1;
+}
+
+.win .scrim i:nth-child(2) {
+  --blur: 1px;
+  --reach: 0.8;
+}
+
+.win .scrim i:nth-child(3) {
+  --blur: 2px;
+  --reach: 0.6;
+}
+
+.win .scrim i:nth-child(4) {
+  --blur: 4px;
+  --reach: 0.4;
+}
+
+.win .scrim i:nth-child(5) {
+  --blur: 8px;
+  --reach: 0.2;
+}
+
+.win .vr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.win .view {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .win .view {
+    transition:
+      opacity 160ms cubic-bezier(0.4, 0, 0.2, 1),
+      visibility 0s 160ms;
+  }
+}
+
+.win:has(#v-home:checked) .view-home,
+.win:has(#v-agents:checked) .view-agents,
+.win:has(#v-mara:checked) .view-mara,
+.win:has(#v-hermes:checked) .view-hermes,
+.win:has(#v-priya:checked) .view-priya,
+.win:has(#v-allhands:checked) .view-allhands,
+.win:has(#v-scout:checked) .view-scout,
+.win:has(#v-eng:checked) .view-eng,
+.win:has(#v-clawbits:checked) .view-clawbits,
+.win:has(#v-smartclaws:checked) .view-smartclaws,
+.win:has(#v-pit:checked) .view-pit,
+.win:has(#v-josh:checked) .view-josh,
+.win:has(#v-quill:checked) .view-quill,
+.win:has(#v-sasha:checked) .view-sasha {
+  visibility: visible;
+  opacity: 1;
+  transition-delay: 0s;
+}

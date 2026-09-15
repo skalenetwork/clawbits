@@ -26,7 +26,7 @@ import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import Base from "../layouts/Base.astro";
 import Button from "../components/Button.astro";
 import HugeIcon from "../components/HugeIcon.astro";
-import ShaderBackdrop from "../components/ShaderBackdrop.tsx";
+import SombraGradient from "../components/SombraGradient.astro";
 import { SITE } from "../config";
 import manifest from "../generated/brand-manifest.json";
 /* Raw imports, not fs reads: `import.meta.url` in an Astro page resolves to the
@@ -170,7 +170,7 @@ const boilerplate = SITE.description;
 <Base
   title="Brand"
   description="The Clawbits logo, colours, type and the rules that go with them. Download the kit."
-  ogImage="/og/og-clawbits-brand.png"
+  og="brand"
   nav="overlay"
 >
   {/* One hidden copy of each master. Everything below is a <use> of these. */}
@@ -187,13 +187,13 @@ const boilerplate = SITE.description;
 
   {/* ── Sheet 00 · Cover ─────────────────────────────────────────────────
       The lockup on the hardest ground we own. If the mark survives the candy
-      shader it survives anything, so the cover is a proof rather than a
+      gradient it survives anything, so the cover is a proof rather than a
       decoration - and it puts the file above every rule, which is what most
       visitors came for. */}
   <div class="frame">
     <section class="canvas" data-theme-anchor>
-      <div class="shader" aria-hidden="true">
-        <ShaderBackdrop client:only="react" />
+      <div class="backdrop" aria-hidden="true">
+        <SombraGradient />
       </div>
 
       <div class="cover">
@@ -481,7 +481,7 @@ const boilerplate = SITE.description;
 
   /* ── Cover ──────────────────────────────────────────────────────────── */
   /* No bottom padding, exactly as the homepage does it: the canvas's bottom
-   * edge is where the rails begin, so their side lines touch the shader
+   * edge is where the rails begin, so their side lines touch the gradient
    * instead of starting half a rem below it. */
   .frame {
     padding: 1rem 1rem 0;
@@ -497,19 +497,14 @@ const boilerplate = SITE.description;
     view-timeline-name: --hero-view;
   }
 
-  .shader {
+  .backdrop {
     position: absolute;
     inset: 0;
     z-index: 0;
-    background:
-      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
-      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
-      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
-      radial-gradient(30% 40% at 68% 78%, rgb(240 154 63 / 0.25), transparent 70%),
-      var(--color-canvas);
+    background: var(--color-canvas);
   }
 
-  .shader::after {
+  .backdrop::after {
     content: "";
     position: absolute;
     inset: 0;
@@ -562,18 +557,18 @@ const boilerplate = SITE.description;
     color: color-mix(in srgb, var(--color-canvas-text) 52%, transparent);
   }
 
-  /* Narrow screens turn the canvas PORTRAIT, and the shader's wave is sized to
-   * the canvas - so the same band that sits low and wide on desktop rears up
-   * and fills the frame behind the copy. The radial pool above assumes a tall
-   * dark field it no longer has, so it is swapped for a flat top-down wash
-   * that covers the bottom half, where the wave is brightest. Same correction,
-   * same values, as /download and /changelog. */
+  /* Narrow screens turn the canvas PORTRAIT, and the gradient's ridge is
+   * stretched to the canvas - so the same band that sits low and wide on
+   * desktop rears up and fills the frame behind the copy. The radial pool above
+   * assumes a tall dark field it no longer has, so it is swapped for a flat
+   * top-down wash that covers the bottom half, where the ridge is brightest.
+   * Same correction, same values, as /download and /changelog. */
   @media (max-width: 48rem) {
     .cover {
       padding-block: clamp(5rem, 18vw, 5.75rem) clamp(2.75rem, 9vw, 3.5rem);
     }
 
-    .shader::after {
+    .backdrop::after {
       background: linear-gradient(
         to bottom,
         rgb(20 19 17 / 0.68) 0%,

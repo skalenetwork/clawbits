@@ -1,6 +1,6 @@
 ---
 import Base from "./Base.astro";
-import { LINKS } from "../config";
+import { LINKS, type OgCard } from "../config";
 
 /**
  * Frame for /privacy and /terms.
@@ -23,11 +23,10 @@ interface Props {
   sections: { id: string; title: string }[];
   /** Sibling legal page, linked from the footer. */
   sibling: { href: string; label: string };
-  /** Social card for this document; privacy and terms have their own. */
-  ogImage: string;
+  og: OgCard;
 }
 
-const { title, effectiveDate, description, sections, sibling, ogImage } = Astro.props;
+const { title, effectiveDate, description, sections, sibling, og } = Astro.props;
 const year = new Date().getFullYear();
 
 // A plain WebPage node. Deliberately NOT a made-up "PrivacyPolicy" type -
@@ -53,7 +52,7 @@ const schema = [
 ];
 ---
 
-<Base title={title} description={description} ogImage={ogImage} schema={schema}>
+<Base title={title} description={description} og={og} schema={schema}>
   <div class="legal">
     <header class="head">
       <p class="eyebrow">Legal</p>

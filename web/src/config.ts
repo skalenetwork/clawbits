@@ -50,6 +50,20 @@ export const SITE = {
   org: "SKALE Labs",
 } as const;
 
+/** Social cards rendered at /og/<key>.png: the lockup, then the page name. */
+export const OG_CARDS = {
+  clawbits: undefined,
+  docs: "Docs",
+  changelog: "Changelog",
+  brand: "Brand",
+  download: "Download",
+  privacy: "Privacy",
+  terms: "Terms",
+  agentpit: "AgentPit",
+} as const satisfies Record<string, string | undefined>;
+
+export type OgCard = keyof typeof OG_CARDS;
+
 export const APP_URL = APP_URL_ENV ?? "https://app.clawbits.ai";
 
 /**
@@ -171,15 +185,10 @@ export const LINKS = {
    * the updater artifacts. /download links here rather than pretending to be
    * the only way in. */
   releases: `${GITHUB}/releases`,
-  /* The hero badge target: the homepage's own Lobstertalk section. Becomes
-   * a dedicated /docs page if the spec ever goes public. */
-  lobstertalk: "/#lobstertalk",
-  /* Reef is a standalone sub-project in the same repo; its README is the
-   * public doc until reef docs join the /docs allowlist. The #readme anchor
-   * scrolls past the file listing to the rendered README - without it GitHub
-   * lands on the directory tree and the reader has to scroll to find the
-   * content the link promised. */
-  reef: `${GITHUB}/tree/main/reef#readme`,
+  /* The hero badge target: the homepage's own Reef section. */
+  reefSection: "/#reef",
+  /* Reef is its own product with its own site and docs. */
+  reef: "https://reef.clawbits.ai",
   blog: `${GITHUB}/tree/main/docs`, // Phase 5 -> "/blog"
   privacy: "/privacy/",
   terms: "/terms/",

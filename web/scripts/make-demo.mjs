@@ -35,7 +35,7 @@
  * --gif-frame composites the rounded corner over a SOLID background instead
  * of leaving it transparent: a transparent rounded corner in a GIF is a hard
  * on/off staircase against whatever it lands on. The web path never needs
- * this - Demo.astro rounds with CSS, which anti-aliases against the shader.
+ * this - Demo.astro rounds with CSS, which anti-aliases against the gradient.
  *
  * USAGE
  *

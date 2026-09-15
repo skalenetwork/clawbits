@@ -203,14 +203,6 @@ pub fn build<R: Runtime>(
     Ok((menu, recent_slots, launch_at_login))
 }
 
-fn focus_main<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
-}
-
 pub fn handle_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
     match id {
         "nav-back" => {
@@ -249,7 +241,7 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
                 let _ = window.close();
             }
         }
-        "win-front" => focus_main(app),
+        "win-front" => crate::focus_main(app),
         "app-check-updates" => {
             // The frontend (UpdateContext) runs the check and surfaces the
             // banner, or a "you're up to date" toast when there's nothing new.
@@ -296,7 +288,7 @@ pub fn handle_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
             };
             if let Some(channel) = items.get(idx) {
                 let _ = app.emit("desktop://open-channel", channel.path.clone());
-                focus_main(app);
+                crate::focus_main(app);
             }
         }
         _ => {}

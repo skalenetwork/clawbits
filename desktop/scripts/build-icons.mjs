@@ -1,104 +1,71 @@
-// Generate the Tauri icon bundle for a given channel.
-//
-// Sources at `desktop/icons-src/{dev,staging,prod}.png` are 1024×1024 raw
-// exports from Icon Composer (edge-to-edge artwork). Using them directly
-// makes the resulting app icon look oversized in the macOS dock; using
-// Apple's stock 824/1024 ratio makes it look smaller than typical
-// third-party apps in practice (the visible shadow/glow most apps bake
-// into their artwork extends the perceived size past their solid body).
-// 920/1024 ≈ 89.8% lands close to that perceived size, then we hand it to
-// `tauri icon` which generates every derivative format.
-//
-// Channel resolution: positional arg → CLAWBITS_CHANNEL env → "dev".
-// The shared monochrome `tray-icon.png` is preserved across regeneration.
+// Rasterizes icons-src/clawbits.png (a 1024px edge-to-edge Icon Composer export) onto Apple's 824px icon grid and
+// runs `tauri icon` for the .icns, .ico and PNG fallbacks, then compiles clawbits.icon into Assets.car with the
+// local Xcode (27+), exactly as tauri-bundler would. The bundle ships the pre-built Assets.car because GitHub's
+// macOS runners still top out at Xcode 26.6, whose actool fails on this icon; point bundle.icon back at
+// clawbits.icon once they ship Xcode 27. Commit the output.
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import sharp from "sharp";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, "..");
-
-const VALID_CHANNELS = ["dev", "staging", "prod"];
-const channel = process.argv[2] || process.env.CLAWBITS_CHANNEL || "dev";
-if (!VALID_CHANNELS.includes(channel)) {
-  console.error(
-    `[icons] unknown channel "${channel}"; expected one of ${VALID_CHANNELS.join(", ")}`,
-  );
-  process.exit(1);
-}
-
-const src = join(root, "icons-src", `${channel}.png`);
-if (!existsSync(src)) {
-  console.error(`[icons] missing source: ${src}`);
-  process.exit(1);
-}
-
 const CANVAS = 1024;
-const ART = 920;
-const PAD = (CANVAS - ART) / 2;
+const BODY = 824;
+const inset = (CANVAS - BODY) / 2;
 
-const iconsDir = join(root, "src-tauri", "icons");
-const tmpDir = join(root, "src-tauri", ".icons-tmp");
-mkdirSync(tmpDir, { recursive: true });
-const padded = join(tmpDir, `${channel}-padded.png`);
+const root = resolve(import.meta.dirname, "..");
+const icons = join(root, "src-tauri", "icons");
+const work = mkdtempSync(join(tmpdir(), "clawbits-icons-"));
+const gridded = join(work, "icon.png");
 
-console.log(
-  `[icons] channel=${channel} → padding to ${ART}px art centered in ${CANVAS}×${CANVAS}`,
-);
-
-await sharp(src)
-  .resize(ART, ART, { kernel: sharp.kernel.lanczos3, fit: "contain" })
-  .extend({
-    top: PAD,
-    bottom: PAD,
-    left: PAD,
-    right: PAD,
-    background: { r: 0, g: 0, b: 0, alpha: 0 },
-  })
+await sharp(join(root, "icons-src", "clawbits.png"))
+  .resize(BODY, BODY)
+  .extend({ top: inset, bottom: inset, left: inset, right: inset, background: { r: 0, g: 0, b: 0, alpha: 0 } })
   .png()
-  .toFile(padded);
+  .toFile(gridded);
 
-// `tauri icon` overwrites managed files but leaves anything it doesn't
-// produce alone. Back up tray-icon.png defensively in case that ever
-// changes — losing it silently would break the menubar UI.
-const trayPath = join(iconsDir, "tray-icon.png");
-const trayBak = join(tmpDir, "tray-icon.png");
-if (existsSync(trayPath)) copyFileSync(trayPath, trayBak);
+execFileSync("bunx", ["tauri", "icon", gridded, "--output", icons], { cwd: root, stdio: "inherit" });
 
-// Two passes: the first generates the default set (.icns, .ico, 32/64/128
-// PNGs, mobile sizes, Microsoft Store logos); the second adds 512x512 for
-// HiDPI Linux dock rendering — Tauri's `--png` flag REPLACES the default
-// set instead of extending it, so we can't fold both into one call.
-console.log(`[icons] running \`tauri icon\` (default sizes)`);
-execFileSync(
-  "npx",
-  ["--no-install", "tauri", "icon", padded, "--output", iconsDir],
-  { cwd: root, stdio: "inherit" },
-);
-
-console.log(`[icons] running \`tauri icon\` (HiDPI 512)`);
-execFileSync(
-  "npx",
-  [
-    "--no-install",
-    "tauri",
-    "icon",
-    padded,
-    "--output",
-    iconsDir,
-    "--png",
-    "512",
-  ],
-  { cwd: root, stdio: "inherit" },
-);
-
-if (existsSync(trayBak) && !existsSync(trayPath)) {
-  copyFileSync(trayBak, trayPath);
+for (const name of readdirSync(icons)) {
+  if (name === "android" || name === "ios" || name.endsWith("Logo.png")) {
+    rmSync(join(icons, name), { recursive: true });
+  }
 }
 
-rmSync(tmpDir, { recursive: true, force: true });
-
-console.log(`[icons] done.`);
+const catalog = join(work, "catalog");
+mkdirSync(catalog);
+cpSync(join(icons, "clawbits.icon"), join(work, "Icon.icon"), { recursive: true });
+execFileSync(
+  "xcrun",
+  [
+    "actool",
+    join(work, "Icon.icon"),
+    "--compile",
+    catalog,
+    "--output-format",
+    "human-readable-text",
+    "--notices",
+    "--warnings",
+    "--output-partial-info-plist",
+    join(catalog, "assetcatalog_generated_info.plist"),
+    "--app-icon",
+    "Icon",
+    "--include-all-app-icons",
+    "--accent-color",
+    "AccentColor",
+    "--enable-on-demand-resources",
+    "NO",
+    "--development-region",
+    "en",
+    "--target-device",
+    "mac",
+    "--minimum-deployment-target",
+    "26.0",
+    "--platform",
+    "macosx",
+  ],
+  { stdio: "inherit" },
+);
+copyFileSync(join(catalog, "Assets.car"), join(icons, "Assets.car"));
+rmSync(work, { recursive: true });

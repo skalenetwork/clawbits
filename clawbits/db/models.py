@@ -119,9 +119,10 @@ class Agent(SQLModel, table=True):
     )
     # Set at signup approval/commit. Nullable for pre-collapse legacy rows.
     org_id: str | None = Field(default=None, foreign_key="organizations.org_id")
-    # Reef-provisioned agents only: the VM id. NULL when self-hosted; the
-    # base URL comes from ``Organization.reef_api_url``.
-    reef_sandbox_id: str | None = None
+    # Reef-hosted agents only: the host and the agent name in the org's reef
+    # repo (``fleet/<host>/<name>.toml``). NULL when self-hosted.
+    reef_host: str | None = None
+    reef_name: str | None = None
     # Holds all manage-permission authority. Nullable for legacy rows.
     operator_id: int | None = Field(default=None, foreign_key="human_users.id")
     # Last ``POST /api/agentic/alive`` ping. NULL = never pinged ("setup").
@@ -167,8 +168,14 @@ class ChallengeSession(SQLModel, table=True):
     org_id: str | None = None
     # Set on human-initiated signup so commit can record the operator.
     human_id: int | None = Field(default=None, foreign_key="human_users.id")
-    # Stamped by the "Run on Reef" flow so commit knows the VM. NULL if none.
-    reef_sandbox_id: str | None = None
+    # Stamped when the agent is declared on a reef host, so commit can copy
+    # both onto the agent row. NULL for every other signup.
+    reef_host: str | None = None
+    reef_name: str | None = None
+    # Picked when a human mints the session, so it is known before the agent
+    # boots. NULL on agentic sessions; unique, so two mints never hold one id.
+    agent_id: str | None = Field(default=None, index=True, unique=True)
+    nickname: str | None = None
 
 
 class HumanUser(SQLModel, table=True):
@@ -370,12 +377,15 @@ class Organization(SQLModel, table=True):
     workos_org_id: str = Field(nullable=False, unique=True)
     name: str = Field(nullable=False, unique=True)
     display_name: str | None = None
+    avatar_version: int | None = None
     is_personal: bool = Field(default=False, nullable=False)
     created_by: int = Field(nullable=False, foreign_key="human_users.id")
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # The org's self-hosted Reef API base URL. ONLY the URL is stored — the
-    # operator's browser holds the admin token and talks to Reef directly.
-    reef_api_url: str | None = None
+    # The org's reef repository, ``owner/name`` on github.com, and a
+    # Fernet-sealed fine-grained token scoped to it. Git is the only bus to a
+    # reef host: clawbits writes fleet files, hosts write status files.
+    reef_repo: str | None = None
+    reef_repo_token: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
     # Org opt-in for the attention gate. It still fires only where the `router`
     # extra is installed and only for agents with `lobstertalk_enabled`.
     attention_enabled: bool = Field(
@@ -721,34 +731,14 @@ class MmPost(SQLModel, table=True):
             "status IN ('streaming', 'draft', 'published', 'rejected')",
             name="mm_posts_status_check",
         ),
-        # Partial index for the pinned-messages popover. The
-        # ``pinned_at DESC`` half drives the newest-pin-first ordering;
-        # the partial predicate keeps the index tiny even on hot channels.
         Index(
             "ix_mm_posts_channel_pinned",
             "channel_id",
             text("pinned_at DESC"),
             postgresql_where=text("pinned_at IS NOT NULL"),
         ),
-        # THE sidebar index. Every per-channel read in the chat list —
-        # latest post, unread count, mention count — seeks published rows by
-        # ``(channel_id, post_id)``. ``channel_id`` is a bare FK and Postgres
-        # does not index those, so without this the planner falls back to
-        # walking ``mm_posts_pkey`` on the ``post_id > last_read`` half and
-        # filtering ``channel_id`` per row: it reads the entire table once per
-        # channel and discards ~99% of it. Partial on ``published`` because
-        # nothing on the read path ever wants a draft or a streaming
-        # placeholder, and the predicate keeps the index off the churn.
-        Index(
-            "ix_mm_posts_channel_post",
-            "channel_id",
-            "post_id",
-            postgresql_where=text("status = 'published'"),
-        ),
-        # Full-text search index over the generated ``message_tsv`` column,
-        # and a trigram index on the raw ``message`` for the typo fallback.
-        # Both created by the search-index migration; declared here so
-        # ``alembic check`` sees no drift. See docs/protocol/SEARCH_SPEC.md.
+        # Postgres does not index a bare FK: without this every sidebar read scans mm_posts.
+        Index("ix_mm_posts_channel_post", "channel_id", "post_id"),
         Index(
             "ix_mm_posts_message_tsv",
             "message_tsv",
@@ -767,31 +757,17 @@ class MmPost(SQLModel, table=True):
     agent_id: str | None = Field(default=None, foreign_key="agents.agent_id")
     human_id: int | None = Field(default=None, foreign_key="human_users.id")
     message: str = Field(nullable=False)
-    # Optional parent for inline-reply threading. NULL for top-level posts.
-    # Self-referential FK — replies must point at a post in the same channel
-    # (enforced at write-time, not by the schema).
+    # A same-channel parent is enforced on write, not by the schema.
     parent_post_id: int | None = Field(
         default=None, foreign_key="mm_posts.post_id", index=True
     )
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # Lifecycle state for the post. Two orthogonal concerns are encoded here:
-    #   ``streaming`` — server placeholder being streamed into via PATCH
-    #     /posts/{post_id}; only the creating agent may patch. The plugin
-    #     finalises by setting ``done=true``, transitioning the row to
-    #     ``published`` (or ``draft`` if the agent's owner requires approval).
-    #   ``draft``     — pending owner approval. Hidden from all viewers
-    #     except the drafting agent's primary owner.
-    #   ``published`` — visible to all channel members. Immutable.
-    #   ``rejected``  — owner rejected the draft. Retained for audit.
     status: str = Field(default="published", nullable=False)
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # Drives the "(edited)" marker. Separate from ``updated_at``, which
-    # streaming and approval transitions also stamp.
     edited_at: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
     )
-    # NULL = not pinned; the value orders the pinned popover newest-first.
     pinned_at: datetime | None = Field(
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
@@ -799,20 +775,15 @@ class MmPost(SQLModel, table=True):
     pinned_by_human_id: int | None = Field(
         default=None, foreign_key="human_users.id"
     )
-    # Server-resolved OG card for the first URL, so the client renders it
-    # with no fetch. NULL falls back to the client-side preview hook.
     link_preview: dict | None = Field(
         default=None,
         sa_column=SAColumn(JSONB, nullable=True),
     )
-    # Trace id minted by the client and persisted so the agent can stamp its
-    # reply with the same one, stitching spans across every hop.
     trace_id: str | None = Field(
         default=None,
         sa_column=SAColumn(Text, nullable=True),
     )
-    # STORED GENERATED by Postgres, never written from Python. Declared so
-    # ``alembic check`` sees no drift and the ORM can query it.
+    # Generated by Postgres; declared only so alembic check sees no drift.
     message_tsv: Any | None = Field(
         default=None,
         sa_column=SAColumn(
@@ -1638,3 +1609,22 @@ class AgentSkillSyncState(SQLModel, table=True):
         default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
     )
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
+
+
+class AgentMark(SQLModel, table=True):
+    """One Tidemark: an agent's first-time achievement. Insert-only, so a mark never drops.
+
+    ``kind`` is plain text validated in code by :data:`clawbits.agent_marks.MarkKind`, so a new
+    kind needs no migration. ``detail`` holds ids only, resolved to an org-safe label on read.
+    """
+
+    __tablename__ = "agent_marks"
+
+    agent_id: str = Field(primary_key=True, foreign_key="agents.agent_id")
+    kind: str = Field(sa_column=SAColumn(Text, primary_key=True))
+    earned_at: datetime | None = Field(
+        default=None, sa_column=_server_now_column(nullable=False)
+    )
+    detail: dict[str, Any] | None = Field(
+        default=None, sa_column=SAColumn(JSONB(none_as_null=True), nullable=True)
+    )

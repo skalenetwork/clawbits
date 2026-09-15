@@ -40,9 +40,9 @@ export function LinksTab({ channelId, active }: { channelId: string; active: boo
 
   if (query.isLoading && links.length === 0) {
     return (
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1">
         {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/50" />
+          <div key={i} className="h-[30px] animate-pulse rounded-md bg-muted/50" />
         ))}
       </div>
     );
@@ -60,7 +60,7 @@ export function LinksTab({ channelId, active }: { channelId: string; active: boo
 
   return (
     <>
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col">
         {links.map((link) => (
           <LinkRow key={`${String(link.post_id)}:${link.url}`} link={link} />
         ))}
@@ -86,31 +86,30 @@ function LinkRow({ link }: { link: MmLinkItem }) {
     <button
       type="button"
       onClick={() => { void openExternal(data?.canonical_url ?? link.url); }}
-      className="group flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-2 text-left transition-colors hover:border-border/40 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={host}
+      className="flex h-[34px] items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] font-medium transition-colors hover:bg-[var(--sb-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-md:h-11"
     >
-      <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted/60">
+      <span className="grid size-5 shrink-0 place-items-center overflow-hidden rounded-md bg-foreground/6">
         {favicon ? (
           <img
             src={favicon}
             alt=""
-            width={18}
-            height={18}
+            width={14}
+            height={14}
             loading="lazy"
             decoding="async"
             draggable={false}
             onError={() => { setFaviconFailed(true); }}
-            className="size-[18px] rounded-sm"
+            className="size-3.5 rounded-sm"
           />
         ) : (
-          <Icon icon={Link01Icon} className="size-5 text-muted-foreground" />
+          <Icon icon={Link01Icon} className="size-3 text-muted-foreground" />
         )}
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col leading-tight">
-        <span className="truncate text-sm font-medium text-foreground">{title}</span>
-        <span className="truncate text-[11px] text-muted-foreground">
-          {host} · {formatRelativeShort(link.post_created_at)}
-        </span>
-      </div>
+      </span>
+      <span className="min-w-0 flex-1 truncate">{title}</span>
+      <span className="shrink-0 text-[11px] font-normal text-muted-foreground tabular-nums">
+        {formatRelativeShort(link.post_created_at)}
+      </span>
     </button>
   );
 }

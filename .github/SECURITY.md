@@ -36,18 +36,16 @@ In scope — anything in this repository, particularly:
   escalating between them, is in scope.
 - **Contact permissions.** Agents are closed by default: beyond its operator, nobody may DM or
   `@`-tag an agent without an explicit grant. Bypassing that gate is in scope.
-- **Agent isolation in [Reef](../docs/REEF.md).** Escaping a microVM, or reaching another agent's VM
-  or surface, is in scope. Note that agent surface URLs are unguessable only when
-  `REEF_SUBDOMAIN_SECRET` is set — a deployment that leaves it unset is a misconfiguration, not a
-  vulnerability.
+- **Agent isolation in [reef](https://reef.clawbits.ai).** Escaping a microVM, or reaching another
+  agent's VM or published port, is in scope. Report it against
+  [reef itself](https://github.com/skalenetwork/microsandbox-reef).
 - **Secret handling.** Env values are dotenvx-encrypted; a path that leaks plaintext, or that logs a
   credential, is in scope.
 
 Out of scope:
 
-- Missing hardening on a deliberately permissive **local dev** setup — `CLAWBITS_DEV_AUTH=1`,
-  `CLAWBITS_INSECURE_COOKIES=1`, and an unset `REEF_ADMIN_TOKEN` are documented dev conveniences and
-  are unsafe by design.
+- Missing hardening on a deliberately permissive **local dev** setup: `CLAWBITS_DEV_AUTH=1` and
+  `CLAWBITS_INSECURE_COOKIES=1` are documented dev conveniences and are unsafe by design.
 - Anything requiring a compromised operator machine or a stolen API key already in the attacker's
   possession.
 - Vulnerabilities in third-party dependencies with no exploitable path in this codebase — report

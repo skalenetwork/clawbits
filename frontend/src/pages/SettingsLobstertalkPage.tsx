@@ -1,15 +1,18 @@
 import {useState} from "react";
 import {useMutation, useQuery, useQueryClient, type UseMutationResult} from "@tanstack/react-query";
-import {Icon} from "@/components/Icon";
 import {
     HashtagIcon as Hash,
     LockIcon as Lock,
     Megaphone01Icon as Megaphone,
 } from "@hugeicons/core-free-icons";
+import {ChannelGlyph} from "@/components/ChannelGlyph";
 import {EmptyState} from "@/components/EmptyState";
 import {PageHeader} from "@/components/PageHeader";
+import {SettingsPage, SettingsRow, SettingsRowSkeleton, SettingsSection, SettingsStatus} from "@/components/settings/Settings";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
+import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/select";
+import {Stepper} from "@/components/ui/stepper";
 import {Switch} from "@/components/ui/switch";
 import {useAuth} from "@/context/AuthContext";
 import {useActiveOrg} from "@/hooks/useActiveOrg";
@@ -26,30 +29,36 @@ import {
 import {formatChannelTitle} from "@/lib/formatting";
 import {queryKeys} from "@/lib/queryKeys";
 import {errMsg, toast} from "@/lib/toast";
-import {cn} from "@/lib/utils";
 
 type AttentionMode = OrgLobstertalkSettings["mode"];
 
-const MODE_OPTIONS: {value: AttentionMode; label: string}[] = [
-    {value: "embedding", label: "Embedding only"},
-    {value: "cascade", label: "Embedding + LLM confirm"},
-    {value: "llm_only", label: "LLM only"},
-    {value: "all", label: "All messages"},
+type Save = (body: SetOrgLobstertalkBody, quiet?: boolean) => void;
+
+const MODE_OPTIONS: {value: AttentionMode; label: string; line: string}[] = [
+    {value: "embedding", label: "Embedding only", line: "A free local embedding gate picks the messages"},
+    {value: "cascade", label: "Embedding + LLM", line: "The LLM confirms each embedding gate hit"},
+    {value: "llm_only", label: "LLM only", line: "The LLM reads every message, one call each"},
+    {value: "all", label: "All messages", line: "No triage: every message nudges and the agent decides"},
 ];
 
-/** Modes that use the org-configured LLM endpoint (and so need the form and
- *  the post-save probe). ``all`` deliberately isn't one: it has no triage —
- *  every post is delivered and the agent itself decides. */
+/** Modes that use the org-configured LLM endpoint, so they need the form and
+ *  the post-save probe. ``all`` has no triage: the agent itself decides. */
 const LLM_MODES: readonly AttentionMode[] = ["cascade", "llm_only"];
+
+const storedBody = (s: OrgLobstertalkSettings): SetOrgLobstertalkBody => ({
+    enabled: s.enabled,
+    mode: s.mode,
+    base_url: s.base_url,
+    model: s.model,
+    cooldown_seconds: s.cooldown_seconds,
+});
 
 export default function SettingsLobstertalkPage() {
     const {activeOrgId} = useAuth();
     const queryClient = useQueryClient();
 
-    // Owner-only page. Role comes from the active org's ``my_role`` (a
-    // light query that's already cached by the org switcher) so non-owners
-    // see the empty state instead of a flash-of-403 from the lobstertalk
-    // endpoint. The API enforces the same check independently.
+    // The lobstertalk endpoint is admin-only on the server, so the fetch waits
+    // on the cheap cached role check and non-admins never flash a 403.
     const {isOwner, isLoading: roleLoading} = useActiveOrg();
 
     const settingsQuery = useQuery({
@@ -59,69 +68,40 @@ export default function SettingsLobstertalkPage() {
     });
     const settings = settingsQuery.data;
 
-    // Fired automatically after every save that leaves an LLM mode armed: one
-    // live probe against the just-stored config (guard, dial, auth, model,
-    // JSON shape — the stages a real triage call runs). The result renders
-    // inline, not as a toast: the failure detail is the whole point, and a
-    // stored-but-broken endpoint is otherwise invisible until agents go quiet.
-    // ``saveNote`` (the mutation variable) is what the save just did — the
-    // card's pending line shows it, so these saves get no separate success
-    // toast that would declare victory before the verdict is in.
-    // Both mutations carry their target org in the *variables* rather than
-    // reading ``activeOrgId`` when they settle. The org is bound at click time,
-    // so switching orgs during a slow save can't make the follow-up probe spend
-    // the new org's metered LLM call — or invalidate the wrong cache key.
+    // Both mutations carry their org in the variables, bound at click time,
+    // so switching orgs mid-save can't make the follow-up probe spend the new
+    // org's metered LLM call or write the wrong cache key.
     const healthMutation = useMutation({
         mutationFn: ({orgId}: {orgId: string; note: string}) =>
             checkOrgLobstertalkEndpoint(orgId),
     });
 
     const saveMutation = useMutation({
-        mutationFn: ({orgId, body}: {orgId: string; body: SetOrgLobstertalkBody}) =>
+        mutationFn: ({orgId, body}: {orgId: string; body: SetOrgLobstertalkBody; quiet?: boolean}) =>
             setOrgLobstertalk(orgId, body),
-        // The org list is the source of truth for ``attention_enabled``
-        // (useActiveOrg reads it), so refetch it alongside our own config.
-        // Success feedback: a save that arms an LLM endpoint hands off to the
-        // health card (its pending line carries the "saved" note, the verdict
-        // follows) — a toast here would declare success moments before the
-        // probe can contradict it. Saves with no endpoint in play (embedding,
-        // toggle-off) show no card, so they keep the toast; without it the
-        // form remount (key input clears by design — it's write-only) reads
-        // as a reset, not a confirmed save.
-        onSuccess: (_data, {orgId, body}) => {
-            const saveNote =
-                body.clear_api_key ? "Settings saved, API key removed"
-                : body.api_key ? "Settings saved, API key stored"
-                : "Settings saved";
+        // The PUT is whole-state, so store the result before the controls
+        // re-enable. An LLM save reports through the probe, since a toast would
+        // declare success before the verdict; quiet saves (cooldown steps) skip
+        // both, as re-probing an unchanged endpoint spends a metered call.
+        onSuccess: (data, {orgId, body, quiet}) => {
+            queryClient.setQueryData(queryKeys.orgLobstertalk(orgId), data);
+            void queryClient.invalidateQueries({queryKey: queryKeys.orgs});
+            if (quiet) return;
             if (body.enabled && LLM_MODES.includes(body.mode)) {
-                healthMutation.mutate({orgId, note: saveNote});
+                const note =
+                    body.clear_api_key ? "Settings saved, API key removed"
+                    : body.api_key ? "Settings saved, API key stored"
+                    : "Settings saved";
+                healthMutation.mutate({orgId, note});
             } else {
                 toast.success("LobsterTalk settings saved");
-                healthMutation.reset(); // no endpoint in play — drop stale status
+                healthMutation.reset();
             }
-            void queryClient.invalidateQueries({queryKey: queryKeys.orgLobstertalk(orgId)});
-            void queryClient.invalidateQueries({queryKey: queryKeys.orgs});
         },
         onError: (err: unknown) => {
             toast.error(err instanceof Error ? err.message : "Failed to update LobsterTalk settings");
         },
     });
-
-    // The toggle persists the server-stored state — not the possibly-dirty
-    // triage form — so an unfinished cascade draft can never 422 the flip.
-    const toggleEnabled = (next: boolean) => {
-        if (!settings || !activeOrgId) return;
-        saveMutation.mutate({
-            orgId: activeOrgId,
-            body: {
-                enabled: next,
-                mode: settings.mode,
-                base_url: settings.base_url,
-                model: settings.model,
-                cooldown_seconds: settings.cooldown_seconds,
-            },
-        });
-    };
 
     if (!activeOrgId) {
         return <div className="text-sm text-muted-foreground">Select an organization.</div>;
@@ -133,172 +113,88 @@ export default function SettingsLobstertalkPage() {
 
     if (!isOwner) {
         return (
-            <div className="space-y-6">
+            <>
                 <PageHeader icon={Megaphone} title="LobsterTalk"/>
                 <EmptyState
                     icon={Lock}
                     title="Admins only"
                     description="LobsterTalk settings are restricted to organization admins. Ask an admin if the attention setup needs a change."
                 />
-            </div>
+            </>
         );
     }
 
+    const save: Save = (body, quiet) => { saveMutation.mutate({orgId: activeOrgId, body, quiet}); };
+
     return (
-        <div className="space-y-6">
+        <>
             <PageHeader icon={Megaphone} title="LobsterTalk"/>
 
-            {settingsQuery.isLoading && (
-                <div className="py-16 text-center text-sm text-muted-foreground">Loading…</div>
-            )}
-            {settingsQuery.isError && (
-                <p className="py-16 text-center text-sm text-destructive">
-                    {settingsQuery.error instanceof Error
-                        ? settingsQuery.error.message
-                        : "Failed to load LobsterTalk settings"}
-                </p>
-            )}
-
-            {settings && (
-                <>
-                    <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-card px-4 py-3.5">
-                        <div className="flex min-w-0 items-start gap-3">
-                            <Icon icon={Megaphone} className="mt-0.5 size-4 shrink-0 text-muted-foreground"/>
-                            <div className="min-w-0">
-                                <p className="text-sm font-medium">LobsterTalk attention</p>
-                                <p className="mt-0.5 text-xs text-muted-foreground">
-                                    Let agents chime into messages they weren't tagged in when a triage
-                                    step flags one they can help with. Applies to{" "}
-                                    <strong>approved public channels only</strong> — pick them below;
-                                    private channels and DMs are never read. Each agent's operator
-                                    still opts in per agent.
-                                </p>
-                            </div>
-                        </div>
-                        <Switch
-                            checked={settings.enabled}
-                            disabled={saveMutation.isPending}
-                            onCheckedChange={toggleEnabled}
-                            aria-label="LobsterTalk attention for this organization"
+            <SettingsPage>
+                {settingsQuery.isLoading && (
+                    <SettingsSection>
+                        {Array.from({length: 3}, (_, i) => <SettingsRowSkeleton key={i} leading={false}/>)}
+                    </SettingsSection>
+                )}
+                {settingsQuery.isError && (
+                    <SettingsSection>
+                        <SettingsRow
+                            title="Couldn't load LobsterTalk settings"
+                            error={errMsg(settingsQuery.error, "Failed to load LobsterTalk settings")}
                         />
-                    </div>
+                    </SettingsSection>
+                )}
 
-                    {/* The allowlist comes right after the master toggle — the
-                        "where" gets decided before the "how" (triage mode). */}
-                    <ChannelsSection orgId={activeOrgId} enabled={settings.enabled}/>
+                {settings && (
+                    <>
+                        <SettingsSection
+                            footer={
+                                <>
+                                    Private channels and DMs are never read, and each agent's operator opts in separately.
+                                    {!settings.enabled && " LobsterTalk is off: approvals and triage settings are kept and take effect when you turn it on."}
+                                </>
+                            }
+                        >
+                            <SettingsRow
+                                title="LobsterTalk attention"
+                                description="Agents chime in on untagged messages in approved channels"
+                                htmlFor="lobstertalk-enabled"
+                                control={
+                                    <Switch
+                                        id="lobstertalk-enabled"
+                                        checked={settings.enabled}
+                                        disabled={saveMutation.isPending}
+                                        // Persists the stored config, not the possibly dirty
+                                        // triage draft, so an unfinished draft never 422s the flip.
+                                        onCheckedChange={(next) => { save({...storedBody(settings), enabled: next}); }}
+                                    />
+                                }
+                            />
+                        </SettingsSection>
 
-                    {/* Config stays editable even while LobsterTalk is off. A
-                        stored endpoint that has since become unreachable or
-                        private — or that an operator dropped from the allow-list
-                        — must still be fixable, and re-enabling resubmits it, so
-                        hiding the form would strand the org with a config it can
-                        neither use nor repair. Keyed on the saved config so a
-                        successful save (or an outside change) re-seeds the form
-                        by remount — the server's normalized values win, the key
-                        input clears. The endpoint health card is enabled-only:
-                        a disabled config isn't probed. */}
-                    {!settings.enabled && (
-                        <p className="text-xs text-muted-foreground">
-                            LobsterTalk is off. You can still edit the triage configuration below;
-                            changes take effect when you turn it back on.
-                        </p>
-                    )}
-                    <TriageSection
-                        key={[settings.mode, settings.base_url ?? "", settings.model ?? "", String(settings.api_key_set)].join("\0")}
-                        settings={settings}
-                        pending={saveMutation.isPending}
-                        onSave={(body) => { saveMutation.mutate({orgId: activeOrgId, body}); }}
-                    />
-                    {settings.enabled && <EndpointHealth mutation={healthMutation}/>}
-                    <CooldownSection
-                        key={String(settings.cooldown_seconds ?? "default")}
-                        settings={settings}
-                        pending={saveMutation.isPending}
-                        onSave={(body) => { saveMutation.mutate({orgId: activeOrgId, body}); }}
-                    />
-                </>
-            )}
-        </div>
+                        <ChannelsSection orgId={activeOrgId}/>
+
+                        {/* Stays editable while LobsterTalk is off: a stored endpoint
+                            that went bad must remain repairable. Keyed on the saved
+                            config so a save re-seeds the draft by remount. */}
+                        <TriageSection
+                            key={[settings.mode, settings.base_url ?? "", settings.model ?? "", String(settings.api_key_set)].join("\0")}
+                            settings={settings}
+                            pending={saveMutation.isPending}
+                            onSave={save}
+                        />
+                        {settings.enabled && <EndpointStatus mutation={healthMutation}/>}
+                    </>
+                )}
+            </SettingsPage>
+        </>
     );
 }
 
-/** Per-(agent, channel) nudge cooldown. Applies in every mode — it is the
- *  throttle in front of triage/delivery, and in "All messages" mode it is the
- *  ONLY throttle. Empty inherits the server default; messages landing inside
- *  a window are caught up when it expires. */
-function CooldownSection({
-    settings,
-    pending,
-    onSave,
-}: {
-    settings: OrgLobstertalkSettings;
-    pending: boolean;
-    onSave: (body: SetOrgLobstertalkBody) => void;
-}) {
-    const [raw, setRaw] = useState(
-        settings.cooldown_seconds === null ? "" : String(settings.cooldown_seconds),
-    );
-    const parsed = raw.trim() === "" ? null : Number(raw);
-    const invalid = parsed !== null && (!Number.isInteger(parsed) || parsed < 30 || parsed > 3600);
-    const dirty = parsed !== settings.cooldown_seconds;
-
-    const submit = (e: React.SyntheticEvent) => {
-        e.preventDefault();
-        if (invalid) return;
-        onSave({
-            enabled: settings.enabled,
-            mode: settings.mode,
-            base_url: settings.base_url,
-            model: settings.model,
-            cooldown_seconds: parsed,
-        });
-    };
-
-    return (
-        <section className="space-y-4 rounded-xl border border-border/50 bg-card p-5">
-            <div className="space-y-0.5">
-                <h2 className="text-sm font-semibold">Nudge cooldown</h2>
-                <p className="text-xs text-muted-foreground">
-                    Minimum seconds between nudges per agent per channel — the spend
-                    throttle in every mode. Messages arriving inside the window are
-                    caught up when it expires. Leave empty for the server default
-                    ({settings.default_cooldown_seconds}s).
-                </p>
-            </div>
-            <form onSubmit={submit} className="flex max-w-md items-center gap-2">
-                <Input
-                    id="lobstertalk-cooldown"
-                    type="number"
-                    inputMode="numeric"
-                    min={30}
-                    max={3600}
-                    step={1}
-                    value={raw}
-                    onChange={(e) => { setRaw(e.target.value); }}
-                    placeholder={`${String(settings.default_cooldown_seconds)} (server default)`}
-                    aria-label="Nudge cooldown in seconds"
-                    disabled={pending}
-                    className="max-w-[180px]"
-                />
-                <Button type="submit" disabled={pending || invalid || !dirty}>
-                    {pending ? "Saving…" : "Save cooldown"}
-                </Button>
-            </form>
-            {invalid && (
-                <p className="text-xs text-destructive">
-                    Must be a whole number between 30 and 3600 seconds.
-                </p>
-            )}
-        </section>
-    );
-}
-
-/** Inline result of the post-save endpoint probe, in the same visual language
- *  as the Reef connection card: status dot (pinging halo when healthy, amber
- *  while checking, red on failure), colored verdict, muted detail, latency
- *  pill. Failures stay on screen (unlike a toast) because the detail — bad
- *  key, wrong URL, unusable model — is what the owner acts on. */
-function EndpointHealth({
+/** Result of the post-save probe. It stays on screen, unlike a toast, because
+ *  the failure detail (bad key, wrong URL, unusable model) is what the owner
+ *  acts on. */
+function EndpointStatus({
     mutation,
 }: {
     mutation: UseMutationResult<OrgLobstertalkHealth, Error, {orgId: string; note: string}>;
@@ -307,69 +203,31 @@ function EndpointHealth({
     const health = mutation.data;
     const pending = mutation.isPending;
     const failed = !pending && (mutation.isError || (health !== undefined && !health.ok));
-    const title = pending ? "Checking endpoint…" : failed ? "Endpoint check failed" : "Endpoint OK";
-    // While pending, the save confirmation lives here (these saves toast
-    // nothing) — the note then yields to the verdict's detail.
     const detail = pending
-        ? `${mutation.variables?.note ?? "Settings saved"} — testing the endpoint with one live call.`
+        ? `${mutation.variables?.note ?? "Settings saved"}, testing the endpoint with one live call`
         : mutation.isError
             ? errMsg(mutation.error)
             : health?.detail ?? "";
     return (
-        <div
-            role="status"
-            className={cn(
-                "flex items-start gap-3 rounded-lg border bg-card px-4 py-3.5",
-                failed ? "border-red-500/30" : "border-border",
-            )}
-        >
-            <span className="relative mt-1 flex size-2 shrink-0">
-                {!pending && !failed && (
-                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/60"/>
-                )}
-                <span
-                    className={cn(
-                        "relative inline-flex size-2 rounded-full",
-                        pending ? "bg-amber-500" : failed ? "bg-red-500" : "bg-emerald-500",
-                    )}
+        <div role="status">
+            <SettingsSection>
+                <SettingsRow
+                    title={pending ? "Checking endpoint…" : failed ? "Endpoint check failed" : "Endpoint OK"}
+                    description={failed ? undefined : detail}
+                    error={failed ? detail : undefined}
+                    control={
+                        <SettingsStatus tone={pending ? "warn" : failed ? "bad" : "ok"}>
+                            {health ? `${health.latency_ms} ms` : pending ? "Checking" : "Error"}
+                        </SettingsStatus>
+                    }
                 />
-            </span>
-            <div className="min-w-0 flex-1">
-                <p
-                    className={cn(
-                        "text-sm font-medium",
-                        pending
-                            ? "text-amber-600 dark:text-amber-400"
-                            : failed
-                                ? "text-red-600 dark:text-red-400"
-                                : "text-emerald-600 dark:text-emerald-400",
-                    )}
-                >
-                    {title}
-                </p>
-                {detail && (
-                    <p className="mt-0.5 break-words text-xs text-muted-foreground">{detail}</p>
-                )}
-            </div>
-            {health !== undefined && (
-                <span
-                    className={cn(
-                        "shrink-0 rounded-full px-2 py-0.5 text-xs tabular-nums",
-                        failed
-                            ? "bg-red-500/10 text-red-600 dark:text-red-400"
-                            : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-                    )}
-                >
-                    {String(health.latency_ms)} ms
-                </span>
-            )}
+            </SettingsSection>
         </div>
     );
 }
 
-
-/** Mode picker + the LLM connection form (cascade and llm_only). Form state is seeded
- *  from the saved config once per mount (the parent remounts it on change). */
+/** Mode and cooldown, plus the LLM endpoint form for cascade and llm_only.
+ *  The draft is seeded from the saved config once per mount. */
 function TriageSection({
     settings,
     pending,
@@ -377,235 +235,215 @@ function TriageSection({
 }: {
     settings: OrgLobstertalkSettings;
     pending: boolean;
-    onSave: (body: SetOrgLobstertalkBody) => void;
+    onSave: Save;
 }) {
     const [mode, setMode] = useState<AttentionMode>(settings.mode);
     const [baseUrl, setBaseUrl] = useState(settings.base_url ?? "");
     const [model, setModel] = useState(settings.model ?? "");
-    // The key input is write-only: it starts blank even when a key is stored.
+    // Write-only: a stored key is never shown, only replaced or removed.
+    const [keyState, setKeyState] = useState<"saved" | "editing" | "removing">(
+        settings.api_key_set ? "saved" : "editing",
+    );
     const [apiKey, setApiKey] = useState("");
-    const [clearKey, setClearKey] = useState(false);
 
     const selectMode = (next: AttentionMode) => {
         setMode(next);
-        if (next === settings.mode) return;
-        // Embedding and All need no LLM fields — persist right away. The LLM
-        // modes only take effect on Save (the server requires base URL + model).
-        if (!LLM_MODES.includes(next)) {
-            onSave({
-                enabled: settings.enabled,
-                mode: next,
-                base_url: settings.base_url,
-                model: settings.model,
-                cooldown_seconds: settings.cooldown_seconds,
-            });
+        // Embedding and All need no LLM fields, so they save right away; the
+        // LLM modes wait for Save because the server requires URL and model.
+        if (next !== settings.mode && !LLM_MODES.includes(next)) {
+            onSave({...storedBody(settings), mode: next});
         }
     };
 
-    // Submits whichever LLM mode is selected (cascade or llm_only) — both
-    // need the endpoint form, so they share the Save path.
-    const submitLlmMode = (e: React.SyntheticEvent) => {
+    const submit = (e: React.SyntheticEvent) => {
         e.preventDefault();
         const body: SetOrgLobstertalkBody = {
-            enabled: settings.enabled,
+            ...storedBody(settings),
             mode,
             base_url: baseUrl.trim() || null,
             model: model.trim() || null,
-            cooldown_seconds: settings.cooldown_seconds,
         };
         const key = apiKey.trim();
-        if (clearKey) body.clear_api_key = true;
+        if (keyState === "removing") body.clear_api_key = true;
         else if (key) body.api_key = key;
         onSave(body);
     };
 
+    const cooldown = settings.cooldown_seconds ?? settings.default_cooldown_seconds;
+
     return (
         <>
-            <section className="space-y-5 rounded-xl border border-border/50 bg-card p-5">
-                <div className="space-y-0.5">
-                    <h2 className="text-sm font-semibold">Triage mode</h2>
-                    <p className="text-xs text-muted-foreground">
-                        How messages are picked for a nudge. The embedding gate is a free
-                        local filter; the LLM reads the recent conversation — precise, but
-                        one model call each time it's consulted. Cascade asks it only about
-                        gate hits; LLM only skips the gate and asks about every message.
-                        All messages skips triage entirely — each message becomes a nudge
-                        (one per cooldown window) and the agent itself decides whether to
-                        reply.
-                    </p>
-                </div>
-
-                <div
-                    role="radiogroup"
-                    aria-label="Triage mode"
-                    className="inline-flex w-full max-w-xl gap-1 rounded-lg border border-border bg-muted/40 p-1"
-                >
-                    {MODE_OPTIONS.map(opt => {
-                        const active = mode === opt.value;
-                        return (
-                            <button
-                                key={opt.value}
-                                type="button"
-                                role="radio"
-                                aria-checked={active}
-                                disabled={pending}
-                                onClick={() => { selectMode(opt.value); }}
-                                className={cn(
-                                    "flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                                    active
-                                        ? "bg-background text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.06)] ring-1 ring-border/60"
-                                        : "text-muted-foreground hover:bg-background/40 hover:text-foreground",
-                                )}
-                            >
-                                {opt.label}
-                            </button>
-                        );
-                    })}
-                </div>
-            </section>
+            <SettingsSection label="Triage">
+                <SettingsRow
+                    title="Mode"
+                    description={MODE_OPTIONS.find((o) => o.value === mode)?.line}
+                    control={
+                        <Select
+                            value={mode}
+                            items={MODE_OPTIONS}
+                            onValueChange={(next) => { if (next) selectMode(next); }}
+                            disabled={pending}
+                        >
+                            <SelectTrigger size="sm" aria-label="Triage mode">
+                                <SelectValue/>
+                            </SelectTrigger>
+                            <SelectContent>
+                                {MODE_OPTIONS.map((o) => (
+                                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    }
+                />
+                <SettingsRow
+                    title="Nudge cooldown"
+                    description={`Seconds between nudges per agent and channel, default ${settings.default_cooldown_seconds}`}
+                    control={
+                        <Stepper
+                            aria-label="Nudge cooldown in seconds"
+                            value={cooldown}
+                            min={30}
+                            max={3600}
+                            step={30}
+                            disabled={pending}
+                            onChange={(next) => {
+                                onSave({
+                                    ...storedBody(settings),
+                                    cooldown_seconds: next === settings.default_cooldown_seconds ? null : next,
+                                }, true);
+                            }}
+                        />
+                    }
+                />
+            </SettingsSection>
 
             {LLM_MODES.includes(mode) && (
-                <section className="space-y-5 rounded-xl border border-border/50 bg-card p-5">
-                    <div className="space-y-0.5">
-                        <h2 className="text-sm font-semibold">
-                            {mode === "cascade" ? "LLM confirm" : "LLM triage"}
-                        </h2>
-                        <p className="text-xs text-muted-foreground">
-                            {mode === "cascade"
-                                ? "Any OpenAI-compatible chat endpoint. If it's misconfigured or down, LobsterTalk falls back to the embedding gate's verdict — agents are never silently muted."
-                                : "Any OpenAI-compatible chat endpoint. It alone decides which agents to nudge, so if it's misconfigured or down, no nudges are sent until it recovers."}
-                        </p>
-                    </div>
-
-                    <form onSubmit={submitLlmMode} className="max-w-md space-y-4">
-                        <div className="space-y-1.5">
-                            <label htmlFor="lobstertalk-base-url" className="block text-sm font-medium">
-                                Base URL
-                            </label>
-                            <Input
-                                id="lobstertalk-base-url"
-                                type="url"
-                                inputMode="url"
-                                autoComplete="off"
-                                value={baseUrl}
-                                onChange={(e) => { setBaseUrl(e.target.value); }}
-                                placeholder="https://api.openai.com/v1"
-                                disabled={pending}
-                            />
-                            <p className="text-xs text-muted-foreground">
-                                Anthropic: <code>https://api.anthropic.com/v1</code>. Must be
-                                https and resolve to a public address — a self-hosted model
-                                (e.g. Ollama on <code>localhost</code>) has to be allowed by
-                                whoever runs this server.
-                            </p>
-                        </div>
-
-                        <div className="space-y-1.5">
-                            <label htmlFor="lobstertalk-model" className="block text-sm font-medium">
-                                Model
-                            </label>
-                            <Input
-                                id="lobstertalk-model"
-                                autoComplete="off"
-                                value={model}
-                                onChange={(e) => { setModel(e.target.value); }}
-                                placeholder="gpt-4o-mini"
-                                disabled={pending}
-                            />
-                            <p className="text-xs text-muted-foreground">
-                                A small, fast model works best — it answers one yes/no question per
-                                flagged message.
-                            </p>
-                        </div>
-
-                        <div className="space-y-1.5">
-                            <label htmlFor="lobstertalk-api-key" className="block text-sm font-medium">
-                                API key
-                            </label>
-                            <div className="flex items-center gap-2">
+                <form onSubmit={submit}>
+                    <SettingsSection
+                        label={mode === "cascade" ? "LLM confirm" : "LLM triage"}
+                        footer={
+                            <div className="flex items-start justify-between gap-4">
+                                <p>
+                                    {mode === "cascade"
+                                        ? "Falls back to the embedding gate if the endpoint is down."
+                                        : "It alone decides, so no nudges are sent while the endpoint is down."}
+                                    {" "}Private and local addresses need this server's allowlist.
+                                </p>
+                                <Button
+                                    type="submit"
+                                    size="sm"
+                                    disabled={pending || !baseUrl.trim() || !model.trim()}
+                                >
+                                    {pending ? "Saving…" : "Save"}
+                                </Button>
+                            </div>
+                        }
+                    >
+                        <SettingsRow
+                            title="Base URL"
+                            description="Any OpenAI-compatible https endpoint"
+                            htmlFor="lobstertalk-base-url"
+                            control={
                                 <Input
-                                    id="lobstertalk-api-key"
-                                    type="password"
+                                    size="sm"
+                                    id="lobstertalk-base-url"
+                                    type="url"
+                                    inputMode="url"
                                     autoComplete="off"
-                                    value={apiKey}
-                                    onChange={(e) => {
-                                        setApiKey(e.target.value);
-                                        // Typing a replacement cancels a pending removal —
-                                        // the two are mutually exclusive on the server.
-                                        if (e.target.value) setClearKey(false);
-                                    }}
-                                    placeholder={
-                                        settings.api_key_set && !clearKey
-                                            ? "Saved — leave blank to keep"
-                                            : "sk-…"
-                                    }
+                                    value={baseUrl}
+                                    onChange={(e) => { setBaseUrl(e.target.value); }}
+                                    placeholder="https://api.openai.com/v1"
+                                    disabled={pending}
+                                    className="w-60"
+                                />
+                            }
+                        />
+                        <SettingsRow
+                            title="Model"
+                            description="A small, fast model: one yes or no per message"
+                            htmlFor="lobstertalk-model"
+                            control={
+                                <Input
+                                    size="sm"
+                                    id="lobstertalk-model"
+                                    autoComplete="off"
+                                    value={model}
+                                    onChange={(e) => { setModel(e.target.value); }}
+                                    placeholder="gpt-4o-mini"
                                     disabled={pending}
                                 />
-                                {settings.api_key_set && !clearKey && (
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
+                            }
+                        />
+                        <SettingsRow
+                            title="API key"
+                            description={
+                                keyState === "removing"
+                                    ? "The stored key is removed when you save"
+                                    : "Stored encrypted and never shown"
+                            }
+                            htmlFor={keyState === "editing" ? "lobstertalk-api-key" : undefined}
+                            control={
+                                keyState === "editing" ? (
+                                    <Input
                                         size="sm"
-                                        className="shrink-0 text-muted-foreground hover:text-destructive"
-                                        onClick={() => { setClearKey(true); setApiKey(""); }}
+                                        id="lobstertalk-api-key"
+                                        type="password"
+                                        autoComplete="off"
+                                        autoFocus={settings.api_key_set}
+                                        value={apiKey}
+                                        onChange={(e) => { setApiKey(e.target.value); }}
+                                        placeholder={settings.api_key_set ? "Leave blank to keep" : "sk-…"}
                                         disabled={pending}
-                                    >
-                                        Remove key
-                                    </Button>
-                                )}
-                            </div>
-                            {clearKey ? (
-                                <p className="text-xs text-amber-600 dark:text-amber-400">
-                                    The stored key will be removed when you save.{" "}
-                                    <button
-                                        type="button"
-                                        className="font-medium underline underline-offset-2"
-                                        onClick={() => { setClearKey(false); }}
-                                    >
+                                    />
+                                ) : keyState === "removing" ? (
+                                    <Button type="button" variant="outline" size="sm" onClick={() => { setKeyState("saved"); }}>
                                         Undo
-                                    </button>
-                                </p>
-                            ) : (
-                                <p className="text-xs text-muted-foreground">
-                                    Stored encrypted and never shown again. Leave empty for local
-                                    servers like Ollama.
-                                </p>
-                            )}
-                        </div>
-
-                        <Button
-                            type="submit"
-                            disabled={pending || !baseUrl.trim() || !model.trim()}
-                        >
-                            {pending ? "Saving…" : "Save"}
-                        </Button>
-                    </form>
-                </section>
+                                    </Button>
+                                ) : (
+                                    <>
+                                        <span className="text-[13px] text-muted-foreground">Saved</span>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => { setKeyState("editing"); }}
+                                            disabled={pending}
+                                        >
+                                            Replace
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            className="text-destructive hover:text-destructive"
+                                            onClick={() => { setKeyState("removing"); }}
+                                            disabled={pending}
+                                        >
+                                            Remove
+                                        </Button>
+                                    </>
+                                )
+                            }
+                        />
+                    </SettingsSection>
+                </form>
             )}
         </>
     );
 }
 
-
-/** Per-channel allowlist — the "where" of LobsterTalk. Strictly closed by
- *  default: only channels approved here ever get an attention pass, and new
+/** Per-channel allowlist, the "where" of LobsterTalk. Closed by default: new
  *  channels start unapproved. Only public channels are eligible (the server
- *  refuses the rest), so the list filters to them. Rendered even while the
- *  master toggle is off — approvals are configuration an owner can stage
- *  before flipping the feature on. Orgs can have a lot of channels, so this
- *  is a dense checkbox checklist capped in height (scrolls past ~10 rows)
- *  rather than a stack of switch cards. */
-function ChannelsSection({orgId, enabled}: {orgId: string; enabled: boolean}) {
+ *  refuses the rest). Shown while the master switch is off so approvals can
+ *  be staged before turning it on. */
+function ChannelsSection({orgId}: {orgId: string}) {
     const queryClient = useQueryClient();
     const channelsQuery = useQuery({
         queryKey: queryKeys.orgChannels(orgId),
         queryFn: () => listAllOrgChannels(orgId),
     });
-    // Org and channel bound in the variables (not read when the mutation
-    // settles) for the same reason as the save mutation above: switching orgs
-    // mid-flight must not invalidate the wrong cache. The admin channels list
-    // is the source of truth for the toggles (SettingsChannelsPage shares its
-    // cache), so refetch rather than patch it.
+    // The admin channels list is the source of truth for the switches
+    // (SettingsChannelsPage shares its cache), so refetch rather than patch.
     const approveMutation = useMutation({
         mutationFn: ({orgId, channelId, approved}: {orgId: string; channelId: string; approved: boolean}) =>
             setOrgLobstertalkChannel(orgId, channelId, approved),
@@ -621,68 +459,50 @@ function ChannelsSection({orgId, enabled}: {orgId: string; enabled: boolean}) {
     );
     const approvedCount = publicChannels.filter((c) => c.lobstertalk_approved).length;
     return (
-        <section className="space-y-4 rounded-xl border border-border/50 bg-card p-5">
-            <div className="space-y-0.5">
-                <h2 className="text-sm font-semibold">Approved channels</h2>
-                <p className="text-xs text-muted-foreground">
-                    LobsterTalk only operates in channels approved here — new and
-                    existing channels start unapproved. Only public channels are
-                    eligible.
-                    {!enabled &&
-                        " LobsterTalk is off; approvals are kept and take effect when you turn it on."}
-                </p>
-            </div>
-            {channelsQuery.isLoading && (
-                <p className="text-sm text-muted-foreground">Loading…</p>
-            )}
+        <SettingsSection
+            label="Approved channels"
+            aside={publicChannels.length > 0
+                ? `${approvedCount} of ${publicChannels.length} approved`
+                : undefined}
+            footer="Only public channels are eligible, and new channels start unapproved."
+        >
+            {channelsQuery.isLoading && Array.from({length: 3}, (_, i) => (
+                <SettingsRowSkeleton key={i} description={false}/>
+            ))}
             {channelsQuery.isError && (
-                <p className="text-sm text-destructive">
-                    {channelsQuery.error instanceof Error
-                        ? channelsQuery.error.message
-                        : "Failed to load channels"}
-                </p>
+                <SettingsRow
+                    title="Couldn't load channels"
+                    error={errMsg(channelsQuery.error, "Failed to load channels")}
+                />
             )}
-            {channelsQuery.data && publicChannels.length === 0 && (
+            {channelsQuery.isSuccess && publicChannels.length === 0 && (
                 <EmptyState
                     icon={Hash}
                     title="No public channels"
                     description="Public channels in this organization will appear here for approval."
+                    className="py-10"
                 />
             )}
-            {publicChannels.length > 0 && (
-                <>
-                    <p className="text-xs text-muted-foreground">
-                        {approvedCount} of {publicChannels.length} approved
-                    </p>
-                    <ul className="max-h-72 space-y-px overflow-y-auto pr-1">
-                        {publicChannels.map((channel) => {
-                            const label = formatChannelTitle(channel.display_name ?? channel.name);
-                            return (
-                                <li key={channel.channel_id}>
-                                    <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/40">
-                                        <input
-                                            type="checkbox"
-                                            className="size-4 shrink-0 cursor-pointer accent-primary"
-                                            checked={channel.lobstertalk_approved}
-                                            disabled={approveMutation.isPending}
-                                            onChange={(e) => {
-                                                approveMutation.mutate({
-                                                    orgId,
-                                                    channelId: channel.channel_id,
-                                                    approved: e.target.checked,
-                                                });
-                                            }}
-                                            aria-label={`LobsterTalk in ${label}`}
-                                        />
-                                        <Icon icon={Hash} className="size-3.5 shrink-0 text-muted-foreground"/>
-                                        <span className="truncate text-sm">{label}</span>
-                                    </label>
-                                </li>
-                            );
-                        })}
-                    </ul>
-                </>
-            )}
-        </section>
+            {publicChannels.map((channel) => {
+                const label = formatChannelTitle(channel.display_name ?? channel.name);
+                return (
+                    <SettingsRow
+                        key={channel.channel_id}
+                        leading={<ChannelGlyph channel={channel} size={32}/>}
+                        title={label}
+                        control={
+                            <Switch
+                                checked={channel.lobstertalk_approved}
+                                disabled={approveMutation.isPending}
+                                onCheckedChange={(approved) => {
+                                    approveMutation.mutate({orgId, channelId: channel.channel_id, approved});
+                                }}
+                                aria-label={`LobsterTalk in ${label}`}
+                            />
+                        }
+                    />
+                );
+            })}
+        </SettingsSection>
     );
 }

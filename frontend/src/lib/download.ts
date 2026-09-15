@@ -15,7 +15,8 @@ export function saveBlob(blob: Blob, filename: string): void {
   window.setTimeout(() => { URL.revokeObjectURL(objectUrl); }, 10_000);
 }
 
-/** Pull ``filename="…"`` out of a Content-Disposition header.
+/** Pull the file name out of a Content-Disposition header, preferring RFC 6266
+ *  ``filename*`` over the ASCII ``filename`` fallback.
  *
  *  The server picks the name (it knows the channel and the export date), so
  *  this only has to survive a header that's missing or shaped unexpectedly —
@@ -25,7 +26,8 @@ export function filenameFromDisposition(
   header: string | null,
   fallback: string,
 ): string {
-  const match = /filename="?([^";]+)"?/i.exec(header ?? "");
-  const name = match?.[1]?.trim() ?? "";
+  const encoded = /filename\*=UTF-8''([^;\s]+)/i.exec(header ?? "")?.[1];
+  const plain = /filename="?([^";]+)"?/i.exec(header ?? "")?.[1]?.trim() ?? "";
+  const name = encoded ? decodeURIComponent(encoded) : plain;
   return name.length > 0 ? name : fallback;
 }

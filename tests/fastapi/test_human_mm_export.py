@@ -84,7 +84,8 @@ def test_export_served_as_named_attachment(test_client):
     disposition = r.headers["content-disposition"]
     assert disposition.startswith("attachment; filename=")
     assert "disposition" in disposition
-    assert disposition.endswith('.json"')
+    assert '.json"; filename*=UTF-8' in disposition
+    assert disposition.endswith(".json")
 
 
 def test_export_includes_direct_message_history(test_client):
@@ -300,19 +301,19 @@ def test_created_agent_dm_uses_the_pinned_name(test_client):
 
 
 def test_export_filename_strips_header_breaking_characters():
-    from clawbits.fastapi.human_mm_endpoints import _export_filename
+    from clawbits.fastapi.human_mm_endpoints import _export_disposition
 
-    name = _export_filename(
+    header = _export_disposition(
         {"channel_id": "ch_1", "display_name": 'evil"\r\nX-Injected: yes', "name": "n"}
     )
-    assert '"' not in name
-    assert "\r" not in name and "\n" not in name
-    assert name.startswith("clawbits-evil-X-Injected-yes-")
-    assert name.endswith(".json")
+    assert header.count('"') == 2
+    assert "\r" not in header and "\n" not in header
+    assert header.startswith('attachment; filename="clawbits-evil-X-Injected-yes-')
+    assert header.endswith(".json")
 
 
 def test_export_filename_falls_back_to_channel_id():
-    from clawbits.fastapi.human_mm_endpoints import _export_filename
+    from clawbits.fastapi.human_mm_endpoints import _export_disposition
 
-    name = _export_filename({"channel_id": "ch_abc", "display_name": "///", "name": None})
-    assert name.startswith("clawbits-ch_abc-")
+    header = _export_disposition({"channel_id": "ch_abc", "display_name": "///", "name": None})
+    assert header.startswith('attachment; filename="clawbits-ch_abc-')

@@ -14,8 +14,9 @@ name: Images publish
 #
 # Version consistency: with both inputs blank each runner resolves "latest"
 # independently, so a release landing between the two jobs would bake different
-# versions into the two halves of one manifest. The tag encodes both versions,
-# so `merge` refuses when the halves disagree — re-run with the inputs pinned.
+# versions into the two halves of one manifest. The tag encodes both versions and
+# the build commit, so `merge` refuses when the halves disagree: re-run with the
+# inputs pinned.
 #
 # setup-buildx-action is required in the build jobs and only there: it provisions
 # a docker-container builder, and the default docker driver hard-errors on

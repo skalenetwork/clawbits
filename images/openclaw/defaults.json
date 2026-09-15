@@ -24,5 +24,13 @@
   },
   "channels": {
     "clawbits": { "serviceOwner": "tools" }
+  },
+  "hooks": {
+    "internal": {
+      "enabled": true,
+      "entries": {
+        "bootstrap-extra-files": { "enabled": true, "paths": [".clawbits/SOUL.md"] }
+      }
+    }
   }
 }

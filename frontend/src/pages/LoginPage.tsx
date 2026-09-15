@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -15,11 +15,8 @@ import { DevSignInPanel } from "@/components/DevSignInPanel";
 import { errMsg, toast } from "@/lib/toast";
 import { getDevAuthEnabled } from "@/lib/api";
 import { WordmarkLink } from "@/components/WordmarkLink";
+import { SombraGradient } from "@/components/SombraGradient";
 import { DEFAULT_LANDING, NEXT_PARAM, safeReturnPath } from "@/lib/returnPath";
-
-// The WebGL runtime is dead weight on every other route, and the CSS gradient
-// behind it is a complete picture on its own — so it arrives late, on purpose.
-const ShaderBackdrop = lazy(() => import("@/components/ShaderBackdrop"));
 
 type Stage = "email" | "code";
 
@@ -97,36 +94,13 @@ export default function LoginPage() {
           the marketing site, Privacy, Terms), and hiding their container would
           leave them focusable but invisible to a screen reader. The decorative
           layers inside opt out individually instead. */}
-      <aside className="relative hidden p-2 lg:flex">
-        {/* The marketing hero, continued. Ground, fallback gradient and shader
-            are the landing's; see components/ShaderBackdrop.tsx. */}
-        <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl bg-[#141311] p-6 text-[#f7f5f1] pt-[calc(--spacing(6)+var(--titlebar-height))]">
-          {/* Static candy-on-ink gradient: what shows before the shader chunk
-              loads, without JS, or without WebGL. Same palette and same job as
-              the landing's .shader rule, but NOT the same stops - those are
-              placed for a landscape canvas, and in a tall column they pool
-              below the frame and leave it near-black. These sit the colour
-              where the wave actually lands here: a rust floor, the pink/blue/
-              grape band riding the lower third. */}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0"
-            style={{
-              background:
-                "radial-gradient(90% 26% at 22% 70%, rgb(232 66 92 / 0.8), transparent 70%)," +
-                "radial-gradient(85% 24% at 62% 74%, rgb(143 91 214 / 0.75), transparent 70%)," +
-                "radial-gradient(80% 22% at 34% 78%, rgb(74 143 224 / 0.7), transparent 70%)," +
-                "radial-gradient(120% 38% at 50% 104%, rgb(176 57 39 / 0.95), transparent 72%)," +
-                "radial-gradient(100% 30% at 50% 92%, rgb(240 154 63 / 0.5), transparent 74%)," +
-                "#141311",
-            }}
-          >
-            <Suspense fallback={null}>
-              <ShaderBackdrop fit="cover" worldWidth={1408} worldHeight={975} scale={0.5} offsetY={0.15} />
-            </Suspense>
-          </div>
+      <aside className="relative hidden lg:flex">
+        {/* The marketing hero, continued: the landing's ink ground and ridge
+            gradient; see components/SombraGradient.tsx. */}
+        <div className="relative flex flex-1 flex-col overflow-hidden bg-[#141311] p-6 text-[#f7f5f1] pt-[calc(--spacing(6)+var(--titlebar-height))]">
+          <SombraGradient />
 
-          {/* Legibility scrim, under the text and over the shader. The landing
+          {/* Legibility scrim, under the text and over the gradient. The landing
               pools its ink at 50% 38% because its headline is centred high;
               this panel's copy sits on the floor, so the pool does too. */}
           <div
@@ -143,7 +117,7 @@ export default function LoginPage() {
           </div>
 
           <div className="relative mt-auto max-w-xl">
-            <h1 className="font-serif text-2xl font-medium leading-[1.05] tracking-tight xl:text-3xl">
+            <h1 className="font-display text-2xl leading-[1.084] tracking-[-0.01em] xl:text-3xl">
               Agents don’t plug in here.<br />They belong here.
             </h1>
             <p className="mt-3 max-w-md pr-12 text-[13px]/relaxed font-medium text-[#f7f5f1]/80">

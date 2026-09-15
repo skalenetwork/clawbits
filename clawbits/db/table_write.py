@@ -1,9 +1,4 @@
-"""Write-side database accessors — SQLModel edition.
-
-Transaction ownership stays with the caller: these methods never call
-``session.commit()`` unless the previous sqlite implementation did (which
-only happens in a couple of legacy paths).
-"""
+"""Write-side database accessors. Transaction ownership stays with the caller: nothing here commits."""
 from __future__ import annotations
 
 import datetime as _dt
@@ -21,11 +16,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, delete, select, update
 
+from clawbits.agent_marks import MarkKind
 from clawbits.avatars.config import CURRENT_AVATAR_VERSION
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.api_key import ApiKey
 from clawbits.datastructures.long_name import LongName
-from clawbits.datastructures.mm_models import agent_dm_channel_name
+from clawbits.datastructures.mm_models import agent_default_channel_name, agent_dm_channel_name
 from clawbits.datastructures.nickname import NickName
 from clawbits.db.models import (
     UNKNOWN_PROVIDER,
@@ -34,6 +30,7 @@ from clawbits.db.models import (
     AgentChannelState,
     AgentClaim,
     AgentContactPermission,
+    AgentMark,
     AgentPost,
     AgentProfile,
     AgentSignupRequest,
@@ -301,14 +298,14 @@ class TableWrite:
         return api_key
 
     @staticmethod
-    def set_agent_reef_sandbox(
-        session: Session, agent_id: str, sandbox_id: str
-    ) -> None:
-        """Record the reef VM an agent runs in (set at signup-commit for the
-        'Run on Reef' flow). Best-effort: a missing row is a no-op."""
+    def set_agent_reef(session: Session, agent_id: str, host: str, name: str) -> None:
+        """Record the reef host and fleet name an agent was declared under,
+        copied from its signup session at commit. Best-effort: a missing row
+        is a no-op."""
         row = session.get(Agent, agent_id)
         if row is not None:
-            row.reef_sandbox_id = sandbox_id
+            row.reef_host = host
+            row.reef_name = name
             session.flush()
 
     @staticmethod
@@ -379,6 +376,10 @@ class TableWrite:
         owner_email: str | None = None,
         org_id: str | None = None,
         human_id: int | None = None,
+        reef_host: str | None = None,
+        reef_name: str | None = None,
+        agent_id: str | None = None,
+        nickname: str | None = None,
     ) -> None:
         session.add(
             ChallengeSession(
@@ -390,6 +391,10 @@ class TableWrite:
                 owner_email=owner_email,
                 org_id=org_id,
                 human_id=human_id,
+                reef_host=reef_host,
+                reef_name=reef_name,
+                agent_id=agent_id,
+                nickname=nickname,
             )
         )
         session.flush()
@@ -400,20 +405,6 @@ class TableWrite:
         if row is not None:
             row.used = True
             session.flush()
-
-    @staticmethod
-    def set_challenge_reef_sandbox(
-        session: Session, session_token: str, sandbox_id: str
-    ) -> bool:
-        """Record which reef VM a pending signup session provisioned, so
-        signup-commit can copy it onto the resulting agent. Returns False when
-        the session doesn't exist (the caller 404s)."""
-        row = session.get(ChallengeSession, session_token)
-        if row is None:
-            return False
-        row.reef_sandbox_id = sandbox_id
-        session.flush()
-        return True
 
     @staticmethod
     def cleanup_expired_challenge_sessions(session: Session, now: datetime) -> None:
@@ -428,6 +419,20 @@ class TableWrite:
         if row is not None:
             session.delete(row)
             session.flush()
+
+    @staticmethod
+    def revoke_reef_signup(session: Session, org_id: str, host: str, name: str) -> None:
+        """Delete the unspent signup sessions minted for ``host``/``name``, so the
+        token its fleet file carried is dead in git history too."""
+        session.exec(
+            delete(ChallengeSession).where(
+                ChallengeSession.org_id == org_id,
+                ChallengeSession.reef_host == host,
+                ChallengeSession.reef_name == name,
+                ChallengeSession.used == False,  # noqa: E712
+            )
+        )
+        session.flush()
 
     # ---------------- human users ----------------
 
@@ -627,6 +632,13 @@ class TableWrite:
             session.flush()
 
     @staticmethod
+    def update_org_display_name(session: Session, org_id: str, display_name: str) -> None:
+        row = session.get(Organization, org_id)
+        if row is not None:
+            row.display_name = display_name
+            session.flush()
+
+    @staticmethod
     def touch_human_last_seen(
         session: Session, human_id: int, when: datetime | None = None
     ) -> None:
@@ -682,19 +694,9 @@ class TableWrite:
         return ts
 
     @staticmethod
-    def set_human_privacy_mode(
-        session: Session,
-        human_id: int,
-        enabled: bool,
-        when: datetime | None = None,
-    ) -> HumanUser:
-        """Legacy single-toggle privacy. Flips all four granular flags
-        atomically (everything hidden / everything visible) so older
-        clients calling ``POST /api/human/privacy-mode`` still see the
-        same coarse behaviour. New clients should use
-        :py:meth:`set_human_privacy_settings`.
-        """
-        del when  # the freeze target is no longer used; signature kept for ABI
+    def set_human_privacy_mode(session: Session, human_id: int, enabled: bool) -> HumanUser:
+        """The single toggle behind ``POST /api/human/privacy-mode``: all four
+        per-signal flags hidden, or all four visible."""
         row = session.get(HumanUser, human_id)
         if row is None:
             raise ValueError(f"Human user '{human_id}' not found")
@@ -1026,6 +1028,12 @@ class TableWrite:
         session.exec(
             delete(AgentSkillSyncState).where(AgentSkillSyncState.agent_id == agent_id)
         )
+        session.exec(delete(AgentMark).where(AgentMark.agent_id == agent_id))
+        # The agent's own read pointers: its restart cursor per channel, not
+        # content, and a NOT NULL ``agent_id`` FK with no cascade.
+        session.exec(
+            delete(AgentChannelState).where(AgentChannelState.agent_id == agent_id)
+        )
 
         if keep_content:
             TableWrite._delete_agent_keep_content(session, agent)
@@ -1080,10 +1088,6 @@ class TableWrite:
         stale_agent_pointers = session.exec(
             select(AgentChannelState)
             .where(AgentChannelState.last_read_post_id.in_(agent_post_ids_subq))
-            # The agent's own rows are bulk-deleted just below — rewinding
-            # them too would leave dirty ORM instances behind a bulk DELETE,
-            # which explodes at flush with a zero-row UPDATE.
-            .where(AgentChannelState.agent_id != agent_id)
         ).all()
         for state in stale_agent_pointers:
             state.last_read_post_id = session.exec(
@@ -1093,10 +1097,6 @@ class TableWrite:
                 .where(MmPost.agent_id.is_distinct_from(agent_id))
             ).one()
             session.add(state)
-        # The deleted agent's own read pointers go outright (FK on agent_id).
-        session.exec(
-            delete(AgentChannelState).where(AgentChannelState.agent_id == agent_id)
-        )
         session.exec(
             update(MmPost)
             .where(MmPost.parent_post_id.in_(agent_post_ids_subq))
@@ -1249,7 +1249,7 @@ class TableWrite:
         """Channel ids of the *direct* (DM) channels this agent takes part in.
 
         A DM is identified by ``channel_type == 'direct'`` plus an agent
-        membership row — the same signal :meth:`TableRead.apply_dm_peer_display`
+        membership row, the same signal :meth:`TableRead.apply_dm_peers`
         uses to resolve a DM's peer.
         """
         return list(
@@ -1379,14 +1379,8 @@ class TableWrite:
             )
         )
 
-        # Preserve DM chats: re-point the agent's membership in each direct
-        # channel to the placeholder so the DM stays intact and still renders
-        # as a conversation with "Deleted agent" (its peer is resolved from
-        # the membership rows — see ``TableRead.apply_dm_peer_display``). Drop
-        # a DM membership outright only when the placeholder already holds one
-        # for that channel — the other party of an agent-agent DM was
-        # deleted-with-keep earlier — which would otherwise collide on
-        # ``uq_mm_channel_members_channel_agent``.
+        # A DM the placeholder already joined (its other agent was deleted with keep) would collide on
+        # uq_mm_channel_members_channel_agent, so that membership is dropped instead of re-pointed.
         dm_ids = TableWrite._agent_dm_channel_ids(session, agent_id)
         if dm_ids:
             other_member = aliased(MmChannelMember)
@@ -1829,7 +1823,7 @@ class TableWrite:
         Channels are deliberately **not** torn down when this empties them of
         humans: the org still owns them, and an owner can delete them from
         Settings. A now-human-less DM is likewise left in place - if the
-        person rejoins, ``_reopen_orphaned_dm`` heals it rather than colliding.
+        person rejoins, ``create_or_get_direct`` re-attaches both parties rather than colliding.
 
         Returns the channel ids the human was removed from, so the caller can
         close their live streams and drop the channels from their sidebar.
@@ -1900,13 +1894,17 @@ class TableWrite:
         return True
 
     @staticmethod
-    def set_org_reef_api_url(session: Session, org_id: str, api_url: str | None) -> bool:
-        """Set (or clear, when ``api_url`` is None) the org's connected Reef API URL.
-        Returns ``False`` if the org doesn't exist (caller decides 404)."""
+    def set_org_reef(
+        session: Session, org_id: str, repo: str | None, sealed_token: str | None
+    ) -> bool:
+        """Set (or clear, when both are ``None``) the org's reef repository and
+        its sealed token. Returns ``False`` if the org doesn't exist (caller
+        decides 404)."""
         row = session.get(Organization, org_id)
         if row is None:
             return False
-        row.reef_api_url = api_url
+        row.reef_repo = repo
+        row.reef_repo_token = sealed_token
         session.flush()
         return True
 
@@ -1994,18 +1992,6 @@ class TableWrite:
     # ---------------- agent claims ----------------
 
     @staticmethod
-    def create_agent_claim(session: Session, email: str, agent_id: str) -> None:
-        existing = session.exec(
-            select(AgentClaim)
-            .where(AgentClaim.email == email)
-            .where(AgentClaim.agent_id == agent_id)
-        ).first()
-        if existing is not None:
-            return
-        session.add(AgentClaim(email=email, agent_id=agent_id))
-        session.flush()
-
-    @staticmethod
     def delete_agent_claims_for_email(session: Session, email: str) -> list[str]:
         rows = session.exec(
             select(AgentClaim).where(AgentClaim.email == email)
@@ -2056,6 +2042,9 @@ class TableWrite:
             return
         session.add(MmChannelMember(channel_id=channel_id, agent_id=agent_id))
         session.flush()
+        channel = session.get(MmChannel, channel_id)
+        if channel.channel_type != "direct" and channel.name != agent_default_channel_name(agent_id):
+            TableWrite.award_mark(session, agent_id, "channel", {"channel_id": channel_id})
 
     # ------------------------------------------------------------------
     # Agent contact permissions (operator-managed contact allowlist)
@@ -2191,6 +2180,7 @@ class TableWrite:
         )
         session.add(row)
         session.flush()
+        TableWrite.award_mark(session, agent_id, "automation", {"automation_id": row.automation_id})
         return row
 
     @staticmethod
@@ -3060,6 +3050,8 @@ class TableWrite:
             agent.inter_agent_message_limit = inter_agent_message_limit
         if lobstertalk_enabled is not None:
             agent.lobstertalk_enabled = lobstertalk_enabled
+        if lobstertalk_enabled:
+            TableWrite.award_mark(session, agent_id, "lobstertalk")
         # host/model are nullable: None normally means "not provided", so
         # clearing needs an explicit flag from the endpoint layer.
         if clear_lobstertalk_ollama_host:
@@ -3151,6 +3143,17 @@ class TableWrite:
         # chats list forever. A no-op for older posts.
         TableWrite._recompute_channel_preview(session, post.channel_id)
         return post
+
+    @staticmethod
+    def set_mm_post_link_preview(
+        session: Session, post_id: int, message: str, link_preview: dict
+    ) -> bool:
+        result = session.exec(
+            update(MmPost)
+            .where(MmPost.post_id == post_id, MmPost.message == message)
+            .values(link_preview=link_preview)
+        )
+        return result.rowcount == 1
 
     @staticmethod
     def delete_mm_post_human(
@@ -3492,7 +3495,7 @@ class TableWrite:
         if org_id is None:
             raise ValueError(f"Agent '{agent_id}' has no organization")
 
-        channel_name = f"agent-{agent_id}"
+        channel_name = agent_default_channel_name(agent_id)
         channel = TableRead.get_mm_channel_by_org_and_name(session, org_id, channel_name)
         if channel is None:
             TableWrite.create_mm_channel(
@@ -3594,6 +3597,49 @@ class TableWrite:
         if channel is None:
             raise ValueError("Failed to load created operator-agent communication channel")
         return channel, True
+
+    # ---------------- agent marks ----------------
+
+    @staticmethod
+    def award_mark(
+        session: Session, agent_id: str, kind: MarkKind, detail: dict[str, int | str] | None = None
+    ) -> None:
+        """Record a first-time achievement. Insert-only: an earned mark is never touched again,
+        and the lookup first keeps a repeat award to one primary key read."""
+        if session.get(AgentMark, (agent_id, kind)) is not None:
+            return
+        session.execute(
+            pg_insert(AgentMark)
+            .values(agent_id=agent_id, kind=kind, detail=detail)
+            .on_conflict_do_nothing(index_elements=["agent_id", "kind"])
+        )
+
+    @staticmethod
+    def award_post_marks(session: Session, agent_id: str, channel_id: str, post_id: int) -> None:
+        """Conversation and teamwork for a post the agent published in a direct channel. The
+        latest earlier post by the other side names the human it answered, or the peer agent,
+        and teamwork goes to both agents. Server-authored posts never come through here."""
+        other = session.exec(
+            select(MmPost.human_id, MmPost.agent_id)
+            .join(MmChannel, MmChannel.channel_id == MmPost.channel_id)
+            .where(
+                MmPost.channel_id == channel_id,
+                MmChannel.channel_type == "direct",
+                MmPost.post_id < post_id,
+                MmPost.status == "published",
+                MmPost.agent_id.is_distinct_from(agent_id),
+            )
+            .order_by(MmPost.post_id.desc())
+            .limit(1)
+        ).first()
+        if other is None:
+            return
+        human_id, peer_agent_id = other
+        if human_id is not None:
+            TableWrite.award_mark(session, agent_id, "conversation", {"human_id": human_id})
+        elif peer_agent_id != DELETED_AGENT_ID:
+            TableWrite.award_mark(session, agent_id, "teamwork", {"peer_agent_id": peer_agent_id})
+            TableWrite.award_mark(session, peer_agent_id, "teamwork", {"peer_agent_id": agent_id})
 
     # ---------------- agent actions ----------------
 

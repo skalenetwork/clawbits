@@ -2,7 +2,7 @@
 import { getCollection, render } from "astro:content";
 import { Image } from "astro:assets";
 import Base from "../../layouts/Base.astro";
-import ShaderBackdrop from "../../components/ShaderBackdrop.tsx";
+import SombraGradient from "../../components/SombraGradient.astro";
 import { LINKS, canonicalUrl } from "../../config";
 
 /**
@@ -15,8 +15,8 @@ import { LINKS, canonicalUrl } from "../../config";
  * which is the whole argument for it: a genuine freshness signal that costs
  * nothing per release.
  *
- * Built from the site's OWN primitives rather than a bespoke layout: a shader
- * canvas head (the homepage's, on the calmer CTA preset) over railed,
+ * Built from the site's OWN primitives rather than a bespoke layout: a gradient
+ * canvas head (the homepage's) over railed,
  * hairline-divided blocks. An earlier pass invented a card-framed timeline with
  * a border-left spine and node dots, which is exactly what Section.astro
  * forbids - "separated by vertical rhythm and a hairline rule, never by cards,
@@ -107,29 +107,17 @@ const schema = [
 <Base
   title="Changelog"
   description={DESCRIPTION}
-  ogImage="/og/og-clawbits-changelog.png"
+  og="changelog"
   schema={schema}
   nav="overlay"
 >
   {/* ── Head canvas ────────────────────────────────────────────────────
-      The homepage's hero shape at interior-page scale, on the CTA's calmer
-      shader preset - a changelog should feel like the same site, not compete
-      with the homepage for the loudest gradient. */}
+      The homepage's hero shape at interior-page scale - a changelog should
+      feel like the same site. */}
   <div class="frame">
     <section class="canvas" data-theme-anchor>
-      <div class="shader" aria-hidden="true">
-        {/* Intensity well under BOTH the hero (0.15 at ~2.5x this height) and
-            the CTA (0.32): the wave is sized to the canvas, so the shorter the
-            canvas the more of the frame it fills. At the CTA's 0.32 this band
-            read louder than the homepage hero itself, which inverts the page
-            hierarchy. Measured on screen, not guessed. */}
-        <ShaderBackdrop
-          client:only="react"
-          softness={0.78}
-          intensity={0.14}
-          noise={0.16}
-          speed={0.5}
-        />
+      <div class="backdrop" aria-hidden="true">
+        <SombraGradient />
       </div>
 
       <div class="head">
@@ -215,7 +203,7 @@ const schema = [
 <style>
   /* ── Head canvas ─────────────────────────────────────────────────────
    * Same construction as the homepage hero: inset frame, rounded dark canvas,
-   * static candy gradient underneath the WebGL island. */
+   * the candy gradient inside it. */
   .frame {
     padding: 1rem 1rem 0;
   }
@@ -235,24 +223,19 @@ const schema = [
     view-timeline-name: --hero-view;
   }
 
-  /* What shows before the island hydrates, without JS, or without WebGL. */
-  .shader {
+  .backdrop {
     position: absolute;
     inset: 0;
     z-index: 0;
-    background:
-      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
-      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
-      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
-      var(--color-canvas);
+    background: var(--color-canvas);
   }
 
-  /* Legibility scrim over the shader, under the text. Two layers, unlike the
+  /* Legibility scrim over the gradient, under the text. Two layers, unlike the
    * homepage's one: a radial pool for the headline, plus a top-down wash. The
    * hero can rely on a radial alone because its text sits over a tall dark
-   * field; here the wave reaches the top edge, so the nav and badge need their
+   * field; here the ridge reaches the top edge, so the nav and badge need their
    * own cover to stay legible. */
-  .shader::after {
+  .backdrop::after {
     content: "";
     position: absolute;
     inset: 0;
@@ -512,11 +495,11 @@ const schema = [
   }
 
   /* Narrow screens turn the canvas PORTRAIT, and the gradient is sized to the
-   * canvas - so the same wave that sits low and wide on desktop rears up and
+   * canvas - so the same ridge that sits low and wide on desktop rears up and
    * fills the frame behind the copy. Two corrections, both measured on a
    * 375px viewport: shorten the band so it stops being a full screen of
    * gradient, and swap the radial-led scrim for a flat wash that covers the
-   * bottom half where the wave is brightest. */
+   * bottom half where the ridge is brightest. */
   @media (max-width: 48rem) {
     .head {
       padding-block: clamp(5rem, 18vw, 5.75rem) clamp(2.75rem, 9vw, 3.5rem);
@@ -527,7 +510,7 @@ const schema = [
       font-size: 0.9375rem;
     }
 
-    .shader::after {
+    .backdrop::after {
       background: linear-gradient(
         to bottom,
         rgb(20 19 17 / 0.68) 0%,

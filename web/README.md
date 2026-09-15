@@ -78,12 +78,13 @@ src/
     Legal.astro          frame for /privacy and /terms
   components/
     Section.astro        the ONE layout primitive
-    AppDemo.astro        the hero's zero-JS recreation of the real app;
-                         bracketed by the bot:demo markers in index.astro
-    ShaderBackdrop.tsx   the only React island (GrainGradient, client:only)
+    AppDemo.astro        the hero's recreation of the real app, views in
+                         app-demo/; bracketed by the bot:demo markers in
+                         index.astro
+    SombraGradient.astro the gradient ridge on every rounded canvas
     *Visual.astro        one per feature section
     LegalSection.astro   one numbered section; index and body share one object
-    Nav / Footer / Button / Logo / Eyebrow / HugeIcon / AppWindow
+    Nav / Footer / Button / Logo / Eyebrow / HugeIcon
   pages/                 index, privacy, terms, brand, download, 404,
                          docs/, changelog/, robots.txt, llms.txt, llms-full.txt
 scripts/
@@ -103,10 +104,9 @@ to the same variable face), Geist Mono for code. The scale leans on in-between
 weights - 450, 550 - which only work because it is served as a variable font,
 so do not swap in static instances.
 
-Two further faces exist and are scoped to one place each, both inside the hero
-demo, where the point is to look like the real app rather than like the site:
-**Fraunces** for the Home greeting and **Inter** (`--ff-app`) for the demo
-window's UI. Neither belongs anywhere else on the page.
+One further face exists and is scoped to the hero demo, where the point is to
+look like the real app rather than like the site: **Inter** (`--ff-app`) for
+the demo window's UI. It belongs nowhere else on the page.
 
 **Nothing on this site is uppercased.** No `text-transform: uppercase`, no
 tracked-out mono micro-labels. Both are the most overused devices on AI landing
@@ -257,32 +257,20 @@ component**, as `lt-*` does. To audit:
 cd web && bun run build && python3 -c "import re,glob,collections; d=collections.defaultdict(set); [d[m.group(1)].add(f) for f in glob.glob('dist/_astro/*.css') for m in re.finditer(r'@keyframes ([\w-]+)\{', open(f).read())]; print({k:v for k,v in d.items() if len(v)>1} or 'no collisions')"
 ```
 
-**Grain is invisible in downscaled screenshots.** It is 1px noise at 0.055
-opacity; any 2x-downscaled capture averages it away. Judge it on a real display.
+**Grain is invisible in downscaled screenshots.** The gradient's grain is a
+per-pixel dither (`SombraGradient.astro`); any 2x-downscaled capture averages it
+away. Judge it on a real display.
 
 **There is no colour logo SVG.** `clawbits-long.svg` is flat black artwork for
 light backgrounds, inverted to white here. The candy-textured mark exists only
 as raster inside `og-default.png`. See the note in `Logo.astro`.
 
-**OG cards ship palette-quantised, and a new one should too.** The hand-made
-cards exported at ~885 KB each; re-encoding to a dithered 256-colour PNG takes
-them to ~340 KB with a mean per-channel error of 0.26/255 - invisible on grain
-and on letterform edges, both checked at 1:1. Plain lossless recompression only
-reaches 710 KB, and JPEG, which would reach 100 KB, visibly smooths the grain
-out of the flat black areas, and the grain is the art direction. Run this on any
-card you add (sharp comes with Astro, so there is nothing to install):
-
-```bash
-cd web && node -e "const s=require('sharp'),f=process.argv[1];s(f).png({palette:true,quality:100,dither:1,effort:10,compressionLevel:9}).toFile(f+'.tmp').then(()=>require('fs').renameSync(f+'.tmp',f))" public/og/og-clawbits-NEW.png
-```
-
-Careful reading sharp's PNG options: passing `effort`, `quality`, `colours` or
-`dither` **implies `palette: true`**. There is no way to ask for "lossless but
-high effort" - `png({compressionLevel: 9})` alone is the lossless path, and
-anything that looks like a quality knob is quantising.
+**OG cards are rendered at build time.** `src/pages/og/[card].png.ts` draws
+every card in `OG_CARDS` (`src/config.ts`) with satori + resvg over
+`src/assets/og-base.png`; pages pick one with Base's `og` prop. To add a card,
+add a key there. The app's `frontend/index.html` points at `/og/clawbits.png`.
 
 **`public/og/og-default.png` is unreferenced ON PURPOSE - do not delete it.** No
-page points at it (`Base.astro` defaults to `og-clawbits.png`, which uses the
-flat logo), so every unused-asset sweep flags it. It is the only surviving
+page points at it, so every unused-asset sweep flags it. It is the only surviving
 raster of the candy-textured wordmark described above, and there is no vector to
 regenerate it from.

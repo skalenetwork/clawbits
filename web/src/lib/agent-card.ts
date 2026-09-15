@@ -8,12 +8,9 @@
  * circle (180,238) r78 on a white r84 disc; name/handle arcs curve OVER the
  * medallion (r136/150° and r112/132°).
  *
- * EXTRACTED from AppDemo.astro (2026-08-18), which is where it was written and
- * which still renders the homepage's cards from it. The /agent-pit step visuals
- * draw the same card at a fraction of the size, and a second copy of these
- * numbers would have been a second card system: the two would agree until the
- * first time either was touched. Everything here is pure - no DOM, no Astro -
- * so it costs a component nothing to import.
+ * Drawn by the /agent-pit step visuals (ManageVisual, AutomateVisual) at a
+ * fraction of the real card's size. Everything here is pure - no DOM, no
+ * Astro - so it costs a component nothing to import.
  *
  * The card is ALL SVG, which is why the small versions can be faithful rather
  * than suggestive: a viewBox scales the whole construction, so a 120px card is
@@ -21,10 +18,10 @@
  * has a floor, which is why the miniatures drop the handle and the seals.
  */
 
-export const fx = (n: number) => Math.round(n * 100) / 100;
+const fx = (n: number) => Math.round(n * 100) / 100;
 
 /** Top arc, left→right over the apex (shapes.ts arcTextPath). */
-export const arcText = (cx: number, cy: number, r: number, sweepDeg: number) => {
+const arcText = (cx: number, cy: number, r: number, sweepDeg: number) => {
   const half = (sweepDeg * Math.PI) / 180 / 2;
   const x0 = fx(cx - r * Math.sin(half));
   const x1 = fx(cx + r * Math.sin(half));
@@ -32,15 +29,11 @@ export const arcText = (cx: number, cy: number, r: number, sweepDeg: number) => 
   return `M ${x0} ${y} A ${r} ${r} 0 0 1 ${x1} ${y}`;
 };
 
-/** Bottom arc, left→right under the center (OperatorSeal ringPath). */
-export const bottomArc = (cx: number, cy: number, r: number) =>
-  `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${cx + r} ${cy}`;
-
 /**
  * Scalloped stamp frame: rounded corners with outward lobes along each run - a
  * simplified take on shapes.ts scallopChain. Local w×h coords.
  */
-export const scallopFrame = (w: number, h: number) => {
+const scallopFrame = (w: number, h: number) => {
   const inset = 9;
   const cr = 20;
   const run = (len: number) => {
@@ -62,7 +55,7 @@ export const scallopFrame = (w: number, h: number) => {
 };
 
 /** 12 registration ticks around the medallion (r88 → r95). */
-export const TICKS = Array.from({ length: 12 }, (_, i) => {
+const TICKS = Array.from({ length: 12 }, (_, i) => {
   const a = (i / 12) * Math.PI * 2;
   return {
     x1: fx(180 + Math.cos(a) * 88),
@@ -73,13 +66,13 @@ export const TICKS = Array.from({ length: 12 }, (_, i) => {
 });
 
 /** Liveness dot rides the avatar's lower-left diagonal: (r+2)/√2. */
-export const PRES = {
+const PRES = {
   cx: fx(180 - 80 * Math.SQRT1_2),
   cy: fx(238 + 80 * Math.SQRT1_2),
 };
 
 /** PresenceDot palette (also the card's STATUS_COLOR). */
-export const STATUS: Record<string, string> = {
+const STATUS: Record<string, string> = {
   available: "#10b981",
   setup: "#3b82f6",
   offline: "#a1a1aa",
@@ -94,15 +87,15 @@ export const STATUS: Record<string, string> = {
  * two, which is enough for a row of three to read as a collection rather than
  * a repeat. Both are verbatim from that file - do not hand-edit the path data.
  *
- * `dots` is the tile AppDemo draws (two dots, two crosses). `plus` is index 7
- * of the app's set: a grid of plus signs, chosen because it stays legible at
- * the size these cards render and reads as obviously different from the dots
- * rather than as a slightly different smudge.
+ * `dots` is two dots and two crosses. `plus` is index 7 of the app's set: a
+ * grid of plus signs, chosen because it stays legible at the size these cards
+ * render and reads as obviously different from the dots rather than as a
+ * slightly different smudge.
  */
 const PLUS_TILE =
   "<g><g><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 -5H23V-1H19V0H23V4H24V0H28V-1H24V-5Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 43H23V47H19V48H23V52H24V48H28V47H24V43Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M0 19H-1V23H-5V24H-1V28H0V24H4V23H0V19Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M0 -5H-1V-1H-5V0H-1V4H0V0H4V-1H0V-5Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 19H47V23H43V24H47V28H48V24H52V23H48V19Z\" fill=\"currentColor\"></path></g></g><g><g><path d=\"M-1 -1L49 49\" stroke=\"currentColor\"></path><path d=\"M-25 23L25 73\" stroke=\"currentColor\"></path><path d=\"M22.5 -25.5L72.5 24.5\" stroke=\"currentColor\"></path><path d=\"M-25 -1L25 49\" stroke=\"currentColor\"></path><path d=\"M-1.5 -25.5L48.5 24.5\" stroke=\"currentColor\"></path><path d=\"M-13 -1L37 49\" stroke=\"currentColor\"></path><path d=\"M10.5 -25.5L60.5 24.5\" stroke=\"currentColor\"></path><path d=\"M-37 -1L13 49\" stroke=\"currentColor\"></path><path d=\"M-13.5 -25.5L54 42\" stroke=\"currentColor\"></path><path d=\"M-7 -1L43 49\" stroke=\"currentColor\"></path><path d=\"M-31 23L19 73\" stroke=\"currentColor\"></path><path d=\"M16.5 -25.5L66.5 24.5\" stroke=\"currentColor\"></path><path d=\"M-31 -1L19 49\" stroke=\"currentColor\"></path><path d=\"M-7.5 -25.5L49.5 31.5\" stroke=\"currentColor\"></path><path d=\"M-19 -1L31 49\" stroke=\"currentColor\"></path><path d=\"M4.5 -25.5L54.5 24.5\" stroke=\"currentColor\"></path><path d=\"M-43 -1L7 49\" stroke=\"currentColor\"></path><path d=\"M-19.5 -25.5L50 44\" stroke=\"currentColor\"></path><path d=\"M-1 -1L49 49\" stroke=\"currentColor\"></path><path d=\"M-25 23L25 73\" stroke=\"currentColor\"></path><path d=\"M22.5 -25.5L72.5 24.5\" stroke=\"currentColor\"></path><path d=\"M-25 -1L25 49\" stroke=\"currentColor\"></path><path d=\"M-1.5 -25.5L48.5 24.5\" stroke=\"currentColor\"></path><path d=\"M-13 -1L37 49\" stroke=\"currentColor\"></path><path d=\"M-37 23L13 73\" stroke=\"currentColor\"></path><path d=\"M10.5 -25.5L60.5 24.5\" stroke=\"currentColor\"></path><path d=\"M-37 -1L13 49\" stroke=\"currentColor\"></path><path d=\"M-13.5 -25.5L55 43\" stroke=\"currentColor\"></path></g></g><g><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 43V46H47V43H48Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 37V40H47V37H48Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 31V34H47V31H48Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 25V28H47V25H48Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 19V22H47V19H48Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 13V16H47V13H48Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 7V10H47V7H48Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M48 1V4H47V1H48Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 43V46H23V43H24Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 37V40H23V37H24Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 31V34H23V31H24Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 25V28H23V25H24Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 19V22H23V19H24Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 13V16H23V13H24Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 7V10H23V7H24Z\" fill=\"currentColor\"></path><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M24 1V4H23V1H24Z\" fill=\"currentColor\"></path></g><g><path d=\"M48 47.5001H0\" stroke=\"currentColor\"></path></g>";
 
-export const CARD_PATTERN = {
+const CARD_PATTERN = {
   dots:
     '<circle cx="10" cy="10" r="1.6" fill="currentColor" />' +
     '<circle cx="34" cy="34" r="1.6" fill="currentColor" />' +

@@ -10,8 +10,7 @@
  * But `is:inline` opts out of Astro's build-time hashing, and the production
  * CSP has no 'unsafe-inline' in script-src - so an inline block is refused by
  * the browser and silently does nothing. (Invisible in `astro dev`, which emits
- * no CSP at all; only `astro build` + `astro preview` reproduces it. The same
- * trap Base.astro documents for the shader's runtime stylesheet.)
+ * no CSP at all; only `astro build` + `astro preview` reproduces it.)
  *
  * So the text lives here, the page injects it verbatim, and astro.config.mjs
  * hashes THIS FILE into script-src. One source, one hash - the alternative is a

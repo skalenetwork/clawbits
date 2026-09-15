@@ -13,7 +13,11 @@ from clawbits.automations.spec import (
     validate_spec,
 )
 
+AUTOMATION_INCAPABLE_RUNTIMES = frozenset({"ironclaw"})
+"""Runtimes whose plugin has no clawbits cron reconciler. An unknown runtime passes."""
+
 __all__ = [
+    "AUTOMATION_INCAPABLE_RUNTIMES",
     "SpecValidationError",
     "canonical_json",
     "normalize_spec",

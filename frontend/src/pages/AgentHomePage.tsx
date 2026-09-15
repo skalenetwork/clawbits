@@ -1,61 +1,45 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  Search01Icon as Search,
-  Home03Icon as HomeIcon,
-  Robot02Icon as Bot,
-  UserAdd01Icon as InvitePeople,
-  Notification03Icon as Bell,
-  Calendar01Icon,
-  InboxUnreadIcon,
-  MessageMultiple01Icon,
-  CheckmarkCircle04Icon,
-  Attachment01Icon as Paperclip,
-} from "@hugeicons/core-free-icons";
+import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { ChannelGlyph } from "@/components/ChannelGlyph";
-import { Icon } from "@/components/Icon";
-import { Button } from "@/components/ui/button";
-import { PageHeader } from "@/components/PageHeader";
+import { PresenceDot } from "@/components/PresenceDot";
+import { useAgentStatus } from "@/hooks/useAgentPresence";
+import { useUserStatus } from "@/hooks/useUserPresence";
 import { MobileChatsScreen } from "@/components/MobileChatsScreen";
+import { HomeTile, KEYCAP_CLASS, Squircle, SquircleDefs } from "@/components/home/tiles";
 import { openCommandPalette } from "@/components/command/paletteStore";
 import { openCreate } from "@/components/command/createStore";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useActiveOrg } from "@/hooks/useActiveOrg";
 import { useAuth } from "@/context/AuthContext";
-import { getAgents, listMmChannels, listOrgMembers } from "@/lib/api";
-import { loadFrecency } from "@/lib/frecency";
-import { rankJumpBackIn } from "@/lib/jumpBackIn";
-import { useMessageDrafts } from "@/hooks/useMessageDrafts";
+import { getAgents, getReef, listMmChannels, type AgentUser, type MmChannel } from "@/lib/api";
+import { agentLivenessStatus } from "@/lib/agentLiveness";
+import { frecencyKey, frecencyScore, loadFrecency } from "@/lib/frecency";
+import { activityTime } from "@/lib/chatFilters";
 import { usePushSubscription } from "@/lib/push";
 import { queryKeys } from "@/lib/queryKeys";
-import {
-  formatChannelTitle,
-  getTimeOfDayGreeting,
-  formatLongDate,
-} from "@/lib/formatting";
+import { formatChannelTitle } from "@/lib/formatting";
 import { toast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
-import { Stagger } from "@/components/agent/manage/Stagger";
 
-/** Mac shows a ⌘ glyph in the command-bar hint; everything else shows "Ctrl". */
 const IS_MAC =
-  typeof navigator !== "undefined" &&
-  /Mac|iPhone|iPad/.test(navigator.userAgent);
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 
-/** The Chats tab branches by viewport: a clean conversation list on mobile,
- *  the home launchpad on desktop. ``DesktopHome`` is a hoisted declaration, so
- *  referencing it above its definition is fine. */
+const unreadFirst = (c: MmChannel) => ((c.unread_count ?? 0) > 0 ? 0 : 1);
+
+function unreadLabel(unread: number, idle: string): string {
+  return unread > 0 ? `${String(unread)} new message${unread === 1 ? "" : "s"}` : idle;
+}
+
 export default function AgentHomePage() {
   const isMobile = useIsMobile();
   return isMobile ? <MobileChatsScreen /> : <DesktopHome />;
 }
 
 function DesktopHome() {
-  const { user, activeOrgId } = useAuth();
-  const navigate = useNavigate();
+  const { activeOrgId } = useAuth();
+  const { org, isOwner } = useActiveOrg();
 
-  // Snapshot frecency + "now" once per mount so the recents ranking stays
-  // stable across re-renders and the memo below stays pure (no Date.now()).
+  // Snapshotted per mount so the ranking cannot reshuffle under the cursor.
   const [frecency] = useState(() => loadFrecency());
   const [now] = useState(() => Date.now());
 
@@ -64,337 +48,317 @@ function DesktopHome() {
     queryFn: () => listMmChannels(activeOrgId ?? null),
     enabled: Boolean(activeOrgId),
   });
-  const channels = useMemo(
-    () => channelsQuery.data?.channels ?? [],
-    [channelsQuery.data],
-  );
+  const channels = channelsQuery.data?.channels ?? [];
+
+  // Connected is not finished: a repo with no host reporting cannot run
+  // anything. One request, no polling, so home stays quiet.
+  const reefQuery = useQuery({
+    queryKey: activeOrgId ? queryKeys.reef(activeOrgId) : ["org", "none", "reef"],
+    queryFn: () => getReef(activeOrgId ?? ""),
+    enabled: Boolean(activeOrgId) && isOwner && Boolean(org?.reef_connected),
+    staleTime: 60_000,
+  });
 
   const agentsQuery = useQuery({
     queryKey: activeOrgId ? queryKeys.agents(activeOrgId) : ["agents", "none"],
     queryFn: () => getAgents(activeOrgId ?? ""),
     enabled: Boolean(activeOrgId),
   });
-  const agents = useMemo(
-    () => agentsQuery.data?.agents ?? [],
-    [agentsQuery.data],
-  );
 
-  const membersQuery = useQuery({
-    queryKey: activeOrgId
-      ? queryKeys.orgMembers(activeOrgId)
-      : ["org-members", "none"],
-    queryFn: () => listOrgMembers(activeOrgId ?? ""),
-    enabled: Boolean(activeOrgId),
-  });
-  const otherMembersCount = (membersQuery.data?.members ?? []).filter(
-    (m) => m.human_id !== user?.id,
-  ).length;
+  // Contact is closed by default, so an org can hold agents that are not yours
+  // to talk to and a tile pointing at one would be a dead end.
+  const topAgent: AgentUser | null =
+    (agentsQuery.data?.agents ?? [])
+      .filter((a) => a.can_dm)
+      .sort((a, b) => {
+        const sa = frecencyScore(frecencyKey("agent", a.agent_id), frecency, now);
+        const sb = frecencyScore(frecencyKey("agent", b.agent_id), frecency, now);
+        return sa === sb ? (b.creation_time ?? "").localeCompare(a.creation_time ?? "") : sb - sa;
+      })[0] ?? null;
 
-  // "Jump back in" — top 4 conversations to resume, ranked by habit
-  // (frecency) + recency, then boosted for what wants attention now: an
-  // unsent draft, or unread that came *in* to you (agent replies, DMs). See
-  // lib/jumpBackIn.ts. Drafts are local to this device, hence the live map.
-  const drafts = useMessageDrafts(user?.id);
-  const recents = useMemo(
-    () =>
-      rankJumpBackIn({
-        channels,
-        frecency,
-        drafts,
-        now,
-        currentUserId: user?.id,
-      }),
-    [channels, frecency, drafts, now, user?.id],
-  );
+  const topAgentDm = topAgent
+    ? (channels.find(
+        (c) => c.channel_type === "direct" && c.dm_peer_agent_id === topAgent.agent_id,
+      ) ?? null)
+    : null;
 
-  const unreadTotal = channels.reduce((n, c) => n + (c.unread_count ?? 0), 0);
-  const unreadConvos = channels.filter((c) => (c.unread_count ?? 0) > 0).length;
-
-  const hasAnyAgent = agents.length > 0;
-  const settled = !agentsQuery.isLoading && !membersQuery.isLoading;
-  // Empty org: no other humans AND no agents. Only "grow the org" actions are
-  // useful — channels/DMs need someone to chat with. Gate on settled queries
-  // so the first-run state doesn't flash before data loads.
-  const isEmptyOrg = settled && otherMembersCount === 0 && !hasAnyAgent;
-
-  const firstName = user?.display_name?.split(" ")[0] ?? "there";
-  const subline: ReactNode = isEmptyOrg ? (
-    "Let's get your workspace set up"
-  ) : (
-    <>
-      <Icon icon={Calendar01Icon} className="size-3.5 shrink-0" />
-      <span>{formatLongDate()}</span>
-      <span aria-hidden="true" className="opacity-40">
-        ·
-      </span>
-      {unreadTotal > 0 ? (
-        <>
-          <Icon icon={InboxUnreadIcon} className="size-3.5 shrink-0" />
-          <span>{unreadTotal} unread in</span>
-          <Icon icon={MessageMultiple01Icon} className="size-3.5 shrink-0" />
-          <span>
-            {unreadConvos} conversation{unreadConvos === 1 ? "" : "s"}
-          </span>
-        </>
-      ) : (
-        <>
-          <Icon icon={CheckmarkCircle04Icon} className="size-3.5 shrink-0" />
-          <span>{"You're all caught up"}</span>
-        </>
-      )}
-    </>
-  );
+  // Unread first, recency inside each band, so a live thread beats a stale one
+  // either way. The agent tile already owns its own DM.
+  const topChannels = channels
+    .filter((c) => c.channel_id !== topAgentDm?.channel_id)
+    .sort((a, b) => unreadFirst(a) - unreadFirst(b) || activityTime(b) - activityTime(a))
+    .slice(0, 2);
+  const nextShortcut = isOwner ? 3 : 2;
 
   return (
     <>
-      <PageHeader icon={HomeIcon} title="Home" />
+      <SquircleDefs />
 
-      {/* Fill the content area and vertically center the launchpad. The
-                shell wrapper is a min-h-full flex column, so ``flex-1`` here
-                grabs the height and ``m-auto`` on the inner column centres it
-                (degrading to top-aligned if it ever overflows). */}
       <div className="flex flex-1 flex-col justify-center px-2 py-10 sm:px-4">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-8">
-          {/* Greeting — the one editorial moment: a large serif welcome. */}
-          <Stagger delay={0}>
-            <h1 className="font-serif text-3xl font-medium tracking-tight text-foreground sm:text-4xl">
-              {getTimeOfDayGreeting()}, {firstName}
-            </h1>
-            <p className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm text-muted-foreground">
-              {subline}
-            </p>
-          </Stagger>
-
-          {/* Command bar — the single universal entry point (opens ⌘K). */}
-          <Stagger delay={60}>
-            <button
-              type="button"
-              onClick={() => {
-                openCommandPalette();
-              }}
-              aria-label="Search or jump to anything"
-              className="group flex h-12 w-full items-center gap-3 rounded-2xl border border-border/70 bg-card px-3 text-left shadow-xs transition duration-150 hover:border-border hover:bg-muted/30 active:scale-[0.99] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 focus-visible:outline-none"
-            >
-              <Icon
-                icon={Search}
-                className="size-[18px] shrink-0 text-muted-foreground"
-              />
-              <span className="flex-1 truncate text-sm text-muted-foreground">
-                Search or jump to anything…
-              </span>
-              <kbd className="inline-flex h-7 shrink-0 items-center justify-center rounded-lg border border-border/80 bg-background px-2.5 font-mono text-xs font-medium text-muted-foreground shadow-xs transition-colors group-hover:border-border group-hover:text-foreground">
-                {IS_MAC ? (
-                  <>
-                    <span className="mr-0.5 text-[15px] leading-none">⌘</span>
-                    K
-                  </>
-                ) : (
-                  "Ctrl K"
-                )}
-              </kbd>
-            </button>
-          </Stagger>
-
-          {/* Jump back in — compact recents; hidden when there are none. */}
-          {!isEmptyOrg && (channelsQuery.isLoading || recents.length > 0) && (
-            <Stagger delay={120} className="space-y-3">
-              <h2 className="text-sm text-muted-foreground">Jump back in</h2>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {channelsQuery.isLoading
-                  ? Array.from({ length: 4 }).map((_, i) => (
-                      <div
-                        key={i}
-                        className="rounded-xl border border-border/60 bg-card p-3"
-                      >
-                        <div className="size-8 animate-pulse rounded-lg bg-muted" />
-                        <div className="mt-3 h-3.5 w-2/3 animate-pulse rounded bg-muted" />
-                        <div className="mt-2 h-3 w-1/2 animate-pulse rounded bg-muted" />
-                      </div>
-                    ))
-                  : recents.map(({ channel: c, reason, draftText }) => {
-                      const label = formatChannelTitle(
-                        c.display_name ?? c.name,
-                        c.channel_type === "direct"
-                          ? "Direct message"
-                          : "Channel",
-                      );
-                      const lastText = c.last_message_text?.trim() ?? "";
-                      const attachmentCount =
-                        c.last_message_attachment_count ?? 0;
-                      const unread = c.unread_count ?? 0;
-                      const muted = Boolean(c.muted);
-                      return (
-                        <Link
-                          key={c.channel_id}
-                          to={`/channels/${c.channel_id}`}
-                          className="group flex flex-col gap-2 rounded-xl border border-border/60 bg-card p-3 transition duration-150 ease-out hover:border-border hover:bg-muted/40 active:scale-[0.97] active:duration-75"
-                        >
-                          <span className="relative inline-flex">
-                            <ChannelGlyph channel={c} size={32} />
-                            {unread > 0 && (
-                              <span
-                                className={cn(
-                                  "absolute -right-1.5 -top-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none tabular-nums ring-2 ring-card",
-                                  muted
-                                    ? "bg-muted text-muted-foreground"
-                                    : "bg-primary text-primary-foreground",
-                                )}
-                                aria-label={`${String(unread)} unread message${unread === 1 ? "" : "s"}`}
-                              >
-                                {unread > 99 ? "99+" : unread}
-                              </span>
-                            )}
-                          </span>
-                          <span className="min-w-0">
-                            <span
-                              className={cn(
-                                "block truncate text-sm",
-                                unread > 0 && !muted
-                                  ? "font-semibold"
-                                  : "font-medium",
-                              )}
-                            >
-                              {label}
-                            </span>
-                            {/* An unsent draft wins over the last-message preview
-                                                      (the Telegram/sidebar pattern), since that's why the
-                                                      card surfaced. */}
-                            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                              {reason === "draft" && draftText ? (
-                                <>
-                                  <span className="font-medium text-destructive">
-                                    Draft:
-                                  </span>{" "}
-                                  {draftText}
-                                </>
-                              ) : lastText ? (
-                                lastText
-                              ) : attachmentCount > 0 ? (
-                                // Attachment-only last message — mirror the sidebar's
-                                // paperclip + count instead of reading as empty.
-                                <span className="inline-flex items-center gap-1 align-middle">
-                                  <Icon
-                                    icon={Paperclip}
-                                    className="size-2.5! shrink-0 opacity-70"
-                                  />
-                                  {attachmentCount === 1
-                                    ? "Attachment"
-                                    : `${String(attachmentCount)} attachments`}
-                                </span>
-                              ) : (
-                                "No messages yet"
-                              )}
-                            </span>
-                          </span>
-                        </Link>
-                      );
-                    })}
-              </div>
-            </Stagger>
+        <div className="home-tiles mx-auto grid w-full max-w-2xl grid-cols-4 gap-2.5">
+          <SearchTile />
+          {isOwner && (
+            <ReefTile
+              connected={Boolean(org?.reef_connected)}
+              hosts={reefQuery.data?.hosts.length ?? null}
+              agents={
+                reefQuery.data
+                  ? reefQuery.data.hosts.reduce((n, h) => n + h.agents.length, 0)
+                  : null
+              }
+              shortcut={1}
+            />
           )}
-
-          {/* First-run only: a focused pair of CTAs to grow an empty org.
-                    Populated orgs use ⌘K (and the rail) for these actions. */}
-          {isEmptyOrg && (
-            <Stagger delay={180}>
-              <div className="flex flex-wrap items-center gap-2.5">
-                <Button
-                  onClick={() => {
-                    openCreate("agent");
-                  }}
-                >
-                  <Icon icon={Bot} className="size-4" />
-                  Add your first agent
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    void navigate("/settings/members");
-                  }}
-                >
-                  <Icon icon={InvitePeople} className="size-4" />
-                  Invite people
-                </Button>
-              </div>
-            </Stagger>
+          <AgentTile
+            agent={topAgent}
+            dm={topAgentDm}
+            shortcut={isOwner ? 2 : 1}
+            className={isOwner ? "col-span-2" : "col-span-4"}
+          />
+          {topChannels.length === 0 ? (
+            <ConversationTile channel={null} shortcut={nextShortcut} />
+          ) : (
+            topChannels.map((c, i) => (
+              <ConversationTile key={c.channel_id} channel={c} shortcut={nextShortcut + i} />
+            ))
           )}
-
-          {/* Notification opt-in — a single quiet row, only when actionable. */}
-          {!isEmptyOrg && (
-            <Stagger delay={240}>
-              <HomeNudges />
-            </Stagger>
-          )}
+          <HomeNudges shortcut={nextShortcut + Math.max(topChannels.length, 1)} />
         </div>
       </div>
     </>
   );
 }
 
-/** Notification opt-in nudge — a single quiet row. Renders nothing once
- *  notifications are enabled (or unsupported), so the page's rhythm stays
- *  intact. */
-function HomeNudges() {
+/** Three states, not two: a repo with no host reporting is half-finished, and
+ *  that person belongs back in the flow rather than on a page reading
+ *  "Connected". ``hosts`` is null until known. */
+function ReefTile({
+  connected,
+  hosts,
+  agents,
+  shortcut,
+}: {
+  connected: boolean;
+  hosts: number | null;
+  agents: number | null;
+  shortcut: number;
+}) {
+  const unfinished = connected && hosts === 0;
+  return (
+    <HomeTile
+      className="col-span-2"
+      shortcut={shortcut}
+      to={connected && !unfinished ? "/settings/reef" : "/setup/reef"}
+      glyph={<AppIcon src="/reef-light.webp" dark="/reef-dark.webp" />}
+      label={!connected ? "Set up Reef" : unfinished ? "Finish setting up Reef" : "Manage Reef"}
+      value={
+        !connected
+          ? "Connect now"
+          : unfinished
+            ? "Add a machine"
+            : agents === null
+              ? "Connected"
+              : `${String(agents)} agent${agents === 1 ? "" : "s"}`
+      }
+    />
+  );
+}
+
+/** A native Icon Composer asset: it ships its own squircle and its own depth,
+ *  so it is rendered bare. Our glass on top of one reads as a smudge. */
+function AppIcon({ src, dark }: { src: string; dark?: string }) {
+  if (!dark) return <img src={src} alt="" className="size-[42px]" width={42} height={42} />;
+  return (
+    <>
+      <img src={src} alt="" className="size-[42px] dark:hidden" width={42} height={42} />
+      <img src={dark} alt="" className="hidden size-[42px] dark:block" width={42} height={42} />
+    </>
+  );
+}
+
+/** Flat art takes the glass squircle; presence is drawn outside the clip so it
+ *  is not sliced by it. */
+function TileGlyph({
+  status,
+  children,
+}: {
+  status?: ComponentProps<typeof PresenceDot>["status"];
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <Squircle className="bg-muted">{children}</Squircle>
+      {status && (
+        <PresenceDot status={status} className="absolute -right-px -bottom-px ring-card" />
+      )}
+    </>
+  );
+}
+
+/** ``dm`` is the conversation you already have with them: jump back should land
+ *  in it rather than on a profile. */
+function AgentTile({
+  agent,
+  dm,
+  shortcut,
+  className,
+}: {
+  agent: AgentUser | null;
+  dm: MmChannel | null;
+  shortcut: number;
+  className: string;
+}) {
+  if (!agent) {
+    return (
+      <HomeTile
+        className={className}
+        shortcut={shortcut}
+        to="/setup/agent"
+        glyph={<AppIcon src="/plus.webp" />}
+        label="Set up your agent"
+        value="Create"
+      />
+    );
+  }
+  const name = agent.display_name || agent.nickname || agent.agent_id;
+  return (
+    <HomeTile
+      className={className}
+      shortcut={shortcut}
+      to={dm ? `/channels/${dm.channel_id}` : `/agents/${agent.agent_id}`}
+      glyph={
+        <TileGlyph status={agentLivenessStatus(agent.last_alive_at ?? null)}>
+          <AgentFaceAvatar
+            name={name}
+            src={agent.avatar?.url}
+            size={42}
+            framed={false}
+            className="rounded-none"
+          />
+        </TileGlyph>
+      }
+      label={unreadLabel(dm?.unread_count ?? 0, dm ? "Work with" : "Open")}
+      value={name}
+    />
+  );
+}
+
+function ConversationTile({
+  channel,
+  shortcut,
+}: {
+  channel: MmChannel | null;
+  shortcut: number;
+}) {
+  // Both hooks answer "offline" for a null id, so they run unconditionally.
+  const peerStatus = useUserStatus(channel?.dm_peer_human_id ?? null);
+  const agentStatus = useAgentStatus(channel?.dm_peer_agent_id ?? null);
+
+  if (!channel) {
+    return (
+      <HomeTile
+        className="col-span-2"
+        shortcut={shortcut}
+        onClick={() => {
+          openCreate("dm");
+        }}
+        glyph={<AppIcon src="/channels.webp" />}
+        label="Start a conversation"
+        value="New chat"
+      />
+    );
+  }
+
+  const isDm = channel.channel_type === "direct";
+  return (
+    <HomeTile
+      className="col-span-2"
+      shortcut={shortcut}
+      to={`/channels/${channel.channel_id}`}
+      glyph={
+        <TileGlyph
+          status={
+            channel.dm_peer_agent_id
+              ? agentStatus
+              : channel.dm_peer_human_id
+                ? peerStatus
+                : undefined
+          }
+        >
+          <ChannelGlyph
+            channel={channel}
+            size={42}
+            showPresenceDot={false}
+            className="rounded-none"
+          />
+        </TileGlyph>
+      }
+      label={unreadLabel(channel.unread_count ?? 0, isDm ? "Open DM" : "Open channel")}
+      value={formatChannelTitle(
+        channel.display_name ?? channel.name,
+        isDm ? "Direct message" : "Channel",
+      )}
+    />
+  );
+}
+
+/** Not a search box: the palette reaches six groups and seven actions, so
+ *  "find or do" is the honest pair of verbs. */
+function SearchTile() {
+  return (
+    <HomeTile
+      className="col-span-4"
+      onClick={() => {
+        openCommandPalette();
+      }}
+      glyph={<AppIcon src="/cmd.webp" />}
+      label="Agents, chats and actions"
+      value="Find or do anything"
+      hotkey={IS_MAC ? "⌘K" : "Ctrl K"}
+      trailing={
+        <span className="flex gap-[3px]">
+          {[IS_MAC ? "⌘" : "Ctrl", "K"].map((k) => (
+            <kbd key={k} className={KEYCAP_CLASS}>
+              {k}
+            </kbd>
+          ))}
+        </span>
+      }
+    />
+  );
+}
+
+/** Renders nothing once notifications are on (or unsupported), so a settled
+ *  workspace keeps its two rows. Blocked at the browser is a report, not a
+ *  control: with no onClick the tile stops being pressable. */
+function HomeNudges({ shortcut }: { shortcut: number }) {
   const push = usePushSubscription();
-  const showPush = push.status === "prompt" || push.status === "denied";
-  if (!showPush) return null;
+  if (push.status !== "prompt" && push.status !== "denied") return null;
 
   const denied = push.status === "denied";
-  const enablePush = async () => {
+  const enable = async () => {
     const result = await push.enable();
     if (result === "enabled") toast.success("Notifications enabled");
     else if (result === "denied")
-      toast.error(
-        "Notifications were blocked - allow them in your browser settings",
-      );
+      toast.error("Notifications were blocked, allow them in your browser settings");
     else if (result === "unavailable")
       toast.error("Push notifications aren't available right now");
   };
 
   return (
-    <div className="divide-y divide-border/50 overflow-hidden rounded-2xl bg-muted/30">
-      <SetupRow
-        icon={Bell}
-        label={
-          denied
-            ? "Notifications are blocked - enable them in your browser settings"
-            : "Turn on notifications for new messages and mentions"
-        }
-        action={
-          denied ? null : (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                void enablePush();
-              }}
-            >
-              Enable
-            </Button>
-          )
-        }
-      />
-    </div>
-  );
-}
-
-/** One quiet setup row: a muted line icon, a single concise line, and an
- *  optional trailing action. The rows share one soft surface (divided by
- *  hairlines) rather than each being a separate alert card. */
-function SetupRow({
-  icon,
-  label,
-  action,
-}: {
-  icon: typeof Bell;
-  label: string;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="flex items-center gap-3 py-2 pl-4 pr-2">
-      <Icon icon={icon} className="size-4 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 text-sm text-foreground">{label}</span>
-      {action}
-    </div>
+    <HomeTile
+      className="col-span-4"
+      shortcut={shortcut}
+      onClick={
+        denied
+          ? undefined
+          : () => {
+              void enable();
+            }
+      }
+      glyph={<AppIcon src="/notifications.webp" />}
+      label={denied ? "Notifications are blocked" : "New messages and mentions"}
+      value={denied ? "Enable them in your browser settings" : "Turn on notifications"}
+    />
   );
 }

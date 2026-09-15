@@ -1,6 +1,7 @@
 ---
 import Base from "../layouts/Base.astro";
 import Button from "../components/Button.astro";
+import SombraGradient from "../components/SombraGradient.astro";
 import { LINKS } from "../config";
 
 /**
@@ -11,8 +12,7 @@ import { LINKS } from "../config";
  * a bounce - the same dark canvas the hero and the final CTA use, carrying a
  * delivery failure instead of a headline.
  *
- * Zero JS: the canvas uses the STATIC candy gradient that the hero's shader
- * island paints over, not the island itself. A 404 does not need WebGL.
+ * Zero client JS: the canvas carries the same static gradient as the hero.
  *
  * `noindex` because a soft 404 in the index is worse than no result at all.
  */
@@ -26,7 +26,9 @@ import { LINKS } from "../config";
 >
   <div class="frame">
     <section class="canvas">
-      <div class="shader" aria-hidden="true"></div>
+      <div class="backdrop" aria-hidden="true">
+        <SombraGradient shape="tall" />
+      </div>
 
       <div class="inner">
         {/* The bounce header, in the register a mail daemon would use. */}
@@ -92,20 +94,14 @@ import { LINKS } from "../config";
       0 8px 10px -6px rgb(0 0 0 / 0.1);
   }
 
-  /* The hero's static fallback gradient, used on its own - no island. */
-  .shader {
+  .backdrop {
     position: absolute;
     inset: 0;
     z-index: 0;
-    background:
-      radial-gradient(52% 68% at 18% 92%, rgb(232 66 92 / 0.5), transparent 64%),
-      radial-gradient(44% 60% at 50% 104%, rgb(143 91 214 / 0.48), transparent 66%),
-      radial-gradient(46% 62% at 82% 94%, rgb(74 143 224 / 0.42), transparent 64%),
-      radial-gradient(30% 40% at 68% 78%, rgb(240 154 63 / 0.25), transparent 70%),
-      var(--color-canvas);
+    background: var(--color-canvas);
   }
 
-  .shader::after {
+  .backdrop::after {
     content: "";
     position: absolute;
     inset: 0;

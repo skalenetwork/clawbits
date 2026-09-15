@@ -70,7 +70,7 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /** All releases, newest first. */
-export const RELEASES: Release[] = Object.entries(rawFiles)
+const RELEASES: Release[] = Object.entries(rawFiles)
   .map(([path, raw]): Release | null => {
     const match = VERSION_FILE_RE.exec(path);
     const version = match?.[1];

@@ -1,38 +1,33 @@
-import type { ReactNode } from "react";
 import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { PresenceDot } from "@/components/PresenceDot";
 import { UserAvatar } from "@/components/UserAvatar";
 import { useAgentStatus } from "@/hooks/useAgentPresence";
 import { useUserLastSeen, useUserLastSeenLabel, useUserStatus } from "@/hooks/useUserPresence";
 import { agentStatusLabel } from "@/lib/agentLiveness";
-import { resolveLastSeen } from "@/lib/formatting";
+import { formatRelativeShort, resolveLastSeen } from "@/lib/formatting";
 import { cn } from "@/lib/utils";
 
 export type MemberKind = "agent" | "human";
 
 interface ChannelMemberRowProps {
   name: string;
-  /** Small muted caption under the name — e.g. "Agent" or "you@domain". Omit for a plain row. */
+  /** Short muted status on the right, e.g. "You". Omit to show live presence. */
   caption?: string;
   kind: MemberKind;
   /** Stable seed for the avatar (agent_id for agents; display_name/email for humans). */
   seed: string;
-  /** Server-provided avatar URL. When present, renders the R2-stored
-   *  SVG; otherwise the initial-letter fallback. */
+  /** Server-provided avatar URL; the initial-letter fallback otherwise. */
   avatarUrl?: string | null;
-  /** Human user id — drives the human presence dot. Omit for agents. */
+  /** Human user id: drives the human presence dot. Omit for agents. */
   humanId?: number | null;
-  /** Agent id — drives the agent liveness dot. Omit for humans. */
+  /** Agent id: drives the agent liveness dot. Omit for humans. */
   agentId?: string | null;
-  trailing?: ReactNode;
-  /** If provided, the whole row becomes a clickable button (used for
-   *  the add-member list and the profile-menu trigger in ChatInfoSidebar).
-   *  The event carries the button element as ``currentTarget``, which
-   *  ProfileMenu uses as the popover anchor. */
+  /** Makes the whole row a button; ``currentTarget`` anchors the profile menu. */
   onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  disabled?: boolean;
 }
 
+/** One member, sized like a main-sidebar row: avatar with presence, name, and
+ *  a short status on the right. */
 export function ChannelMemberRow({
   name,
   caption,
@@ -41,22 +36,15 @@ export function ChannelMemberRow({
   avatarUrl,
   humanId,
   agentId,
-  trailing,
   onClick,
-  disabled,
 }: ChannelMemberRowProps) {
   const status = useUserStatus(humanId);
   const lastSeen = useUserLastSeen(humanId);
   const lastSeenLabel = useUserLastSeenLabel(humanId);
-  // Agent global liveness. Always called (rules of hooks); returns "offline"
-  // for non-agent rows since we pass null there.
   const agentStatus = useAgentStatus(kind === "agent" ? agentId : null);
   const showHumanDot = kind === "human" && humanId != null;
   const showAgentDot = kind === "agent" && agentId != null;
-  const showDot = showHumanDot || showAgentDot;
   const dotStatus = showAgentDot ? agentStatus : status;
-  // Tooltip text — agent label for agents; for offline humans the absolute
-  // last-seen fallback; otherwise the raw status string.
   const dotTitle = showAgentDot
     ? agentStatusLabel(agentStatus)
     : showHumanDot
@@ -64,78 +52,41 @@ export function ChannelMemberRow({
         ? `Last seen ${resolveLastSeen(lastSeen, lastSeenLabel)}`
         : status
       : undefined;
-
-  // Auto-populated status caption. The caller can still override via the
-  // `caption` prop (e.g. "You" for the current user) — we only fill the slot
-  // when the caller leaves it empty.
-  const presenceCaption = showHumanDot
+  const presence = showHumanDot
     ? status === "online"
       ? "Online"
       : status === "idle"
         ? "Idle"
-        : `Last seen ${resolveLastSeen(lastSeen, lastSeenLabel)}`
+        : formatRelativeShort(lastSeen) || "Offline"
     : showAgentDot
-      ? `Agent · ${agentStatusLabel(agentStatus)}`
+      ? agentStatusLabel(agentStatus)
       : undefined;
-  const effectiveCaption = caption ?? presenceCaption;
-
-  const avatar =
-    kind === "agent"
-      ? <AgentFaceAvatar size={28} name={seed} src={avatarUrl} />
-      : <UserAvatar size={28} name={seed} src={avatarUrl} />;
-
-  const avatarWrap = (
-    <span className="relative flex shrink-0 items-center justify-center">
-      {avatar}
-      {showDot && (
-        <span
-          className="pointer-events-none absolute bottom-0 right-0"
-          title={dotTitle}
-        >
-          <PresenceDot
-            status={dotStatus}
-            size={8}
-            ringClassName="ring-sidebar"
-            label={dotTitle}
-          />
-        </span>
-      )}
-    </span>
-  );
+  const trailing = caption ?? presence;
 
   const content = (
     <>
-      {avatarWrap}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium leading-tight">{name}</span>
-        {effectiveCaption && (
-          <span className="block truncate text-[11px] text-muted-foreground leading-tight">{effectiveCaption}</span>
+      <span className="relative flex shrink-0">
+        {kind === "agent"
+          ? <AgentFaceAvatar size={20} name={seed} src={avatarUrl}/>
+          : <UserAvatar size={20} name={seed} src={avatarUrl}/>}
+        {(showHumanDot || showAgentDot) && (
+          <span className="pointer-events-none absolute -right-0.5 -bottom-0.5">
+            <PresenceDot status={dotStatus} size={7} ringClassName="ring-sidebar" label={dotTitle}/>
+          </span>
         )}
       </span>
-      {trailing && <span className="shrink-0">{trailing}</span>}
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      {trailing && <span className="shrink-0 text-[11px] font-normal text-muted-foreground tabular-nums">{trailing}</span>}
     </>
   );
+  const row = "flex h-[34px] w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] font-medium max-md:h-11";
 
   if (onClick) {
     return (
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={disabled}
-        className={cn(
-          "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
-          "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-          "disabled:pointer-events-none disabled:opacity-50",
-        )}
-      >
+      <button type="button" onClick={onClick} className={cn(row, "transition-colors hover:bg-[var(--sb-hover)]")}>
         {content}
       </button>
     );
   }
-
-  return (
-    <div className="flex items-center gap-2.5 rounded-md px-2 py-1.5">
-      {content}
-    </div>
-  );
+  return <div className={row}>{content}</div>;
 }

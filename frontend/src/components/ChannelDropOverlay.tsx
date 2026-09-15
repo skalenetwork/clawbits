@@ -1,12 +1,7 @@
 import { CloudUploadIcon } from "@hugeicons/core-free-icons";
 
 import { Icon } from "@/components/Icon";
-
-interface ChannelDropOverlayProps {
-  show: boolean;
-  /** Optional caption — defaults to the in-code MM_FILES limits. */
-  caption?: string;
-}
+import { MAX_ATTACHMENT_MB, MAX_PER_POST } from "@/hooks/useChannelAttachments";
 
 /**
  * Fullscreen frosted overlay shown while files are being dragged over
@@ -14,10 +9,7 @@ interface ChannelDropOverlayProps {
  * and is ``pointer-events-none`` so the underlying drag target keeps
  * receiving ``dragover`` and ``drop`` events from the window listener.
  */
-export function ChannelDropOverlay({
-  show,
-  caption = "Up to 5 files, 15 MB each",
-}: ChannelDropOverlayProps) {
+export function ChannelDropOverlay({ show }: { show: boolean }) {
   if (!show) return null;
   return (
     <div className="pointer-events-none fixed inset-0 z-40 bg-black/40 backdrop-blur-md">
@@ -30,7 +22,9 @@ export function ChannelDropOverlay({
             <Icon icon={CloudUploadIcon} className="size-7" />
           </div>
           <span className="text-base font-medium">Drop files to upload</span>
-          <span className="text-sm text-white/65">{caption}</span>
+          <span className="text-sm text-white/65">
+            Up to {MAX_PER_POST} files, {MAX_ATTACHMENT_MB} MB each
+          </span>
         </div>
       </div>
     </div>

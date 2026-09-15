@@ -1,14 +1,13 @@
 """Organization data models (GitHub-style orgs)."""
+from datetime import datetime
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from clawbits.datastructures.avatar_models import AvatarRef
+from clawbits.reef_repo import NAME_RE, OWNER_RE, PUBLIC_HOST_RE, REPO_RE, Health
 
-# ---------------------------------------------------------------------------
-# Requests
-# ---------------------------------------------------------------------------
 
 class CreateOrgRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -18,6 +17,11 @@ class CreateOrgRequest(BaseModel):
         description="Organization slug (lowercase alphanumeric + hyphens, e.g. 'my-team')",
     )
     display_name: str | None = Field(default=None, max_length=128, description="Human-friendly display name")
+
+
+class UpdateOrgRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    display_name: str = Field(min_length=1, max_length=128, description="Public organization name")
 
 
 class AddOrgMemberRequest(BaseModel):
@@ -32,26 +36,37 @@ class UpdateOrgMemberRoleRequest(BaseModel):
     role: Literal["owner", "member"] = Field(description="New role in the organization")
 
 
-class SetReefConnectionRequest(BaseModel):
-    """Connect (or re-point) the org's self-hosted Reef. We persist ONLY this URL."""
+class SetReefRepoRequest(BaseModel):
+    """Connect the org's reef repository. Git is the only bus to a reef host."""
     model_config = ConfigDict(extra="forbid", frozen=True)
-    api_url: str = Field(
-        min_length=1, max_length=2048,
-        description="Base URL of the self-hosted Reef API, reachable over the owner's tunnel",
+    repo: str = Field(
+        pattern=REPO_RE.pattern,
+        description="The private repository on github.com, as ``owner/name``",
+    )
+    token: str = Field(
+        min_length=1, max_length=512,
+        description="Fine-grained token scoped to that repository, Contents read and write",
     )
 
-    @field_validator("api_url")
-    @classmethod
-    def _normalize_url(cls, v: str) -> str:
-        v = v.strip().rstrip("/")
-        if not (v.startswith("http://") or v.startswith("https://")):
-            raise ValueError("api_url must start with http:// or https://")
-        return v
 
+class CreateReefAgentRequest(BaseModel):
+    """Declare one agent on a reef host: clawbits writes its fleet file."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    host: str = Field(pattern=NAME_RE.pattern, description="A host that has written a status file")
+    role: str = Field(pattern=NAME_RE.pattern, description="A role from the org's catalog")
+    name: str | None = Field(
+        default=None, pattern=NAME_RE.pattern,
+        description="The agent's name on that host; defaults to its agent id, lowercased",
+    )
+    owner: str | None = Field(
+        default=None, pattern=OWNER_RE.pattern,
+        description="Who `reef agent serve` admits for terminals; defaults to the caller",
+    )
+    public_host: str | None = Field(
+        default=None, pattern=PUBLIC_HOST_RE.pattern,
+        description="Optional OPENCLAW_PUBLIC_HOST for the agent's own URL",
+    )
 
-# ---------------------------------------------------------------------------
-# Responses
-# ---------------------------------------------------------------------------
 
 class SetOrgAttentionRequest(BaseModel):
     """Owner toggle for the org's LobsterTalk attention gate."""
@@ -67,7 +82,7 @@ class OrgAttentionResponse(BaseModel):
 class SetOrgLobstertalkRequest(BaseModel):
     """Owner-set LobsterTalk attention config: the org toggle, the decision
     mode, and (for the LLM modes) the OpenAI-compatible LLM endpoint. The API
-    key is write-only — omit it to keep the stored key, or send
+    key is write-only: omit it to keep the stored key, or send
     ``clear_api_key`` to drop it."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: bool = Field(description="Whether the LobsterTalk attention gate is armed for this org")
@@ -112,13 +127,7 @@ class SetOrgLobstertalkRequest(BaseModel):
         v = v.strip().rstrip("/")
         if not (v.startswith("http://") or v.startswith("https://")):
             raise ValueError("base_url must start with http:// or https://")
-        # An OpenAI-compatible base URL is scheme://host[:port]/path and nothing
-        # more. Userinfo, a query string and a fragment are each a place a secret
-        # can ride along — and this value is handed back to *every* org member on
-        # GET and written to the server log on a triage failure. Reject them here
-        # rather than store, echo and log them. (The SDK builds request URLs by
-        # appending to the base and drops a base-URL query anyway, so this
-        # forbids nothing that would otherwise have worked.)
+        # Userinfo, query and fragment can each carry a secret, and GET echoes this to every member.
         parts = urlsplit(v)
         if parts.username or parts.password or "@" in parts.netloc:
             raise ValueError("base_url must not contain credentials (user:pass@…)")
@@ -139,15 +148,13 @@ class SetOrgLobstertalkRequest(BaseModel):
 
 class OrgLobstertalkResponse(BaseModel):
     """The org's LobsterTalk attention config. The stored API key is never
-    returned — ``api_key_set`` only reports whether one exists."""
+    returned: ``api_key_set`` only reports whether one exists.
+    ``cooldown_seconds`` is null while inheriting ``default_cooldown_seconds``."""
     enabled: bool = False
     mode: Literal["embedding", "cascade", "llm_only", "all"] = "embedding"
     base_url: str | None = None
     model: str | None = None
     api_key_set: bool = False
-    # The org's cooldown override (null = inheriting) plus the server default
-    # it would inherit — so the UI can label the empty field truthfully
-    # instead of guessing what "default" means on this deployment.
     cooldown_seconds: int | None = None
     default_cooldown_seconds: int = 300
 
@@ -177,30 +184,15 @@ class OrgResponse(BaseModel):
     org_id: str
     name: str
     display_name: str | None = None
+    avatar: AvatarRef | None = None
     is_personal: bool = Field(description="Whether this is a user's auto-created personal org")
     created_by: int = Field(description="Human user ID of the creator")
     created_at: str
-    # Org-level opt-in for the LobsterTalk attention gate (owner-toggled). Mirrors
-    # Organization.attention_enabled; lets the UI reflect current state and gate
-    # the owner-only toggle.
     attention_enabled: bool = False
-    # The calling user's role in this org. Populated by listing endpoints
-    # so the frontend can gate admin surfaces without an extra round-trip
-    # (and without needing access to the full member list). ``None`` on
-    # responses that don't pass a caller — e.g. the create-org endpoint
-    # when the row was just minted.
+    reef_connected: bool = False
     my_role: Literal["owner", "member"] | None = None
-    # When the caller last activated this org in the UI. ``None`` means
-    # "never visited" — the org switcher renders a "New" pill so a
-    # freshly-invited user can tell they were just added to an org they
-    # haven't entered yet.
     last_visited_at: str | None = None
-    # Unread post count aggregated across the caller's non-muted channels
-    # in this org. Powers the cross-org activity badge in the switcher.
     unread_count: int = 0
-    # Number of channels with at least one unread post (after the same
-    # mute filter). Useful when the UI wants a "X channels" hint rather
-    # than a raw post count.
     unread_channel_count: int = 0
 
 
@@ -209,9 +201,86 @@ class OrgListResponse(BaseModel):
     total: int
 
 
-class ReefConnectionResponse(BaseModel):
-    """The org's connected Reef API URL, or ``None`` when no Reef is connected."""
-    api_url: str | None = None
+class ReefApplied(BaseModel):
+    """The ``main`` and ``fleet`` HEADs a host last applied in full."""
+    main: str
+    fleet: str
+
+
+class ReefHostAgent(BaseModel):
+    """One row of the host's ``reef agent list --json``. ``image`` is what the
+    VM runs; it defaults so a host on a reef that predates it still validates."""
+    name: str
+    role: str
+    image: str = ""
+    desired: str
+    state: str
+    vm: str | None = None
+    synced: bool
+    role_current: bool
+
+
+class ReefEvent(BaseModel):
+    """One row of the host's ``reef events --json``."""
+    agent: str
+    at: datetime
+    kind: str
+    detail: str
+
+
+class ReefHostResponse(BaseModel):
+    """One reef host, as its own status file describes it. ``last_seen`` is the
+    reconciler's coarse heartbeat and ``health`` is read off it and the last
+    apply (:func:`clawbits.reef_repo.parse_status`). ``applied`` is null until
+    an apply lands; ``error`` is why the last one failed."""
+    host: str
+    reef: str | None = None
+    last_seen: datetime | None = None
+    health: Health
+    applied: ReefApplied | None = None
+    error: str | None = None
+    agents: list[ReefHostAgent] = []
+    events: list[ReefEvent] = []
+
+
+class ReefAgentResponse(BaseModel):
+    """A declared agent and when its one-time signup token dies. Still declared
+    for as long as that token is unspent: enrolling is what ends the state."""
+    host: str
+    name: str
+    expires_at: datetime
+
+
+class CreateReefAgentResponse(ReefAgentResponse):
+    """A declared agent with the id and nickname picked for it at mint."""
+    agent_id: str
+    nickname: str
+
+
+class ReefResponse(BaseModel):
+    """The org's reef repository, every host reporting into it by name, and
+    the agents declared but not yet enrolled. ``connected`` is false when no
+    repository is stored, or when its token cannot be unsealed (the secrets
+    key rotated)."""
+    repo: str | None = None
+    connected: bool
+    hosts: list[ReefHostResponse] = []
+    declared: list[ReefAgentResponse] = []
+
+
+class ReefSecretResponse(BaseModel):
+    env: str
+    host: str
+
+
+class ReefRoleResponse(BaseModel):
+    """One reviewed role from ``main:roles/``: the whole blast radius an agent
+    created from it inherits."""
+    name: str
+    image: str
+    egress: list[str]
+    secrets: list[ReefSecretResponse]
+    resources: dict[str, int]
 
 
 class OrgMemberResponse(BaseModel):
@@ -220,9 +289,6 @@ class OrgMemberResponse(BaseModel):
     display_name: str | None = None
     role: str
     joined_at: str
-    # Server-stored avatar for the member's user — see
-    # :mod:`clawbits.avatars`. None on legacy responses that haven't
-    # been re-plumbed yet; the frontend falls back to initials.
     avatar: AvatarRef | None = None
 
 

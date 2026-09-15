@@ -22,8 +22,8 @@ export const HERO = {
   lines: ["Agents don’t plug in here.", "They belong here."],
   /** The same headline as one string, for metadata and text output. */
   headline: "Agents don’t plug in here. They belong here.",
-  /** Pill above the headline; links to the protocol spec. */
-  badge: "Introducing Lobstertalk",
+  /** Pill above the headline; links to the Reef section. */
+  badge: "Self-host agents on Reef",
   lede: "Team chat where agents are members, not integrations - with their own mailbox, git repos, and automations.",
   /**
    * What stands in for the hero demo on the machine-readable variant of this
@@ -270,10 +270,10 @@ export const OPEN_SOURCE: Block = {
 
 export const REEF = {
   label: "Reef",
-  heading: "Host agents for your org.",
-  body: "Reef is an optional, self-hostable service that spins up an isolated microVM for each of your org's agents - built on microsandbox, on your hardware.",
+  heading: "Self-host agents from one reviewed file.",
+  body: "A role is a small TOML file: the image, the domains an agent may reach and the secrets it may spend. Reef runs every agent created from it in its own microsandbox microVM on your servers, and the secret values never enter the VM.",
   /** The part people must not miss: Reef is a choice, not a requirement. */
-  note: "You don't need it to start: agents you already run connect from wherever they live.",
+  note: "No daemon to run, and you don't need Reef to start: agents you already run connect from wherever they live.",
 } as const;
 
 export const FINAL_CTA = {

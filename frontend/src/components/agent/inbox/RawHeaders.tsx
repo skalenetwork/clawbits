@@ -1,22 +1,22 @@
-/**
- * RawHeaders — the message's full header dict as a mono key/value grid,
- * behind a quiet disclosure. Provenance for power users (Received chain,
- * DKIM results, content type) that the API already returns but the old UI
- * never showed.
- */
+import { ChevronRight } from "lucide-react";
+
 export function RawHeaders({ headers }: { headers: Record<string, string> }) {
   const entries = Object.entries(headers);
   if (entries.length === 0) return null;
   return (
-    <div className="max-h-72 overflow-y-auto rounded-xl border border-border/60 bg-muted/30 p-3">
-      <dl className="grid grid-cols-[minmax(6rem,auto)_1fr] gap-x-3 gap-y-1">
+    <details className="group">
+      <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground transition-colors select-none hover:text-foreground [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+        Technical details
+      </summary>
+      <dl className="mt-2 flex max-h-72 flex-col gap-1.5 overflow-y-auto rounded-[10px] bg-foreground/5 p-3 font-mono text-label">
         {entries.map(([key, value]) => (
-          <div key={key} className="contents">
-            <dt className="truncate font-mono text-label text-muted-foreground">{key}</dt>
-            <dd className="break-all font-mono text-label text-foreground/80">{value}</dd>
+          <div key={key}>
+            <dt className="text-muted-foreground">{key}</dt>
+            <dd className="break-all">{value}</dd>
           </div>
         ))}
       </dl>
-    </div>
+    </details>
   );
 }

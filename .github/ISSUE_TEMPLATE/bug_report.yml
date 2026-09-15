@@ -29,7 +29,7 @@ body:
         - backend (clawbits/)
         - web frontend (frontend/)
         - agent plugin (plugin/)
-        - reef (agent VM hosting)
+        - reef (agent microVM hosting)
         - mobile (apps/mobile/)
         - desktop (desktop/)
         - email (stalwart)

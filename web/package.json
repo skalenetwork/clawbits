@@ -10,6 +10,7 @@
     "dev": "astro dev --port ${PORT:-4321}",
     "brand:assets": "node scripts/build-brand-assets.mjs",
     "demo": "node scripts/make-demo.mjs",
+    "sombra": "bun scripts/bake-sombra.ts",
     "build": "bun run brand:assets && astro build && node scripts/build-headers.mjs && node scripts/build-bot-page.mjs",
     "preview": "astro preview",
     "check": "astro check && tsc -p worker",
@@ -22,23 +23,22 @@
     "verify": "bun run check && bun run verify:legal && bun run verify:links && bun run verify:analytics && bun run verify:no-inline-styles"
   },
   "dependencies": {
-    "@astrojs/react": "^6.0.2",
     "@astrojs/sitemap": "3.7.3",
-    "@paper-design/shaders-react": "0.0.80",
-    "astro": "7.2.2",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "astro": "7.2.2"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
     "@astrojs/markdown-satteri": "0.3.5",
     "@cloudflare/workers-types": "^5.20260814.1",
+    "@fontsource-variable/inter": "5.2.8",
+    "@fontsource/geist": "^5.3.0",
     "@hugeicons/core-free-icons": "^4.2.2",
+    "@resvg/resvg-js": "^2.6.2",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "^26.2.0",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "lucide": "1.22.0",
     "puppeteer-core": "^25.7.0",
+    "satori": "^0.33.4",
     "tailwindcss": "4.3.3",
     "typescript": "~6.0.3",
     "wrangler": "^4.123.0"

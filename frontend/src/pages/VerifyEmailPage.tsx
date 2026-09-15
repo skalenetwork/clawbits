@@ -1,7 +1,8 @@
-import { lazy, Suspense, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { WordmarkLink } from "@/components/WordmarkLink";
+import { SombraGradient } from "@/components/SombraGradient";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -12,10 +13,6 @@ import {
 } from "@/components/ui/input-otp";
 import { errMsg, toast } from "@/lib/toast";
 import { DEFAULT_LANDING, NEXT_PARAM, safeReturnPath } from "@/lib/returnPath";
-
-// Same deal as LoginPage: the WebGL runtime is dead weight until this route is
-// actually reached, and the CSS gradient behind it is a complete picture alone.
-const ShaderBackdrop = lazy(() => import("@/components/ShaderBackdrop"));
 
 /**
  * Final step of a social sign-in that WorkOS gated behind email verification.
@@ -65,7 +62,7 @@ export default function VerifyEmailPage() {
           the same funnel, and it used to be a neutral-grey slab with a dot grid
           and a 7xl sans headline, so signing in with Google changed art direction
           mid-flow. Kept as a copy rather than a shared primitive because there
-          are only these two instances and each places its own gradient stops.
+          are only these two instances.
 
           Not aria-hidden as a whole (the old version was): it carries real links
           - the wordmark out to the marketing site, Privacy, Terms - and hiding
@@ -73,30 +70,9 @@ export default function VerifyEmailPage() {
           The decorative layers inside opt out individually instead. */}
       <aside className="relative hidden p-2 lg:flex">
         <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl bg-[#141311] p-6 text-[#f7f5f1] pt-[calc(--spacing(6)+var(--titlebar-height))]">
-          {/* Static candy-on-ink gradient: what shows before the shader chunk
-              loads, without JS, or without WebGL. Stops match LoginPage's, which
-              are placed for a tall column rather than the landing's landscape
-              canvas - a rust floor with the pink/blue/grape band riding the
-              lower third. */}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0"
-            style={{
-              background:
-                "radial-gradient(90% 26% at 22% 70%, rgb(232 66 92 / 0.8), transparent 70%)," +
-                "radial-gradient(85% 24% at 62% 74%, rgb(143 91 214 / 0.75), transparent 70%)," +
-                "radial-gradient(80% 22% at 34% 78%, rgb(74 143 224 / 0.7), transparent 70%)," +
-                "radial-gradient(120% 38% at 50% 104%, rgb(176 57 39 / 0.95), transparent 72%)," +
-                "radial-gradient(100% 30% at 50% 92%, rgb(240 154 63 / 0.5), transparent 74%)," +
-                "#141311",
-            }}
-          >
-            <Suspense fallback={null}>
-              <ShaderBackdrop fit="cover" worldWidth={1408} worldHeight={975} scale={0.5} offsetY={0.15} />
-            </Suspense>
-          </div>
+          <SombraGradient />
 
-          {/* Legibility scrim, under the text and over the shader. */}
+          {/* Legibility scrim, under the text and over the gradient. */}
           <div
             aria-hidden="true"
             className="pointer-events-none absolute inset-0"
@@ -111,7 +87,7 @@ export default function VerifyEmailPage() {
           </div>
 
           <div className="relative mt-auto max-w-xl">
-            <h1 className="font-serif text-2xl font-medium leading-[1.05] tracking-tight xl:text-3xl">
+            <h1 className="font-display text-2xl leading-[1.084] tracking-[-0.01em] xl:text-3xl">
               One quick check.
             </h1>
             <p className="mt-3 max-w-md pr-12 text-[13px]/relaxed font-medium text-[#f7f5f1]/80">

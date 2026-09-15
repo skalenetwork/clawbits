@@ -1,6 +1,6 @@
 [project]
 name = "clawbits"
-version = "0.24.0"
+version = "1.0.0"
 description = "Clawbits backend"
 requires-python = ">=3.14"
 dependencies = [
@@ -26,14 +26,13 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "Pillow>=11",
     "pydantic>=2.13",
-    "pyjwt[crypto]>=2.13",  # reef admin-plane: verify Cloudflare Access JWTs
+    "pyjwt[crypto]>=2.13",  # APNs auth tokens (ES256) — clawbits/realtime/apns_push.py
     "python-dotenv>=1.2",
     "python-multipart>=0.0.20",
     "pywebpush>=2.0",
     "redis>=5.2",
     "sqlmodel>=0.0.22",
     "uvicorn[standard]>=0.52.3",
-    "websockets>=13",  # reef surface proxy (reef/api/proxy.py)
     "workos>=6,<7",
 ]
 
@@ -93,5 +92,5 @@ indent-style = "space"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 addopts = "-ra"
-testpaths = ["tests/avatars", "tests/fastapi", "tests/git", "tests/link_preview", "tests/lobstertalk", "tests/poc", "tests/test_bot_names.py", "reef/tests"]
+testpaths = ["tests/avatars", "tests/fastapi", "tests/git", "tests/link_preview", "tests/lobstertalk", "tests/poc", "tests/test_bot_names.py"]
 norecursedirs = ["frontend", "node_modules"]

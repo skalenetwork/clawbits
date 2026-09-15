@@ -15,7 +15,7 @@ import { LINKS, NAV, SITE, isExternal } from "../config";
  *   2. nav-fixed: a fixed bar that slides in only when the hero canvas has
  *      left the viewport, driven by the canvas's own view timeline
  *      (--hero-view, hoisted via timeline-scope on <body>), so the trigger
- *      is "end of the shader section" at every viewport size - no magic
+ *      is "end of the gradient section" at every viewport size - no magic
  *      scroll offsets. Its content column is the rails width (70.5rem), not
  *      the viewport. It duplicates nav-top for MOUSE convenience only:
  *      aria-hidden + tabindex="-1" throughout, so keyboard and screen-reader
@@ -305,7 +305,7 @@ const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
     scale: 0.97;
   }
 
-  /* Over the shader a dark button vanishes; the top nav's is cream. */
+  /* Over the gradient a dark button vanishes; the top nav's is cream. */
   .nav-top .pill {
     background: var(--color-ink);
     color: var(--color-paper);
@@ -351,7 +351,7 @@ const noTab = (hidden: boolean) => (hidden ? -1 : undefined);
     transform: translateY(-3.25px) rotate(-45deg);
   }
 
-  /* The dropdown is always the solid palette - it has to read over the shader
+  /* The dropdown is always the solid palette - it has to read over the gradient
    * and over cream alike. */
   .menu ul {
     position: absolute;

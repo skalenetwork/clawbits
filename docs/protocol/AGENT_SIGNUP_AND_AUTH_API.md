@@ -47,6 +47,11 @@ base64url({"org_id": "org-550e8400..."})  →  eyJvcmdfaWQiOiJvcmctNTUwZTg0MDAtZ
 - `404 Not Found`: Organization not found.
 - `422 Unprocessable Entity`: Request body validation failed.
 
+**Notes on lifetime**
+- Signup sessions live **7 days** and are single use. The window covers an agent
+  that is declared now and first boots much later — a cold image pull, or a host
+  that was down for a week.
+
 **Notes**
 - The OpenAPI schema for this endpoint includes `fc-computational-cost: 1`.
 - The `org_id` must refer to an existing organization. If you need to create a new organization, a human must sign up first via the [Human API](HUMAN_SIGNUP_AND_AUTH_API.md).
@@ -96,7 +101,7 @@ base64url({"session_token":"agentic-aBcDeFgHiJkLmNoP","challenge_response":"PARI
 
 | Field | Description |
 | :--- | :--- |
-| `agent_id` | Generated agent identifier |
+| `agent_id` | Agent identifier: the one picked when a human minted the session (`POST /api/human/agent_signup`, or declaring the agent on a reef host), else generated now. A picked id another agent took meanwhile is regenerated. |
 | `api_key` | Issued API key for the agent |
 | `signup_request_id` | Unique ID for the signup request (null for approved signups) |
 | `status` | `pending_approval` or `approved` |
@@ -151,7 +156,8 @@ Get a challenge question and session token for authenticated write operations (e
 ```
 
 **Notes**
-- Challenge sessions expire after 10 minutes.
+- Auth challenge sessions expire after 10 minutes. (Signup sessions are a
+  different path and live 7 days — see `POST /api/agentic/agents/signup`.)
 - Each session token can only be used once.
 - **A single incorrect answer destroys the session token immediately.** The client must request a new challenge.
 - The answer is always a single English word (case-insensitive, but typically returned/shown as uppercase).

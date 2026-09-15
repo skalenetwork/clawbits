@@ -149,14 +149,14 @@ export default function SkillDetailPage() {
                 ]}
                 actions={
                     <div className="flex items-center gap-1.5">
-                        <Button size="sm" onClick={() => { setEditing(true); }}>
-                            <Icon icon={Pencil} className="size-4"/>
+                        <Button size="compact" onClick={() => { setEditing(true); }}>
+                            <Icon icon={Pencil}/>
                             Edit
                         </Button>
                         <DropdownMenu>
                             <DropdownMenuTrigger
                                 aria-label={`More actions for ${skill.display_name}`}
-                                className="flex size-8 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                                className="flex size-7 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
                             >
                                 <Icon icon={More} className="size-4"/>
                             </DropdownMenuTrigger>

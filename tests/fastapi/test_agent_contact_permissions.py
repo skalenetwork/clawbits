@@ -11,11 +11,10 @@ human↔agent DM, agent↔agent DM, channel tagging, add-member, and the per-vie
 ``can_dm`` / ``can_tag`` flags the human agent payloads expose for the UI.
 """
 from tests.fastapi.test_human_mattermost import (
-    _agent_auth,
+    _bearer,
     _create_agent,
     _create_channel,
     _get_personal_org_id,
-    _human_auth,
     _register_human,
 )
 
@@ -28,7 +27,7 @@ def _add_org_member(tc, owner_token, org_id, email, role="member"):
     r = tc.post(
         f"/api/human/orgs/{org_id}/members",
         json={"email": email, "role": role},
-        headers=_human_auth(owner_token),
+        headers=_bearer(owner_token),
     )
     assert r.status_code == 200, r.text
 
@@ -42,7 +41,7 @@ def _grant(tc, manager_token, agent_id, ptype, pid, *, can_dm=False, can_tag=Fal
             "can_dm": can_dm,
             "can_tag": can_tag,
         },
-        headers=_human_auth(manager_token),
+        headers=_bearer(manager_token),
     )
 
 
@@ -50,7 +49,7 @@ def _open_dm(tc, token, org_id, agent_id):
     return tc.post(
         "/api/human/mm/direct",
         json={"org_id": org_id, "target_id": agent_id, "target_type": "agent"},
-        headers=_human_auth(token),
+        headers=_bearer(token),
     )
 
 
@@ -58,7 +57,7 @@ def _add_channel_member(tc, token, ch_id, member_id, member_type):
     return tc.post(
         f"/api/human/mm/channels/{ch_id}/members",
         json={"member_id": str(member_id), "member_type": member_type},
-        headers=_human_auth(token),
+        headers=_bearer(token),
     )
 
 
@@ -66,7 +65,7 @@ def _post(tc, token, ch_id, message):
     return tc.post(
         f"/api/human/mm/channels/{ch_id}/posts",
         json={"message": message, "status": "published"},
-        headers=_human_auth(token),
+        headers=_bearer(token),
     )
 
 
@@ -112,7 +111,7 @@ def test_human_dm_denied_without_grant_then_allowed(test_client):
     # Revoking access shuts the existing DM too: neither re-open nor read.
     d = test_client.delete(
         f"/api/human/agents/{agent['agent_id']}/contact-permissions/human/{other['user']['id']}",
-        headers=_human_auth(owner["access_token"]),
+        headers=_bearer(owner["access_token"]),
     )
     assert d.status_code == 200, d.text
     assert d.json()["removed"] is True
@@ -120,7 +119,7 @@ def test_human_dm_denied_without_grant_then_allowed(test_client):
     r = _open_dm(test_client, other["access_token"], org_id, agent["agent_id"])
     assert r.status_code == 403, r.text
     r = test_client.get(
-        f"/api/human/mm/channels/{dm_id}/posts", headers=_human_auth(other["access_token"])
+        f"/api/human/mm/channels/{dm_id}/posts", headers=_bearer(other["access_token"])
     )
     assert r.status_code == 403, r.text
 
@@ -142,16 +141,16 @@ def test_revoked_agent_dm_drops_out_of_sidebar(test_client):
     ).json()["channel_id"]
 
     r = test_client.get(
-        "/api/human/mm/channels", headers=_human_auth(other["access_token"])
+        "/api/human/mm/channels", headers=_bearer(other["access_token"])
     )
     assert dm_id in [c["channel_id"] for c in r.json()["channels"]]
 
     test_client.delete(
         f"/api/human/agents/{agent['agent_id']}/contact-permissions/human/{other['user']['id']}",
-        headers=_human_auth(owner["access_token"]),
+        headers=_bearer(owner["access_token"]),
     )
     r = test_client.get(
-        "/api/human/mm/channels", headers=_human_auth(other["access_token"])
+        "/api/human/mm/channels", headers=_bearer(other["access_token"])
     )
     assert dm_id not in [c["channel_id"] for c in r.json()["channels"]]
 
@@ -174,7 +173,7 @@ def test_new_org_member_not_auto_joined_to_agent_channel(test_client):
 
     # The new member's sidebar must not contain any agent channel.
     r = test_client.get(
-        "/api/human/mm/channels", headers=_human_auth(other["access_token"])
+        "/api/human/mm/channels", headers=_bearer(other["access_token"])
     )
     assert r.status_code == 200, r.text
     names = [c.get("name", "") for c in r.json()["channels"]]
@@ -259,7 +258,7 @@ def test_agent_to_agent_dm_requires_grant(test_client):
         return test_client.post(
             "/api/agentic/mm/direct",
             json={"target_agent_id": target},
-            headers=_agent_auth(api_key),
+            headers=_bearer(api_key),
         )
 
     # Closed by default.
@@ -279,27 +278,27 @@ def test_agent_to_agent_dm_requires_grant(test_client):
 
     # The recipient B (never granted to contact A) can still read + reply.
     r = test_client.get(
-        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_agent_auth(agent_b["api_key"])
+        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_bearer(agent_b["api_key"])
     )
     assert r.status_code == 200, r.text
     r = test_client.post(
         f"/api/agentic/mm/channels/{dm_id}/posts",
         json={"message": "reply ok"},
-        headers=_agent_auth(agent_b["api_key"]),
+        headers=_bearer(agent_b["api_key"]),
     )
     assert r.status_code == 200, r.text
 
     # Revoke → both sides lose access.
     test_client.delete(
         f"/api/human/agents/{agent_b['agent_id']}/contact-permissions/agent/{agent_a['agent_id']}",
-        headers=_human_auth(owner["access_token"]),
+        headers=_bearer(owner["access_token"]),
     )
     r = test_client.get(
-        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_agent_auth(agent_a["api_key"])
+        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_bearer(agent_a["api_key"])
     )
     assert r.status_code == 403, r.text
     r = test_client.get(
-        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_agent_auth(agent_b["api_key"])
+        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_bearer(agent_b["api_key"])
     )
     assert r.status_code == 403, r.text
 
@@ -322,7 +321,7 @@ def test_agent_tagging_agent_requires_grant(test_client):
     r = test_client.post(
         f"/api/agentic/mm/channels/{ch_id}/posts",
         json={"message": msg},
-        headers=_agent_auth(agent_a["api_key"]),
+        headers=_bearer(agent_a["api_key"]),
     )
     assert r.status_code == 403, r.text
 
@@ -333,7 +332,7 @@ def test_agent_tagging_agent_requires_grant(test_client):
     r = test_client.post(
         f"/api/agentic/mm/channels/{ch_id}/posts",
         json={"message": msg},
-        headers=_agent_auth(agent_a["api_key"]),
+        headers=_bearer(agent_a["api_key"]),
     )
     assert r.status_code == 200, r.text
 
@@ -354,9 +353,9 @@ def test_management_authority_operator_owner_member(test_client):
     _add_org_member(test_client, owner["access_token"], org_id, "mg-member@test.com", role="member")
 
     url = f"/api/human/agents/{agent['agent_id']}/contact-permissions"
-    assert test_client.get(url, headers=_human_auth(owner["access_token"])).status_code == 200
-    assert test_client.get(url, headers=_human_auth(co_owner["access_token"])).status_code == 200
-    assert test_client.get(url, headers=_human_auth(member["access_token"])).status_code == 403
+    assert test_client.get(url, headers=_bearer(owner["access_token"])).status_code == 200
+    assert test_client.get(url, headers=_bearer(co_owner["access_token"])).status_code == 200
+    assert test_client.get(url, headers=_bearer(member["access_token"])).status_code == 403
 
     # Org owner can grant.
     g = _grant(
@@ -385,7 +384,7 @@ def test_management_list_and_clear(test_client):
         test_client, owner["access_token"], agent["agent_id"],
         "human", other["user"]["id"], can_dm=True, can_tag=True,
     )
-    r = test_client.get(url, headers=_human_auth(owner["access_token"]))
+    r = test_client.get(url, headers=_bearer(owner["access_token"]))
     perms = r.json()["permissions"]
     assert len(perms) == 1
     assert perms[0]["principal_id"] == str(other["user"]["id"])
@@ -396,7 +395,7 @@ def test_management_list_and_clear(test_client):
         test_client, owner["access_token"], agent["agent_id"],
         "human", other["user"]["id"], can_dm=False, can_tag=False,
     )
-    r = test_client.get(url, headers=_human_auth(owner["access_token"]))
+    r = test_client.get(url, headers=_bearer(owner["access_token"]))
     assert r.json()["permissions"] == []
 
 
@@ -439,7 +438,7 @@ def test_channel_members_expose_viewer_can_tag(test_client):
 
     def agent_can_tag(token):
         r = test_client.get(
-            f"/api/human/mm/channels/{ch_id}/members", headers=_human_auth(token)
+            f"/api/human/mm/channels/{ch_id}/members", headers=_bearer(token)
         )
         assert r.status_code == 200, r.text
         row = next(m for m in r.json()["members"] if m.get("agent_id") == agent["agent_id"])
@@ -467,7 +466,7 @@ def test_agent_payload_exposes_viewer_contact_flags(test_client):
     def profile(token):
         r = test_client.get(
             f"/api/human/orgs/{org_id}/agents/{agent['agent_id']}",
-            headers=_human_auth(token),
+            headers=_bearer(token),
         )
         assert r.status_code == 200, r.text
         return r.json()
@@ -489,7 +488,7 @@ def test_agent_payload_exposes_viewer_contact_flags(test_client):
     assert p["can_dm"] and not p["can_tag"]
 
     r = test_client.get(
-        f"/api/human/orgs/{org_id}/agents", headers=_human_auth(other["access_token"])
+        f"/api/human/orgs/{org_id}/agents", headers=_bearer(other["access_token"])
     )
     row = next(a for a in r.json()["agents"] if a["agent_id"] == agent["agent_id"])
     assert row["can_dm"] and not row["can_tag"] and not row["can_manage_contacts"]
@@ -526,39 +525,39 @@ def test_revoke_closes_agent_side_of_human_dm(test_client):
 
     # While granted, the agent can read the DM and sees it in its channel list.
     r = test_client.get(
-        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_agent_auth(agent["api_key"])
+        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_bearer(agent["api_key"])
     )
     assert r.status_code == 200, r.text
-    r = test_client.get("/api/agentic/mm/channels", headers=_agent_auth(agent["api_key"]))
+    r = test_client.get("/api/agentic/mm/channels", headers=_bearer(agent["api_key"]))
     assert dm_id in [c["channel_id"] for c in r.json()["channels"]]
 
     # Revoke → the agent can no longer read/post the DM, and it drops out of
     # the agent's channel list.
     test_client.delete(
         f"/api/human/agents/{agent['agent_id']}/contact-permissions/human/{_other['user']['id']}",
-        headers=_human_auth(owner["access_token"]),
+        headers=_bearer(owner["access_token"]),
     )
     r = test_client.get(
-        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_agent_auth(agent["api_key"])
+        f"/api/agentic/mm/channels/{dm_id}/posts", headers=_bearer(agent["api_key"])
     )
     assert r.status_code == 403, r.text
     r = test_client.post(
         f"/api/agentic/mm/channels/{dm_id}/posts",
         json={"message": "still there?"},
-        headers=_agent_auth(agent["api_key"]),
+        headers=_bearer(agent["api_key"]),
     )
     assert r.status_code == 403, r.text
-    r = test_client.get("/api/agentic/mm/channels", headers=_agent_auth(agent["api_key"]))
+    r = test_client.get("/api/agentic/mm/channels", headers=_bearer(agent["api_key"]))
     assert dm_id not in [c["channel_id"] for c in r.json()["channels"]]
 
     # The operator DM is unaffected (operator is always allowed).
     r = test_client.get(
         f"/api/agentic/mm/teams/{agent['agent_id']}/operator-channel",
-        headers=_agent_auth(agent["api_key"]),
+        headers=_bearer(agent["api_key"]),
     )
     op_ch = r.json()["channel_id"]
     r = test_client.get(
-        f"/api/agentic/mm/channels/{op_ch}/posts", headers=_agent_auth(agent["api_key"])
+        f"/api/agentic/mm/channels/{op_ch}/posts", headers=_bearer(agent["api_key"])
     )
     assert r.status_code == 200, r.text
 
@@ -575,7 +574,7 @@ def test_revoked_agent_dm_content_not_searchable(test_client):
     r = test_client.post(
         f"/api/human/mm/channels/{dm_id}/posts",
         json={"message": f"a secret {needle} here", "status": "published"},
-        headers=_human_auth(other["access_token"]),
+        headers=_bearer(other["access_token"]),
     )
     assert r.status_code == 200, r.text
 
@@ -583,7 +582,7 @@ def test_revoked_agent_dm_content_not_searchable(test_client):
         r = test_client.get(
             "/api/human/mm/search",
             params={"q": needle},
-            headers=_human_auth(token),
+            headers=_bearer(token),
         )
         assert r.status_code == 200, r.text
         return r.json()["results"]
@@ -594,7 +593,7 @@ def test_revoked_agent_dm_content_not_searchable(test_client):
     # Revoke → search no longer returns it for that human.
     test_client.delete(
         f"/api/human/agents/{agent['agent_id']}/contact-permissions/human/{other['user']['id']}",
-        headers=_human_auth(owner["access_token"]),
+        headers=_bearer(owner["access_token"]),
     )
     assert search_hits(other["access_token"]) == []
 
@@ -634,7 +633,7 @@ def test_delete_agent_with_contact_grants(test_client):
     # The grant that named the deleted agent as a principal is gone.
     r = test_client.get(
         f"/api/human/agents/{survivor['agent_id']}/contact-permissions",
-        headers=_human_auth(owner["access_token"]),
+        headers=_bearer(owner["access_token"]),
     )
     assert r.status_code == 200, r.text
     assert r.json()["permissions"] == []
@@ -672,7 +671,7 @@ def test_delete_human_with_contact_grants(test_client):
 
     r = test_client.get(
         f"/api/human/agents/{agent['agent_id']}/contact-permissions",
-        headers=_human_auth(owner["access_token"]),
+        headers=_bearer(owner["access_token"]),
     )
     assert r.status_code == 200, r.text
     pids = {p["principal_id"] for p in r.json()["permissions"]}
@@ -716,14 +715,14 @@ def test_deleted_agent_tombstone_does_not_shadow_dm_peer(test_client, _test_engi
     r = test_client.post(
         f"/api/agentic/mm/channels/{dm_id}/posts",
         json={"message": "hi from beyond the tombstone", "status": "streaming"},
-        headers=_agent_auth(agent["api_key"]),
+        headers=_bearer(agent["api_key"]),
     )
     assert r.status_code == 200, r.text
 
     # ...and the operator can still read it.
     r = test_client.get(
         f"/api/human/mm/channels/{dm_id}/posts",
-        headers=_human_auth(owner_token),
+        headers=_bearer(owner_token),
     )
     assert r.status_code == 200, r.text
 

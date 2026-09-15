@@ -160,7 +160,7 @@ export function formatInstant(ms: number, tz?: string): string {
  * expression when cronstrue can't read it.
  */
 export function describeSchedule(schedule: Schedule | null): string {
-  if (!schedule) return "—";
+  if (!schedule) return "No schedule";
   switch (schedule.kind) {
     case "every":
       return `Every ${humanizeEvery(schedule.everyMs)}`;

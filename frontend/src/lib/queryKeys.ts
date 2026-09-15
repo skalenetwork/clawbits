@@ -1,3 +1,5 @@
+import type {MmSearchFilters} from "@/lib/api";
+
 export const queryKeys = {
   /** Caller's per-signal privacy flags (last seen, online status, read
    *  receipts, typing). One global entry — the row belongs to the
@@ -21,7 +23,7 @@ export const queryKeys = {
   /** One agent's AI usage. */
   agentUsage: (orgId: string, agentId: string, range: string) =>
     ["org", orgId, "usage", "agent", agentId, range] as const,
-  /** Org-wide automation list (across the caller's operated agents). */
+  /** Prefix covering every automation query in an org, for invalidation. */
   automations: (orgId: string) => ["automations", orgId] as const,
   /** One agent's automation list. */
   automationsForAgent: (orgId: string, agentId: string) =>
@@ -53,30 +55,19 @@ export const queryKeys = {
   orgSignupRequests: (orgId: string) => ["org", orgId, "signup-requests"] as const,
   /** The org's LobsterTalk attention config (toggle + mode + LLM connection). */
   orgLobstertalk: (orgId: string) => ["org", orgId, "lobstertalk"] as const,
-  /** The org's stored Reef API URL (clawbits backend). */
-  reefConnection: (orgId: string) => ["org", orgId, "reef-connection"] as const,
-  /** Browser-direct Reef health probe for the connection's status badge. */
-  reefHealth: (orgId: string) => ["org", orgId, "reef-health"] as const,
-  /** Browser-direct Reef fleet list (gated on the in-memory session token). */
-  reefFleet: (orgId: string) => ["org", orgId, "reef-fleet"] as const,
-  /** Browser-direct Reef provider availability (presence booleans only). */
-  reefProviders: (orgId: string) => ["org", orgId, "reef-providers"] as const,
-  /** One agent's Reef env (key names + lengths, never values). Keyed by
-   *  sandbox id, so the agent Manage section and Settings → Reef share a cache. */
-  reefAgentEnv: (orgId: string, sandboxId: string) =>
-    ["org", orgId, "reef-agent-env", sandboxId] as const,
+  /** The org's reef repository, plus the hosts reporting into it. */
+  reef: (orgId: string) => ["org", orgId, "reef"] as const,
+  /** The role catalog in the org's reef repository. */
+  reefRoles: (orgId: string) => ["org", orgId, "reef", "roles"] as const,
   /** Operator-only agent email inbox (Stalwart). */
   agentInbox: {
-    /** Prefix to invalidate every cache for one agent's inbox at once. */
-    all: (orgId: string, agentId: string) =>
-      ["agent-inbox", orgId, agentId] as const,
     count: (orgId: string, agentId: string) =>
       ["agent-inbox", orgId, agentId, "count"] as const,
-    list: (orgId: string, agentId: string, limit?: number, offset?: number, unreadOnly?: boolean) =>
-      ["agent-inbox", orgId, agentId, "list", { limit, offset, unreadOnly }] as const,
-    /** Prefix matching every paginated list variant — use for invalidation so
-     *  we refresh the list without touching the open message (which would
-     *  re-fetch + re-mark-read in a loop). */
+    list: (orgId: string, agentId: string, limit: number) =>
+      ["agent-inbox", orgId, agentId, "list", limit] as const,
+    /** Prefix matching every list limit, for invalidation: refreshes the list
+     *  without touching the open message (which would re-fetch and re-mark-read
+     *  in a loop). */
     listPrefix: (orgId: string, agentId: string) =>
       ["agent-inbox", orgId, agentId, "list"] as const,
     email: (orgId: string, agentId: string, uid: number) =>
@@ -105,13 +96,7 @@ export const queryKeys = {
     channelPinnedPosts: (channelId: string) =>
       ["mm", "channel", channelId, "pinned-posts"] as const,
     linkPreview: (url: string) => ["mm", "link-preview", url] as const,
-    /** Message content search results (Tier 2). Keyed on the full query
-     *  shape so different sorts/scopes cache independently. */
-    search: (
-      orgId: string | null,
-      query: string,
-      sort: string,
-      channelId: string | null,
-    ) => ["mm", "search", orgId, query, sort, channelId] as const,
+    search: (orgId: string | null, query: string, sort: string, filters: MmSearchFilters) =>
+      ["mm", "search", orgId, query, sort, filters] as const,
   },
 } as const;

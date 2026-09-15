@@ -11,6 +11,7 @@ import {
 import { Icon } from "@/components/Icon";
 import { CodeBlock } from "@/components/CodeBlock";
 import { MessageMarkdown } from "@/components/MessageMarkdown";
+import { holdAutoplay } from "@/components/video/autoplay";
 import { Video } from "@/components/video/Video";
 import { getMmFileDownloadUrl, type MmFile } from "@/lib/api";
 import { stableDownloadUrl, stableThumbnailUrl } from "@/lib/attachmentUrlCache";
@@ -81,6 +82,8 @@ export function AttachmentViewer({ files, initialIndex, onClose }: AttachmentVie
       document.body.style.overflow = prev;
     };
   }, []);
+
+  useEffect(holdAutoplay, []);
 
   // Focus management: move focus into the modal on open and restore it to the
   // element that opened it on close, so keyboard users aren't dropped back at
