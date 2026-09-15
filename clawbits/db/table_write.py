@@ -1029,6 +1029,11 @@ class TableWrite:
             delete(AgentSkillSyncState).where(AgentSkillSyncState.agent_id == agent_id)
         )
         session.exec(delete(AgentMark).where(AgentMark.agent_id == agent_id))
+        # The agent's own read pointers: its restart cursor per channel, not
+        # content, and a NOT NULL ``agent_id`` FK with no cascade.
+        session.exec(
+            delete(AgentChannelState).where(AgentChannelState.agent_id == agent_id)
+        )
 
         if keep_content:
             TableWrite._delete_agent_keep_content(session, agent)
@@ -1083,10 +1088,6 @@ class TableWrite:
         stale_agent_pointers = session.exec(
             select(AgentChannelState)
             .where(AgentChannelState.last_read_post_id.in_(agent_post_ids_subq))
-            # The agent's own rows are bulk-deleted just below — rewinding
-            # them too would leave dirty ORM instances behind a bulk DELETE,
-            # which explodes at flush with a zero-row UPDATE.
-            .where(AgentChannelState.agent_id != agent_id)
         ).all()
         for state in stale_agent_pointers:
             state.last_read_post_id = session.exec(
@@ -1096,10 +1097,6 @@ class TableWrite:
                 .where(MmPost.agent_id.is_distinct_from(agent_id))
             ).one()
             session.add(state)
-        # The deleted agent's own read pointers go outright (FK on agent_id).
-        session.exec(
-            delete(AgentChannelState).where(AgentChannelState.agent_id == agent_id)
-        )
         session.exec(
             update(MmPost)
             .where(MmPost.parent_post_id.in_(agent_post_ids_subq))

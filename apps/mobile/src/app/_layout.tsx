@@ -3,7 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SessionProvider, useSession } from "@/lib/session";
 import { DataProvider } from "@/lib/data";
-import { Empty, styles } from "@/components/ui";
+import { color, Empty, styles } from "@/components/ui";
 import { View } from "react-native";
 import { PushNotifications } from "@/lib/push";
 
@@ -30,6 +30,9 @@ function Root() {
     <Stack
       screenOptions={{
         headerBackButtonDisplayMode: "minimal",
+        headerTintColor: color.text,
+        headerTitleStyle: { color: color.text },
+        headerLargeTitleStyle: { color: color.text },
         contentStyle: styles.screen,
       }}
     >

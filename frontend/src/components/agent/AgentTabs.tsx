@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate, useOutletContext } from "react-router-dom";
-import { BubbleChatIcon, Clock05Icon, IdentityCardIcon, Mail01Icon, Settings02Icon } from "@hugeicons/core-free-icons";
+import { BubbleChatIcon, Clock05Icon, Mail01Icon, Passport01Icon, Settings02Icon } from "@hugeicons/core-free-icons";
 import { Icon, type AppIcon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
 import type { AgentOutletContext } from "@/components/agent/AgentShell";
@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 type AgentTab = "automations" | "inbox" | "card" | "manage";
 
 const TABS: { key: AgentTab; label: string; icon: AppIcon }[] = [
-  { key: "card", label: "Card", icon: IdentityCardIcon },
+  { key: "card", label: "Passport", icon: Passport01Icon },
   { key: "automations", label: "Automations", icon: Clock05Icon },
   { key: "inbox", label: "Inbox", icon: Mail01Icon },
   { key: "manage", label: "Manage", icon: Settings02Icon },

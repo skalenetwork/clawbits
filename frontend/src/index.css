@@ -968,7 +968,7 @@ html[data-media-viewer] [data-vt-contextual] {
 .access-foot,
 .access-bhead,
 .access-marks,
-.access-return {
+.access-issued {
   position: relative;
 }
 .access-top {
@@ -1041,15 +1041,20 @@ html[data-media-viewer] [data-vt-contextual] {
   justify-content: space-between;
   margin-top: auto;
 }
-.access-tier {
+.access-owner {
   display: flex;
   align-items: center;
   gap: 1.2cqw;
+  min-width: 0;
   font-size: max(7.5px, 3.7cqw);
   font-weight: 500;
   letter-spacing: 0.01em;
 }
-.access-tier-name {
+.access-handle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   display: inline-block;
   line-height: 1.2;
   background: var(--access-label);
@@ -1130,9 +1135,39 @@ html[data-media-viewer] [data-vt-contextual] {
 .access-marks [data-on] .access-when {
   color: var(--access-sub);
 }
-.access-return {
+.access-issued {
+  display: flex;
+  align-items: center;
+  gap: 3cqw;
   margin-top: auto;
-  font-size: 3.4cqw;
+  padding-top: 4cqw;
+  border-top: 1px solid var(--access-edge);
+}
+.access-issued img {
+  flex: none;
+  width: 9cqw;
+  height: 9cqw;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--access-edge);
+}
+.access-issued > span {
+  display: grid;
+  min-width: 0;
+  line-height: 1.35;
+}
+.access-issued-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 3.9cqw;
+  font-weight: 600;
+}
+.access-issued-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 3.1cqw;
   color: var(--access-quiet);
 }
 

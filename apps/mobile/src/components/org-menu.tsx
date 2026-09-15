@@ -1,5 +1,6 @@
 import { Host } from "@expo/ui";
 import { Button, Menu } from "@expo/ui/swift-ui";
+import { buttonBorderShape, buttonStyle } from "@expo/ui/swift-ui/modifiers";
 import { Alert } from "react-native";
 import { useOrganizations } from "@/lib/data";
 import { useSession } from "@/lib/session";
@@ -17,6 +18,7 @@ export function OrgMenu() {
       <Menu
         label={selected?.display_name || selected?.name || "Account"}
         systemImage="chevron.down"
+        modifiers={[buttonStyle("glass"), buttonBorderShape("capsule")]}
       >
         {organizations.map((org) => (
           <Button

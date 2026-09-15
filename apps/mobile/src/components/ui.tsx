@@ -1,56 +1,273 @@
 import { Image } from "expo-image";
-import { SymbolView, type SymbolViewProps } from "expo-symbols";
+import { Host } from "@expo/ui";
+import {
+  Button,
+  GlassEffectContainer,
+  HStack,
+  Image as SwiftImage,
+  Text as NativeText,
+  TextField,
+  type ButtonProps,
+  type TextFieldRef,
+} from "@expo/ui/swift-ui";
+import {
+  accessibilityLabel,
+  autocorrectionDisabled,
+  buttonBorderShape,
+  buttonStyle,
+  controlSize,
+  disabled as disabledModifier,
+  font,
+  foregroundStyle,
+  frame,
+  glassEffect,
+  keyboardType,
+  labelStyle,
+  lineLimit,
+  onSubmit as onSubmitModifier,
+  padding,
+  submitLabel,
+  textContentType,
+  textFieldStyle,
+  textInputAutocapitalization,
+  tint,
+} from "@expo/ui/swift-ui/modifiers";
+import { useImperativeHandle, useRef, type Ref } from "react";
 import {
   ActivityIndicator,
+  Image as Raster,
   PlatformColor,
-  Pressable,
   StyleSheet,
   Text,
   View,
+  type ColorValue,
 } from "react-native";
 import type { Avatar } from "@/lib/models";
 
 export const color = {
   background: PlatformColor("systemBackground"),
-  secondary: PlatformColor("secondarySystemBackground"),
+  secondary: PlatformColor("tertiarySystemFill"),
   text: PlatformColor("label"),
   muted: PlatformColor("secondaryLabel"),
   line: PlatformColor("separator"),
-  blue: PlatformColor("systemBlue"),
+  primary: PlatformColor("systemBlue"),
+  onPrimary: "#ffffff",
   red: PlatformColor("systemRed"),
 };
+
+export function GlassButton({
+  label,
+  onPress,
+  disabled = false,
+  prominent = false,
+  icon,
+  iconTint,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  prominent?: boolean;
+  icon?: number;
+  iconTint?: ColorValue;
+}) {
+  const iconUri = icon != null ? Raster.resolveAssetSource(icon)?.uri : undefined;
+  return (
+    <Host style={{ alignSelf: "stretch", height: 56 }}>
+      <Button
+        onPress={onPress}
+        modifiers={[
+          buttonStyle(prominent ? "glassProminent" : "glass"),
+          buttonBorderShape("capsule"),
+          controlSize("large"),
+          ...(prominent ? [tint(color.text)] : []),
+          disabledModifier(disabled),
+        ]}
+      >
+        <HStack spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
+          {iconUri ? (
+            <SwiftImage uiImage={iconUri} size={18} color={iconTint} />
+          ) : null}
+          <NativeText
+            modifiers={[
+              font({ textStyle: "body", weight: "semibold" }),
+              foregroundStyle(prominent ? color.background : color.text),
+            ]}
+          >
+            {label}
+          </NativeText>
+        </HStack>
+      </Button>
+    </Host>
+  );
+}
 
 export function IconButton({
   name,
   label,
   onPress,
   disabled = false,
+  prominent = false,
 }: {
-  name: SymbolViewProps["name"];
+  name: ButtonProps["systemImage"];
   label: string;
   onPress: () => void;
   disabled?: boolean;
+  prominent?: boolean;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        width: 44,
-        height: 44,
-        alignItems: "center",
-        justifyContent: "center",
-        opacity: disabled ? 0.35 : pressed ? 0.5 : 1,
-      })}
-    >
-      <SymbolView
-        name={name}
-        tintColor={color.blue}
-        style={{ width: 22, height: 22 }}
+    <Host style={{ width: 44, height: 44 }}>
+      <Button
+        label={label}
+        systemImage={name}
+        onPress={onPress}
+        modifiers={[
+          buttonStyle(prominent ? "glassProminent" : "glass"),
+          buttonBorderShape("circle"),
+          controlSize("large"),
+          labelStyle("iconOnly"),
+          ...(prominent ? [tint(color.text)] : []),
+          accessibilityLabel(label),
+          disabledModifier(disabled),
+        ]}
       />
-    </Pressable>
+    </Host>
+  );
+}
+
+export function GlassField({
+  placeholder,
+  onChangeText,
+  autoFocus = false,
+  disabled = false,
+  keyboard,
+  contentType,
+  submit,
+  onSubmit,
+}: {
+  placeholder: string;
+  onChangeText: (text: string) => void;
+  autoFocus?: boolean;
+  disabled?: boolean;
+  keyboard?: "email-address" | "numeric";
+  contentType?: "emailAddress" | "oneTimeCode";
+  submit?: "continue" | "go" | "send";
+  onSubmit?: () => void;
+}) {
+  return (
+    <Host style={{ alignSelf: "stretch", height: 56 }}>
+      <TextField
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        onTextChange={onChangeText}
+        modifiers={[
+          accessibilityLabel(placeholder),
+          textFieldStyle("plain"),
+          glassEffect({
+            glass: { variant: "regular", interactive: true },
+            shape: "capsule",
+          }),
+          frame({ maxWidth: Infinity, minHeight: 52 }),
+          padding({ horizontal: 18, vertical: 14 }),
+          font({ textStyle: "body", size: 17 }),
+          textInputAutocapitalization("never"),
+          autocorrectionDisabled(true),
+          ...(keyboard ? [keyboardType(keyboard)] : []),
+          ...(contentType ? [textContentType(contentType)] : []),
+          ...(submit ? [submitLabel(submit)] : []),
+          ...(onSubmit ? [onSubmitModifier(onSubmit)] : []),
+          disabledModifier(disabled),
+        ]}
+      />
+    </Host>
+  );
+}
+
+export type GlassComposerHandle = {
+  setText: (text: string) => Promise<void>;
+  clear: () => Promise<void>;
+};
+
+export function GlassComposer({
+  composerRef,
+  onChangeText,
+  onSend,
+  sendDisabled,
+  inputDisabled = false,
+}: {
+  composerRef?: Ref<GlassComposerHandle>;
+  onChangeText: (text: string) => void;
+  onSend: () => void;
+  sendDisabled: boolean;
+  inputDisabled?: boolean;
+}) {
+  const field = useRef<TextFieldRef>(null);
+  useImperativeHandle(composerRef, () => ({
+    setText: (text: string) => field.current?.setText(text) ?? Promise.resolve(),
+    clear: () => field.current?.clear() ?? Promise.resolve(),
+  }));
+  return (
+    <Host
+      matchContents={{ vertical: true }}
+      style={{ alignSelf: "stretch" }}
+      seedColor={color.text}
+    >
+      <GlassEffectContainer spacing={10}>
+        <HStack
+          spacing={8}
+          alignment="bottom"
+          modifiers={[padding({ horizontal: 10, vertical: 6 })]}
+        >
+          <Button
+            label="Attachments, coming later"
+            systemImage="plus"
+            onPress={() => undefined}
+            modifiers={[
+              buttonStyle("glass"),
+              buttonBorderShape("circle"),
+              controlSize("large"),
+              labelStyle("iconOnly"),
+              accessibilityLabel("Attachments, coming later"),
+              disabledModifier(true),
+            ]}
+          />
+          <TextField
+            ref={field}
+            placeholder="Message"
+            axis="vertical"
+            maxLength={4000}
+            onTextChange={onChangeText}
+            modifiers={[
+              accessibilityLabel("Message"),
+              glassEffect({
+                glass: { variant: "regular", interactive: true },
+                shape: "capsule",
+              }),
+              frame({ maxWidth: Infinity, minHeight: 36 }),
+              padding({ horizontal: 14, vertical: 8 }),
+              font({ textStyle: "body" }),
+              lineLimit({ min: 1, max: 5 }),
+              submitLabel("send"),
+              onSubmitModifier(onSend),
+              disabledModifier(inputDisabled),
+            ]}
+          />
+          <Button
+            label="Send message"
+            systemImage="arrow.up"
+            onPress={onSend}
+            modifiers={[
+              buttonStyle("glassProminent"),
+              buttonBorderShape("circle"),
+              controlSize("large"),
+              labelStyle("iconOnly"),
+              tint(color.text),
+              accessibilityLabel("Send message"),
+              disabledModifier(sendDisabled),
+            ]}
+          />
+        </HStack>
+      </GlassEffectContainer>
+    </Host>
   );
 }
 
@@ -96,15 +313,7 @@ export function Empty({
         <>
           <Text style={styles.heading}>{title}</Text>
           {detail && <Text style={styles.detail}>{detail}</Text>}
-          {onRetry && (
-            <Pressable
-              onPress={onRetry}
-              accessibilityRole="button"
-              style={styles.retry}
-            >
-              <Text style={styles.link}>Try again</Text>
-            </Pressable>
-          )}
+          {onRetry && <GlassButton label="Try again" onPress={onRetry} />}
         </>
       )}
     </View>
@@ -146,15 +355,6 @@ export const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: color.line,
     marginLeft: 82,
-  },
-  link: { fontSize: 17, color: color.blue },
-  retry: { padding: 12 },
-  input: {
-    fontSize: 17,
-    color: color.text,
-    backgroundColor: color.secondary,
-    borderRadius: 12,
-    padding: 16,
   },
   error: { fontSize: 14, color: color.red, padding: 12, textAlign: "center" },
 });

@@ -2,24 +2,25 @@ import { useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
-  Pressable,
   Text,
-  TextInput,
+  useColorScheme,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Image } from "expo-image";
 import * as WebBrowser from "expo-web-browser";
 import { apiUrl, request } from "@/lib/api";
 import type { User } from "@/lib/models";
 import { useSession } from "@/lib/session";
-import { color, styles } from "@/components/ui";
+import { color, GlassButton, GlassField, styles } from "@/components/ui";
 
 const providers = [
-  ["google", "Google"],
-  ["github", "GitHub"],
+  ["google", "Google", require("../../assets/images/google.png")],
+  ["github", "GitHub", require("../../assets/images/github.png")],
 ] as const;
 
 export default function SignIn() {
+  const dark = useColorScheme() === "dark";
   const { signIn, error } = useSession();
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -77,83 +78,69 @@ export default function SignIn() {
         behavior="padding"
         style={{ flex: 1, justifyContent: "center", padding: 28, gap: 18 }}
       >
-        <Text style={{ fontSize: 34, fontWeight: "700", color: color.text }}>
-          Clawbits
-        </Text>
-        <Text style={styles.preview}>Your conversations, close at hand.</Text>
+        <Image
+          source={require("../../assets/images/clawbits-long-current.svg")}
+          accessibilityLabel="Clawbits"
+          style={{ width: 168, height: 28, alignSelf: "center", marginBottom: 8 }}
+          contentFit="contain"
+          tintColor={dark ? "#f7f5f1" : "#000000"}
+        />
         {error && <Text style={styles.error}>{error}</Text>}
-        <TextInput
-          accessibilityLabel="Email"
+        <GlassField
           placeholder="Email"
-          placeholderTextColor={color.muted}
-          style={styles.input}
-          autoCapitalize="none"
-          keyboardType="email-address"
-          textContentType="emailAddress"
-          value={email}
-          editable={!sent && !busy}
           onChangeText={setEmail}
+          disabled={sent || busy}
+          keyboard="email-address"
+          contentType="emailAddress"
+          submit="continue"
+          onSubmit={() => {
+            if (!sent && email.trim()) void submit();
+          }}
         />
         {sent && (
-          <TextInput
-            accessibilityLabel="Verification code"
+          <GlassField
             placeholder="Code from your email"
-            placeholderTextColor={color.muted}
-            style={styles.input}
-            keyboardType="number-pad"
-            textContentType="oneTimeCode"
-            autoFocus
-            value={code}
             onChangeText={setCode}
-            editable={!busy}
+            autoFocus
+            disabled={busy}
+            keyboard="numeric"
+            contentType="oneTimeCode"
+            submit="go"
+            onSubmit={() => {
+              if (code) void submit();
+            }}
           />
         )}
-        <Pressable
-          accessibilityRole="button"
+        <GlassButton
+          label={busy ? "Please wait…" : sent ? "Sign In" : "Continue with Email"}
+          prominent
           disabled={busy || !email.trim() || (sent && !code)}
           onPress={() => {
             void submit();
           }}
-          style={{
-            backgroundColor: color.blue,
-            padding: 16,
-            borderRadius: 14,
-            opacity: busy ? 0.5 : 1,
-          }}
-        >
-          <Text
-            style={{
-              color: "white",
-              fontSize: 17,
-              fontWeight: "600",
-              textAlign: "center",
-            }}
-          >
-            {busy ? "Please wait…" : sent ? "Sign In" : "Continue with Email"}
-          </Text>
-        </Pressable>
+        />
         {sent ? (
-          <Pressable
+          <GlassButton
+            label="Use another email"
             disabled={busy}
             onPress={() => {
               setSent(false);
               setCode("");
             }}
-          >
-            <Text style={styles.link}>Use another email</Text>
-          </Pressable>
+          />
         ) : (
-          <View style={{ gap: 18, alignItems: "center", paddingTop: 8 }}>
-            {providers.map(([provider, label]) => (
-              <Pressable
+          <View style={{ gap: 12 }}>
+            {providers.map(([provider, label, icon]) => (
+              <GlassButton
                 key={provider}
+                label={`Continue with ${label}`}
+                icon={icon}
+                iconTint={provider === "github" ? color.text : undefined}
                 disabled={busy}
                 onPress={() => {
                   void social(provider);
                 }}
-              >
-                <Text style={styles.link}>{`Continue with ${label}`}</Text>
-              </Pressable>
+              />
             ))}
           </View>
         )}

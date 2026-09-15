@@ -5,6 +5,7 @@ import { useAvatarBaseColor } from "@/hooks/useAvatarBaseColor";
 import { useResilientImage } from "@/hooks/useResilientImage";
 import { agentDisplay } from "@/lib/agentDisplay";
 import type { AgentProfile, SkillRuntime } from "@/lib/api";
+import { mentionHandle } from "@/lib/messageHelpers";
 import { prefersReducedMotion } from "@/lib/motion";
 import { RUNTIME_LABELS } from "@/lib/skills";
 import { MARK_COPY, formatMarkDate, progressText, type TidemarkState } from "@/lib/tidemarks";
@@ -157,6 +158,12 @@ export function AccessCard({ profile, tide }: { profile: AgentProfile; tide: Tid
   const name = agentDisplay(profile);
   const runtime = profile.agent_type && RUNTIME_LABELS[profile.agent_type as SkillRuntime];
   const { tier, kinds, marks, full_set: full } = profile.tidemarks;
+  const operator = profile.operator;
+  const owner = operator?.display_name;
+  const handle =
+    operator && mentionHandle({ agent_id: null, human_id: operator.human_id, display_name: operator.display_name ?? null });
+  const ownerAvatar = useResilientImage(operator?.avatar?.url);
+  const issued = profile.creation_time && `Issued ${formatMarkDate(profile.creation_time)}`;
 
   return (
     <div className="access" onPointerMove={track} onPointerLeave={release}>
@@ -195,8 +202,8 @@ export function AccessCard({ profile, tide }: { profile: AgentProfile; tide: Tid
                 </span>
               </span>
               <span className="access-foot">
-                <span className="access-tier">
-                  <span className="access-tier-name">{tide.label}</span>
+                <span className="access-owner">
+                  {handle && <span className="access-handle">@{handle}</span>}
                   <i className="access-star" />
                 </span>
                 <svg className="access-nfc" viewBox="5 1.5 13.5 21" aria-hidden="true">
@@ -222,8 +229,14 @@ export function AccessCard({ profile, tide }: { profile: AgentProfile; tide: Tid
                   );
                 })}
               </span>
-              {profile.email_address && (
-                <span className="access-return">If found, mail {profile.email_address}</span>
+              {(owner || issued) && (
+                <span className="access-issued">
+                  {ownerAvatar && <img src={ownerAvatar} alt="" />}
+                  <span>
+                    {owner && <span className="access-issued-name">{owner}</span>}
+                    {issued && <span className="access-issued-line">{issued}</span>}
+                  </span>
+                </span>
               )}
             </span>
           </span>
