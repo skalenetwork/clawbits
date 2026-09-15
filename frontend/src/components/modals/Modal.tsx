@@ -15,7 +15,6 @@ const KIND_WIDTH = {
   picker: "sm:max-w-[30rem]",
   form: "sm:max-w-[28rem]",
   confirm: "sm:max-w-[24rem]",
-  reader: "sm:max-w-[36rem]",
 };
 
 export function ModalPanel({

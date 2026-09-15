@@ -394,3 +394,33 @@ export function CommandBlock({ code, copy = true }: { code: string; copy?: boole
     </div>
   );
 }
+
+/** One value copied bare, with nothing around it: the whole block is the button. */
+export function CopyField({ label, value, onCopy }: { label: string; value: string; onCopy?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      title={value}
+      onClick={() => {
+        void navigator.clipboard.writeText(value).then(() => {
+          setCopied(true);
+          onCopy?.();
+          setTimeout(() => {
+            setCopied(false);
+          }, 1600);
+        });
+      }}
+      className="group flex w-full min-w-0 flex-col gap-0.5 rounded-xl border border-code-border bg-code px-3 py-2 text-left transition-colors hover:border-foreground/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+    >
+      <span className="flex items-center justify-between gap-2 text-[12px] text-muted-foreground">
+        {label}
+        <span className="inline-flex items-center gap-1 group-hover:text-foreground">
+          <Icon icon={copied ? Tick02Icon : Copy01Icon} className="size-3" />
+          {copied ? "Copied" : "Copy"}
+        </span>
+      </span>
+      <span className="truncate font-mono text-[12.5px]">{value}</span>
+    </button>
+  );
+}

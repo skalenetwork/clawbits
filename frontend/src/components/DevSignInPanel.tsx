@@ -152,7 +152,7 @@ export function DevSignInPanel() {
               }`}
             >
               <span className="relative inline-flex shrink-0">
-                <UserAvatar name={email} size={CHIP_AVATAR_SIZE} className="rounded-full" />
+                <UserAvatar name={email} size={CHIP_AVATAR_SIZE} />
                 {isPending && (
                   <span className="absolute inset-0 grid place-items-center rounded-full bg-background/80 text-foreground/80">
                     <UnicodeSpinner className="text-[11px]" />

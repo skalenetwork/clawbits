@@ -4,7 +4,7 @@
 // build — no version endpoint or build-time injection needed.
 
 export interface Release {
-  /** "1.4.0" — matches the prod semantic-release tag; the modal dedupes on it. */
+  /** "1.4.0" — matches the prod semantic-release tag; the card dedupes on it. */
   version: string;
   /** ISO date string from frontmatter, or null. */
   date: string | null;
@@ -24,7 +24,7 @@ const rawFiles = import.meta.glob<string>("../release-notes/*.md", {
 });
 
 // Optional hero images: a ``<version>.webp`` next to the markdown is shown at
-// the top of the modal for that release. Bundled as asset URLs.
+// the top of the card for that release. Bundled as asset URLs.
 const imageFiles = import.meta.glob<string>("../release-notes/*.webp", {
   query: "?url",
   import: "default",

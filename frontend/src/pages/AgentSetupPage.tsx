@@ -5,11 +5,13 @@
 import { useAgentStatus } from "@/hooks/useAgentPresence";
 import { useEffect, useEffectEvent, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import { ChevronDown } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ReefHealth } from "@/components/settings/Settings";
 import {
   Checks,
   CommandBlock,
+  CopyField,
   SetupButton,
   SetupMark,
   SetupPanel,
@@ -129,6 +131,7 @@ export default function AgentSetupPage() {
   const queryClient = useQueryClient();
   const [a, setAnswers] = useState<Answers>({ where: null });
   const [copied, setCopied] = useState(false);
+  const [showIds, setShowIds] = useState(false);
 
   const exit = () => {
     // react-router numbers its history entries: above 0 there is a page in
@@ -434,6 +437,31 @@ export default function AgentSetupPage() {
       body: session && prompt && (
         <>
           <CommandBlock code={prompt} copy={false} />
+          <div className="flex w-full flex-col">
+            <button
+              type="button"
+              aria-expanded={showIds}
+              onClick={() => { setShowIds((v) => !v); }}
+              className="inline-flex items-center gap-1 self-start rounded-sm text-[13px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              {showIds ? "Hide org ID and token" : "Or copy org ID and token manually"}
+              <ChevronDown className={cn("size-3.5 transition-transform", showIds && "rotate-180")} />
+            </button>
+            <div
+              inert={!showIds}
+              className={cn(
+                "grid transition-[grid-template-rows,opacity] duration-200 ease-out",
+                showIds ? "grid-rows-[1fr]" : "grid-rows-[0fr] opacity-0",
+              )}
+            >
+              <div className="-m-1 overflow-hidden p-1">
+                <div className="grid w-full gap-2 pt-2 sm:grid-cols-2">
+                  {org && <CopyField label="Org ID" value={org.org_id} onCopy={() => { setCopied(true); }} />}
+                  <CopyField label="Signup token" value={session.session_token} onCopy={() => { setCopied(true); }} />
+                </div>
+              </div>
+            </div>
+          </div>
           <Checks items={[{ label: `Waiting for ${session.nickname}`, done: Boolean(agent) }]} />
         </>
       ),
