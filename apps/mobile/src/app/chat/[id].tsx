@@ -12,7 +12,6 @@ import {
   AppState,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
@@ -27,7 +26,14 @@ import {
   type Post,
 } from "@/lib/models";
 import { useSession } from "@/lib/session";
-import { color, Empty, GlassButton, IconButton, styles } from "@/components/ui";
+import {
+  color,
+  Empty,
+  GlassButton,
+  GlassComposer,
+  styles,
+  type GlassComposerHandle,
+} from "@/components/ui";
 
 type Delivery = { uuid: string; text: string; state: "sending" | "uncertain" };
 
@@ -50,6 +56,7 @@ function Conversation({ id }: { id: string }) {
   const insets = useSafeAreaInsets();
   const list = useRef<LegendListRef>(null);
   const composer = useRef<ComponentRef<typeof View>>(null);
+  const field = useRef<GlassComposerHandle>(null);
   const { contentInsetEndAdjustment, onComposerLayout } =
     useKeyboardChatComposerInset(list, composer, 60 + insets.bottom);
   const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({
@@ -110,6 +117,7 @@ function Conversation({ id }: { id: string }) {
     const uuid = randomUUID();
     setDelivery({ uuid, text: message, state: "sending" });
     setText("");
+    void field.current?.clear();
     setError(null);
     void scrollMessageToEnd({ animated: true, closeKeyboard: false });
     try {
@@ -127,6 +135,7 @@ function Conversation({ id }: { id: string }) {
       else if (cause instanceof ApiError && cause.status < 500) {
         setDelivery(null);
         setText(message);
+        void field.current?.setText(message);
         setError(cause.message);
       } else {
         setDelivery({ uuid, text: message, state: "uncertain" });
@@ -186,6 +195,7 @@ function Conversation({ id }: { id: string }) {
             <Message
               post={item}
               previous={posts[index - 1]}
+              next={posts[index + 1]}
               own={item.human_id === session!.user.id}
             />
           )}
@@ -217,11 +227,13 @@ function Conversation({ id }: { id: string }) {
           }
           ListFooterComponent={
             pending ? (
-              <View style={chat.pending}>
-                <Text style={[chat.message, chat.outgoing]}>
-                  {pending.text}
-                </Text>
-                <Text style={styles.detail}>
+              <View style={[chat.row, chat.ungrouped, { alignItems: "flex-end" }]}>
+                <View style={[chat.bubble, chat.outgoing]}>
+                  <Text selectable style={[chat.message, chat.outgoingText]}>
+                    {pending.text}
+                  </Text>
+                </View>
+                <Text style={chat.author}>
                   {pending.state === "sending"
                     ? "Sending…"
                     : "Delivery unconfirmed"}
@@ -238,10 +250,7 @@ function Conversation({ id }: { id: string }) {
         <View
           ref={composer}
           onLayout={onComposerLayout}
-          style={{
-            backgroundColor: color.background,
-            paddingBottom: insets.bottom + 8,
-          }}
+          style={{ paddingBottom: insets.bottom + 8 }}
         >
           {error && !accepted && (
             <Text accessibilityLiveRegion="polite" style={styles.error}>
@@ -253,56 +262,72 @@ function Conversation({ id }: { id: string }) {
               label="Keep text in composer"
               onPress={() => {
                 setText(pending.text);
+                void field.current?.setText(pending.text);
                 setDelivery(null);
                 setError(null);
               }}
             />
           )}
-          <View style={chat.composer}>
-            <IconButton name="plus" label="Attachments, coming later" disabled onPress={() => {}} />
-            <TextInput
-              accessibilityLabel="Message"
-              placeholder="Message"
-              placeholderTextColor={color.muted}
-              multiline
-              maxLength={4000}
-              value={text}
-              onChangeText={setText}
-              editable={!pending}
-              style={chat.input}
-            />
-            <IconButton
-              name="arrow.up"
-              label="Send message"
-              disabled={!connected || !text.trim() || !!pending}
-              onPress={() => {
-                void send();
-              }}
-            />
-          </View>
+          <GlassComposer
+            composerRef={field}
+            onChangeText={setText}
+            onSend={() => {
+              void send();
+            }}
+            sendDisabled={!connected || !text.trim() || !!pending}
+            inputDisabled={!!pending}
+          />
         </View>
       </KeyboardStickyView>
     </View>
   );
 }
 
+function samePerson(a?: Post, b?: Post) {
+  return !!a && !!b && a.human_id === b.human_id && a.agent_id === b.agent_id;
+}
+
+function newDay(post: Post, previous?: Post) {
+  return (
+    !previous ||
+    new Date(previous.created_at).toDateString() !==
+      new Date(post.created_at).toDateString()
+  );
+}
+
+function bubbleShape(own: boolean, groupedPrev: boolean, groupedNext: boolean) {
+  const outer = 18;
+  const inner = 5;
+  if (own) {
+    return {
+      borderTopLeftRadius: outer,
+      borderBottomLeftRadius: outer,
+      borderTopRightRadius: groupedPrev ? inner : outer,
+      borderBottomRightRadius: groupedNext ? inner : outer,
+    };
+  }
+  return {
+    borderTopRightRadius: outer,
+    borderBottomRightRadius: outer,
+    borderTopLeftRadius: groupedPrev ? inner : outer,
+    borderBottomLeftRadius: groupedNext ? inner : outer,
+  };
+}
+
 function Message({
   post,
   previous,
+  next,
   own,
 }: {
   post: Post;
   previous?: Post;
+  next?: Post;
   own: boolean;
 }) {
-  const showDate =
-    !previous ||
-    new Date(previous.created_at).toDateString() !==
-      new Date(post.created_at).toDateString();
-  const showAuthor =
-    showDate ||
-    previous?.human_id !== post.human_id ||
-    previous?.agent_id !== post.agent_id;
+  const showDate = newDay(post, previous);
+  const groupedPrev = !showDate && samePerson(previous, post);
+  const groupedNext = !!next && !newDay(next, post) && samePerson(post, next);
   return (
     <>
       {showDate && (
@@ -314,22 +339,39 @@ function Message({
           })}
         </Text>
       )}
-      <View style={[chat.row, { alignItems: own ? "flex-end" : "flex-start" }]}>
-        {!own && showAuthor && (
+      <View
+        style={[
+          chat.row,
+          groupedPrev ? chat.grouped : chat.ungrouped,
+          { alignItems: own ? "flex-end" : "flex-start" },
+        ]}
+      >
+        {!own && !groupedPrev && (
           <Text style={chat.author}>
             {post.poster_display_name || post.agent_id || "Member"}
             {post.agent_id ? " · Agent" : ""}
           </Text>
         )}
-        <View style={[chat.bubble, own ? chat.outgoing : chat.incoming]}>
+        <View
+          style={[
+            chat.bubble,
+            own ? chat.outgoing : chat.incoming,
+            bubbleShape(own, groupedPrev, groupedNext),
+          ]}
+        >
           <Text
             selectable
-            style={[chat.message, { color: own ? color.onPrimary : color.text }]}
+            style={[chat.message, own ? chat.outgoingText : chat.incomingText]}
           >
             {post.message || (post.status === "streaming" ? "…" : "Attachment")}
           </Text>
           {post.files.length > 0 && (
-            <Text style={{ color: own ? color.onPrimary : color.muted, fontSize: 13 }}>
+            <Text
+              style={{
+                color: own ? color.onPrimary : color.muted,
+                fontSize: 13,
+              }}
+            >
               {post.files.length} attachment{post.files.length === 1 ? "" : "s"}{" "}
               · View on web
             </Text>
@@ -357,37 +399,21 @@ const chat = StyleSheet.create({
     fontWeight: "600",
     paddingVertical: 16,
   },
-  row: { paddingHorizontal: 16, paddingVertical: 4, gap: 3 },
+  row: { paddingHorizontal: 16, gap: 3 },
+  grouped: { paddingTop: 1, paddingBottom: 1 },
+  ungrouped: { paddingTop: 6, paddingBottom: 6 },
   author: { fontSize: 12, color: color.muted, marginHorizontal: 12 },
   bubble: {
-    maxWidth: "86%",
-    borderRadius: 20,
+    maxWidth: "76%",
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 9,
     gap: 6,
   },
-  outgoing: { backgroundColor: color.primary, color: color.onPrimary, borderRadius: 20 },
+  outgoing: { backgroundColor: color.primary },
   incoming: { backgroundColor: color.secondary },
-  message: { fontSize: 17, lineHeight: 23 },
-  pending: { alignItems: "flex-end", padding: 16, gap: 6 },
+  message: { fontSize: 17, lineHeight: 22 },
+  outgoingText: { color: color.onPrimary },
+  incomingText: { color: color.text },
   sticky: { position: "absolute", bottom: 0, left: 0, right: 0 },
-  composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    paddingHorizontal: 8,
-    paddingTop: 8,
-    gap: 4,
-  },
-  input: {
-    flex: 1,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: color.line,
-    borderRadius: 22,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    fontSize: 17,
-    color: color.text,
-    minHeight: 44,
-    maxHeight: 150,
-  },
 });
+

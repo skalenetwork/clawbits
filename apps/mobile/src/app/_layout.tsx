@@ -30,7 +30,7 @@ function Root() {
     <Stack
       screenOptions={{
         headerBackButtonDisplayMode: "minimal",
-        headerTintColor: color.primary,
+        headerTintColor: color.text,
         headerTitleStyle: { color: color.text },
         headerLargeTitleStyle: { color: color.text },
         contentStyle: styles.screen,

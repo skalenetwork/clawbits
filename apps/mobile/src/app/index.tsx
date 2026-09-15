@@ -125,7 +125,7 @@ export default function Chats() {
                   width: 9,
                   height: 9,
                   borderRadius: 5,
-                  backgroundColor: color.primary,
+                  backgroundColor: color.red,
                 }}
               />
             )}
