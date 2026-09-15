@@ -1300,7 +1300,9 @@ class TableWrite:
 
         DM (direct) channels are kept whole: the agent's membership in each is
         re-pointed to the placeholder so the conversation survives and still
-        renders as a DM with "Deleted agent". Group-channel memberships,
+        renders as a DM with "Deleted agent", and each is renamed off its
+        canonical name so a later agent drawing the same id opens a fresh DM
+        instead of adopting this one. Group-channel memberships,
         channel-event history, repositories, share records, actions, profile,
         signup, and claim rows are identity/relationship state rather than
         authored content, so they are dropped as in the plain delete path.
@@ -1401,6 +1403,13 @@ class TableWrite:
                 .where(MmChannelMember.agent_id == agent_id)
                 .where(MmChannelMember.channel_id.in_(dm_ids))
                 .values(agent_id=tomb_id)
+            )
+            # Ids are drawn from a finite nickname pool and free up on delete: a kept DM
+            # holding its canonical name would be adopted by the next agent with this id.
+            session.exec(
+                update(MmChannel)
+                .where(MmChannel.channel_id.in_(dm_ids))
+                .values(name="deleted-" + MmChannel.channel_id)
             )
 
         # --- Drop identity / relationship / audit rows (not content) ---
@@ -3555,8 +3564,7 @@ class TableWrite:
         display_name = f"DM: {agent_id}"
 
         # Fallback: a row with the canonical name already exists but
-        # membership has drifted (orphan from a previous failed write or
-        # an agent_id that was re-used after deletion). Reuse it —
+        # membership has drifted (orphan from a previous failed write). Reuse it —
         # creating a new one would 409 on uq_mm_channels_org_name.
         squatter = TableRead.get_mm_channel_by_org_and_name(session, org_id, dm_name)
         if squatter is not None:

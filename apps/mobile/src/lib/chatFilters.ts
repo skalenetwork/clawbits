@@ -54,3 +54,8 @@ export function previewText(channel: Channel, userId: number): string {
       : `${channel.last_message_attachment_count} attachments`;
   return channel.channel_type === "direct" ? "Start a conversation" : "No messages";
 }
+
+export function glyphKind(channel: Channel): "human" | "agent" | "channel" {
+  if (channel.channel_type !== "direct") return "channel";
+  return channel.dm_peer_agent_id ? "agent" : "human";
+}

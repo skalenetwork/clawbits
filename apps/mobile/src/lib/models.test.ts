@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   historyPosts,
+  memberCountLabel,
   mergePost,
+  orgName,
   reconcilePage,
   removePost,
   type History,
@@ -118,5 +120,23 @@ describe("message reconciliation", () => {
     );
     expect(result.posts[0]).toBe(fetched);
     expect(result.next).toBe(2);
+  });
+});
+
+describe("workspace labels", () => {
+  test("orgName prefers the display name", () => {
+    expect(
+      orgName({
+        org_id: "org",
+        name: "acme",
+        display_name: "Acme",
+        is_personal: false,
+      }),
+    ).toBe("Acme");
+  });
+  test("memberCountLabel is singular for one member", () => {
+    expect(memberCountLabel(1)).toBe("1 member");
+    expect(memberCountLabel(0)).toBe("0 members");
+    expect(memberCountLabel(12)).toBe("12 members");
   });
 });

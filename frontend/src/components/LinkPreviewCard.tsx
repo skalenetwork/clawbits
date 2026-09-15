@@ -152,7 +152,7 @@ export const LinkPreviewCard = memo(function LinkPreviewCard({
       target="_blank"
       rel="noopener noreferrer"
       data-link-preview
-      className="mt-2 block max-w-md overflow-hidden rounded-xl border border-border/40 bg-muted/50 transition-transform duration-150 ease-out active:scale-[0.99] dark:bg-muted/30"
+      className="mt-2 block max-w-80 overflow-hidden rounded-xl border border-border/40 bg-muted/50 transition-transform duration-150 ease-out active:scale-[0.99] dark:bg-muted/30"
     >
       {showImage && (
         <img
@@ -165,26 +165,26 @@ export const LinkPreviewCard = memo(function LinkPreviewCard({
           className="aspect-[1.91/1] w-full object-cover"
         />
       )}
-      <div className={`flex flex-col px-4 py-3.5 ${twitter ? "gap-3" : "gap-2"}`}>
-        <div className="flex items-start justify-between gap-3">
+      <div className={`flex flex-col px-3 py-2.5 ${twitter ? "gap-2" : "gap-1"}`}>
+        <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
             {twitter ? (
-              <div className="flex min-w-0 items-center gap-2.5">
+              <div className="flex min-w-0 items-center gap-2">
                 {avatarSrc && (
                   <img
                     src={avatarSrc}
                     alt=""
-                    width={32}
-                    height={32}
+                    width={28}
+                    height={28}
                     loading="lazy"
                     decoding="async"
                     draggable={false}
                     onError={() => { setAvatarFailed(true); }}
-                    className="size-8 shrink-0 rounded-full bg-background object-cover"
+                    className="size-7 shrink-0 rounded-full bg-background object-cover"
                   />
                 )}
                 <div className="flex min-w-0 flex-col leading-tight">
-                  <span className="truncate text-[14px] font-semibold text-foreground">
+                  <span className="truncate text-[13px] font-semibold text-foreground">
                     {twitter.displayName}
                   </span>
                   <span className="truncate text-xs text-muted-foreground">
@@ -193,38 +193,38 @@ export const LinkPreviewCard = memo(function LinkPreviewCard({
                 </div>
               </div>
             ) : (
-              <div className="line-clamp-2 text-[15px] font-semibold leading-snug text-foreground">
+              <div className="line-clamp-2 text-[13px] font-semibold leading-snug text-foreground">
                 {preview.title}
               </div>
             )}
           </div>
           {preview.site_name && (
-            <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-foreground/10 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+            <span className="flex shrink-0 items-center gap-1 rounded-full bg-foreground/10 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
               {faviconSrc && (
                 <img
                   src={faviconSrc}
                   alt=""
-                  width={14}
-                  height={14}
+                  width={12}
+                  height={12}
                   loading="lazy"
                   decoding="async"
                   draggable={false}
                   onError={() => { setFaviconFailed(true); }}
-                  className="size-3.5 shrink-0 rounded-sm"
+                  className="size-3 shrink-0 rounded-sm"
                 />
               )}
-              <span className="max-w-[8rem] truncate">{preview.site_name}</span>
+              <span className="max-w-[6rem] truncate">{preview.site_name}</span>
             </span>
           )}
         </div>
         {twitter
           ? preview.description && (
-              <div className="line-clamp-6 whitespace-pre-line text-[15px] leading-relaxed text-foreground/95">
+              <div className="line-clamp-4 whitespace-pre-line text-[13px] leading-normal text-foreground/95">
                 {preview.description}
               </div>
             )
           : preview.description && (
-              <div className="line-clamp-2 text-[13px] leading-relaxed text-muted-foreground">
+              <div className="line-clamp-2 text-xs leading-normal text-muted-foreground">
                 {preview.description}
               </div>
             )}
@@ -250,11 +250,11 @@ function LinkPreviewSkeleton() {
     <div
       aria-hidden="true"
       data-link-preview-skeleton
-      className="mt-2 block max-w-md overflow-hidden rounded-xl border border-border/40 bg-muted/50 dark:bg-muted/30"
+      className="mt-2 block max-w-80 overflow-hidden rounded-xl border border-border/40 bg-muted/50 dark:bg-muted/30"
     >
       <div className="aspect-[1.91/1] w-full animate-pulse bg-muted/50"/>
-      <div className="flex flex-col gap-2 px-4 py-3.5">
-        <div className="h-4 w-3/4 animate-pulse rounded-md bg-muted/60"/>
+      <div className="flex flex-col gap-1.5 px-3 py-2.5">
+        <div className="h-3.5 w-3/4 animate-pulse rounded-md bg-muted/60"/>
         <div className="h-3 w-5/6 animate-pulse rounded-md bg-muted/50"/>
         <div className="h-3 w-2/3 animate-pulse rounded-md bg-muted/50"/>
       </div>

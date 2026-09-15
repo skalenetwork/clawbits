@@ -2,6 +2,7 @@ import type { InfiniteData } from "@tanstack/react-query";
 
 export interface Avatar {
   url: string;
+  kind?: "generated" | "uploaded";
 }
 
 export interface User {
@@ -15,7 +16,9 @@ export interface Organization {
   org_id: string;
   name: string;
   display_name: string | null;
+  avatar?: Avatar | null;
   is_personal: boolean;
+  member_count?: number;
 }
 
 export interface Channel {
@@ -69,6 +72,14 @@ export type ChatEvent = { channel_id: string } & (
 
 export function channelName(channel: Channel): string {
   return channel.dm_peer?.display_name || channel.display_name || channel.name;
+}
+
+export function orgName(org: Organization): string {
+  return org.display_name || org.name;
+}
+
+export function memberCountLabel(count: number): string {
+  return count === 1 ? "1 member" : `${count} members`;
 }
 
 const updatedAt = (post: Post): number =>

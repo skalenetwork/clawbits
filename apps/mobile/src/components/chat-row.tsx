@@ -1,29 +1,8 @@
-import { Pressable, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
-import { SymbolView } from "expo-symbols";
-import { listTime, previewText } from "@/lib/chatFilters";
+import { glyphKind, listTime, previewText } from "@/lib/chatFilters";
 import { channelName, type Channel } from "@/lib/models";
 import { AvatarView, color, styles } from "@/components/ui";
-
-function ChatGlyph({ channel }: { channel: Channel }) {
-  if (channel.channel_type === "direct") {
-    return (
-      <AvatarView
-        avatar={channel.dm_peer?.avatar || channel.avatar}
-        name={channelName(channel)}
-      />
-    );
-  }
-  return (
-    <View style={styles.avatar}>
-      <SymbolView
-        name={channel.channel_type === "private" ? "lock.fill" : "number"}
-        size={22}
-        tintColor={color.muted}
-      />
-    </View>
-  );
-}
 
 export function ChatRow({
   channel,
@@ -34,6 +13,7 @@ export function ChatRow({
 }) {
   const unread = channel.unread_count > 0;
   const name = channelName(channel);
+  const shape = glyphKind(channel);
   return (
     <Pressable
       accessibilityRole="button"
@@ -49,12 +29,20 @@ export function ChatRow({
         pressed && { backgroundColor: color.secondary },
       ]}
     >
-      <ChatGlyph channel={channel} />
+      <AvatarView
+        avatar={
+          shape === "channel"
+            ? channel.avatar
+            : channel.dm_peer?.avatar || channel.avatar
+        }
+        name={name}
+        shape={shape}
+      />
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: "row", gap: 8, alignItems: "baseline" }}>
           <Text
             numberOfLines={1}
-            style={[styles.name, { flex: 1, fontWeight: unread ? "700" : "400" }]}
+            style={[styles.name, { flex: 1 }]}
           >
             {name}
           </Text>
@@ -62,20 +50,44 @@ export function ChatRow({
             {listTime(channel.last_message_at)}
           </Text>
         </View>
-        <Text numberOfLines={1} style={styles.preview}>
-          {previewText(channel, userId)}
-        </Text>
+        <View style={badge.line}>
+          <Text numberOfLines={1} style={[styles.preview, badge.preview]}>
+            {previewText(channel, userId)}
+          </Text>
+          {unread ? (
+            <View style={badge.pill}>
+              <Text style={badge.count}>
+                {channel.unread_count > 99 ? "99+" : String(channel.unread_count)}
+              </Text>
+            </View>
+          ) : null}
+        </View>
       </View>
-      {unread ? (
-        <View
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: 5,
-            backgroundColor: color.red,
-          }}
-        />
-      ) : null}
     </Pressable>
   );
 }
+
+const badge = StyleSheet.create({
+  line: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4,
+  },
+  preview: { flex: 1, marginTop: 0 },
+  pill: {
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    backgroundColor: color.red,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  count: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#ffffff",
+    fontVariant: ["tabular-nums"],
+  },
+});
