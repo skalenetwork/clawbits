@@ -4,9 +4,9 @@ import {
   Button,
   GlassEffectContainer,
   HStack,
-  Image as SwiftImage,
   Text as NativeText,
   TextField,
+  VStack,
   type ButtonProps,
   type TextFieldRef,
 } from "@expo/ui/swift-ui";
@@ -35,12 +35,10 @@ import {
 import { useImperativeHandle, useRef, type Ref } from "react";
 import {
   ActivityIndicator,
-  Image as Raster,
   PlatformColor,
   StyleSheet,
   Text,
   View,
-  type ColorValue,
 } from "react-native";
 import type { Avatar } from "@/lib/models";
 
@@ -68,36 +66,44 @@ export function GlassButton({
   disabled?: boolean;
   prominent?: boolean;
   icon?: number;
-  iconTint?: ColorValue;
+  iconTint?: string;
 }) {
-  const iconUri = icon != null ? Raster.resolveAssetSource(icon)?.uri : undefined;
   return (
-    <Host style={{ alignSelf: "stretch", height: 56 }}>
-      <Button
-        onPress={onPress}
-        modifiers={[
-          buttonStyle(prominent ? "glassProminent" : "glass"),
-          buttonBorderShape("capsule"),
-          controlSize("large"),
-          ...(prominent ? [tint(color.text)] : []),
-          disabledModifier(disabled),
-        ]}
-      >
-        <HStack spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
-          {iconUri ? (
-            <SwiftImage uiImage={iconUri} size={18} color={iconTint} />
-          ) : null}
+    <View style={{ alignSelf: "stretch", height: 56 }}>
+      <Host style={StyleSheet.absoluteFill}>
+        <Button
+          onPress={onPress}
+          modifiers={[
+            buttonStyle(prominent ? "glassProminent" : "glass"),
+            buttonBorderShape("capsule"),
+            controlSize("large"),
+            ...(prominent ? [tint(color.text)] : []),
+            disabledModifier(disabled),
+          ]}
+        >
           <NativeText
             modifiers={[
-              font({ textStyle: "body", weight: "semibold" }),
+              font({ textStyle: "body", weight: "regular" }),
               foregroundStyle(prominent ? color.background : color.text),
+              frame({ maxWidth: Infinity, minHeight: 24 }),
             ]}
           >
             {label}
           </NativeText>
-        </HStack>
-      </Button>
-    </Host>
+        </Button>
+      </Host>
+      {icon != null && (
+        <Image
+          source={icon}
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+          style={styles.buttonIcon}
+          contentFit="contain"
+          tintColor={iconTint}
+          pointerEvents="none"
+        />
+      )}
+    </View>
   );
 }
 
@@ -115,16 +121,17 @@ export function IconButton({
   prominent?: boolean;
 }) {
   return (
-    <Host style={{ width: 44, height: 44 }}>
+    <Host matchContents>
       <Button
         label={label}
         systemImage={name}
         onPress={onPress}
         modifiers={[
-          buttonStyle(prominent ? "glassProminent" : "glass"),
+          buttonStyle("plain"),
           buttonBorderShape("circle"),
           controlSize("large"),
           labelStyle("iconOnly"),
+          frame({ width: 32, height: 32 }),
           ...(prominent ? [tint(color.text)] : []),
           accessibilityLabel(label),
           disabledModifier(disabled),
@@ -155,29 +162,33 @@ export function GlassField({
 }) {
   return (
     <Host style={{ alignSelf: "stretch", height: 56 }}>
-      <TextField
-        placeholder={placeholder}
-        autoFocus={autoFocus}
-        onTextChange={onChangeText}
-        modifiers={[
-          accessibilityLabel(placeholder),
-          textFieldStyle("plain"),
-          glassEffect({
-            glass: { variant: "regular", interactive: true },
-            shape: "capsule",
-          }),
-          frame({ maxWidth: Infinity, minHeight: 52 }),
-          padding({ horizontal: 18, vertical: 14 }),
-          font({ textStyle: "body", size: 17 }),
-          textInputAutocapitalization("never"),
-          autocorrectionDisabled(true),
-          ...(keyboard ? [keyboardType(keyboard)] : []),
-          ...(contentType ? [textContentType(contentType)] : []),
-          ...(submit ? [submitLabel(submit)] : []),
-          ...(onSubmit ? [onSubmitModifier(onSubmit)] : []),
-          disabledModifier(disabled),
-        ]}
-      />
+      <VStack
+        modifiers={[frame({ maxWidth: Infinity, maxHeight: Infinity })]}
+      >
+        <TextField
+          placeholder={placeholder}
+          autoFocus={autoFocus}
+          onTextChange={onChangeText}
+          modifiers={[
+            accessibilityLabel(placeholder),
+            textFieldStyle("plain"),
+            font({ textStyle: "body", weight: "regular" }),
+            padding({ horizontal: 18 }),
+            frame({ maxWidth: Infinity, maxHeight: Infinity }),
+            glassEffect({
+              glass: { variant: "regular", interactive: true },
+              shape: "capsule",
+            }),
+            textInputAutocapitalization("never"),
+            autocorrectionDisabled(true),
+            ...(keyboard ? [keyboardType(keyboard)] : []),
+            ...(contentType ? [textContentType(contentType)] : []),
+            ...(submit ? [submitLabel(submit)] : []),
+            ...(onSubmit ? [onSubmitModifier(onSubmit)] : []),
+            disabledModifier(disabled),
+          ]}
+        />
+      </VStack>
     </Host>
   );
 }
@@ -340,7 +351,7 @@ export const styles = StyleSheet.create({
     backgroundColor: color.secondary,
   },
   initial: { fontSize: 22, fontWeight: "600", color: color.muted },
-  name: { fontSize: 17, fontWeight: "600", color: color.text },
+  name: { fontSize: 17, fontWeight: "400", color: color.text },
   detail: { fontSize: 15, color: color.muted, textAlign: "center" },
   preview: { fontSize: 15, color: color.muted, marginTop: 4 },
   heading: { fontSize: 22, fontWeight: "600", color: color.text },
@@ -357,4 +368,11 @@ export const styles = StyleSheet.create({
     marginLeft: 82,
   },
   error: { fontSize: 14, color: color.red, padding: 12, textAlign: "center" },
+  buttonIcon: {
+    position: "absolute",
+    left: 22,
+    top: 19,
+    width: 18,
+    height: 18,
+  },
 });

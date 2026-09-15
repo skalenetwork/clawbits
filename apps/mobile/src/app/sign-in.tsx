@@ -12,11 +12,11 @@ import * as WebBrowser from "expo-web-browser";
 import { apiUrl, request } from "@/lib/api";
 import type { User } from "@/lib/models";
 import { useSession } from "@/lib/session";
-import { color, GlassButton, GlassField, styles } from "@/components/ui";
+import { GlassButton, GlassField, styles } from "@/components/ui";
 
 const providers = [
-  ["google", "Google", require("../../assets/images/google.png")],
-  ["github", "GitHub", require("../../assets/images/github.png")],
+  ["google", "Google", require("../../assets/images/google.svg")],
+  ["github", "GitHub", require("../../assets/images/github.svg")],
 ] as const;
 
 export default function SignIn() {
@@ -135,7 +135,13 @@ export default function SignIn() {
                 key={provider}
                 label={`Continue with ${label}`}
                 icon={icon}
-                iconTint={provider === "github" ? color.text : undefined}
+                iconTint={
+                  provider === "github"
+                    ? dark
+                      ? "#f7f5f1"
+                      : "#000000"
+                    : undefined
+                }
                 disabled={busy}
                 onPress={() => {
                   void social(provider);

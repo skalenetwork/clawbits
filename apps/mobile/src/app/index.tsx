@@ -1,16 +1,31 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
-import { FlatList, Pressable, Text, View } from "react-native";
+import { FlatList, Text, View } from "react-native";
 import { api, ApiError } from "@/lib/api";
+import {
+  CHAT_TAB_LABEL,
+  filterChannelsByTab,
+  type ChatTab,
+} from "@/lib/chatFilters";
 import { useOrganizations } from "@/lib/data";
-import { channelName } from "@/lib/models";
 import { useSession } from "@/lib/session";
-import { AvatarView, color, Empty, IconButton, styles } from "@/components/ui";
+import { ChatFilter } from "@/components/chat-filter";
+import { ChatRow } from "@/components/chat-row";
+import { Empty, IconButton, styles } from "@/components/ui";
 import { OrgMenu } from "@/components/org-menu";
+
+const emptyTitle: Record<ChatTab, string> = {
+  all: "No conversations yet",
+  channels: "No channels",
+  dms: "No direct messages",
+  agents: "No agent chats",
+};
 
 export default function Chats() {
   const { session } = useSession();
   const orgs = useOrganizations();
+  const [tab, setTab] = useState<ChatTab>("all");
   const org = orgs.selected?.org_id ?? "";
   const query = useQuery({
     queryKey: ["channels", org],
@@ -20,8 +35,11 @@ export default function Chats() {
   const failed = query.isError || orgs.isError;
   const denied =
     query.error instanceof ApiError && [403, 404].includes(query.error.status);
-  const channels = [...(denied ? [] : (query.data?.channels ?? []))].sort(
-    (a, b) => (b.last_message_at || "").localeCompare(a.last_message_at || ""),
+  const channels = filterChannelsByTab(
+    [...(denied ? [] : (query.data?.channels ?? []))].sort((a, b) =>
+      (b.last_message_at || "").localeCompare(a.last_message_at || ""),
+    ),
+    tab,
   );
   return (
     <View style={styles.screen}>
@@ -49,9 +67,12 @@ export default function Chats() {
         }}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         ListHeaderComponent={
-          failed && channels.length ? (
-            <Text style={styles.detail}>Offline · Showing saved chats</Text>
-          ) : undefined
+          <>
+            <ChatFilter value={tab} onChange={setTab} />
+            {failed && channels.length ? (
+              <Text style={styles.detail}>Offline · Showing saved chats</Text>
+            ) : null}
+          </>
         }
         ListEmptyComponent={
           <Empty
@@ -59,10 +80,12 @@ export default function Chats() {
               orgs.isPending ||
               (!!org && query.isPending && query.fetchStatus !== "paused")
             }
-            title={failed ? "Could not load chats" : "No conversations yet"}
+            title={failed ? "Could not load chats" : emptyTitle[tab]}
             detail={
               org
-                ? "Start a message to a person or agent."
+                ? tab === "all"
+                  ? "Start a message to a person or agent."
+                  : `Nothing in ${CHAT_TAB_LABEL[tab].toLowerCase()} yet.`
                 : "Your organizations will appear here."
             }
             onRetry={
@@ -76,60 +99,7 @@ export default function Chats() {
           />
         }
         renderItem={({ item }) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${channelName(item)}${item.unread_count ? `, ${item.unread_count} unread` : ""}`}
-            onPress={() =>
-              router.push({
-                pathname: "/chat/[id]",
-                params: { id: item.channel_id },
-              })
-            }
-            style={({ pressed }) => [
-              styles.row,
-              { opacity: pressed ? 0.5 : 1 },
-            ]}
-          >
-            <AvatarView
-              avatar={item.dm_peer?.avatar || item.avatar}
-              name={channelName(item)}
-            />
-            <View style={{ flex: 1 }}>
-              <View
-                style={{ flexDirection: "row", gap: 8, alignItems: "baseline" }}
-              >
-                <Text numberOfLines={1} style={[styles.name, { flex: 1 }]}>
-                  {channelName(item)}
-                </Text>
-                <Text style={{ fontSize: 12, color: color.muted }}>
-                  {item.last_message_at
-                    ? new Date(item.last_message_at).toLocaleDateString(
-                        undefined,
-                        { month: "short", day: "numeric" },
-                      )
-                    : ""}
-                </Text>
-              </View>
-              <Text numberOfLines={2} style={styles.preview}>
-                {item.last_message_text ||
-                  (item.last_message_attachment_count
-                    ? "Attachment"
-                    : item.channel_type === "direct"
-                      ? "Start a conversation"
-                      : "Channel")}
-              </Text>
-            </View>
-            {item.unread_count > 0 && (
-              <View
-                style={{
-                  width: 9,
-                  height: 9,
-                  borderRadius: 5,
-                  backgroundColor: color.red,
-                }}
-              />
-            )}
-          </Pressable>
+          <ChatRow channel={item} userId={session!.user.id} />
         )}
       />
     </View>

@@ -14,7 +14,7 @@ This starts Vite (from `../frontend`) and opens a native window pointing at it. 
 
 ## Icons
 
-[`src-tauri/icons/clawbits.icon`](src-tauri/icons/clawbits.icon) is the Icon Composer original: macOS 26+ renders it natively, light and dark. The committed rasters beside it (`.icns` for older macOS, `.ico`, PNGs) come from [`icons-src/clawbits.png`](icons-src/clawbits.png) via `bun run icons`, which scales it onto Apple's 824px icon grid. Every channel ships the same icon.
+[`src-tauri/icons/clawbits.icon`](src-tauri/icons/clawbits.icon) is the Icon Composer original: macOS 26+ renders it natively, light and dark. `bun run icons` (needs Xcode 27) compiles it into the committed `Assets.car` the bundle ships, and renders the rasters beside it (`.icns` for older macOS, `.ico`, PNGs) from [`icons-src/clawbits.png`](icons-src/clawbits.png), scaled onto Apple's 824px icon grid. The bundle uses the pre-built `Assets.car` only until GitHub's macOS runners ship Xcode 27 (26.6's actool fails on this icon); then `bundle.icon` points back at `clawbits.icon`. Every channel ships the same icon.
 
 ## Build
 

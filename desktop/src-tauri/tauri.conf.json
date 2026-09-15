@@ -62,7 +62,7 @@
       "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico",
-      "icons/clawbits.icon"
+      "icons/Assets.car"
     ],
     "macOS": {
       "minimumSystemVersion": "11.0"
