@@ -5,5 +5,6 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+KillMode=process
 User=reef
 ExecStart=/home/reef/agents/reconcile.sh

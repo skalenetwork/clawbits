@@ -74,6 +74,13 @@ export const api = {
       undefined,
       signal,
     ),
+  members: (token: string, org: string, signal?: AbortSignal) =>
+    request<{ total: number }>(
+      `/api/human/orgs/${encodeURIComponent(org)}/members`,
+      token,
+      undefined,
+      signal,
+    ),
   channels: (token: string, org: string, signal?: AbortSignal) =>
     request<{ channels: Channel[] }>(
       `/api/human/mm/channels?org_id=${encodeURIComponent(org)}`,

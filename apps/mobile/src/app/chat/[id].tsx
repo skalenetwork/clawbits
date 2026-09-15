@@ -3,30 +3,48 @@ import {
   useKeyboardChatComposerInset,
   useKeyboardScrollToEnd,
 } from "@legendapp/list/keyboard";
-import type { LegendListRef, ViewToken } from "@legendapp/list/react-native";
+import type { LegendListRef } from "@legendapp/list/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
 import { randomUUID } from "expo-crypto";
-import { useCallback, useEffect, useRef, useState, type ComponentRef } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentRef,
+} from "react";
 import {
   AppState,
+  DynamicColorIOS,
+  Linking,
+  PlatformColor,
+  Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { GlassView } from "expo-glass-effect";
+import { SymbolView } from "expo-symbols";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, ApiError } from "@/lib/api";
 import { historyKey, useHistory, useLiveEvents } from "@/lib/data";
+import { glyphKind } from "@/lib/chatFilters";
+import { samePerson, showStamp, stampLabel } from "@/lib/messageLayout";
 import {
   channelName,
   historyPosts,
   mergePost,
+  type Channel,
   type History,
   type Post,
 } from "@/lib/models";
 import { useSession } from "@/lib/session";
 import {
+  AvatarView,
   color,
   Empty,
   GlassButton,
@@ -36,6 +54,15 @@ import {
 } from "@/components/ui";
 
 type Delivery = { uuid: string; text: string; state: "sending" | "uncertain" };
+
+function itemsAreEqual(prev: Post, next: Post) {
+  return (
+    prev.post_id === next.post_id &&
+    prev.message === next.message &&
+    prev.status === next.status &&
+    prev.updated_at === next.updated_at
+  );
+}
 
 export default function ConversationRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -62,45 +89,79 @@ function Conversation({ id }: { id: string }) {
   const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({
     listRef: list,
   });
-  const posts = historyPosts(history.data);
+  const posts = useMemo(() => historyPosts(history.data), [history.data]);
   const [text, setText] = useState("");
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [visible, setVisible] = useState(0);
   const read = useRef(0);
   const sending = useRef(false);
+  const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusedRef = useRef(focused);
+  const connectedRef = useRef(connected);
+  focusedRef.current = focused;
+  connectedRef.current = connected;
+  const inbox = client.getQueryData<{ channels: Channel[] }>([
+    "channels",
+    session!.org ?? "",
+  ]);
+  const kind =
+    channel.data?.channel_type ??
+    inbox?.channels.find((item) => item.channel_id === id)?.channel_type;
+  const named = kind != null && kind !== "direct";
+  const userId = session!.user.id;
   const forbidden =
     channel.error instanceof ApiError &&
     [403, 404].includes(channel.error.status);
-  const onViewableItemsChanged = useCallback(
-    ({ viewableItems }: { viewableItems: ViewToken<Post>[] }) => {
-      const ids = viewableItems
-        .filter((item) => item.isViewable && item.item.status === "published")
-        .map((item) => item.item.post_id);
-      setVisible(Math.max(0, ...ids));
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (
-      !focused ||
-      !connected ||
-      visible <= read.current ||
-      AppState.currentState !== "active"
-    )
-      return;
-    const timer = setTimeout(() => {
+  const scheduleRead = useCallback(() => {
+    if (readTimer.current) clearTimeout(readTimer.current);
+    readTimer.current = setTimeout(() => {
+      if (
+        !focusedRef.current ||
+        !connectedRef.current ||
+        AppState.currentState !== "active"
+      )
+        return;
+      const state = list.current?.getState();
+      if (!state) return;
+      let max = read.current;
+      for (let i = state.start; i <= state.end; i++) {
+        const post = posts[i];
+        if (post?.status === "published") max = Math.max(max, post.post_id);
+      }
+      if (max <= read.current) return;
       void api
-        .read(token, id, visible)
+        .read(token, id, max)
         .then((result) => {
           read.current = Math.max(read.current, result.last_read_post_id);
           void client.invalidateQueries({ queryKey: ["channels"] });
         })
         .catch(() => undefined);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [client, connected, focused, id, token, visible]);
+    }, 400);
+  }, [client, id, posts, token]);
+  const renderItem = useCallback(
+    ({ item, index }: { item: Post; index: number }) => (
+      <Message
+        post={item}
+        previous={posts[index - 1]}
+        next={posts[index + 1]}
+        own={item.human_id === userId}
+        named={named}
+      />
+    ),
+    [named, posts, userId],
+  );
+  const getItemType = useCallback(
+    (item: Post, index: number) =>
+      showStamp(item, posts[index - 1]) ? "stamp" : "row",
+    [posts],
+  );
+
+  useEffect(
+    () => () => {
+      if (readTimer.current) clearTimeout(readTimer.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (forbidden) client.removeQueries({ queryKey: historyKey(id) });
@@ -159,12 +220,8 @@ function Conversation({ id }: { id: string }) {
     );
   return (
     <View style={styles.screen}>
-      <Stack.Screen
-        options={{
-          title: channel.data ? channelName(channel.data) : "Conversation",
-        }}
-      />
-      {!connected && (
+      <Stack.Screen options={{ headerShown: false, title: "" }} />
+      {!connected && posts.length === 0 && (
         <Text
           accessibilityLiveRegion="polite"
           style={[styles.detail, { padding: 6 }]}
@@ -188,38 +245,37 @@ function Conversation({ id }: { id: string }) {
       ) : (
         <KeyboardAwareLegendList
           ref={list}
+          style={{ flex: 1 }}
           data={posts}
-          keyExtractor={(post) => String(post.post_id)}
-          estimatedItemSize={72}
-          renderItem={({ item, index }) => (
-            <Message
-              post={item}
-              previous={posts[index - 1]}
-              next={posts[index + 1]}
-              own={item.human_id === session!.user.id}
-            />
-          )}
+          keyExtractor={keyExtractor}
+          estimatedItemSize={64}
+          renderItem={renderItem}
+          getItemType={getItemType}
+          itemsAreEqual={itemsAreEqual}
           initialScrollAtEnd
           alignItemsAtEnd
           maintainScrollAtEnd={{ animated: false }}
           maintainScrollAtEndThreshold={0.15}
-          maintainVisibleContentPosition
+          maintainVisibleContentPosition={{ data: true, size: false }}
           contentInsetEndAdjustment={contentInsetEndAdjustment}
           freeze={freeze}
           keyboardLiftBehavior="always"
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ paddingTop: 12 }}
+          showsVerticalScrollIndicator={false}
+          showsHorizontalScrollIndicator={false}
+          drawDistance={200}
+          contentContainerStyle={{
+            paddingTop: insets.top + 56,
+            paddingBottom: 8,
+          }}
           onStartReached={() => {
             if (history.hasNextPage && !history.isFetching)
               void history.fetchNextPage();
           }}
           onStartReachedThreshold={1}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={{
-            itemVisiblePercentThreshold: 50,
-            minimumViewTime: 250,
-          }}
+          onMomentumScrollEnd={scheduleRead}
+          onScrollEndDrag={scheduleRead}
           ListHeaderComponent={
             history.isFetchNextPageError ? (
               <GlassButton label="Retry older messages" onPress={() => { void history.fetchNextPage(); }} />
@@ -229,7 +285,7 @@ function Conversation({ id }: { id: string }) {
             pending ? (
               <View style={[chat.row, chat.ungrouped, { alignItems: "flex-end" }]}>
                 <View style={[chat.bubble, chat.outgoing]}>
-                  <Text selectable style={[chat.message, chat.outgoingText]}>
+                  <Text style={[chat.message, chat.outgoingText]}>
                     {pending.text}
                   </Text>
                 </View>
@@ -243,6 +299,14 @@ function Conversation({ id }: { id: string }) {
           }
         />
       )}
+      <View pointerEvents="box-none" style={[chrome.overlay, { height: insets.top + 56 }]}>
+        <View style={[chrome.back, { top: insets.top + 6 }]}>
+          <ChatBackButton />
+        </View>
+        <View style={[chrome.center, { top: insets.top + 6 }]}>
+          {channel.data ? <ChatNamePill channel={channel.data} /> : null}
+        </View>
+      </View>
       <KeyboardStickyView
         style={chat.sticky}
         offset={{ closed: 0, opened: insets.bottom }}
@@ -250,95 +314,167 @@ function Conversation({ id }: { id: string }) {
         <View
           ref={composer}
           onLayout={onComposerLayout}
-          style={{ paddingBottom: insets.bottom + 8 }}
+          style={{ paddingBottom: insets.bottom + 8, paddingTop: 8 }}
         >
-          {error && !accepted && (
-            <Text accessibilityLiveRegion="polite" style={styles.error}>
-              {error}
-            </Text>
-          )}
-          {pending?.state === "uncertain" && (
-            <GlassButton
-              label="Keep text in composer"
-              onPress={() => {
-                setText(pending.text);
-                void field.current?.setText(pending.text);
-                setDelivery(null);
-                setError(null);
+            {error && !accepted && (
+              <Text accessibilityLiveRegion="polite" style={styles.error}>
+                {error}
+              </Text>
+            )}
+            {pending?.state === "uncertain" && (
+              <GlassButton
+                label="Keep text in composer"
+                onPress={() => {
+                  setText(pending.text);
+                  void field.current?.setText(pending.text);
+                  setDelivery(null);
+                  setError(null);
+                }}
+              />
+            )}
+            <GlassComposer
+              composerRef={field}
+              onChangeText={setText}
+              onSend={() => {
+                void send();
               }}
+              sendDisabled={!connected || !text.trim() || !!pending}
+              inputDisabled={!!pending}
             />
-          )}
-          <GlassComposer
-            composerRef={field}
-            onChangeText={setText}
-            onSend={() => {
-              void send();
-            }}
-            sendDisabled={!connected || !text.trim() || !!pending}
-            inputDisabled={!!pending}
-          />
         </View>
       </KeyboardStickyView>
     </View>
   );
 }
 
-function samePerson(a?: Post, b?: Post) {
-  return !!a && !!b && a.human_id === b.human_id && a.agent_id === b.agent_id;
+function ChatBackButton() {
+  return (
+    <Pressable
+      onPress={() => router.back()}
+      accessibilityLabel="Back"
+      style={[chrome.chip, chrome.fill]}
+    >
+      <GlassView
+        glassEffectStyle="regular"
+        isInteractive={false}
+        style={StyleSheet.absoluteFill}
+      />
+      <SymbolView
+        name="chevron.left"
+        size={16}
+        weight="semibold"
+        tintColor={color.header}
+      />
+    </Pressable>
+  );
 }
 
-function newDay(post: Post, previous?: Post) {
+function ChatNamePill({ channel }: { channel: Channel }) {
+  const name = channelName(channel);
+  const shape = glyphKind(channel);
   return (
-    !previous ||
-    new Date(previous.created_at).toDateString() !==
-      new Date(post.created_at).toDateString()
+    <View style={[chrome.pill, chrome.fill]}>
+      <GlassView
+        glassEffectStyle="regular"
+        isInteractive={false}
+        style={StyleSheet.absoluteFill}
+      />
+      <View pointerEvents="none" style={chrome.pillBody}>
+        <AvatarView
+          size={28}
+          name={name}
+          shape="human"
+          avatar={
+            shape === "channel"
+              ? channel.avatar
+              : channel.dm_peer?.avatar || channel.avatar
+          }
+        />
+        <Text numberOfLines={1} style={chrome.pillName}>
+          {name}
+        </Text>
+      </View>
+    </View>
   );
 }
 
 function bubbleShape(own: boolean, groupedPrev: boolean, groupedNext: boolean) {
   const outer = 18;
   const inner = 5;
+  const tail = groupedNext ? inner : outer;
   if (own) {
     return {
       borderTopLeftRadius: outer,
       borderBottomLeftRadius: outer,
       borderTopRightRadius: groupedPrev ? inner : outer,
-      borderBottomRightRadius: groupedNext ? inner : outer,
+      borderBottomRightRadius: tail,
     };
   }
   return {
     borderTopRightRadius: outer,
     borderBottomRightRadius: outer,
     borderTopLeftRadius: groupedPrev ? inner : outer,
-    borderBottomLeftRadius: groupedNext ? inner : outer,
+    borderBottomLeftRadius: tail,
   };
 }
 
-function Message({
+function BubbleText({ text, own }: { text: string; own: boolean }) {
+  if (!text.includes("http")) {
+    return (
+      <Text style={[chat.message, own ? chat.outgoingText : chat.incomingText]}>
+        {text}
+      </Text>
+    );
+  }
+  const parts = text.split(/(https?:\/\/[^\s]+)/g);
+  return (
+    <Text style={[chat.message, own ? chat.outgoingText : chat.incomingText]}>
+      {parts.map((part, index) =>
+        /^https?:\/\//.test(part) ? (
+          <Text
+            key={index}
+            style={chat.link}
+            onPress={() => {
+              void Linking.openURL(part);
+            }}
+          >
+            {part}
+          </Text>
+        ) : (
+          part
+        ),
+      )}
+    </Text>
+  );
+}
+
+const Message = memo(function Message({
   post,
   previous,
   next,
   own,
+  named,
 }: {
   post: Post;
   previous?: Post;
   next?: Post;
   own: boolean;
+  named: boolean;
 }) {
-  const showDate = newDay(post, previous);
-  const groupedPrev = !showDate && samePerson(previous, post);
-  const groupedNext = !!next && !newDay(next, post) && samePerson(post, next);
+  const stamped = showStamp(post, previous);
+  const groupedPrev = !stamped && samePerson(previous, post);
+  const groupedNext =
+    !!next && !showStamp(next, post) && samePerson(post, next);
+  const body =
+    post.message ||
+    (post.status === "streaming"
+      ? "…"
+      : post.files.length
+        ? "Attachment"
+        : "");
   return (
-    <>
-      {showDate && (
-        <Text style={chat.date}>
-          {new Date(post.created_at).toLocaleDateString(undefined, {
-            weekday: "short",
-            month: "short",
-            day: "numeric",
-          })}
-        </Text>
-      )}
+    <View>
+      {stamped && <Text style={chat.date}>{stampLabel(post.created_at)}</Text>}
       <View
         style={[
           chat.row,
@@ -346,36 +482,21 @@ function Message({
           { alignItems: own ? "flex-end" : "flex-start" },
         ]}
       >
-        {!own && !groupedPrev && (
+        {named && !own && !groupedPrev && (
           <Text style={chat.author}>
             {post.poster_display_name || post.agent_id || "Member"}
-            {post.agent_id ? " · Agent" : ""}
           </Text>
         )}
-        <View
-          style={[
-            chat.bubble,
-            own ? chat.outgoing : chat.incoming,
-            bubbleShape(own, groupedPrev, groupedNext),
-          ]}
-        >
-          <Text
-            selectable
-            style={[chat.message, own ? chat.outgoingText : chat.incomingText]}
+        <View style={chat.bubbleWrap}>
+          <View
+            style={[
+              chat.bubble,
+              own ? chat.outgoing : chat.incoming,
+              bubbleShape(own, groupedPrev, groupedNext),
+            ]}
           >
-            {post.message || (post.status === "streaming" ? "…" : "Attachment")}
-          </Text>
-          {post.files.length > 0 && (
-            <Text
-              style={{
-                color: own ? color.onPrimary : color.muted,
-                fontSize: 13,
-              }}
-            >
-              {post.files.length} attachment{post.files.length === 1 ? "" : "s"}{" "}
-              · View on web
-            </Text>
-          )}
+            <BubbleText text={body} own={own} />
+          </View>
         </View>
         {post.status !== "published" && (
           <Text style={chat.author}>
@@ -387,33 +508,90 @@ function Message({
           </Text>
         )}
       </View>
-    </>
+    </View>
   );
+});
+
+function keyExtractor(post: Post) {
+  return String(post.post_id);
 }
+
+const bubbleIn = DynamicColorIOS({ light: "#E9E9EB", dark: "#3A3A3C" });
+const bubbleOut = "#007AFF";
+
+const chrome = StyleSheet.create({
+  overlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 20,
+  },
+  back: {
+    position: "absolute",
+    left: 16,
+  },
+  chip: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fill: {
+    backgroundColor: color.background,
+  },
+  center: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    alignItems: "center",
+  },
+  pill: {
+    height: 44,
+    maxWidth: 220,
+    borderRadius: 22,
+    overflow: "hidden",
+  },
+  pillBody: {
+    height: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingLeft: 6,
+    paddingRight: 14,
+  },
+  pillName: {
+    flexShrink: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: color.header,
+  },
+});
 
 const chat = StyleSheet.create({
   date: {
     textAlign: "center",
-    color: color.muted,
-    fontSize: 12,
+    color: PlatformColor("secondaryLabel"),
+    fontSize: 11,
     fontWeight: "600",
-    paddingVertical: 16,
+    paddingVertical: 10,
   },
-  row: { paddingHorizontal: 16, gap: 3 },
+  row: { paddingHorizontal: 8 },
   grouped: { paddingTop: 1, paddingBottom: 1 },
   ungrouped: { paddingTop: 6, paddingBottom: 6 },
-  author: { fontSize: 12, color: color.muted, marginHorizontal: 12 },
+  author: { fontSize: 11, color: color.muted, marginLeft: 16, marginBottom: 2 },
+  bubbleWrap: { maxWidth: "75%" },
   bubble: {
-    maxWidth: "76%",
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
   },
-  outgoing: { backgroundColor: color.primary },
-  incoming: { backgroundColor: color.secondary },
+  outgoing: { backgroundColor: bubbleOut },
+  incoming: { backgroundColor: bubbleIn },
   message: { fontSize: 17, lineHeight: 22 },
-  outgoingText: { color: color.onPrimary },
-  incomingText: { color: color.text },
+  outgoingText: { color: "#ffffff" },
+  incomingText: { color: PlatformColor("label") },
+  link: { textDecorationLine: "underline" },
   sticky: { position: "absolute", bottom: 0, left: 0, right: 0 },
 });
-

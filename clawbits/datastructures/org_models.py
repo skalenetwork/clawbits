@@ -194,6 +194,7 @@ class OrgResponse(BaseModel):
     last_visited_at: str | None = None
     unread_count: int = 0
     unread_channel_count: int = 0
+    member_count: int = 0
 
 
 class OrgListResponse(BaseModel):

@@ -5,24 +5,27 @@ import {
   buttonBorderShape,
   buttonStyle,
   controlSize,
+  foregroundStyle,
   frame,
   labelStyle,
 } from "@expo/ui/swift-ui/modifiers";
 import { Alert } from "react-native";
 import { useOrganizations } from "@/lib/data";
 import { useSession } from "@/lib/session";
+import { color, useHostColorScheme } from "@/components/ui";
 
 export function OrgMenu() {
   const { organizations, selected } = useOrganizations();
   const { selectOrg, signOut } = useSession();
   const name = selected?.display_name || selected?.name || "Account";
+  const colorScheme = useHostColorScheme();
   const failed = (error: unknown) =>
     Alert.alert(
       "Could not update account",
       error instanceof Error ? error.message : "Please try again.",
     );
   return (
-    <Host matchContents>
+    <Host matchContents colorScheme={colorScheme}>
       <Menu
         label={name}
         systemImage="building.2"
@@ -32,6 +35,7 @@ export function OrgMenu() {
           controlSize("large"),
           labelStyle("iconOnly"),
           frame({ width: 32, height: 32 }),
+          foregroundStyle(color.header),
           accessibilityLabel(name),
         ]}
       >

@@ -1343,6 +1343,8 @@ class TableRead:
           the org's channels (excluding ones this user has muted) so the
           org switcher can show cross-org activity badges in a single
           round-trip.
+        - ``member_count`` — humans in the org, so a workspace picker can
+          render it without a members-list fetch per org.
         """
         # Capped like the sidebar: this also runs on boot, so org totals sum capped counts.
         per_channel = (
@@ -1380,6 +1382,19 @@ class TableRead:
             .where(OrgMember.human_id == human_id)
             .order_by(Organization.created_at)
         ).all()
+        org_ids = [org.org_id for org, _, _ in rows]
+        member_counts = {
+            row[0]: int(row[1] or 0)
+            for row in (
+                session.exec(
+                    select(OrgMember.org_id, func.count())
+                    .where(OrgMember.org_id.in_(org_ids))
+                    .group_by(OrgMember.org_id)
+                ).all()
+                if org_ids
+                else []
+            )
+        }
         out = []
         for org, role, last_visited_at in rows:
             d = TableRead._org_to_dict(org)
@@ -1388,6 +1403,7 @@ class TableRead:
             total, unread_ch = unread_agg.get(org.org_id, (0, 0))
             d["unread_count"] = total
             d["unread_channel_count"] = unread_ch
+            d["member_count"] = member_counts.get(org.org_id, 0)
             out.append(d)
         return out
 
