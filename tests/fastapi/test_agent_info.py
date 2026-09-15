@@ -600,6 +600,7 @@ def test_delete_agent_keep_content_reassigns_to_placeholder(test_client):
 
     from clawbits.db.models import (
         Agent,
+        AgentChannelState,
         AgentPost,
         MmChannel,
         MmChannelMember,
@@ -635,6 +636,9 @@ def test_delete_agent_keep_content_reassigns_to_placeholder(test_client):
         s.add(agent_post)
         s.flush()
         agent_post_id = agent_post.post_id
+        # Any agent that ever acked a channel holds a read pointer; it used to
+        # block the keep-content delete with a ForeignKeyViolation.
+        TableWrite.mark_mm_channel_read_agent(s, channel_id, agent_id, agent_post_id)
 
         reaction = MmPostReaction(
             post_id=agent_post.post_id, emoji="👍", agent_id=agent_id
@@ -736,6 +740,12 @@ def test_delete_agent_keep_content_reassigns_to_placeholder(test_client):
         assert (
             s.exec(
                 select(MmChannelMember).where(MmChannelMember.agent_id == agent_id)
+            ).first()
+            is None
+        )
+        assert (
+            s.exec(
+                select(AgentChannelState).where(AgentChannelState.agent_id == agent_id)
             ).first()
             is None
         )

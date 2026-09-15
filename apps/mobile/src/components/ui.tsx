@@ -1,9 +1,10 @@
 import { Image } from "expo-image";
-import { SymbolView, type SymbolViewProps } from "expo-symbols";
+import { Host } from "@expo/ui";
+import { Button, Text as NativeText, type ButtonProps } from "@expo/ui/swift-ui";
+import { accessibilityLabel, buttonBorderShape, buttonStyle, controlSize, disabled as disabledModifier, font, foregroundStyle, frame, labelStyle, tint } from "@expo/ui/swift-ui/modifiers";
 import {
   ActivityIndicator,
-  PlatformColor,
-  Pressable,
+  DynamicColorIOS,
   StyleSheet,
   Text,
   View,
@@ -11,14 +12,40 @@ import {
 import type { Avatar } from "@/lib/models";
 
 export const color = {
-  background: PlatformColor("systemBackground"),
-  secondary: PlatformColor("secondarySystemBackground"),
-  text: PlatformColor("label"),
-  muted: PlatformColor("secondaryLabel"),
-  line: PlatformColor("separator"),
-  blue: PlatformColor("systemBlue"),
-  red: PlatformColor("systemRed"),
+  background: DynamicColorIOS({ light: "#ffffff", dark: "#090909" }),
+  secondary: DynamicColorIOS({ light: "#f6f5f4", dark: "#161513" }),
+  text: DynamicColorIOS({ light: "#1e1e1e", dark: "#e8e3da" }),
+  muted: DynamicColorIOS({ light: "#67635b", dark: "#87837c" }),
+  line: DynamicColorIOS({ light: "#c5c2bd", dark: "#2e2c27" }),
+  primary: DynamicColorIOS({ light: "#2e2e2e", dark: "#d9d7c9" }),
+  onPrimary: DynamicColorIOS({ light: "#f8f7f1", dark: "#1c1c1c" }),
+  red: DynamicColorIOS({ light: "#b73416", dark: "#ef643b" }),
 };
+
+export function GlassButton({ label, onPress, disabled = false, prominent = false }: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  prominent?: boolean;
+}) {
+  return (
+    <Host style={{ alignSelf: "stretch", height: 56 }}>
+      <Button onPress={onPress} modifiers={[
+        buttonStyle(prominent ? "glassProminent" : "glass"),
+        buttonBorderShape("capsule"),
+        controlSize("large"),
+        tint(color.primary),
+        disabledModifier(disabled),
+      ]}>
+        <NativeText modifiers={[
+          font({ size: 17, weight: "semibold" }),
+          foregroundStyle(prominent ? color.onPrimary : color.text),
+          frame({ maxWidth: Infinity, minHeight: 24 }),
+        ]}>{label}</NativeText>
+      </Button>
+    </Host>
+  );
+}
 
 export function IconButton({
   name,
@@ -26,31 +53,23 @@ export function IconButton({
   onPress,
   disabled = false,
 }: {
-  name: SymbolViewProps["name"];
+  name: ButtonProps["systemImage"];
   label: string;
   onPress: () => void;
   disabled?: boolean;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        width: 44,
-        height: 44,
-        alignItems: "center",
-        justifyContent: "center",
-        opacity: disabled ? 0.35 : pressed ? 0.5 : 1,
-      })}
-    >
-      <SymbolView
-        name={name}
-        tintColor={color.blue}
-        style={{ width: 22, height: 22 }}
-      />
-    </Pressable>
+    <Host style={{ width: 44, height: 44 }}>
+      <Button label={label} systemImage={name} onPress={onPress} modifiers={[
+        buttonStyle("glass"),
+        buttonBorderShape("circle"),
+        controlSize("large"),
+        labelStyle("iconOnly"),
+        tint(color.primary),
+        accessibilityLabel(label),
+        disabledModifier(disabled),
+      ]} />
+    </Host>
   );
 }
 
@@ -97,13 +116,7 @@ export function Empty({
           <Text style={styles.heading}>{title}</Text>
           {detail && <Text style={styles.detail}>{detail}</Text>}
           {onRetry && (
-            <Pressable
-              onPress={onRetry}
-              accessibilityRole="button"
-              style={styles.retry}
-            >
-              <Text style={styles.link}>Try again</Text>
-            </Pressable>
+            <GlassButton label="Try again" onPress={onRetry} />
           )}
         </>
       )}
@@ -147,13 +160,11 @@ export const styles = StyleSheet.create({
     backgroundColor: color.line,
     marginLeft: 82,
   },
-  link: { fontSize: 17, color: color.blue },
-  retry: { padding: 12 },
   input: {
     fontSize: 17,
     color: color.text,
     backgroundColor: color.secondary,
-    borderRadius: 12,
+    borderRadius: 24,
     padding: 16,
   },
   error: { fontSize: 14, color: color.red, padding: 12, textAlign: "center" },

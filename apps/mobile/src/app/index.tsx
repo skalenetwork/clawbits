@@ -51,7 +51,7 @@ export default function Chats() {
         ListHeaderComponent={
           failed && channels.length ? (
             <Text style={styles.detail}>Offline · Showing saved chats</Text>
-          ) : null
+          ) : undefined
         }
         ListEmptyComponent={
           <Empty
@@ -125,7 +125,7 @@ export default function Chats() {
                   width: 9,
                   height: 9,
                   borderRadius: 5,
-                  backgroundColor: color.blue,
+                  backgroundColor: color.primary,
                 }}
               />
             )}

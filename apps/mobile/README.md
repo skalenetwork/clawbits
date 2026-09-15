@@ -1,6 +1,6 @@
 # Clawbits for iPhone
 
-Expo 57, React Native 0.86, iOS 26+. One inbox for human and agent DMs and mixed channels.
+Expo 58 preview, React Native 0.88 RC, iOS 26+. One inbox for human and agent DMs and mixed channels.
 
 ## Development
 
@@ -10,6 +10,10 @@ bun run ios
 ```
 
 Native projects are generated from `app.json`. Do not edit generated iOS files. The current Xcode SDK needs a matching installed simulator runtime.
+
+Expo is pinned to `58.0.0-preview.1` for development. Its generated scene lifecycle supports Xcode 27; Expo 57.0.22 cannot launch when built with the iOS 27 SDK. Use the installed SDK's dependency versions until the stable release is validated.
+
+Verified on iOS 27 simulator with Xcode 27: Release build and sign-in screen launch. Keep simulator signing enabled for Keychain access. Local Release builds have no EAS update channel; update checks return HTTP 400 while the embedded app runs.
 
 ```sh
 bun run typecheck

@@ -3,19 +3,17 @@ import {
   useKeyboardChatComposerInset,
   useKeyboardScrollToEnd,
 } from "@legendapp/list/keyboard";
-import type { LegendListRef } from "@legendapp/list/react-native";
+import type { LegendListRef, ViewToken } from "@legendapp/list/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
 import { randomUUID } from "expo-crypto";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentRef } from "react";
 import {
   AppState,
-  Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
-  type ViewToken,
 } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -29,7 +27,7 @@ import {
   type Post,
 } from "@/lib/models";
 import { useSession } from "@/lib/session";
-import { color, Empty, IconButton, styles } from "@/components/ui";
+import { color, Empty, GlassButton, IconButton, styles } from "@/components/ui";
 
 type Delivery = { uuid: string; text: string; state: "sending" | "uncertain" };
 
@@ -51,7 +49,7 @@ function Conversation({ id }: { id: string }) {
   const connected = useLiveEvents(id, focused);
   const insets = useSafeAreaInsets();
   const list = useRef<LegendListRef>(null);
-  const composer = useRef<View>(null);
+  const composer = useRef<ComponentRef<typeof View>>(null);
   const { contentInsetEndAdjustment, onComposerLayout } =
     useKeyboardChatComposerInset(list, composer, 60 + insets.bottom);
   const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({
@@ -214,14 +212,7 @@ function Conversation({ id }: { id: string }) {
           }}
           ListHeaderComponent={
             history.isFetchNextPageError ? (
-              <Pressable
-                onPress={() => {
-                  void history.fetchNextPage();
-                }}
-                style={styles.retry}
-              >
-                <Text style={styles.detail}>Tap to retry older messages</Text>
-              </Pressable>
+              <GlassButton label="Retry older messages" onPress={() => { void history.fetchNextPage(); }} />
             ) : null
           }
           ListFooterComponent={
@@ -258,26 +249,17 @@ function Conversation({ id }: { id: string }) {
             </Text>
           )}
           {pending?.state === "uncertain" && (
-            <Pressable
+            <GlassButton
+              label="Keep text in composer"
               onPress={() => {
                 setText(pending.text);
                 setDelivery(null);
                 setError(null);
               }}
-              style={styles.retry}
-            >
-              <Text style={styles.detail}>Keep text in composer</Text>
-            </Pressable>
+            />
           )}
           <View style={chat.composer}>
-            <Pressable
-              disabled
-              accessibilityRole="button"
-              accessibilityLabel="Attachments, coming later"
-              style={{ width: 36, alignItems: "center" }}
-            >
-              <Text style={{ fontSize: 30, color: color.muted }}>+</Text>
-            </Pressable>
+            <IconButton name="plus" label="Attachments, coming later" disabled onPress={() => {}} />
             <TextInput
               accessibilityLabel="Message"
               placeholder="Message"
@@ -290,7 +272,7 @@ function Conversation({ id }: { id: string }) {
               style={chat.input}
             />
             <IconButton
-              name="arrow.up.circle.fill"
+              name="arrow.up"
               label="Send message"
               disabled={!connected || !text.trim() || !!pending}
               onPress={() => {
@@ -342,12 +324,12 @@ function Message({
         <View style={[chat.bubble, own ? chat.outgoing : chat.incoming]}>
           <Text
             selectable
-            style={[chat.message, { color: own ? "white" : color.text }]}
+            style={[chat.message, { color: own ? color.onPrimary : color.text }]}
           >
             {post.message || (post.status === "streaming" ? "…" : "Attachment")}
           </Text>
           {post.files.length > 0 && (
-            <Text style={{ color: own ? "white" : color.muted, fontSize: 13 }}>
+            <Text style={{ color: own ? color.onPrimary : color.muted, fontSize: 13 }}>
               {post.files.length} attachment{post.files.length === 1 ? "" : "s"}{" "}
               · View on web
             </Text>
@@ -384,7 +366,7 @@ const chat = StyleSheet.create({
     paddingVertical: 10,
     gap: 6,
   },
-  outgoing: { backgroundColor: color.blue, color: "white", borderRadius: 20 },
+  outgoing: { backgroundColor: color.primary, color: color.onPrimary, borderRadius: 20 },
   incoming: { backgroundColor: color.secondary },
   message: { fontSize: 17, lineHeight: 23 },
   pending: { alignItems: "flex-end", padding: 16, gap: 6 },
