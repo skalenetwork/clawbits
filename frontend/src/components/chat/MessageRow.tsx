@@ -740,6 +740,7 @@ export const MessageRow = memo(function MessageRow({
   const previewUrl = settled && !post.link_preview ? extractUrls(post.message)[0] : undefined;
   const reactionPicker = settled && <ReactionQuickPicker onSelect={react}/>;
   const receipt = receiptOf(post, channelType, currentUserId, members);
+  const handleText = authorMember ? `@${mentionHandle(authorMember)}` : "@user";
 
   const row = (
     <div
@@ -747,20 +748,31 @@ export const MessageRow = memo(function MessageRow({
       {...longPress}
       onPointerEnter={mountActions}
       onFocus={mountActions}
-      className={`group/row relative mx-0.5 rounded-lg pl-2.5 pr-3 transition-colors duration-500 ${
+      className={`group/row relative mx-0.5 rounded-lg pl-14 pr-3 transition-colors duration-500 ${
         isGroupStart ? "mt-4 pt-1.5 pb-0.5" : "mt-1.5 min-w-0 py-0.5"
       } ${isDraft ? "bg-amber-500/5" : isRejected ? "bg-muted/20" : ""} ${highlighted ? "bg-primary/10" : ""}`}
     >
       {isGroupStart && (
-        <div className="mb-1.5 flex h-5 items-center gap-2 text-[13px]">
+        <span className="absolute top-2.5 left-2.5">
           <ProfileMenuTrigger
             member={authorMember}
-            handleText={authorMember ? `@${mentionHandle(authorMember)}` : "@user"}
-            className="group/author flex min-w-0 cursor-pointer items-center gap-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            handleText={handleText}
+            className="flex cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
             ariaLabel={`Open profile for ${posterName(post)}`}
           >
-            <PostAvatar post={post} size={20}/>
-            <span className="relative -top-px truncate font-medium text-muted-foreground group-hover/author:underline">{posterName(post)}</span>
+            <PostAvatar post={post} size={36}/>
+          </ProfileMenuTrigger>
+        </span>
+      )}
+      {isGroupStart && (
+        <div className="flex h-5 items-center gap-2 text-[13px]">
+          <ProfileMenuTrigger
+            member={authorMember}
+            handleText={handleText}
+            className="flex min-w-0 cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            ariaLabel={`Open profile for ${posterName(post)}`}
+          >
+            <span className="truncate font-medium text-muted-foreground hover:underline">{posterName(post)}</span>
           </ProfileMenuTrigger>
           <Tooltip>
             <TooltipTrigger
