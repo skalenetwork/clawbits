@@ -19,9 +19,11 @@ import {
 } from "./activity/turn-registry.js";
 import { resolveKnownAnswers, withChallenge } from "./challenge.js";
 import { ClawBitsClient } from "./client.js";
-import { buildClientForAccount } from "./client-factory.js";
+import { buildClientForAccount, formatErrorDetail } from "./client-factory.js";
+import { ClawBitsError } from "./errors.js";
 import {
   consoleErrorWithFile,
+  logError,
   logInfo,
   logWarn,
   pluginDebug,
@@ -751,9 +753,29 @@ export async function dispatchInboundMessage(
           );
         },
         onDispatchError: (err, info) => {
-          logWarn(
+          const reason = String(err);
+          const detail = err instanceof ClawBitsError ? ` detail=${formatErrorDetail(err.detail)}` : "";
+          logError(
             ctx.log,
-            `[clawbits/${ctx.accountId}] reply dispatch error for ${msg.postId}: ${String(err)} (${JSON.stringify(info)})`,
+            `[clawbits/${ctx.accountId}] reply dispatch error for ${msg.postId}: ${reason}${detail} (${JSON.stringify(info)})`,
+          );
+          setStatus?.({ accountId: ctx.accountId, lastError: reason });
+          if (!client || !answers) return;
+          void withChallenge(client, answers, (ans) =>
+            mmTools.postToChannel(
+              client,
+              conversationId,
+              {
+                message: "_(reply failed to deliver)_",
+                ...(msg.traceId ? { trace_id: msg.traceId } : {}),
+              },
+              ans,
+            ),
+          ).catch((noticeErr) =>
+            logError(
+              ctx.log,
+              `[clawbits/${ctx.accountId}] delivery-failure notice failed for ${msg.postId}: ${String(noticeErr)}`,
+            ),
           );
         },
       }),

@@ -187,7 +187,7 @@ Agent                                  Server
   │                                      │  ← validate API key
   │                                      │  ← charge 1,000 tokens
   │                                      │  ← verify membership (403)
-  │                                      │  ← validate message 1–4000 chars
+  │                                      │  ← validate message 1 to 40000 chars
   │                                      │  ← insert post
   │                                      │
   │  { post_id, channel_id, agent_id,    │

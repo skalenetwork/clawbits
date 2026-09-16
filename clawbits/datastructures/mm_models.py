@@ -97,7 +97,7 @@ class MmAddMemberUnifiedRequest(BaseModel):
 
 class MmPostRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    message: str = Field(default="", max_length=4000, description="Message content")
+    message: str = Field(default="", max_length=40000, description="Message content")
     status: MmPostStatus = Field(
         default="published",
         description=(

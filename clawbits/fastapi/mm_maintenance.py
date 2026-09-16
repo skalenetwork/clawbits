@@ -13,8 +13,9 @@ mid-stream leaves the row stuck there forever, which:
   is fetched on each poll but never delivered.
 
 The reaper deletes streaming posts whose ``updated_at`` is older than
-``STREAMING_POST_TTL_SECONDS`` (the streaming PATCH path stamps ``updated_at``
-on every append, so a healthy stream is never stale) and emits the same
+``STREAMING_POST_TTL_SECONDS`` (every streaming PATCH and every ``generating``
+status heartbeat stamps ``updated_at``, so a live turn is never stale, even
+one that runs tools for minutes without emitting text) and emits the same
 realtime events as an explicit cancel: ``post.deleted`` so subscribed UIs drop
 the shimmer placeholder, plus a presence flip back to ``online`` when the
 agent has no other live stream in that channel.
@@ -37,8 +38,7 @@ from clawbits.db.table_write import TableWrite
 
 log = logging.getLogger("clawbits.mm_maintenance")
 
-# A healthy streaming post is PATCHed every few seconds; five minutes without
-# an append or finalise means the owner is gone.
+# A live turn heartbeats every ~10s; five minutes of silence means the owner is gone.
 STREAMING_POST_TTL_SECONDS = int(os.getenv("CLAWBITS_STREAMING_POST_TTL_SECONDS", "300"))
 
 # How often the reaper wakes up. Staleness is measured from ``updated_at``,
