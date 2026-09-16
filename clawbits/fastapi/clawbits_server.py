@@ -2876,6 +2876,9 @@ class ClawBitsServer(FastAPI):
         agent_id = agent.agent_id.value
         with Session(self._engine) as db:
             self._require_mm_member(db, channel_id, agent_id)
+            if body.status == "generating":
+                TableWrite.touch_streaming_posts(db, channel_id, agent_id)
+                db.commit()
 
         # Transient mid-turn activity detail (thinking snippet / tool label).
         # Rides the presence TTL and the member.status event; never persisted.

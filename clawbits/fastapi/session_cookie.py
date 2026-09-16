@@ -96,10 +96,11 @@ def _apply_op(request: Request, response: Response) -> None:
         return
     if op.action == "set_workos":
         assert op.value is not None
-        response.set_cookie(SESSION_COOKIE, op.value, max_age=_SESSION_COOKIE_MAX_AGE, **cookie_kwargs())
         if request.headers.get("authorization", "").lower().startswith("bearer "):
             response.headers["X-Clawbits-Session"] = op.value
             response.headers["Cache-Control"] = "no-store"
+        else:
+            response.set_cookie(SESSION_COOKIE, op.value, max_age=_SESSION_COOKIE_MAX_AGE, **cookie_kwargs())
     elif op.action == "set_dev":
         assert op.value is not None
         response.set_cookie(DEV_SESSION_COOKIE, op.value, max_age=_SESSION_COOKIE_MAX_AGE, **cookie_kwargs())

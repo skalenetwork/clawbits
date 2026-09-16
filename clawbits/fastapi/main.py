@@ -280,6 +280,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Clawbits-Session"],
 )
 
 # Cache-busting middleware for all responses. The session-cookie write

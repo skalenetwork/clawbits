@@ -147,10 +147,8 @@ export function setupApiClient(): void {
     const isOwnApi = url.pathname.startsWith("/api/") && (url.origin === window.location.origin || url.origin === apiOrigin);
 
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-    if (isDesktop && isOwnApi && !headers.has("authorization")) {
-      const token = localStorage.getItem(AUTH_TOKEN_KEY);
-      if (token) headers.set("Authorization", `Bearer ${token}`);
-    }
+    const token = isDesktop && isOwnApi && !headers.has("authorization") ? localStorage.getItem(AUTH_TOKEN_KEY) : null;
+    if (token) headers.set("Authorization", `Bearer ${token}`);
 
     let target: RequestInfo | URL = input;
     if (apiBase) {
@@ -164,6 +162,8 @@ export function setupApiClient(): void {
     }
 
     const response = await origFetch(target, { ...init, headers });
+    const rotated = token && response.headers.get("X-Clawbits-Session");
+    if (rotated && localStorage.getItem(AUTH_TOKEN_KEY) === token) localStorage.setItem(AUTH_TOKEN_KEY, rotated);
     if (isDesktop && response.ok) {
       if (AUTH_RESPONSE_PATHS.some((p) => inputUrl.includes(p))) {
         const body = (await response.clone().json().catch(() => ({}))) as { token?: unknown };

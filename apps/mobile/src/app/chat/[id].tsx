@@ -21,19 +21,22 @@ import {
   DynamicColorIOS,
   Linking,
   PlatformColor,
-  Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import { GlassView } from "expo-glass-effect";
-import { SymbolView } from "expo-symbols";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, ApiError } from "@/lib/api";
 import { historyKey, useHistory, useLiveEvents } from "@/lib/data";
 import { glyphKind } from "@/lib/chatFilters";
-import { samePerson, showStamp, stampLabel } from "@/lib/messageLayout";
+import {
+  backUnreadTitle,
+  inboxUnread,
+  samePerson,
+  showStamp,
+  stampLabel,
+} from "@/lib/messageLayout";
 import {
   channelName,
   historyPosts,
@@ -72,15 +75,25 @@ export default function ConversationRoute() {
 function Conversation({ id }: { id: string }) {
   const { session } = useSession();
   const token = session!.token;
+  const org = session!.org ?? "";
   const client = useQueryClient();
   const channel = useQuery({
     queryKey: ["channel", id],
     queryFn: ({ signal }) => api.channel(token, id, signal),
   });
+  const inbox = useQuery({
+    queryKey: ["channels", org],
+    enabled: !!org,
+    queryFn: ({ signal }) => api.channels(token, org, signal),
+  });
   const history = useHistory(id);
   const focused = useIsFocused();
   const connected = useLiveEvents(id, focused);
   const insets = useSafeAreaInsets();
+  const listPad = useMemo(
+    () => ({ paddingTop: insets.top + 44, paddingBottom: 8 }),
+    [insets.top],
+  );
   const list = useRef<LegendListRef>(null);
   const composer = useRef<ComponentRef<typeof View>>(null);
   const field = useRef<GlassComposerHandle>(null);
@@ -100,14 +113,9 @@ function Conversation({ id }: { id: string }) {
   const connectedRef = useRef(connected);
   focusedRef.current = focused;
   connectedRef.current = connected;
-  const inbox = client.getQueryData<{ channels: Channel[] }>([
-    "channels",
-    session!.org ?? "",
-  ]);
-  const kind =
-    channel.data?.channel_type ??
-    inbox?.channels.find((item) => item.channel_id === id)?.channel_type;
-  const named = kind != null && kind !== "direct";
+  const cached = inbox.data?.channels.find((item) => item.channel_id === id);
+  const active = channel.data ?? cached;
+  const named = active != null && active.channel_type !== "direct";
   const userId = session!.user.id;
   const forbidden =
     channel.error instanceof ApiError &&
@@ -170,6 +178,32 @@ function Conversation({ id }: { id: string }) {
   const accepted =
     !!delivery && posts.some((post) => post.client_msg_uuid === delivery.uuid);
   const pending = accepted ? null : delivery;
+  const title = active ? channelName(active) : "";
+  const backTitle =
+    backUnreadTitle(inboxUnread(inbox.data?.channels ?? [])) ?? "Chats";
+  const renderTitle = useCallback(
+    () => (active ? <ChatTitle channel={active} /> : null),
+    [active],
+  );
+  const header = useMemo(
+    () => ({
+      title,
+      headerTransparent: true,
+      headerShadowVisible: false,
+      headerBlurEffect: "none" as const,
+      headerStyle: { backgroundColor: "transparent" },
+      headerBackButtonDisplayMode: "default" as const,
+      headerBackTitle: backTitle,
+      headerTitle: active ? renderTitle : undefined,
+      scrollEdgeEffects: {
+        top: "hidden" as const,
+        bottom: "hidden" as const,
+        left: "hidden" as const,
+        right: "hidden" as const,
+      },
+    }),
+    [active, backTitle, renderTitle, title],
+  );
 
   const send = async () => {
     const message = text.trim();
@@ -212,23 +246,17 @@ function Conversation({ id }: { id: string }) {
 
   if (forbidden)
     return (
-      <Empty
-        title="Conversation unavailable"
-        detail="You may no longer have access."
-        onRetry={() => router.back()}
-      />
+      <>
+        <Stack.Screen options={{ title: "Chat", headerBackTitle: "Chats" }} />
+        <Empty
+          title="Conversation unavailable"
+          detail="You may no longer have access."
+          onRetry={() => router.back()}
+        />
+      </>
     );
   return (
-    <View style={styles.screen}>
-      <Stack.Screen options={{ headerShown: false, title: "" }} />
-      {!connected && posts.length === 0 && (
-        <Text
-          accessibilityLiveRegion="polite"
-          style={[styles.detail, { padding: 6 }]}
-        >
-          Connecting · Saved messages available
-        </Text>
-      )}
+    <>
       {history.isPending ? (
         <Empty
           title="No saved messages"
@@ -245,7 +273,7 @@ function Conversation({ id }: { id: string }) {
       ) : (
         <KeyboardAwareLegendList
           ref={list}
-          style={{ flex: 1 }}
+          style={chat.list}
           data={posts}
           keyExtractor={keyExtractor}
           estimatedItemSize={64}
@@ -256,7 +284,8 @@ function Conversation({ id }: { id: string }) {
           alignItemsAtEnd
           maintainScrollAtEnd={{ animated: false }}
           maintainScrollAtEndThreshold={0.15}
-          maintainVisibleContentPosition={{ data: true, size: false }}
+          maintainVisibleContentPosition={{ data: true, size: true }}
+          contentInsetAdjustmentBehavior="never"
           contentInsetEndAdjustment={contentInsetEndAdjustment}
           freeze={freeze}
           keyboardLiftBehavior="always"
@@ -264,11 +293,8 @@ function Conversation({ id }: { id: string }) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           showsHorizontalScrollIndicator={false}
-          drawDistance={200}
-          contentContainerStyle={{
-            paddingTop: insets.top + 56,
-            paddingBottom: 8,
-          }}
+          drawDistance={400}
+          contentContainerStyle={listPad}
           onStartReached={() => {
             if (history.hasNextPage && !history.isFetching)
               void history.fetchNextPage();
@@ -278,12 +304,26 @@ function Conversation({ id }: { id: string }) {
           onScrollEndDrag={scheduleRead}
           ListHeaderComponent={
             history.isFetchNextPageError ? (
-              <GlassButton label="Retry older messages" onPress={() => { void history.fetchNextPage(); }} />
+              <GlassButton
+                label="Retry older messages"
+                onPress={() => {
+                  void history.fetchNextPage();
+                }}
+              />
+            ) : !connected && posts.length === 0 ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                style={[styles.detail, { padding: 6 }]}
+              >
+                Connecting · Saved messages available
+              </Text>
             ) : null
           }
           ListFooterComponent={
             pending ? (
-              <View style={[chat.row, chat.ungrouped, { alignItems: "flex-end" }]}>
+              <View
+                style={[chat.row, chat.ungrouped, { alignItems: "flex-end" }]}
+              >
                 <View style={[chat.bubble, chat.outgoing]}>
                   <Text style={[chat.message, chat.outgoingText]}>
                     {pending.text}
@@ -299,14 +339,6 @@ function Conversation({ id }: { id: string }) {
           }
         />
       )}
-      <View pointerEvents="box-none" style={[chrome.overlay, { height: insets.top + 56 }]}>
-        <View style={[chrome.back, { top: insets.top + 6 }]}>
-          <ChatBackButton />
-        </View>
-        <View style={[chrome.center, { top: insets.top + 6 }]}>
-          {channel.data ? <ChatNamePill channel={channel.data} /> : null}
-        </View>
-      </View>
       <KeyboardStickyView
         style={chat.sticky}
         offset={{ closed: 0, opened: insets.bottom }}
@@ -316,84 +348,56 @@ function Conversation({ id }: { id: string }) {
           onLayout={onComposerLayout}
           style={{ paddingBottom: insets.bottom + 8, paddingTop: 8 }}
         >
-            {error && !accepted && (
-              <Text accessibilityLiveRegion="polite" style={styles.error}>
-                {error}
-              </Text>
-            )}
-            {pending?.state === "uncertain" && (
-              <GlassButton
-                label="Keep text in composer"
-                onPress={() => {
-                  setText(pending.text);
-                  void field.current?.setText(pending.text);
-                  setDelivery(null);
-                  setError(null);
-                }}
-              />
-            )}
-            <GlassComposer
-              composerRef={field}
-              onChangeText={setText}
-              onSend={() => {
-                void send();
+          {error && !accepted && (
+            <Text accessibilityLiveRegion="polite" style={styles.error}>
+              {error}
+            </Text>
+          )}
+          {pending?.state === "uncertain" && (
+            <GlassButton
+              label="Keep text in composer"
+              onPress={() => {
+                setText(pending.text);
+                void field.current?.setText(pending.text);
+                setDelivery(null);
+                setError(null);
               }}
-              sendDisabled={!connected || !text.trim() || !!pending}
-              inputDisabled={!!pending}
             />
+          )}
+          <GlassComposer
+            composerRef={field}
+            onChangeText={setText}
+            onSend={() => {
+              void send();
+            }}
+            sendDisabled={!connected || !text.trim() || !!pending}
+            inputDisabled={!!pending}
+          />
         </View>
       </KeyboardStickyView>
-    </View>
+      <Stack.Screen options={header} />
+    </>
   );
 }
 
-function ChatBackButton() {
-  return (
-    <Pressable
-      onPress={() => router.back()}
-      accessibilityLabel="Back"
-      style={[chrome.chip, chrome.fill]}
-    >
-      <GlassView
-        glassEffectStyle="regular"
-        isInteractive={false}
-        style={StyleSheet.absoluteFill}
-      />
-      <SymbolView
-        name="chevron.left"
-        size={16}
-        weight="semibold"
-        tintColor={color.header}
-      />
-    </Pressable>
-  );
-}
-
-function ChatNamePill({ channel }: { channel: Channel }) {
+function ChatTitle({ channel }: { channel: Channel }) {
   const name = channelName(channel);
   const shape = glyphKind(channel);
   return (
-    <View style={[chrome.pill, chrome.fill]}>
-      <GlassView
-        glassEffectStyle="regular"
-        isInteractive={false}
-        style={StyleSheet.absoluteFill}
+    <View accessibilityLabel={name} style={title.row}>
+      <AvatarView
+        size={28}
+        name={name}
+        shape={shape}
+        avatar={
+          shape === "channel"
+            ? channel.avatar
+            : channel.dm_peer?.avatar || channel.avatar
+        }
       />
-      <View pointerEvents="none" style={chrome.pillBody}>
-        <AvatarView
-          size={28}
-          name={name}
-          shape="human"
-          avatar={
-            shape === "channel"
-              ? channel.avatar
-              : channel.dm_peer?.avatar || channel.avatar
-          }
-        />
-        <Text numberOfLines={1} style={chrome.pillName}>
-          {name}
-        </Text>
-      </View>
+      <Text numberOfLines={1} style={title.name}>
+        {name}
+      </Text>
     </View>
   );
 }
@@ -472,6 +476,14 @@ const Message = memo(function Message({
       : post.files.length
         ? "Attachment"
         : "");
+  const caption =
+    post.status === "streaming"
+      ? "Writing…"
+      : post.status === "draft"
+        ? "Draft"
+        : post.status === "published"
+          ? null
+          : "Not published";
   return (
     <View>
       {stamped && <Text style={chat.date}>{stampLabel(post.created_at)}</Text>}
@@ -498,15 +510,7 @@ const Message = memo(function Message({
             <BubbleText text={body} own={own} />
           </View>
         </View>
-        {post.status !== "published" && (
-          <Text style={chat.author}>
-            {post.status === "streaming"
-              ? "Writing…"
-              : post.status === "draft"
-                ? "Draft"
-                : "Not published"}
-          </Text>
-        )}
+        {caption && <Text style={chat.author}>{caption}</Text>}
       </View>
     </View>
   );
@@ -519,64 +523,30 @@ function keyExtractor(post: Post) {
 const bubbleIn = DynamicColorIOS({ light: "#E9E9EB", dark: "#3A3A3C" });
 const bubbleOut = "#007AFF";
 
-const chrome = StyleSheet.create({
-  overlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 20,
-  },
-  back: {
-    position: "absolute",
-    left: 16,
-  },
-  chip: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    overflow: "hidden",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  fill: {
-    backgroundColor: color.background,
-  },
-  center: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    alignItems: "center",
-  },
-  pill: {
-    height: 44,
-    maxWidth: 220,
-    borderRadius: 22,
-    overflow: "hidden",
-  },
-  pillBody: {
-    height: 44,
+const title = StyleSheet.create({
+  row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingLeft: 6,
-    paddingRight: 14,
+    maxWidth: 220,
   },
-  pillName: {
+  name: {
     flexShrink: 1,
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: "600",
     color: color.header,
   },
 });
 
 const chat = StyleSheet.create({
+  list: { flex: 1 },
   date: {
     textAlign: "center",
     color: PlatformColor("secondaryLabel"),
     fontSize: 11,
     fontWeight: "600",
-    paddingVertical: 10,
+    paddingTop: 12,
+    paddingBottom: 8,
   },
   row: { paddingHorizontal: 8 },
   grouped: { paddingTop: 1, paddingBottom: 1 },

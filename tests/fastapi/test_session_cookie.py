@@ -187,6 +187,7 @@ def test_bearer_client_receives_rotated_session(client: TestClient, path: str, t
     response = client.get(path, headers={"Authorization": "bEaReR previous"}, follow_redirects=False)
     assert response.headers["X-Clawbits-Session"] == token
     assert response.headers["Cache-Control"] == "no-store"
+    assert "set-cookie" not in response.headers
 
 
 def test_cookie_client_does_not_receive_bearer_session_header(client: TestClient) -> None:
