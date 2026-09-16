@@ -166,9 +166,9 @@ describe("desktop session rotation", () => {
   async function loadApiClient(rotated: string | null) {
     const mod = await loadDesktopModule();
     sent.length = 0;
-    window.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    window.fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       sent.push(new Headers(init?.headers).get("authorization"));
-      return new Response("{}", { headers: rotated ? { "X-Clawbits-Session": rotated } : {} });
+      return Promise.resolve(new Response("{}", { headers: rotated ? { "X-Clawbits-Session": rotated } : {} }));
     });
     mod.setupApiClient();
   }

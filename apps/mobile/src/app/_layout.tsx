@@ -53,7 +53,22 @@ function Root() {
           name="index"
           options={{ title: "Chats", headerLargeTitle: true }}
         />
-        <Stack.Screen name="chat/[id]" options={{ headerShown: false }} />
+        <Stack.Screen
+          name="chat/[id]"
+          options={{
+            headerLargeTitle: false,
+            headerTransparent: true,
+            headerShadowVisible: false,
+            headerBlurEffect: "none",
+            headerStyle: { backgroundColor: "transparent" },
+            scrollEdgeEffects: {
+              top: "hidden",
+              bottom: "hidden",
+              left: "hidden",
+              right: "hidden",
+            },
+          }}
+        />
         <Stack.Screen
           name="new"
           options={{
