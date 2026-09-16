@@ -17,11 +17,14 @@ import { setDesktopSessionLive } from "../lib/desktop";
 
 const ACTIVE_ORG_KEY = "fc_active_org_id";
 
-async function fetchPersonalOrgId(queryClient: QueryClient): Promise<string> {
+/** The personal org, and whether there is any other org to choose between.
+ *  With one there is nothing to ask, so a sign-in opens it; with several the
+ *  choice stays open for the org picker. */
+async function fetchOrgs(queryClient: QueryClient): Promise<{ personalOrgId: string; several: boolean }> {
   const { organizations } = await queryClient.fetchQuery({ queryKey: queryKeys.orgs, queryFn: getOrgs });
   const personal = organizations.find((org) => org.is_personal);
   if (!personal) throw new Error("No personal organization found");
-  return personal.org_id;
+  return { personalOrgId: personal.org_id, several: organizations.length > 1 };
 }
 
 const getMeOrNull = () => getMe().catch(() => null);
@@ -29,6 +32,8 @@ const getMeOrNull = () => getMe().catch(() => null);
 interface AuthState {
   user: HumanUser | null;
   activeOrgId: string | null;
+  /** Signed in with several orgs and none opened yet: the org picker asks. */
+  needsOrgPick: boolean;
   setActiveOrgId: (orgId: string) => void;
   loading: boolean;
   sendMagic: (email: string) => Promise<void>;
@@ -70,11 +75,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       if (me) {
         setUser(me);
-        const personalOrg = fetchPersonalOrgId(queryClient).then(
-          (orgId) => { if (!cancelled) setPersonalOrgId(orgId); },
+        const orgs = fetchOrgs(queryClient).then(
+          ({ personalOrgId, several }) => {
+            if (cancelled) return;
+            setPersonalOrgId(personalOrgId);
+            if (bootOrgId || several) return;
+            localStorage.setItem(ACTIVE_ORG_KEY, personalOrgId);
+            setStoredOrgId(personalOrgId);
+          },
           () => undefined,
         );
-        if (!bootOrgId) await personalOrg;
+        if (!bootOrgId) await orgs;
       }
       if (!cancelled) startTransition(() => { setLoading(false); });
     })();
@@ -88,30 +99,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStoredOrgId(orgId);
   };
 
+  const forgetActiveOrg = () => {
+    localStorage.removeItem(ACTIVE_ORG_KEY);
+    setStoredOrgId(null);
+  };
+
   const installSession = async (u: HumanUser, method: string) => {
     queryClient.clear();
-    setUser(u);
+    forgetActiveOrg();
     const createdAt = u.created_at ? Date.parse(u.created_at) : NaN;
     track("signin-complete", {
       method,
       ...(Number.isNaN(createdAt) ? {} : { first_session: Date.now() - createdAt < 5 * 60_000 }),
     });
-    await fetchPersonalOrgId(queryClient).then(
-      (orgId) => {
-        setPersonalOrgId(orgId);
-        setActiveOrgId(orgId);
+    // Orgs before the user, so the first signed-in render already knows whether to ask.
+    await fetchOrgs(queryClient).then(
+      ({ personalOrgId, several }) => {
+        setPersonalOrgId(personalOrgId);
+        if (!several) setActiveOrgId(personalOrgId);
       },
       () => undefined,
     );
+    setUser(u);
   };
 
   const logout = async () => {
     await apiLogout().catch(() => undefined);
-    localStorage.removeItem(ACTIVE_ORG_KEY);
+    forgetActiveOrg();
     queryClient.clear();
     setUser(null);
     setPersonalOrgId(null);
-    setStoredOrgId(null);
   };
 
   return (
@@ -119,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         user,
         activeOrgId,
+        needsOrgPick: personalOrgId !== null && storedOrgId === null,
         setActiveOrgId,
         loading,
         sendMagic: sendMagicCode,

@@ -28,10 +28,11 @@ import {Input} from "@/components/ui/input";
 import {Avatar} from "@/components/Avatar";
 import {UserAvatar} from "@/components/UserAvatar";
 import {CHANGELOG_URL} from "@/components/WordmarkLink";
-import {createOrg, getOrgs, markOrgVisited, type Org} from "@/lib/api";
+import {createOrg, getOrgs, type Org} from "@/lib/api";
 import {openExternal} from "@/lib/desktop";
 import {queryKeys} from "@/lib/queryKeys";
 import {useAuth} from "@/context/AuthContext";
+import {orgScoped, useOpenOrg} from "@/hooks/useOpenOrg";
 import {toast} from "@/lib/toast";
 
 function orgLabel(org: Org): string {
@@ -50,22 +51,12 @@ export function OrgSwitcher() {
     const navigate = useNavigate();
     const location = useLocation();
 
+    const openOrg = useOpenOrg();
+
     const switchOrg = (orgId: string) => {
         if (orgId === activeOrgId) return;
-        setActiveOrgId(orgId);
-        queryClient.setQueryData<{organizations: Org[]; total: number}>(
-            queryKeys.orgs,
-            prev => prev && {
-                ...prev,
-                organizations: prev.organizations.map(o =>
-                    o.org_id === orgId
-                        ? {...o, last_visited_at: new Date().toISOString(), unread_count: 0, unread_channel_count: 0}
-                        : o,
-                ),
-            },
-        );
-        void markOrgVisited(orgId).catch(() => undefined);
-        if (/^\/(agents|channels)\//.test(location.pathname)) void navigate("/home");
+        openOrg(orgId);
+        if (orgScoped(location.pathname)) void navigate("/home");
     };
 
     const orgsQuery = useQuery({queryKey: queryKeys.orgs, queryFn: getOrgs});

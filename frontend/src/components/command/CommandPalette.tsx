@@ -1,9 +1,10 @@
 import {useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode} from "react";
-import {useNavigate} from "react-router-dom";
+import {useLocation, useNavigate} from "react-router-dom";
 import {keepPreviousData, useInfiniteQuery, useQuery, useQueryClient} from "@tanstack/react-query";
 import {useSelector} from "@tanstack/react-store";
 import {Drawer as DrawerPrimitive} from "@base-ui/react/drawer";
 import {
+    ArrowLeftRight,
     AtSign,
     Bell,
     BookOpen,
@@ -40,6 +41,7 @@ import {useIsMobile} from "@/hooks/use-mobile";
 import {
     createOrGetMmDirect,
     getAgents,
+    getOrgs,
     listMmChannels,
     listOrgMembers,
     searchMessages,
@@ -48,6 +50,7 @@ import {
     type MmSearchSort,
 } from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
+import {captureReturnPath, withNext} from "@/lib/returnPath";
 import {fuzzyScoreAny} from "@/lib/fuzzy";
 import {frecencyKey, frecencyScore, loadFrecency, recordVisit} from "@/lib/frecency";
 import {formatChannelTitle, formatRelativeShort} from "@/lib/formatting";
@@ -210,6 +213,7 @@ function Palette({mobile}: {mobile: boolean}) {
     const {user, activeOrgId} = useAuth();
     const {isOwner} = useActiveOrg();
     const navigate = useNavigate();
+    const location = useLocation();
     const queryClient = useQueryClient();
     const baseId = useId();
     const listId = `${baseId}-list`;
@@ -236,6 +240,7 @@ function Palette({mobile}: {mobile: boolean}) {
         enabled,
         staleTime: 60_000,
     });
+    const {data: orgData} = useQuery({queryKey: queryKeys.orgs, queryFn: getOrgs, staleTime: 60_000});
     const {data: agentData} = useQuery({
         queryKey: queryKeys.agents(orgId),
         queryFn: () => getAgents(orgId),
@@ -394,6 +399,9 @@ function Palette({mobile}: {mobile: boolean}) {
                 action("home", "Home", House, go("/home"), "", isDesktop && keycap("1")),
                 action("agents", "Agents", Bot, go("/agents"), "", isDesktop && keycap("2")),
                 action("skills", "Skills", BookOpen, go("/skills")),
+                ...((orgData?.organizations.length ?? 0) > 1
+                    ? [action("switch-org", "Switch organization", ArrowLeftRight, go(withNext("/setup/org", captureReturnPath(location))), "org workspace team")]
+                    : []),
             ],
         },
         {

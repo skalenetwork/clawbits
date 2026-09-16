@@ -32,9 +32,10 @@ export const DEFAULT_LANDING = "/home";
  *
  * Returning to a login route after logging in is at best a no-op and at worst
  * a loop: ``GuestOnly`` bounces a signed-in visitor off ``/login``, and if it
- * bounced them to ``/login`` the app would spin.
+ * bounced them to ``/login`` the app would spin. The org picker is the same:
+ * once an org is open it forwards to ``next``, and ``next`` must not be itself.
  */
-const NEVER_RETURN_TO = ["/login", "/verify-email"];
+const NEVER_RETURN_TO = ["/login", "/verify-email", "/setup/org"];
 
 /** Long enough for any real deep link; short enough not to be a payload. */
 const MAX_LENGTH = 512;
@@ -95,7 +96,7 @@ export function captureReturnPath(location: {
   return safeReturnPath(here);
 }
 
-/** ``/login``, carrying ``next`` only when there is something worth carrying. */
-export function loginPathFor(next: string | null): string {
-  return next ? `/login?${NEXT_PARAM}=${encodeURIComponent(next)}` : "/login";
+/** ``path``, carrying ``next`` only when there is something worth carrying. */
+export function withNext(path: string, next: string | null): string {
+  return next ? `${path}?${NEXT_PARAM}=${encodeURIComponent(next)}` : path;
 }

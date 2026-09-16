@@ -50,9 +50,7 @@ export function SetupShell({ steps, at, onExit, escExits, unsaved, children }: S
   }, []);
 
   return (
-    <div className="relative flex min-h-svh flex-col items-center justify-center bg-background px-4 py-20">
-      <SquircleDefs />
-
+    <SetupStage>
       <div className="absolute inset-x-0 top-5 flex items-center justify-center gap-1.5">
         {steps.map((s, i) => {
           const done = Boolean(s.value);
@@ -104,24 +102,9 @@ export function SetupShell({ steps, at, onExit, escExits, unsaved, children }: S
         })}
       </div>
 
-      <button
-        type="button"
-        onClick={leave}
-        className={cn(
-          "absolute top-5 right-5 flex h-8 items-center gap-2 rounded-lg",
-          escExits ? "pl-2.5 pr-1.5" : "px-2.5",
-          "bg-foreground/6 text-[13px] font-medium text-muted-foreground transition-colors duration-200",
-          "hover:bg-foreground/10 hover:text-foreground",
-          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-        )}
-      >
+      <SetupCornerButton chip={escExits ? "Esc" : undefined} onClick={leave}>
         Exit
-        {escExits && (
-          <span aria-hidden="true" className="grid h-5 min-w-5 place-items-center rounded-md bg-foreground/10 px-1 text-[11px]">
-            Esc
-          </span>
-        )}
-      </button>
+      </SetupCornerButton>
 
       {confirming ? (
         <SetupPanel title="Leave setup?" line={unsaved ?? undefined}>
@@ -143,7 +126,50 @@ export function SetupShell({ steps, at, onExit, escExits, unsaved, children }: S
       ) : (
         children
       )}
+    </SetupStage>
+  );
+}
+
+/** The edge-to-edge stage alone, for a single question with nothing to step
+ *  through and nowhere to exit to. */
+export function SetupStage({ children }: { children: ReactNode }) {
+  return (
+    <div className="relative flex min-h-svh flex-col items-center justify-center bg-background px-4 py-20">
+      <SquircleDefs />
+      {children}
     </div>
+  );
+}
+
+/** The quiet way out, pinned top right of the stage. */
+export function SetupCornerButton({
+  children,
+  onClick,
+  chip,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  chip?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "absolute top-5 right-5 flex h-8 items-center gap-2 rounded-lg",
+        chip ? "pl-2.5 pr-1.5" : "px-2.5",
+        "bg-foreground/6 text-[13px] font-medium text-muted-foreground transition-colors duration-200",
+        "hover:bg-foreground/10 hover:text-foreground",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+      )}
+    >
+      {children}
+      {chip && (
+        <span aria-hidden="true" className="grid h-5 min-w-5 place-items-center rounded-md bg-foreground/10 px-1 text-[11px]">
+          {chip}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -173,6 +199,61 @@ export function SetupPanel({
       )}
       {children}
     </div>
+  );
+}
+
+/** One answer to press, with its digit key docked right while it has one. */
+export function SetupChoice({
+  icon,
+  title,
+  meta,
+  digit,
+  picked,
+  onPick,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  meta: string;
+  /** Absent: no key, only the click. */
+  digit?: number;
+  /** Held for the beat between the press and what it opens. */
+  picked: boolean;
+  /** Absent: shown, but not pressable. */
+  onPick?: () => void;
+  /** Badges before the key. */
+  children?: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={!onPick}
+      onClick={onPick}
+      data-picked={picked}
+      className={cn(
+        "flex w-full items-center gap-3 rounded-2xl border border-border bg-card p-3 text-left transition-colors duration-200",
+        "hover:border-foreground/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+        "data-[picked=true]:border-foreground data-[picked=true]:ring-1 data-[picked=true]:ring-foreground data-[picked=true]:transition-none",
+        "disabled:pointer-events-none disabled:opacity-55",
+      )}
+    >
+      {icon}
+      <span className="min-w-0">
+        <span className="block truncate text-[15px] font-semibold">{title}</span>
+        <span className="block truncate text-[13px] text-muted-foreground">{meta}</span>
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-2 pl-2">
+        {children}
+        {digit !== undefined && digit <= 9 && (
+          <span
+            aria-hidden="true"
+            className="grid h-7 min-w-7 place-items-center rounded-[9px] border border-border bg-background px-2 text-[13px] font-medium text-muted-foreground"
+          >
+            {digit}
+          </span>
+        )}
+      </span>
+    </button>
   );
 }
 
