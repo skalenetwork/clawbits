@@ -1,6 +1,6 @@
 #!/bin/sh
-# One tick: pull what the org declared, apply it, push what this host observed.
-# Nothing retries in here; the next tick is the retry.
+# One tick: pull what the org declared, apply it or bring back what died, push
+# what this host observed. Nothing retries in here; the next tick is the retry.
 set -eu
 
 : "${REEF_HOST:?REEF_HOST is required}"
@@ -28,6 +28,14 @@ apply() {
   "$REEF" fleet apply "$@" --prune || return 1
 }
 
+# reef closes a failed command with a summary line; the cause is the last
+# "subject: reason" line before it, when there is one.
+cause() {
+  printf '%s\n' "$1" |
+    { grep -E '^[^ ]+: ' | grep -v '^Error: ' || printf '%s\n' "$1"; } |
+    tail -n 1 | sed 's/^[[:space:]]*//' | cut -c 1-200
+}
+
 applied="$REEF_DIR/applied"
 declared="$(git -C "$REEF_DIR/main" rev-parse HEAD) $(git -C "$REEF_DIR/fleet" rev-parse HEAD)"
 result=ok
@@ -40,12 +48,12 @@ if [ "$declared" != "$(cat "$applied" 2>/dev/null || true)" ]; then
     printf '%s' "$declared" > "$applied"
   else
     result=failed
-    # reef closes a failed apply with a summary line; the cause is the last
-    # "subject: reason" line before it, when there is one.
-    error="$(printf '%s\n' "$out" |
-      { grep -E '^[^ ]+: ' | grep -v '^Error: ' || printf '%s\n' "$out"; } |
-      tail -n 1 | sed 's/^[[:space:]]*//' | cut -c 1-200)"
+    error="$(cause "$out")"
   fi
+  printf '%s\n' "$out"
+elif ! out="$("$REEF" reconcile 2>&1)"; then
+  result=failed
+  error="$(cause "$out")"
   printf '%s\n' "$out"
 fi
 

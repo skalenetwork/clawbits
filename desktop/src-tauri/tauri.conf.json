@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Clawbits",
   "mainBinaryName": "clawbits",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "identifier": "ai.clawbits.desktop",
   "build": {
     "frontendDist": "../../frontend/dist",

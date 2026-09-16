@@ -20,7 +20,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { SettingsPage, SettingsRow, SettingsSection } from "@/components/settings/Settings";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useAuth } from "@/context/AuthContext";
-import { getOrgs, markOrgVisited, type Org } from "@/lib/api";
+import { useOpenOrg } from "@/hooks/useOpenOrg";
+import { getOrgs, type Org } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 
 const CHEVRON = <Icon icon={ChevronRight} className="size-4 text-muted-foreground" />;
@@ -37,7 +38,8 @@ const PREFERENCES: { icon: IconSvgElement; title: string; to: string }[] = [
 export default function SettingsMenuPage() {
     const isMobile = useIsMobile();
     const navigate = useNavigate();
-    const { user, activeOrgId, setActiveOrgId, logout } = useAuth();
+    const { user, activeOrgId, logout } = useAuth();
+    const openOrg = useOpenOrg();
 
     const orgsQuery = useQuery({
         queryKey: queryKeys.orgs,
@@ -52,10 +54,7 @@ export default function SettingsMenuPage() {
 
     const switchOrg = (orgId: string) => {
         if (orgId === activeOrgId) return;
-        setActiveOrgId(orgId);
-        void markOrgVisited(orgId).catch(() => {
-            // Non-fatal: the next getOrgs refetch reconciles the visited flag.
-        });
+        openOrg(orgId);
     };
 
     const handleSignOut = () => {

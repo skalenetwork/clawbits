@@ -30,7 +30,7 @@ import { extractAdminCommandQuery, getAdminCommandOptions } from "@/lib/adminCom
 import { extractClipboardFiles } from "@/lib/clipboardFiles";
 import { extractShortcodeQuery } from "@/lib/emoji";
 import { modGlyph } from "@/lib/shortcuts/platform";
-import { HERE_TOKEN, isHereToken } from "@/lib/mentions";
+import { HERE_TOKEN, escapeRegExp, isHereToken } from "@/lib/mentions";
 import { draftStore } from "@/lib/messageDrafts";
 import {
   extractChannelQuery,
@@ -270,7 +270,7 @@ export function MessageComposer({
   const adminOptions = adminMatch ? getAdminCommandOptions(adminMatch.query) : [];
   const mentionOptions = mentionMatch ? mentionOptionsFor(members, mentionMatch.query, channelType) : [];
   const channelOptions = channelMatch ? channelOptionsFor(mentions, channelMatch.query) : [];
-  const emojiOptions = emojiSearch && emojiMatch ? emojiSearch(emojiMatch.query).slice(0, SUGGESTION_LIMIT) : [];
+  const emojiOptions = emojiSearch && emojiMatch ? emojiSearch(new RegExp(escapeRegExp(emojiMatch.query))).slice(0, SUGGESTION_LIMIT) : [];
 
   const suggestion = [
     { kind: "admin", match: adminMatch, extract: extractAdminCommandQuery, texts: adminOptions.map((o) => `${o.command} `) },
