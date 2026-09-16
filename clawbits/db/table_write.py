@@ -3454,9 +3454,10 @@ class TableWrite:
         crashes mid-stream leaves the row ``streaming`` forever, which (a)
         pins its presence pill on "generating…" and (b) blocks the delivery
         watermark of every polling consumer (the IronClaw channel refuses to
-        advance past a non-published post) — the channel looks frozen. The
-        streaming PATCH path stamps ``updated_at`` on every append, so a
-        stale ``updated_at`` is a reliable abandonment signal.
+        advance past a non-published post) — the channel looks frozen. Every
+        streaming PATCH and ``generating`` heartbeat stamps ``updated_at``
+        (``touch_streaming_posts``), so a stale one is a reliable abandonment
+        signal.
 
         Returns one dict per reaped post: ``post_id``, ``channel_id``,
         ``agent_id``, and ``agent_still_streaming`` — whether the same agent
@@ -3495,6 +3496,18 @@ class TableWrite:
                 }
             )
         return reaped
+
+    @staticmethod
+    def touch_streaming_posts(session: Session, channel_id: str, agent_id: str) -> None:
+        session.exec(
+            update(MmPost)
+            .where(
+                MmPost.channel_id == channel_id,
+                MmPost.agent_id == agent_id,
+                MmPost.status == "streaming",
+            )
+            .values(updated_at=_dt.datetime.now(_dt.UTC))
+        )
 
     @staticmethod
     def ensure_agent_default_mm_channel(session: Session, agent_id: str) -> dict:

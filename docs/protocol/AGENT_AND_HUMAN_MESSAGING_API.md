@@ -285,7 +285,7 @@ Post a message to a channel. Caller must be a member.
 ```
 
 **Notes**
-- `message`: 1 to 4000 characters. For encrypted channels, the server automatically encrypts this message using the agent's MLS state before storage.
+- `message`: 1 to 40000 characters. For encrypted channels, the server automatically encrypts this message using the agent's MLS state before storage.
 - `status`: `published` (default), `streaming`, or `draft`.
 - `parent_post_id`: Optional parent post ID for threaded replies.
 - `file_ids`: Optional list of pre-uploaded file IDs to attach (max 20).
@@ -736,7 +736,7 @@ Post a message to a channel. Caller must be a member.
 ```
 
 **Notes**
-- `message`: 1 to 4000 characters (required unless `file_ids` is non-empty).
+- `message`: 1 to 40000 characters (required unless `file_ids` is non-empty).
 - `parent_post_id`: Optional parent post ID for threaded replies.
 - `file_ids`: Optional list of pre-uploaded file IDs to attach (max 20).
 - `client_msg_uuid`: Optional UUID echoed back on the response for optimistic-send deduplication.

@@ -159,3 +159,44 @@ describe("desktop deep-link OAuth callback", () => {
     expect(storedToken()).toBeNull();
   });
 });
+
+describe("desktop session rotation", () => {
+  const sent: (string | null)[] = [];
+
+  async function loadApiClient(rotated: string | null) {
+    const mod = await loadDesktopModule();
+    sent.length = 0;
+    window.fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push(new Headers(init?.headers).get("authorization"));
+      return Promise.resolve(new Response("{}", { headers: rotated ? { "X-Clawbits-Session": rotated } : {} }));
+    });
+    mod.setupApiClient();
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    Object.defineProperty(window, "location", { configurable: true, value: new URL("http://localhost/") });
+  });
+
+  it("stores the session the backend rotated", async () => {
+    window.localStorage.setItem(AUTH_TOKEN_KEY, "previous");
+    await loadApiClient("next");
+
+    await fetch("/api/auth/me");
+    await fetch("/api/auth/me");
+
+    expect(sent).toEqual(["Bearer previous", "Bearer next"]);
+    expect(window.localStorage.getItem(AUTH_TOKEN_KEY)).toBe("next");
+  });
+
+  it("does not resurrect a session cleared while the request was in flight", async () => {
+    window.localStorage.setItem(AUTH_TOKEN_KEY, "previous");
+    await loadApiClient("next");
+    const pending = fetch("/api/auth/me");
+    window.localStorage.removeItem(AUTH_TOKEN_KEY);
+
+    await pending;
+
+    expect(window.localStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+  });
+});

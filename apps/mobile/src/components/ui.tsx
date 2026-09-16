@@ -1,5 +1,5 @@
 import { Image } from "expo-image";
-import { GlassView } from "expo-glass-effect";
+import { GlassContainer, GlassView } from "expo-glass-effect";
 import { SymbolView } from "expo-symbols";
 import { Host } from "@expo/ui";
 import {
@@ -245,7 +245,7 @@ export function GlassComposer({
     },
   }));
   return (
-    <View style={composer.row}>
+    <GlassContainer spacing={8} style={composer.row}>
       <Pressable
         disabled
         accessibilityLabel="Attachments, coming later"
@@ -254,7 +254,7 @@ export function GlassComposer({
         <GlassView
           glassEffectStyle="regular"
           isInteractive={false}
-          style={StyleSheet.absoluteFill}
+          style={composer.chipGlass}
         />
         <SymbolView
           name="plus"
@@ -270,14 +270,15 @@ export function GlassComposer({
       >
         <TextInput
           ref={input as never}
+          accessibilityLabel="Message"
           placeholder="Message"
           placeholderTextColor="#8E8E93"
           onChangeText={onChangeText}
           editable={!inputDisabled}
-          returnKeyType="send"
-          enablesReturnKeyAutomatically
+          multiline
+          scrollEnabled
+          maxLength={8000}
           blurOnSubmit={false}
-          onSubmitEditing={onSend}
           style={composer.input}
         />
       </GlassView>
@@ -293,7 +294,7 @@ export function GlassComposer({
             sendOn ? (scheme === "dark" ? "#ffffff" : "#000000") : undefined
           }
           isInteractive={sendOn}
-          style={StyleSheet.absoluteFill}
+          style={composer.chipGlass}
         />
         <SymbolView
           name="arrow.up"
@@ -308,39 +309,49 @@ export function GlassComposer({
           }
         />
       </Pressable>
-    </View>
+    </GlassContainer>
   );
 }
 
 const CHIP = 44;
+const FIELD_MAX = 22 * 6 + 20;
 const composer = StyleSheet.create({
   row: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-end",
     gap: 8,
     paddingHorizontal: 16,
   },
   chip: {
     width: CHIP,
     height: CHIP,
-    borderRadius: CHIP / 2,
-    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: color.background,
+  },
+  chipGlass: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    borderRadius: CHIP / 2,
   },
   field: {
     flex: 1,
-    height: CHIP,
+    minHeight: CHIP,
+    maxHeight: FIELD_MAX,
     borderRadius: CHIP / 2,
     overflow: "hidden",
     justifyContent: "center",
-    backgroundColor: color.background,
   },
   input: {
-    height: CHIP,
+    minHeight: CHIP,
+    maxHeight: FIELD_MAX,
     paddingHorizontal: 16,
+    paddingTop: 11,
+    paddingBottom: 11,
     fontSize: 17,
+    lineHeight: 22,
     color: color.text,
   },
 });

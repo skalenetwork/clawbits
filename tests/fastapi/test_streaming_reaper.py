@@ -28,7 +28,7 @@ class FakeBus:
     async def publish(self, topic: str, event: dict[str, Any]) -> None:
         self.published.append((topic, event))
 
-    async def presence_set(self, channel_id, member_kind, member_id, status) -> None:
+    async def presence_set(self, channel_id, member_kind, member_id, status, activity=None) -> None:
         self.presence.append((channel_id, member_kind, str(member_id), status))
 
     # The post-create endpoint touches these on the way in; no-ops suffice.
@@ -141,6 +141,24 @@ def test_reaper_unsticks_presence_when_no_live_stream_remains(
         ev for _, ev in fake_bus.published if ev.get("type") == "member.status"
     ]
     assert member_events and member_events[0]["data"]["status"] == "online"
+
+
+def test_generating_heartbeat_keeps_a_textless_stream_alive(
+    test_client, _test_engine, fake_bus
+):
+    agent = _create_owned_agent(test_client)
+    ch = _make_channel(test_client, agent)
+    post = _make_streaming_post(test_client, agent, ch)
+    _backdate_post(_test_engine, post, 600)
+
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{ch}/status",
+        json={"status": "generating"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert r.status_code == 204, r.text
+    assert asyncio.run(reap_stale_streaming_posts_once(_test_engine, ttl_seconds=300)) == 0
+    assert post in _post_ids(test_client, agent, ch)
 
 
 def test_reaper_is_a_noop_without_stale_streams(test_client, _test_engine, fake_bus):
