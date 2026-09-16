@@ -1,7 +1,5 @@
 import {
   KeyboardAwareLegendList,
-  useKeyboardChatComposerInset,
-  useKeyboardScrollToEnd,
 } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,9 +22,15 @@ import {
   StyleSheet,
   Text,
   View,
+  type LayoutChangeEvent,
 } from "react-native";
-import { KeyboardStickyView } from "react-native-keyboard-controller";
+import { GlassView } from "expo-glass-effect";
+import {
+  KeyboardStickyView,
+  useReanimatedKeyboardAnimation,
+} from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useDerivedValue, useSharedValue } from "react-native-reanimated";
 import { api, ApiError } from "@/lib/api";
 import { historyKey, useHistory, useLiveEvents } from "@/lib/data";
 import { glyphKind } from "@/lib/chatFilters";
@@ -91,19 +95,36 @@ function Conversation({ id }: { id: string }) {
   const connected = useLiveEvents(id, focused);
   const insets = useSafeAreaInsets();
   const listPad = useMemo(
-    () => ({ paddingTop: insets.top + 44, paddingBottom: 8 }),
+    () => ({ paddingTop: insets.top + 44, paddingBottom: 0 }),
     [insets.top],
   );
   const list = useRef<LegendListRef>(null);
   const composer = useRef<ComponentRef<typeof View>>(null);
   const field = useRef<GlassComposerHandle>(null);
-  const { contentInsetEndAdjustment, onComposerLayout } =
-    useKeyboardChatComposerInset(list, composer, 60 + insets.bottom);
-  const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({
-    listRef: list,
-  });
+  const composerSize = useSharedValue(56 + insets.bottom);
+  const lastComposer = useRef(0);
+  const { progress } = useReanimatedKeyboardAnimation();
+  const bottomInset = insets.bottom;
+  const closedDrop = 16;
+  const contentInsetEndAdjustment = useDerivedValue(
+    () =>
+      composerSize.value -
+      closedDrop * (1 - progress.value) -
+      bottomInset * progress.value,
+  );
+  const onComposerLayout = (event: LayoutChangeEvent) => {
+    const height = Math.round(event.nativeEvent.layout.height);
+    if (!Number.isFinite(height) || height <= 0) return;
+    if (lastComposer.current === 0) {
+      lastComposer.current = height;
+      composerSize.value = height;
+      return;
+    }
+    if (Math.abs(height - lastComposer.current) < 8) return;
+    lastComposer.current = height;
+    composerSize.value = height;
+  };
   const posts = useMemo(() => historyPosts(history.data), [history.data]);
-  const [text, setText] = useState("");
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [error, setError] = useState<string | null>(null);
   const read = useRef(0);
@@ -205,16 +226,12 @@ function Conversation({ id }: { id: string }) {
     [active, backTitle, renderTitle, title],
   );
 
-  const send = async () => {
-    const message = text.trim();
+  const send = async (message: string) => {
     if (!message || sending.current || pending || !connected) return;
     sending.current = true;
     const uuid = randomUUID();
     setDelivery({ uuid, text: message, state: "sending" });
-    setText("");
-    void field.current?.clear();
     setError(null);
-    void scrollMessageToEnd({ animated: true, closeKeyboard: false });
     try {
       const post = await api.send(token, id, message, uuid);
       client.setQueryData<History>(historyKey(id), (old) =>
@@ -229,7 +246,6 @@ function Conversation({ id }: { id: string }) {
       if (accepted) setDelivery(null);
       else if (cause instanceof ApiError && cause.status < 500) {
         setDelivery(null);
-        setText(message);
         void field.current?.setText(message);
         setError(cause.message);
       } else {
@@ -282,12 +298,13 @@ function Conversation({ id }: { id: string }) {
           itemsAreEqual={itemsAreEqual}
           initialScrollAtEnd
           alignItemsAtEnd
-          maintainScrollAtEnd={{ animated: false }}
-          maintainScrollAtEndThreshold={0.15}
+          maintainScrollAtEnd={{
+            animated: false,
+            on: { dataChange: true, layout: false, itemLayout: false },
+          }}
           maintainVisibleContentPosition={{ data: true, size: true }}
           contentInsetAdjustmentBehavior="never"
           contentInsetEndAdjustment={contentInsetEndAdjustment}
-          freeze={freeze}
           keyboardLiftBehavior="always"
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
@@ -324,11 +341,20 @@ function Conversation({ id }: { id: string }) {
               <View
                 style={[chat.row, chat.ungrouped, { alignItems: "flex-end" }]}
               >
-                <View style={[chat.bubble, chat.outgoing]}>
+              <View style={chat.bubbleWrap}>
+                <View
+                  style={[
+                    chat.bubble,
+                    chat.outgoing,
+                    bubbleShape(true, false, false),
+                  ]}
+                >
                   <Text style={[chat.message, chat.outgoingText]}>
                     {pending.text}
                   </Text>
                 </View>
+                <BubbleTail own />
+              </View>
                 <Text style={chat.author}>
                   {pending.state === "sending"
                     ? "Sending…"
@@ -341,7 +367,7 @@ function Conversation({ id }: { id: string }) {
       )}
       <KeyboardStickyView
         style={chat.sticky}
-        offset={{ closed: 0, opened: insets.bottom }}
+        offset={{ closed: 16, opened: insets.bottom }}
       >
         <View
           ref={composer}
@@ -357,7 +383,6 @@ function Conversation({ id }: { id: string }) {
             <GlassButton
               label="Keep text in composer"
               onPress={() => {
-                setText(pending.text);
                 void field.current?.setText(pending.text);
                 setDelivery(null);
                 setError(null);
@@ -366,12 +391,10 @@ function Conversation({ id }: { id: string }) {
           )}
           <GlassComposer
             composerRef={field}
-            onChangeText={setText}
-            onSend={() => {
-              void send();
+            onSend={(message) => {
+              void send(message);
             }}
-            sendDisabled={!connected || !text.trim() || !!pending}
-            inputDisabled={!!pending}
+            sendDisabled={!connected || !!pending}
           />
         </View>
       </KeyboardStickyView>
@@ -384,7 +407,11 @@ function ChatTitle({ channel }: { channel: Channel }) {
   const name = channelName(channel);
   const shape = glyphKind(channel);
   return (
-    <View accessibilityLabel={name} style={title.row}>
+    <GlassView
+      glassEffectStyle="regular"
+      accessibilityLabel={name}
+      style={title.pill}
+    >
       <AvatarView
         size={28}
         name={name}
@@ -398,28 +425,49 @@ function ChatTitle({ channel }: { channel: Channel }) {
       <Text numberOfLines={1} style={title.name}>
         {name}
       </Text>
-    </View>
+    </GlassView>
   );
 }
 
 function bubbleShape(own: boolean, groupedPrev: boolean, groupedNext: boolean) {
   const outer = 18;
   const inner = 5;
-  const tail = groupedNext ? inner : outer;
+  const stem = groupedNext ? inner : 5;
   if (own) {
     return {
       borderTopLeftRadius: outer,
       borderBottomLeftRadius: outer,
       borderTopRightRadius: groupedPrev ? inner : outer,
-      borderBottomRightRadius: tail,
+      borderBottomRightRadius: stem,
     };
   }
   return {
     borderTopRightRadius: outer,
     borderBottomRightRadius: outer,
     borderTopLeftRadius: groupedPrev ? inner : outer,
-    borderBottomLeftRadius: tail,
+    borderBottomLeftRadius: stem,
   };
+}
+
+function BubbleTail({ own }: { own: boolean }) {
+  const fill = own ? bubbleOut : bubbleIn;
+  return (
+    <View
+      pointerEvents="none"
+      style={[chat.tail, own ? chat.tailOut : chat.tailIn]}
+    >
+      <View
+        style={[
+          chat.tailNub,
+          own ? chat.tailNubOut : chat.tailNubIn,
+          { backgroundColor: fill },
+        ]}
+      />
+      <View
+        style={[chat.tailScoop, own ? chat.tailScoopOut : chat.tailScoopIn]}
+      />
+    </View>
+  );
 }
 
 function BubbleText({ text, own }: { text: string; own: boolean }) {
@@ -509,6 +557,7 @@ const Message = memo(function Message({
           >
             <BubbleText text={body} own={own} />
           </View>
+          {!groupedNext && <BubbleTail own={own} />}
         </View>
         {caption && <Text style={chat.author}>{caption}</Text>}
       </View>
@@ -524,11 +573,15 @@ const bubbleIn = DynamicColorIOS({ light: "#E9E9EB", dark: "#3A3A3C" });
 const bubbleOut = "#007AFF";
 
 const title = StyleSheet.create({
-  row: {
+  pill: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    maxWidth: 220,
+    height: 44,
+    maxWidth: 240,
+    paddingLeft: 8,
+    paddingRight: 16,
+    borderRadius: 22,
   },
   name: {
     flexShrink: 1,
@@ -548,7 +601,7 @@ const chat = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 8,
   },
-  row: { paddingHorizontal: 8 },
+  row: { paddingHorizontal: 10 },
   grouped: { paddingTop: 1, paddingBottom: 1 },
   ungrouped: { paddingTop: 6, paddingBottom: 6 },
   author: { fontSize: 11, color: color.muted, marginLeft: 16, marginBottom: 2 },
@@ -559,6 +612,34 @@ const chat = StyleSheet.create({
   },
   outgoing: { backgroundColor: bubbleOut },
   incoming: { backgroundColor: bubbleIn },
+  tail: {
+    position: "absolute",
+    bottom: 0,
+    width: 11,
+    height: 17,
+    overflow: "hidden",
+  },
+  tailOut: { right: -6 },
+  tailIn: { left: -6 },
+  tailNub: {
+    position: "absolute",
+    bottom: 0,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+  },
+  tailNubOut: { left: -9 },
+  tailNubIn: { right: -9 },
+  tailScoop: {
+    position: "absolute",
+    bottom: -1,
+    width: 18,
+    height: 21,
+    borderRadius: 10,
+    backgroundColor: PlatformColor("systemBackground"),
+  },
+  tailScoopOut: { left: 2 },
+  tailScoopIn: { right: 2 },
   message: { fontSize: 17, lineHeight: 22 },
   outgoingText: { color: "#ffffff" },
   incomingText: { color: PlatformColor("label") },

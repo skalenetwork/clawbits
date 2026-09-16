@@ -30,12 +30,19 @@ import {
   textInputAutocapitalization,
   tint,
 } from "@expo/ui/swift-ui/modifiers";
-import { useImperativeHandle, useRef, type ReactNode, type Ref } from "react";
+import {
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 import {
   GLASS_BLUR_PAD,
   GLASS_BLUR_RADIUS,
   useGlassAvatar,
 } from "@/lib/glassAvatar";
+import { KeyboardController } from "react-native-keyboard-controller";
 import {
   ActivityIndicator,
   DynamicColorIOS,
@@ -215,35 +222,51 @@ export type GlassComposerHandle = {
   clear: () => Promise<void>;
 };
 
+type ComposerInput = {
+  focus: () => void;
+};
+
+function keepComposerFocus(input: { current: ComposerInput | null }) {
+  KeyboardController.setFocusTo("current");
+  input.current?.focus();
+}
+
 export function GlassComposer({
   composerRef,
-  onChangeText,
   onSend,
   sendDisabled,
-  inputDisabled = false,
 }: {
   composerRef?: Ref<GlassComposerHandle>;
-  onChangeText: (text: string) => void;
-  onSend: () => void;
+  onSend: (text: string) => void;
   sendDisabled: boolean;
-  inputDisabled?: boolean;
 }) {
   const scheme = useHostColorScheme();
-  const sendOn = !sendDisabled;
-  const input = useRef<{
-    setNativeProps: (props: { text: string }) => void;
-    clear: () => void;
-  } | null>(null);
+  const [value, setValue] = useState("");
+  const sendOn = !sendDisabled && !!value.trim();
+  const input = useRef<ComposerInput>(null);
+  const keepFocus = () => {
+    keepComposerFocus(input);
+  };
   useImperativeHandle(composerRef, () => ({
     setText: (text: string) => {
-      input.current?.setNativeProps({ text });
+      setValue(text);
       return Promise.resolve();
     },
     clear: () => {
-      input.current?.clear();
+      setValue("");
+      keepFocus();
       return Promise.resolve();
     },
   }));
+  const submit = () => {
+    const message = value.trim();
+    if (!message || sendDisabled) return;
+    setValue("");
+    keepFocus();
+    onSend(message);
+  };
+  const sendFill = scheme === "dark" ? "#ffffff" : "#000000";
+  const sendGlyph = scheme === "dark" ? "#000000" : "#ffffff";
   return (
     <GlassContainer spacing={8} style={composer.row}>
       <Pressable
@@ -258,7 +281,7 @@ export function GlassComposer({
         />
         <SymbolView
           name="plus"
-          size={18}
+          size={17}
           weight="medium"
           tintColor={color.header}
         />
@@ -273,54 +296,46 @@ export function GlassComposer({
           accessibilityLabel="Message"
           placeholder="Message"
           placeholderTextColor="#8E8E93"
-          onChangeText={onChangeText}
-          editable={!inputDisabled}
+          onChangeText={setValue}
+          value={value}
           multiline
           scrollEnabled
           maxLength={8000}
           blurOnSubmit={false}
+          submitBehavior="newline"
           style={composer.input}
         />
+        <View style={composer.sendSlot}>
+          {sendOn ? (
+            <Pressable
+              onPressIn={keepFocus}
+              onPress={submit}
+              accessibilityLabel="Send message"
+              style={[composer.send, { backgroundColor: sendFill }]}
+            >
+              <SymbolView
+                name="arrow.up"
+                size={15}
+                weight="semibold"
+                tintColor={sendGlyph}
+              />
+            </Pressable>
+          ) : null}
+        </View>
       </GlassView>
-      <Pressable
-        onPress={onSend}
-        disabled={sendDisabled}
-        accessibilityLabel="Send message"
-        style={composer.chip}
-      >
-        <GlassView
-          glassEffectStyle="regular"
-          tintColor={
-            sendOn ? (scheme === "dark" ? "#ffffff" : "#000000") : undefined
-          }
-          isInteractive={sendOn}
-          style={composer.chipGlass}
-        />
-        <SymbolView
-          name="arrow.up"
-          size={16}
-          weight="semibold"
-          tintColor={
-            sendOn
-              ? scheme === "dark"
-                ? "#000000"
-                : "#ffffff"
-              : color.header
-          }
-        />
-      </Pressable>
     </GlassContainer>
   );
 }
 
-const CHIP = 44;
-const FIELD_MAX = 22 * 6 + 20;
+const CHIP = 40;
+const SEND = 30;
+const FIELD_MAX = 21 * 6 + 16;
 const composer = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 8,
-    paddingHorizontal: 16,
+    gap: 6,
+    paddingHorizontal: 22,
   },
   chip: {
     width: CHIP,
@@ -340,19 +355,35 @@ const composer = StyleSheet.create({
     flex: 1,
     minHeight: CHIP,
     maxHeight: FIELD_MAX,
+    flexDirection: "row",
+    alignItems: "flex-end",
     borderRadius: CHIP / 2,
     overflow: "hidden",
-    justifyContent: "center",
   },
   input: {
+    flex: 1,
     minHeight: CHIP,
     maxHeight: FIELD_MAX,
-    paddingHorizontal: 16,
-    paddingTop: 11,
-    paddingBottom: 11,
-    fontSize: 17,
-    lineHeight: 22,
+    paddingLeft: 14,
+    paddingRight: 6,
+    paddingTop: 9,
+    paddingBottom: 9,
+    fontSize: 16,
+    lineHeight: 21,
     color: color.text,
+  },
+  sendSlot: {
+    width: SEND,
+    height: SEND,
+    marginRight: 5,
+    marginBottom: 5,
+  },
+  send: {
+    width: SEND,
+    height: SEND,
+    borderRadius: SEND / 2,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });
 

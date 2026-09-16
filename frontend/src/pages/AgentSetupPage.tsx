@@ -13,6 +13,7 @@ import {
   CommandBlock,
   CopyField,
   SetupButton,
+  SetupChoice,
   SetupMark,
   SetupPanel,
   SetupShell,
@@ -552,7 +553,22 @@ export default function AgentSetupPage() {
         {view.choices && (
           <div className="flex w-full flex-col gap-2">
             {view.choices.map((c, i) => (
-              <ChoiceRow key={i} choice={c} digit={i + 1} picked={flashed === i} />
+              <SetupChoice
+                key={i}
+                icon={<img src={c.icon} alt="" className="size-10 shrink-0 rounded-[10px]" />}
+                title={c.title}
+                meta={c.meta}
+                digit={c.pick && i + 1}
+                picked={flashed === i}
+                onPick={c.pick}
+              >
+                {c.health && <ReefHealth health={c.health} />}
+                {c.soon && (
+                  <span className="rounded-full bg-foreground/6 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                    Soon
+                  </span>
+                )}
+              </SetupChoice>
             ))}
           </div>
         )}
@@ -578,46 +594,5 @@ export default function AgentSetupPage() {
         )}
       </SetupPanel>
     </SetupShell>
-  );
-}
-
-function ChoiceRow({ choice: c, digit, picked }: { choice: Choice; digit: number; picked: boolean }) {
-  return (
-    <button
-      type="button"
-      disabled={!c.pick}
-      onClick={c.pick}
-      data-picked={picked}
-      className={cn(
-        "flex w-full items-center gap-3 rounded-2xl border border-border bg-card p-3 text-left transition-colors duration-200",
-        "hover:border-foreground/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-        "data-[picked=true]:border-foreground data-[picked=true]:ring-1 data-[picked=true]:ring-foreground data-[picked=true]:transition-none",
-        "disabled:pointer-events-none disabled:opacity-55",
-      )}
-    >
-      <img src={c.icon} alt="" className="size-10 shrink-0 rounded-[10px]" />
-      <span className="min-w-0">
-        <span className="block truncate text-[15px] font-semibold">{c.title}</span>
-        <span className="block truncate text-[13px] text-muted-foreground">{c.meta}</span>
-      </span>
-      <span className="ml-auto flex shrink-0 items-center gap-2 pl-2">
-        {c.health && <ReefHealth health={c.health} />}
-        {c.soon ? (
-          <span className="rounded-full bg-foreground/6 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-            Soon
-          </span>
-        ) : (
-          c.pick &&
-          digit <= 9 && (
-            <span
-              aria-hidden="true"
-              className="grid h-7 min-w-7 place-items-center rounded-[9px] border border-border bg-background px-2 text-[13px] font-medium text-muted-foreground"
-            >
-              {digit}
-            </span>
-          )
-        )}
-      </span>
-    </button>
   );
 }

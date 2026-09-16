@@ -16,7 +16,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { DesktopShell } from "./DesktopShell";
 import { MobileShell } from "./MobileShell";
-import { captureReturnPath, loginPathFor } from "@/lib/returnPath";
+import { captureReturnPath, withNext } from "@/lib/returnPath";
 
 const ReleaseNotesCard = lazy(() =>
   import("@/components/ReleaseNotesCard").then((module) => ({ default: module.ReleaseNotesCard })),
@@ -32,7 +32,7 @@ export interface ChannelOutletContext {
 
 /** Auth gating, the unread title and dock badge, heartbeat and web push, then the desktop or mobile layout. */
 export default function AppShell() {
-  const { user, activeOrgId, loading } = useAuth();
+  const { user, activeOrgId, needsOrgPick, loading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
@@ -73,7 +73,8 @@ export default function AppShell() {
     );
   }
 
-  if (!user) return <Navigate to={loginPathFor(captureReturnPath(location))} replace />;
+  if (!user) return <Navigate to={withNext("/login", captureReturnPath(location))} replace />;
+  if (needsOrgPick) return <Navigate to={withNext("/setup/org", captureReturnPath(location))} replace />;
 
   return (
     <>

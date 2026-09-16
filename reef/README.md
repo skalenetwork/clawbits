@@ -11,7 +11,9 @@ status  status/<host>.json          each host, from this timer
 ```
 
 Every 30 seconds the host pulls `main` and `fleet`, and when either has moved
-it runs `reef role apply` and `reef fleet apply --prune`. Then it writes what
+it runs `reef role apply` and `reef fleet apply --prune`. When neither has, it
+runs `reef reconcile`, which starts any agent that died since, after a reboot or
+a crashed gateway, and prints only when that fails. Then it writes what
 `reef` observed to `status/<host>.json`, and only when the content changed does
 it commit, rebase onto `status` and push. Each host touches only its own file,
 so the rebase never conflicts, and a push that loses a race goes out on the
@@ -21,7 +23,7 @@ next tick. Besides the rows of `reef role list`, `reef agent list` and the last
 ```text
 at       heartbeat: the current UTC time rounded down to ten minutes
 applied  {main, fleet}: the HEADs last applied in full, null until one lands
-result   ok, or failed when this tick's apply failed
+result   ok, or failed when this tick's apply or reconcile failed
 error    the cause reef printed when it failed, else null
 ```
 
@@ -38,7 +40,8 @@ the org gets. `journalctl -u reef-reconcile` has the rest.
 
 Prepare the machine first: [reef's host
 guide](https://reef.clawbits.ai/docs/setup/host) covers `msb`, KVM, the `reef`
-account and the state directory. Then, as `reef`, put the provider secrets in
+account and the state directory. Skip its boot unit: this timer already brings
+agents back after a reboot. Then, as `reef`, put the provider secrets in
 `~/.local/state/reef/secrets.toml` (`chmod 600`) and check `reef doctor`.
 
 `jq` and `git` are the only extra packages this needs.

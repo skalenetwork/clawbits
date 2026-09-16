@@ -4,7 +4,7 @@
  * the in-SPA flows validate here, so both need the same hostile cases.
  */
 import { describe, expect, it } from "vitest";
-import { captureReturnPath, loginPathFor, safeReturnPath } from "./returnPath";
+import { captureReturnPath, safeReturnPath, withNext } from "./returnPath";
 
 describe("safeReturnPath", () => {
   it.each([
@@ -19,6 +19,7 @@ describe("safeReturnPath", () => {
     ["/login", "would loop against GuestOnly"],
     ["/login?next=%2Fx", "same, with a query"],
     ["/verify-email", "intermediate auth route"],
+    ["/setup/org", "the org picker forwards to next"],
     [`/${"a".repeat(600)}`, "absurd length"],
     /* Both tuple members are declared, because `it.each` spreads the WHOLE row
      * into the callback - a one-parameter callback does not type-check against
@@ -52,12 +53,12 @@ describe("captureReturnPath", () => {
   });
 });
 
-describe("loginPathFor", () => {
+describe("withNext", () => {
   it("omits the parameter when there is nothing to carry", () => {
-    expect(loginPathFor(null)).toBe("/login");
+    expect(withNext("/login", null)).toBe("/login");
   });
 
   it("encodes the destination", () => {
-    expect(loginPathFor("/agents?a=1")).toBe("/login?next=%2Fagents%3Fa%3D1");
+    expect(withNext("/login", "/agents?a=1")).toBe("/login?next=%2Fagents%3Fa%3D1");
   });
 });

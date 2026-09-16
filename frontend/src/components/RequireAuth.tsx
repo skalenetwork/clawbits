@@ -1,6 +1,6 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { captureReturnPath, loginPathFor } from "@/lib/returnPath";
+import { captureReturnPath, withNext } from "@/lib/returnPath";
 
 /**
  * The auth gate without the shell, for a route that wants the app's identity
@@ -18,7 +18,7 @@ export default function RequireAuth() {
       </div>
     );
 
-  if (!user) return <Navigate to={loginPathFor(captureReturnPath(location))} replace />;
+  if (!user) return <Navigate to={withNext("/login", captureReturnPath(location))} replace />;
 
   return <Outlet />;
 }
