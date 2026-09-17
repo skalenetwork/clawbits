@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { registerClawBitsCli } from "./cli.js";
 import { clawbitsChannelPlugin } from "./plugin.js";
 import { registerActivitySubscription } from "./activity/subscription.js";
+import { setModelChoiceRuntime } from "./model-choice.js";
 import {
   registerSlimChannelHandoff,
   resolveClawBitsServiceOwner,
@@ -18,6 +19,7 @@ export default defineChannelPluginEntry({
   configSchema: emptyChannelConfigSchema(),
   registerCliMetadata: registerClawBitsCli,
   registerFull: (api) => {
+    setModelChoiceRuntime(api.runtime);
     const hostApi = api as typeof api & {
       config?: OpenClawConfig;
       logger?: { warn?: (message: string) => void };

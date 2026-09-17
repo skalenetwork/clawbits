@@ -7,20 +7,21 @@ import {AnthropicIcon, CodexColorIcon, GeminiIcon, NearAiIcon, OllamaIcon, OpenA
 interface ProviderBrand {
     Glyph?: ComponentType<{className?: string}>;
     tile: string;
+    label?: string;
 }
 
 const NEUTRAL_TILE = "#262626";
-const GEMINI: ProviderBrand = {Glyph: GeminiIcon, tile: "#4285F4"};
+const GEMINI: ProviderBrand = {Glyph: GeminiIcon, tile: "#4285F4", label: "Google"};
 
 const PROVIDER_BRANDS: Record<string, ProviderBrand> = {
-    anthropic: {Glyph: AnthropicIcon, tile: "#D97757"},
-    openai: {Glyph: OpenAiIcon, tile: "#10A37F"},
-    "openai-codex": {Glyph: CodexColorIcon, tile: "#ffffff"},
+    anthropic: {Glyph: AnthropicIcon, tile: "#D97757", label: "Anthropic"},
+    openai: {Glyph: OpenAiIcon, tile: "#10A37F", label: "OpenAI"},
+    "openai-codex": {Glyph: CodexColorIcon, tile: "#ffffff", label: "Codex"},
     gemini: GEMINI,
     google: GEMINI,
-    nearai: {Glyph: NearAiIcon, tile: "#000000"},
-    openrouter: {Glyph: OpenRouterIcon, tile: "#7C5CF6"},
-    ollama: {Glyph: OllamaIcon, tile: NEUTRAL_TILE},
+    nearai: {Glyph: NearAiIcon, tile: "#000000", label: "NEAR AI"},
+    openrouter: {Glyph: OpenRouterIcon, tile: "#7C5CF6", label: "OpenRouter"},
+    ollama: {Glyph: OllamaIcon, tile: NEUTRAL_TILE, label: "Ollama"},
 };
 
 export function providerBrand(id: string): ProviderBrand {

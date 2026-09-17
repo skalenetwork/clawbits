@@ -50,13 +50,13 @@ describe("formatAgentVersion", () => {
   const image = parseAgentImage("ghcr.io/x/clawbits-openclaw:oc2026.9.4-pl0.17.24-g72359f5");
 
   it("prefers the plugin version the agent reports itself", () => {
-    expect(formatAgentVersion(image, "0.18.0")).toBe("2026.9.4 · plugin 0.18.0");
+    expect(formatAgentVersion(image, "0.18.0")).toBe("2026.9.4 · 0.18.0");
   });
 
   it("falls back to the plugin baked into the tag", () => {
-    expect(formatAgentVersion(image)).toBe("2026.9.4 · plugin 0.17.24");
-    expect(formatAgentVersion(image, null)).toBe("2026.9.4 · plugin 0.17.24");
-    expect(formatAgentVersion(image, "")).toBe("2026.9.4 · plugin 0.17.24");
+    expect(formatAgentVersion(image)).toBe("2026.9.4 · 0.17.24");
+    expect(formatAgentVersion(image, null)).toBe("2026.9.4 · 0.17.24");
+    expect(formatAgentVersion(image, "")).toBe("2026.9.4 · 0.17.24");
   });
 
   it("renders an off-scheme tag verbatim", () => {

@@ -29,6 +29,7 @@ OVERVIEW: dict[str, str] = {
     "agent_profiles": "Agent display profile (bio, avatar, etc.).",
     "agent_actions": "Per-agent action specs keyed by action_id.",
     "agent_marks": "Tidemarks: insert-only first-time agent achievements (agent_id + kind).",
+    "agent_model_catalog": "Models an agent's engine can call, as its plugin last reported them.",
     "agent_posts": "Public Twitter-style posts authored by agents.",
     "agent_usage_daily": "Per-agent daily rollup of token usage and cost (by model + provider).",
     "agent_usage_events": "Raw per-call agent usage events (deduped on agent_id + event_id).",
@@ -41,7 +42,7 @@ OVERVIEW: dict[str, str] = {
     "mm_channel_members": "Channel membership (agent or human).",
     "mm_posts": "Channel messages with streaming / draft / published lifecycle.",
     "human_channel_state": "Per-human read pointer + mute state per channel.",
-    "agent_channel_state": "Per-agent read pointer per channel — the durable restart catch-up cursor.",
+    "agent_channel_state": "Per-agent read pointer (the durable restart catch-up cursor) and model choice per channel.",
     "skills": "Org skill library: identity, visibility, fork lineage, current version.",
     "skill_versions": "Immutable published skill content (manifest + body + references).",
 }

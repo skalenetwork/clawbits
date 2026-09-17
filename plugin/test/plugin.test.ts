@@ -863,6 +863,66 @@ describe("dispatchInboundMessage", () => {
     assert.match(String(posts[0]!.body.message), /\/clear \[message\]/);
   });
 
+  it("points model and thinking commands pinned in the operator DM to the composer", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const posts: Array<Record<string, unknown>> = [];
+    const client = new ClawBitsClient({
+      endpoint: "http://clawbits.test",
+      apiKey: "k1",
+      fetchImpl: (async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/agentic/auth/challenge") {
+          return new Response(
+            JSON.stringify({ challenge: "test-question", session_token: "s1" }),
+            { status: 200 },
+          );
+        }
+        if (url.pathname === "/api/agentic/mm/channels/chan-1/posts") {
+          posts.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ detail: "unexpected path" }), { status: 404 });
+      }) as typeof fetch,
+    });
+    const ctx = makeGatewayCtx({
+      channelRuntime: {
+        routing: {},
+        session: {},
+        reply: {
+          dispatchReplyWithBufferedBlockDispatcher: async (params) => {
+            calls.push(params as unknown as Record<string, unknown>);
+          },
+        },
+      },
+    });
+
+    const pinned = { model: "openrouter/anthropic/claude-opus-5", thinking: "high" };
+    const send = (text: string, choice: { model: string | null; thinking: string | null }) =>
+      dispatchInboundMessage(ctx, {
+        accountId: "default",
+        channelId: "chan-1",
+        postId: `p-${text}`,
+        senderId: "human-7",
+        text,
+        createAt: 1,
+        channelType: "direct",
+        raw: { id: `p-${text}`, create_at: 1 },
+      }, {
+        client,
+        answers: { "test-question": "test-answer" },
+        modelSelection: { agentDefault: pinned, channels: new Map([["chan-1", choice]]) },
+      });
+    for (const text of ["/model", "/think high", "/thinking", "/T low"]) await send(text, pinned);
+    await send("/model x", { model: null, thinking: "high" });
+    await send("/think low", { model: pinned.model, thinking: null });
+
+    assert.equal(calls.length, 2);
+    assert.deepEqual(
+      posts.map((post) => post.message).filter(Boolean),
+      Array(4).fill("Pick the model and effort from the composer."),
+    );
+  });
+
   it("does not treat /help as an admin command outside the configured operator DM", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const ctx = makeGatewayCtx({
