@@ -612,38 +612,42 @@ export function MessageComposer({
               className="[grid-area:1/1] block w-full resize-none overflow-y-auto border-0 bg-transparent p-0 text-[14px] leading-5 text-transparent caret-foreground outline-none shadow-none placeholder:text-muted-foreground focus-visible:ring-0 selection:bg-primary/20 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
           </div>
-          {agentPicker && (
-            <AgentTargetChip
-              agents={agents}
-              targetHandle={targetHandle}
-              open={pickerOpen}
-              onOpenChange={(open, refocus) => {
-                setPickerOpen(open);
-                if (refocus) refocusInput();
-              }}
-              align={stacked ? "start" : "end"}
-              onPick={(handle) => {
-                onSetManualTarget(handle);
-                if (!handle && autoMention) onDismissAutoMention();
-                setPickerOpen(false);
-                refocusInput();
-              }}
-            />
-          )}
-          {orgId && modelAgent?.agent_id && modelAgent.model_choice && (
-            <ModelPicker
-              orgId={orgId}
-              agentId={modelAgent.agent_id}
-              channelId={channelId}
-              value={modelAgent.model_choice}
-              variant="pill"
-              align={stacked ? "start" : "end"}
-              open={modelPickerOpen}
-              onOpenChange={(open, refocus) => {
-                setModelPickerOpen(open);
-                if (refocus) refocusInput();
-              }}
-            />
+          {(agentPicker || modelAgent) && (
+            <div className="flex min-w-0 items-center">
+              {agentPicker && (
+                <AgentTargetChip
+                  agents={agents}
+                  targetHandle={targetHandle}
+                  open={pickerOpen}
+                  onOpenChange={(open, refocus) => {
+                    setPickerOpen(open);
+                    if (refocus) refocusInput();
+                  }}
+                  align={stacked ? "start" : "end"}
+                  onPick={(handle) => {
+                    onSetManualTarget(handle);
+                    if (!handle && autoMention) onDismissAutoMention();
+                    setPickerOpen(false);
+                    refocusInput();
+                  }}
+                />
+              )}
+              {orgId && modelAgent?.agent_id && modelAgent.model_choice && (
+                <ModelPicker
+                  orgId={orgId}
+                  agentId={modelAgent.agent_id}
+                  channelId={channelId}
+                  value={modelAgent.model_choice}
+                  variant="pill"
+                  align={stacked ? "start" : "end"}
+                  open={modelPickerOpen}
+                  onOpenChange={(open, refocus) => {
+                    setModelPickerOpen(open);
+                    if (refocus) refocusInput();
+                  }}
+                />
+              )}
+            </div>
           )}
           <div className="ml-auto flex items-center gap-1.5">
             {draft.length >= COUNTER_THRESHOLD && (
