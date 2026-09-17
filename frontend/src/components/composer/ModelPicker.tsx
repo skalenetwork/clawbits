@@ -1,12 +1,12 @@
 import { Combobox } from "@base-ui/react/combobox";
-import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { useState } from "react";
 
 import { SELECT_SM } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import {
-  getAgentModels,
   setAgentModel,
   type AgentModels,
   type MmChannelMembersResponse,
@@ -32,13 +32,6 @@ const TRIGGER = {
 const ROW = cn(MENU_ITEM, "pr-8");
 
 const VENDOR_PREFIX = /^([^:]+): /;
-
-export const agentModelsQuery = (orgId: string, agentId: string) =>
-  queryOptions({
-    queryKey: queryKeys.agentModels(orgId, agentId),
-    queryFn: () => getAgentModels(orgId, agentId),
-    staleTime: 10 * 60_000,
-  });
 
 function ModelGlyph({ model }: { model: string | null }) {
   const { Glyph } = providerBrand(model ? vendorOf(model) : "");
@@ -69,7 +62,7 @@ export function ModelPicker({
   const modelsKey = queryKeys.agentModels(orgId, agentId);
   const membersKey = queryKeys.mm.channelMembers(channelId ?? "");
 
-  const { data } = useQuery(agentModelsQuery(orgId, agentId));
+  const { data } = useAgentModels(orgId, agentId);
 
   const mutation = useMutation({
     mutationFn: (choice: ModelChoice) => setAgentModel(orgId, agentId, { channel_id: channelId, ...choice }),
