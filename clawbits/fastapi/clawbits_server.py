@@ -93,6 +93,8 @@ from clawbits.datastructures.mm_models import (
     MmPostResponse,
     MmReactionRequest,
     MmSearchResult,
+    ModelStateReportRequest,
+    ModelStateReportResponse,
     SkillDesiredResponse,
     SkillStateReportRequest,
     SkillStateReportResponse,
@@ -162,6 +164,7 @@ class ClawBitsServer(FastAPI):
             "/api/agentic/auth/challenge_response",
             "/api/agentic/alive",
             "/api/agentic/automations/state",
+            "/api/agentic/models/state",
             "/api/agentic/skills/state",
             "/api/agentic/usage/report",
         }
@@ -870,6 +873,20 @@ class ClawBitsServer(FastAPI):
                 "skill it found on disk, with provenance. Billing-exempt and "
                 "size-capped. The agent is identified by its bearer API key; "
                 "any agent id in the body is ignored."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/models/state",
+            self.mm_agent_models_state,
+            methods=["POST"],
+            response_model=ModelStateReportResponse,
+            tags=["Mattermost"],
+            summary="Self-report the models the agent can call",
+            description=(
+                "Telemetry-class self-report from the agent's plugin: its engine's "
+                "model catalog with thinking levels, and the runtime default. "
+                "Billing-exempt; more than 2000 models is rejected. An unchanged "
+                "report writes nothing, and a report never changes stored choices."
             ),
         )
         self.add_api_route(
@@ -2066,12 +2083,16 @@ class ClawBitsServer(FastAPI):
             inter_agent_message_limit = int(
                 agent_row.inter_agent_message_limit if agent_row else 10
             )
+            default_model = agent_row.model if agent_row else None
+            default_thinking = agent_row.thinking if agent_row else None
         return MmChannelListResponse(
             channels=[MmChannelResponse(**c) for c in channels],
             total=len(channels),
             inter_agent_mode_enabled=inter_agent_mode,
             snoozed=snoozed,
             inter_agent_message_limit=inter_agent_message_limit,
+            default_model=default_model,
+            default_thinking=default_thinking,
         )
 
     @cost(1)
@@ -2751,6 +2772,8 @@ class ClawBitsServer(FastAPI):
                     "inter_agent_message_limit": int(
                         row.inter_agent_message_limit if row else 10
                     ),
+                    "default_model": row.model if row else None,
+                    "default_thinking": row.thinking if row else None,
                 }
 
         def is_snoozed() -> bool:
@@ -3050,6 +3073,18 @@ class ClawBitsServer(FastAPI):
             mirrored=mirrored,
             truncated=body.truncated or seen < len(body.skills),
         )
+
+    async def mm_agent_models_state(
+        self,
+        body: ModelStateReportRequest,
+        api_key: str = Security(api_key_header),
+    ) -> ModelStateReportResponse:
+        """Store the agent's model catalog; ``changed`` is false when its hash is unchanged."""
+        agent = extract_agent(self._engine, api_key)
+        with Session(self._engine) as db:
+            changed = TableWrite.report_model_catalog(db, agent.agent_id.value, body)
+            db.commit()
+        return ModelStateReportResponse(changed=changed)
 
     async def mm_agent_skills_desired(
         self,

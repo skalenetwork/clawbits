@@ -49,6 +49,8 @@ export const queryKeys = {
   /** Channels/DMs an agent is in — the automation delivery-target picker. */
   agentChannels: (orgId: string, agentId: string) =>
     ["agentChannels", orgId, agentId] as const,
+  agentModels: (orgId: string, agentId: string) =>
+    ["agentModels", orgId, agentId] as const,
   /** An agent's contact allowlist — who may DM / @-tag it (Manage page). */
   agentContactPermissions: (agentId: string) =>
     ["agentContactPermissions", agentId] as const,

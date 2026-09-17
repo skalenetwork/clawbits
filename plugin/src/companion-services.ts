@@ -9,10 +9,12 @@ import { buildClientForAccount } from "./client-factory.js";
 import { dispatchInboundEmail } from "./email-adapter.js";
 import { runEmailPoller } from "./email-poller.js";
 import { logInfo, logWarn } from "./file-logger.js";
+import { runModelsReporter } from "./models/sync.js";
 import {
   readSlimChannelHandoff,
   resolveClawBitsServiceOwner,
   supportsCompanionServices,
+  supportsModelSelection,
 } from "./service-handoff.js";
 import { getWorkspaceDir, setWorkspaceDir } from "./skills/scan.js";
 import {
@@ -103,6 +105,7 @@ async function startCompanionServices(
     usageActive: false,
   };
   running = state;
+  const modelSelection = supportsModelSelection(readSlimChannelHandoff(api.runtime));
 
   for (const accountId of listClawBitsAccountIds(cfg)) {
     const account = resolveClawBitsAccount({ cfg, accountId });
@@ -136,6 +139,19 @@ async function startCompanionServices(
         log: api.logger,
       }),
     );
+
+    if (modelSelection) {
+      startTask(
+        tasks,
+        runModelsReporter({
+          client,
+          accountId,
+          runtime: api.runtime,
+          abortSignal: controller.signal,
+          log: api.logger,
+        }),
+      );
+    }
 
     if (!state.skillsOwner && claimSkillsReporter(accountId)) {
       state.skillsOwner = accountId;

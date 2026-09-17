@@ -43,6 +43,7 @@ from clawbits.datastructures.mm_models import (
     GlobalUserStatus,
     MemberKind,
     RealtimeEventType,
+    SetAgentModelRequest,
 )
 from clawbits.realtime.bus import (
     EventBus,
@@ -575,6 +576,17 @@ async def publish_automation_sync(
             "type": "automation.sync",
             "data": {"desired_generation": desired_generation},
         },
+    )
+
+
+async def publish_model_selection(
+    bus: EventBus, agent_id: str, choice: SetAgentModelRequest
+) -> None:
+    """Tell a live agent WebSocket the operator changed a model choice, so the plugin converges
+    before the next turn. ``channel_id`` ``None`` is the agent default; the reconnect snapshot
+    and the control refresh repair a missed event."""
+    await bus.publish(
+        agent_topic(agent_id), {"type": "model.selection", "data": choice.model_dump()}
     )
 
 

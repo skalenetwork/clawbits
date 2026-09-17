@@ -135,6 +135,8 @@ class Agent(SQLModel, table=True):
     # ``ironclaw`` | ``hermes``) and plugin version. NULL on older plugins.
     agent_type: str | None = None
     plugin_version: str | None = None
+    model: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
+    thinking: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
 
 
 class ShareRecord(SQLModel, table=True):
@@ -570,6 +572,9 @@ class AgentChannelState(SQLModel, table=True):
     A row is created lazily on the first ack. Absence of a row means "no
     pointer yet": clients treat that as a first boot (seed to newest, then
     ack) so rolling this out does not replay history.
+
+    ``model`` and ``thinking`` are the operator's choice for this conversation; NULL inherits
+    the agent default.
     """
 
     __tablename__ = "agent_channel_state"
@@ -587,6 +592,8 @@ class AgentChannelState(SQLModel, table=True):
     last_read_post_id: int | None = Field(
         default=None, foreign_key="mm_posts.post_id"
     )
+    model: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
+    thinking: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
 
 
@@ -1628,3 +1635,20 @@ class AgentMark(SQLModel, table=True):
     detail: dict[str, Any] | None = Field(
         default=None, sa_column=SAColumn(JSONB(none_as_null=True), nullable=True)
     )
+
+
+class AgentModelCatalog(SQLModel, table=True):
+    """The models an agent's engine can call, as its plugin last reported them.
+
+    Its own table because the ``agents`` row is read on every alive ping, snapshot and post
+    fan-out. A report never rewrites the choices stored on ``agents`` or ``agent_channel_state``.
+    """
+
+    __tablename__ = "agent_model_catalog"
+
+    agent_id: str = Field(primary_key=True, foreign_key="agents.agent_id")
+    catalog_hash: str = Field(sa_column=SAColumn(Text, nullable=False))
+    models: list[dict[str, Any]] = Field(sa_column=SAColumn(JSONB, nullable=False))
+    default_model: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
+    default_thinking: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
+    reported_at: datetime = Field(sa_column=SAColumn(SADateTime(timezone=True), nullable=False))

@@ -1,4 +1,4 @@
-// Persistent per-(account, channel) watermarks, as a small JSON file. Three
+// Persistent per-(account, channel) watermarks, as a small JSON file. Four
 // key shapes share the store:
 //
 //   "<channelId>"        — newest post already SHOWN as read-only context.
@@ -6,8 +6,10 @@
 //                          The boot catch-up resume point; written for every
 //                          channel, DMs included.
 //   "email:inbox"        — the email poller's UID watermark.
+//   "model:<agentId>"    — the agent default model choice last written to
+//                          openclaw.json, as { model, thinking }.
 //
-// On-disk: { "<accountId>": { "<key>": <createAtMs>, ... }, ... }
+// On-disk: { "<accountId>": { "<key>": <createAtMs> | <choice>, ... }, ... }
 //
 // DURABILITY: the default path prefers, in order, $CLAWBITS_STATE_DIR, then
 // `~/.config/openclaw/clawbits/` when `~/.config/openclaw` exists (under reef
@@ -28,6 +30,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { ModelChoice, ModelChoiceStore } from "./model-choice.js";
 
 
 /** Minimal contract the poller depends on. Kept narrow so tests can pass a
@@ -92,8 +95,9 @@ function defaultStatePath(): string {
  * without a file path it behaves as a pure in-memory store (load/flush are
  * no-ops) — handy for tests and the "no persistence" fallback.
  */
-export class ChannelWatermarkStore implements WatermarkStore {
+export class ChannelWatermarkStore implements WatermarkStore, ModelChoiceStore {
   private readonly map = new Map<string, number>();
+  private readonly choices = new Map<string, ModelChoice>();
   private readonly filePath: string | null;
   private loadPromise: Promise<void> | undefined;
   private dirty = false;
@@ -158,6 +162,11 @@ export class ChannelWatermarkStore implements WatermarkStore {
         if (typeof value === "number" && Number.isFinite(value)) {
           this.map.set(this.keyFor(accountId, channelId), value);
           ingested = true;
+        } else if (value && typeof value === "object" && "model" in value && "thinking" in value) {
+          this.choices.set(this.keyFor(accountId, channelId), {
+            model: typeof value.model === "string" ? value.model : null,
+            thinking: typeof value.thinking === "string" ? value.thinking : null,
+          });
         }
       }
     }
@@ -211,6 +220,16 @@ export class ChannelWatermarkStore implements WatermarkStore {
     this.scheduleFlush();
   }
 
+  getChoice(accountId: string, key: string): ModelChoice | undefined {
+    return this.choices.get(this.keyFor(accountId, key));
+  }
+
+  async setChoice(accountId: string, key: string, choice: ModelChoice): Promise<void> {
+    this.choices.set(this.keyFor(accountId, key), choice);
+    this.dirty = true;
+    await this.flush();
+  }
+
   private scheduleFlush(): void {
     if (!this.filePath) return;
     this.dirty = true;
@@ -230,8 +249,8 @@ export class ChannelWatermarkStore implements WatermarkStore {
     }
     if (!this.filePath || !this.dirty) return;
     this.dirty = false;
-    const snapshot: Record<string, Record<string, number>> = {};
-    for (const [key, value] of this.map) {
+    const snapshot: Record<string, Record<string, number | ModelChoice>> = {};
+    for (const [key, value] of [...this.map, ...this.choices]) {
       const sep = key.indexOf(KEY_SEP);
       const accountId = sep >= 0 ? key.slice(0, sep) : key;
       const channelId = sep >= 0 ? key.slice(sep + 1) : "";

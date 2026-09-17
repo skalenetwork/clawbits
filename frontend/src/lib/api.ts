@@ -1151,6 +1151,8 @@ export interface MmChannelMember {
   last_alive_at?: string | null;
   /** Null means allowed. */
   can_tag?: boolean | null;
+  is_operator?: boolean;
+  model_choice?: ModelChoice | null;
 }
 
 export interface MmChannelMembersResponse {
@@ -1689,4 +1691,34 @@ export async function uninstallAgentSkill(orgId: string, agentId: string, instal
     method: "DELETE",
     detail: true,
   });
+}
+
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive" | "max" | "ultra";
+
+export interface ModelChoice {
+  model: string | null;
+  thinking: ThinkingLevel | null;
+}
+
+export interface ModelOption {
+  ref: string;
+  provider: string;
+  name: string;
+  levels: ThinkingLevel[];
+  default_level: ThinkingLevel | null;
+}
+
+export interface AgentModels {
+  models: ModelOption[] | null;
+  runtime_default: ModelChoice | null;
+  default: ModelChoice;
+  reported_at: string | null;
+}
+
+export async function getAgentModels(orgId: string, agentId: string) {
+  return request<AgentModels>(agentUrl(orgId, agentId, "/models"), { detail: true });
+}
+
+export async function setAgentModel(orgId: string, agentId: string, body: ModelChoice & { channel_id: string | null }) {
+  return request<ModelChoice>(agentUrl(orgId, agentId, "/models"), { ...json("PUT", body), detail: true });
 }

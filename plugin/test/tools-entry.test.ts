@@ -7,7 +7,9 @@ import { summarizeChannels, summarizePosts } from "../src/tool-views.js";
 import { resolveCompanionServiceActivation } from "../src/companion-services.js";
 import {
   CLAWBITS_SERVICE_HANDOFF_CAPABILITY,
+  readSlimChannelHandoff,
   registerSlimChannelHandoff,
+  supportsModelSelection,
 } from "../src/service-handoff.js";
 
 function readJson(path: string): Record<string, unknown> {
@@ -346,6 +348,19 @@ describe("clawbits companion plugin", () => {
       resolveCompanionServiceActivation(invalid.api.config, invalid.api.runtime).reason,
       "invalid-owner",
     );
+  });
+
+  it("reports models only beside a channel that applies model selection", () => {
+    assert.equal(supportsModelSelection(readSlimChannelHandoff(runtimeWithHandoff("0.17.0"))), true);
+    assert.equal(supportsModelSelection(readSlimChannelHandoff(runtimeWithHandoff())), false);
+
+    const olderChannel = runtimeWithHandoff();
+    olderChannel.channel.runtimeContexts.register({
+      channelId: "clawbits",
+      capability: CLAWBITS_SERVICE_HANDOFF_CAPABILITY,
+      context: { channelVersion: "0.17.0", servicesMovedTo: "clawbits-tools" },
+    });
+    assert.equal(supportsModelSelection(readSlimChannelHandoff(olderChannel)), false);
   });
 
   it("uses channel account config without exposing its API key", async () => {

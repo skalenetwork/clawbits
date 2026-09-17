@@ -32,6 +32,7 @@ type GuardRuntime = {
 
 export type InboundDispatchGuardTarget = {
   sessionKey: string;
+  agentId?: string;
   lockDir?: string;
 };
 
@@ -129,13 +130,13 @@ export function resolveInboundDispatchGuardTarget(params: {
 
   const agentId = typeof route?.agentId === "string" ? route.agentId : undefined;
   const resolveStorePath = runtime?.session?.resolveStorePath;
-  if (!agentId || typeof resolveStorePath !== "function") return { sessionKey };
+  if (!agentId || typeof resolveStorePath !== "function") return { sessionKey, agentId };
 
   try {
     const storePath = resolveStorePath(resolveSessionStoreConfig(params.cfg), { agentId });
-    return { sessionKey, lockDir: path.join(path.dirname(storePath), LOCK_DIR_NAME) };
+    return { sessionKey, agentId, lockDir: path.join(path.dirname(storePath), LOCK_DIR_NAME) };
   } catch {
-    return { sessionKey };
+    return { sessionKey, agentId };
   }
 }
 
