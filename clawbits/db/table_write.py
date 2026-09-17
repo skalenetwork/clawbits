@@ -21,7 +21,12 @@ from clawbits.avatars.config import CURRENT_AVATAR_VERSION
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.api_key import ApiKey
 from clawbits.datastructures.long_name import LongName
-from clawbits.datastructures.mm_models import agent_default_channel_name, agent_dm_channel_name
+from clawbits.datastructures.mm_models import (
+    ModelStateReportRequest,
+    SetAgentModelRequest,
+    agent_default_channel_name,
+    agent_dm_channel_name,
+)
 from clawbits.datastructures.nickname import NickName
 from clawbits.db.models import (
     UNKNOWN_PROVIDER,
@@ -31,6 +36,7 @@ from clawbits.db.models import (
     AgentClaim,
     AgentContactPermission,
     AgentMark,
+    AgentModelCatalog,
     AgentPost,
     AgentProfile,
     AgentSignupRequest,
@@ -1029,6 +1035,7 @@ class TableWrite:
             delete(AgentSkillSyncState).where(AgentSkillSyncState.agent_id == agent_id)
         )
         session.exec(delete(AgentMark).where(AgentMark.agent_id == agent_id))
+        session.exec(delete(AgentModelCatalog).where(AgentModelCatalog.agent_id == agent_id))
         # The agent's own read pointers: its restart cursor per channel, not
         # content, and a NOT NULL ``agent_id`` FK with no cascade.
         session.exec(
@@ -2894,6 +2901,28 @@ class TableWrite:
         return row.last_read_post_id or 0
 
     @staticmethod
+    def _upsert_agent_channel_state(
+        session: Session,
+        agent_id: str,
+        channel_id: str,
+        mutate: Callable[[AgentChannelState], None],
+    ) -> AgentChannelState:
+        """Find-or-create an (agent, channel) state row, apply ``mutate`` and stamp
+        ``updated_at``. The agent twin of :meth:`_upsert_human_channel_state`."""
+        row = session.exec(
+            select(AgentChannelState)
+            .where(AgentChannelState.agent_id == agent_id)
+            .where(AgentChannelState.channel_id == channel_id)
+        ).first()
+        if row is None:
+            row = AgentChannelState(agent_id=agent_id, channel_id=channel_id)
+        mutate(row)
+        row.updated_at = _dt.datetime.now(_dt.UTC)
+        session.add(row)
+        session.flush()
+        return row
+
+    @staticmethod
     def mark_mm_channel_read_agent(
         session: Session, channel_id: str, agent_id: str, post_id: int
     ) -> int:
@@ -2904,19 +2933,55 @@ class TableWrite:
 
         Returns the new effective ``last_read_post_id``.
         """
-        row = session.exec(
-            select(AgentChannelState)
-            .where(AgentChannelState.agent_id == agent_id)
-            .where(AgentChannelState.channel_id == channel_id)
-        ).first()
-        if row is None:
-            row = AgentChannelState(agent_id=agent_id, channel_id=channel_id)
-        if row.last_read_post_id is None or post_id > row.last_read_post_id:
-            row.last_read_post_id = post_id
-        row.updated_at = _dt.datetime.now(_dt.UTC)
-        session.add(row)
-        session.flush()
+        def advance(row: AgentChannelState) -> None:
+            if row.last_read_post_id is None or post_id > row.last_read_post_id:
+                row.last_read_post_id = post_id
+
+        row = TableWrite._upsert_agent_channel_state(
+            session, agent_id, channel_id, advance
+        )
         return row.last_read_post_id or 0
+
+    @staticmethod
+    def set_model_choice(
+        session: Session, agent_id: str, choice: SetAgentModelRequest
+    ) -> None:
+        """Store the operator's choice on the agent row when ``choice.channel_id`` is ``None``,
+        else on that conversation's state row."""
+        def apply(row: Agent | AgentChannelState) -> None:
+            row.model = choice.model
+            row.thinking = choice.thinking
+
+        if choice.channel_id is None:
+            apply(session.get_one(Agent, agent_id))
+        else:
+            TableWrite._upsert_agent_channel_state(session, agent_id, choice.channel_id, apply)
+
+    @staticmethod
+    def report_model_catalog(
+        session: Session, agent_id: str, report: ModelStateReportRequest
+    ) -> bool:
+        """Upsert the agent's reported catalog, skipping the write when its hash is unchanged.
+        Returns whether a row was written."""
+        catalog_hash = hashlib.sha256(report.model_dump_json().encode()).hexdigest()
+        values = {
+            "catalog_hash": catalog_hash,
+            "models": [m.model_dump() for m in report.models],
+            "default_model": report.default_model,
+            "default_thinking": report.default_thinking,
+            "reported_at": _dt.datetime.now(_dt.UTC),
+        }
+        columns = AgentModelCatalog.__table__.c
+        return session.execute(
+            pg_insert(AgentModelCatalog)
+            .values(agent_id=agent_id, **values)
+            .on_conflict_do_update(
+                index_elements=["agent_id"],
+                set_=values,
+                where=columns.catalog_hash != catalog_hash,
+            )
+            .returning(columns.agent_id)
+        ).first() is not None
 
     @staticmethod
     def set_mm_channel_muted(

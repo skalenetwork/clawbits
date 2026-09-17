@@ -8,6 +8,7 @@ export type ClawBitsServiceOwner = "channel" | "tools";
 export interface ClawBitsServiceHandoff {
   channelVersion: string;
   servicesMovedTo: "clawbits-tools";
+  modelSelection?: true;
 }
 
 interface RuntimeContextRegistry {
@@ -74,7 +75,7 @@ export function registerSlimChannelHandoff(
   return runtime?.channel?.runtimeContexts?.register({
     channelId: "clawbits",
     capability: CLAWBITS_SERVICE_HANDOFF_CAPABILITY,
-    context: { channelVersion, servicesMovedTo: "clawbits-tools" },
+    context: { channelVersion, servicesMovedTo: "clawbits-tools", modelSelection: true },
   });
 }
 
@@ -96,4 +97,8 @@ export function supportsCompanionServices(
     CLAWBITS_SLIM_CHANNEL_MIN_VERSION,
   );
   return Number.isFinite(comparison) && comparison >= 0;
+}
+
+export function supportsModelSelection(handoff: ClawBitsServiceHandoff | undefined): boolean {
+  return handoff?.modelSelection === true;
 }

@@ -853,6 +853,7 @@ function ChannelView({ channelId }: { channelId: string }) {
         ref={composerRef}
         isMobile={isMobile}
         wrapperRef={composerWrapRef}
+        orgId={channelOrgId}
         channelId={channelId}
         userId={user?.id ?? null}
         channelType={channel?.channel_type}

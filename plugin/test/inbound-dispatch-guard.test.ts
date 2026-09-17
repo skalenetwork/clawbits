@@ -62,6 +62,7 @@ describe("inbound dispatch guard", () => {
 
     expect(target).toEqual({
       sessionKey: "agent:main:clawbits:direct:human:5",
+      agentId: "main",
       lockDir: "/tmp/openclaw/sessions/.clawbits-inbound-dispatch-locks",
     });
   });

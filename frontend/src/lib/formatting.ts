@@ -44,7 +44,7 @@ export function parseAgentImage(image: string): AgentImage {
 /** The plugin version the agent reports wins over the tag: a plugin updates itself inside the VM. */
 export function formatAgentVersion({ tag, label, scheme }: AgentImage, reported?: string | null): string {
   if (scheme === null) return tag || label;
-  return `${scheme.engine} · plugin ${reported || scheme.plugin}`;
+  return `${scheme.engine} · ${reported || scheme.plugin}`;
 }
 
 export const RUNTIME_LOGO: Record<string, string> = {

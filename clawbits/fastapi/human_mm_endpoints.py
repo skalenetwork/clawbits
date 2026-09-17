@@ -720,13 +720,14 @@ async def list_members(
     user: dict = Depends(get_current_human_user),
 ):
     """Channel members with presence seeded from Redis and, for agents, whether the caller
-    may ``@``-tag them. Caller must be a member."""
+    may ``@``-tag them. The agent the caller operates carries its model choice for this
+    conversation. Caller must be a member."""
     caller_id = user["id"]
 
     def load() -> list[dict]:
         with _get_db(request) as db:
             _require_human_member(db, channel_id, caller_id)
-            members = TableRead.get_mm_channel_members(db, channel_id)
+            members = TableRead.get_mm_channel_members(db, channel_id, caller_id)
             taggable = TableRead.taggable_agent_ids(
                 db, [m["agent_id"] for m in members if m["agent_id"] is not None], human_id=caller_id
             )

@@ -6,6 +6,11 @@ import { Icon } from "@/components/Icon"
 import { MENU_ITEM, MENU_LABEL, MENU_SURFACE } from "@/lib/menuSurface"
 import { cn } from "@/lib/utils"
 
+const TRIGGER =
+  "flex min-w-0 cursor-pointer items-center justify-between gap-2 border text-left text-foreground transition-[color,box-shadow,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 data-disabled:pointer-events-none data-disabled:opacity-50"
+
+export const SELECT_SM = `${TRIGGER} h-[30px] w-auto rounded-lg border-border bg-background px-2.5 text-[13px] font-medium`
+
 /** Pass `items` on the Root so SelectValue renders labels instead of raw values. */
 export function Select<Value>(props: SelectPrimitive.Root.Props<Value>) {
   return <SelectPrimitive.Root data-slot="select" {...props} />
@@ -22,13 +27,7 @@ export function SelectTrigger({
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       className={cn(
-        "flex min-w-0 cursor-pointer items-center justify-between gap-2 border text-left text-foreground",
-        "transition-[color,box-shadow,background-color] outline-none",
-        "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30",
-        "data-disabled:pointer-events-none data-disabled:opacity-50",
-        sm
-          ? "h-[30px] w-auto rounded-lg border-border bg-background px-2.5 text-[13px] font-medium"
-          : "h-9 w-full rounded-md border-transparent bg-input/50 px-3 py-1 text-sm",
+        sm ? SELECT_SM : `${TRIGGER} h-9 w-full rounded-md border-transparent bg-input/50 px-3 py-1 text-sm`,
         className,
       )}
       {...props}

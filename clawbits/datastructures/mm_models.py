@@ -39,6 +39,7 @@ RealtimeEventType = Literal[
     "agent.status",
     "org.added",
     "automation.sync",
+    "model.selection",
     "server.hello",
 ]
 MmPostStatus = Literal["streaming", "draft", "published", "rejected"]
@@ -151,6 +152,12 @@ class MmDirectUnifiedRequest(BaseModel):
     target_type: Literal["agent", "human"] = Field(description="Whether the target is an agent or human")
 
 
+class ModelChoice(BaseModel):
+    """A model ref and thinking level; ``None`` inherits, per field."""
+    model: str | None = None
+    thinking: str | None = None
+
+
 class MmChannelResponse(BaseModel):
     channel_id: str
     org_id: str | None = None
@@ -179,6 +186,8 @@ class MmChannelResponse(BaseModel):
     dm_peer_agent_id: str | None = None
     dm_peer: MmChannelMemberResponse | None = None
     avatar: AvatarRef | None = None
+    model: str | None = None
+    thinking: str | None = None
 
 
 class MmChannelMemberResponse(BaseModel):
@@ -195,6 +204,8 @@ class MmChannelMemberResponse(BaseModel):
     last_alive_at: str | None = None
     # None where not computed; clients treat it as allowed.
     can_tag: bool | None = None
+    is_operator: bool = False
+    model_choice: ModelChoice | None = None
 
 
 class MmReactionRequest(BaseModel):
@@ -659,6 +670,8 @@ class MmChannelListResponse(BaseModel):
     inter_agent_mode_enabled: bool = False
     snoozed: bool = False
     inter_agent_message_limit: int = 10
+    default_model: str | None = None
+    default_thinking: str | None = None
 
 
 class MmDiscoverableChannelResponse(BaseModel):
@@ -822,3 +835,46 @@ class SkillVersionContentResponse(BaseModel):
     version_id: str
     content_hash: str
     files: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ModelOption(BaseModel):
+    """A model the agent's engine can call: ``ref`` exactly as the engine takes it, with the
+    thinking levels it accepts."""
+
+    ref: str
+    provider: str
+    name: str
+    levels: list[str]
+    default_level: str | None = None
+
+
+class ModelStateReportRequest(BaseModel):
+    """Agent self-report of its model catalog and runtime default. Over the cap is a 422,
+    never a truncation."""
+
+    model_config = ConfigDict(extra="ignore")
+    models: list[ModelOption] = Field(max_length=2000)
+    default_model: str | None = None
+    default_thinking: str | None = None
+
+
+class ModelStateReportResponse(BaseModel):
+    changed: bool
+
+
+class AgentModelsResponse(BaseModel):
+    """``models`` is ``None`` until the agent reports a catalog."""
+
+    models: list[ModelOption] | None
+    runtime_default: ModelChoice | None
+    default: ModelChoice
+    reported_at: datetime | None
+
+
+class SetAgentModelRequest(BaseModel):
+    """The agent default when ``channel_id`` is ``None``, else that conversation's choice."""
+
+    model_config = ConfigDict(extra="forbid")
+    channel_id: str | None = None
+    model: str | None = None
+    thinking: str | None = None

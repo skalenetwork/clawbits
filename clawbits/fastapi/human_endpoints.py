@@ -34,11 +34,15 @@ from clawbits.datastructures.email_models import (
     EmailSetReadRequest,
 )
 from clawbits.datastructures.mm_models import (
+    AgentModelsResponse,
     MmChannelEventResponse,
+    ModelChoice,
+    ModelOption,
     PrivacyModeRequest,
     PrivacyModeResponse,
     PrivacySettingsRequest,
     PrivacySettingsResponse,
+    SetAgentModelRequest,
 )
 from clawbits.datastructures.org_models import (
     AddOrgMemberRequest,
@@ -69,6 +73,7 @@ from clawbits.db.models import (
     AGENT_USAGE_SCHEMA_VERSION,
     DISPLAY_NAME_MAX_LENGTH,
     Agent,
+    AgentModelCatalog,
     AgentPost,
     AgentProfile,
     AgentSkillInstall,
@@ -118,6 +123,7 @@ from clawbits.realtime import (
     publish_channel_event,
     publish_channel_removed,
     publish_member_removed,
+    publish_model_selection,
     publish_org_added,
     publish_org_updated,
     publish_user_status,
@@ -952,6 +958,82 @@ def rename_agent(
             raise HTTPException(status_code=404, detail="Agent not found")
         db.commit()
         return {"agent_id": agent_id, "nickname": updated.nickname}
+
+
+@human_router.get(
+    "/api/human/orgs/{org_id}/agents/{agent_id}/models", response_model=AgentModelsResponse
+)
+def get_agent_models(
+    org_id: str,
+    agent_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> AgentModelsResponse:
+    """The models the agent reported, its runtime default and the operator's agent default.
+    ``models`` is null until the agent reports. Operator-only."""
+    with _get_db(request) as db:
+        _require_agent_operator(db, org_id, agent_id, user, "choose its model")
+        agent = db.get_one(Agent, agent_id)
+        catalog = db.get(AgentModelCatalog, agent_id)
+        default = ModelChoice(model=agent.model, thinking=agent.thinking)
+        if catalog is None:
+            return AgentModelsResponse(
+                models=None, runtime_default=None, default=default, reported_at=None
+            )
+        return AgentModelsResponse(
+            models=[ModelOption.model_validate(m) for m in catalog.models],
+            runtime_default=ModelChoice(
+                model=catalog.default_model, thinking=catalog.default_thinking
+            ),
+            default=default,
+            reported_at=catalog.reported_at,
+        )
+
+
+@human_router.put(
+    "/api/human/orgs/{org_id}/agents/{agent_id}/models", response_model=ModelChoice
+)
+async def set_agent_model(
+    org_id: str,
+    agent_id: str,
+    body: SetAgentModelRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+) -> ModelChoice:
+    """Set the agent default (``channel_id`` null) or one conversation's choice, null
+    inheriting per field. Operator-only. ``thinking`` must be a level of the effective model:
+    ``model``, else for a conversation the agent default, else the runtime default. The agent
+    is told before this returns."""
+
+    def write(db: Session) -> None:
+        _require_agent_operator(db, org_id, agent_id, user, "choose its model")
+        if body.channel_id is not None and not (
+            TableRead.is_mm_channel_member_human(db, body.channel_id, user["id"])
+            and TableRead.is_mm_channel_member(db, body.channel_id, agent_id)
+        ):
+            raise HTTPException(status_code=404, detail="Channel not found")
+        catalog = db.get(AgentModelCatalog, agent_id)
+        if catalog is None:
+            raise HTTPException(status_code=422, detail="The agent has not reported its models")
+        levels = {
+            option.ref: option.levels for option in map(ModelOption.model_validate, catalog.models)
+        }
+        if body.model is not None and body.model not in levels:
+            raise HTTPException(status_code=422, detail="The agent does not offer this model")
+        agent_default = db.get_one(Agent, agent_id).model if body.channel_id is not None else None
+        effective = body.model or agent_default or catalog.default_model
+        if body.thinking is not None and (
+            effective is None or body.thinking not in levels.get(effective, [])
+        ):
+            raise HTTPException(
+                status_code=422, detail="The model does not support this thinking level"
+            )
+        TableWrite.set_model_choice(db, agent_id, body)
+        db.commit()
+
+    await _in_db(request, write)
+    await publish_model_selection(get_bus(), agent_id, body)
+    return ModelChoice(model=body.model, thinking=body.thinking)
 
 
 class CreateAutomationRequest(BaseModel):

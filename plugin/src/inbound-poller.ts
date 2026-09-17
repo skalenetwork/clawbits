@@ -20,6 +20,7 @@ import {
   logWarn,
   writeTraceSpan,
 } from "./file-logger.js";
+import { choiceOf, INHERIT, type ModelSelection } from "./model-choice.js";
 import * as mmTools from "./tools/mattermost.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
 
@@ -142,6 +143,7 @@ export interface InboundPollerOptions {
   account: ResolvedClawBitsAccount;
   abortSignal: AbortSignal;
   onInboundMessage: (msg: InboundMessage) => Promise<void> | void;
+  onModelSelection?: (selection: ModelSelection) => void;
   /** Milliseconds between fallback polls when realtime is unavailable. Defaults to 30 seconds. */
   pollIntervalMs?: number;
   /** Milliseconds a queued inbound post may wait before it is dropped. Defaults to 10 minutes. */
@@ -817,6 +819,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
   let interAgentMode = account.interAgentMode === true;
   let interAgentMessageLimit = clampInterAgentMessageLimit(account.interAgentMessageLimit);
   let agentSnoozed = false;
+  let modelSelection: ModelSelection = { agentDefault: INHERIT, channels: new Map() };
   let consecutiveAgentTurns = 0;
   let awaitingHumanGuidance = false;
   let guidanceNoticeSent = false;
@@ -1059,6 +1062,11 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
   const channelSetKey = (channels: DiscoveredChannel[]): string =>
     channels.map((channel) => channel.id).sort().join("\0");
 
+  const publishModelSelection = (selection: ModelSelection): void => {
+    modelSelection = selection;
+    opts.onModelSelection?.(selection);
+  };
+
   const applyControlPayload = (raw: unknown): DiscoveredChannel[] => {
     const channels = extractChannels(raw);
     rebuildDiscoveredChannels(channels);
@@ -1067,6 +1075,8 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       extractInterAgentMessageLimit(raw) ??
       clampInterAgentMessageLimit(account.interAgentMessageLimit);
     agentSnoozed = extractAgentSnoozed(raw) ?? false;
+    const selection = extractModelSelection(raw);
+    if (selection) publishModelSelection(selection);
     return channels;
   };
 
@@ -1543,6 +1553,18 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         }
         if (event.type === "resync_required") {
           forceReconcilePoll = true;
+          return;
+        }
+        if (event.type === "model.selection") {
+          const data = event.data;
+          if (!data || typeof data !== "object") return;
+          const { channel_id, model, thinking } = data as Record<string, unknown>;
+          const choice = choiceOf(model, thinking);
+          publishModelSelection(
+            typeof channel_id === "string"
+              ? { ...modelSelection, channels: new Map(modelSelection.channels).set(channel_id, choice) }
+              : { ...modelSelection, agentDefault: choice },
+          );
           return;
         }
         if (event.type === "automation.sync") {
@@ -2103,6 +2125,22 @@ function extractChannels(raw: unknown): DiscoveredChannel[] {
     if (Array.isArray(channels)) return extractChannels(channels);
   }
   return [];
+}
+
+function extractModelSelection(raw: unknown): ModelSelection | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const { channels, default_model, default_thinking } = raw as Record<string, unknown>;
+  if (!Array.isArray(channels)) return undefined;
+  return {
+    agentDefault: choiceOf(default_model, default_thinking),
+    channels: new Map(
+      channels.flatMap((channel: Record<string, unknown> | null) =>
+        typeof channel?.channel_id === "string"
+          ? [[channel.channel_id, choiceOf(channel.model, channel.thinking)] as const]
+          : [],
+      ),
+    ),
+  };
 }
 
 function clampInterAgentMessageLimit(value: unknown): number {
