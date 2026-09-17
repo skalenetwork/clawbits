@@ -37,7 +37,7 @@ export function AgentTargetChip({
             type="button"
             tabIndex={-1}
             aria-label={target ? `Sending to ${agentLabel(target)}` : "Send to an agent"}
-            className={`flex h-7 min-w-0 max-w-48 items-center gap-1.5 rounded-lg px-1.5 text-[13px] font-medium transition-colors hover:bg-foreground/6 data-popup-open:bg-foreground/6 ${target ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            className={`flex h-7 min-w-0 max-w-48 items-center gap-1.5 rounded-full px-1.5 text-[13px] font-medium transition-colors hover:bg-foreground/6 data-popup-open:bg-foreground/6 ${target ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
           >
             {target && <AgentFaceAvatar size={16} name={agentLabel(target)} src={target.avatar?.url} framed={false}/>}
             <span className="truncate">{target ? agentLabel(target) : "Agent"}</span>

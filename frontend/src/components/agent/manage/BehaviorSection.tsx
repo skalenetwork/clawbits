@@ -39,7 +39,7 @@ export function BehaviorSection({ orgId, profile }: { orgId: string; profile: Ag
       {models?.models && (
         <SettingsRow
           title="Model"
-          description="Used when a conversation has no choice of its own"
+          description="Default model and effort"
           control={
             <ModelPicker
               orgId={orgId}
