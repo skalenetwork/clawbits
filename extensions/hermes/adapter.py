@@ -1,8 +1,8 @@
 """The Clawbits platform adapter: polling, dispatch, presence, delivery.
 
 Everything with a lifecycle lives here — the poll/liveness/WebSocket loops,
-turn spawning, status heartbeats, and outbound sends (text and native
-images). Pure helpers live in :mod:`.messages`, network-fetch guarding in
+the turn lifecycle hooks, status heartbeats, and outbound sends (text and
+native images). Pure helpers live in :mod:`.messages`, network-fetch guarding in
 :mod:`.media`, and the CLI subprocess wrapper in :mod:`.cli_client`.
 """
 
@@ -19,12 +19,18 @@ from pathlib import Path
 from typing import Any
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+)
 from gateway.session import SessionSource
 
 from .attachments import cache_post_attachments
 from .automations import run_automations_reconciler
-from .cli_client import _ClawbitsCli, _default_cli_path
+from .cli_client import _ClawbitsCli, _default_cli_path, endpoint
 from .email_integration import (
     DEFAULT_EMAIL_POLL_INTERVAL_SECONDS,
     MIN_EMAIL_POLL_INTERVAL_SECONDS,
@@ -61,7 +67,6 @@ from .read_cursors import load_read_cursors, save_read_cursors
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "http://localhost:8000"
 DEFAULT_POLL_INTERVAL_SECONDS = 3.0
 # Liveness heartbeat cadence. Clawbits flips an agent to "offline" after 40 min of
 # silence, so this must stay comfortably inside that window; ~10 min matches the
@@ -122,9 +127,10 @@ _MAX_INTERIM_BUBBLE_CHARS = 400
 _PATCH_REPLACE_MAX_CHARS = 40_000
 
 # Drafts opened by the CURRENT turn. A ContextVar rather than a plain set
-# because turns run concurrently in the same channel: each _run_turn task gets
-# its own copy of the context, so a finishing turn closes only its own drafts
-# and never yanks a sibling turn's live stream out from under it.
+# because turns run concurrently in the same channel: each gateway processing
+# task gets its own copy of the context (seeded in on_processing_start), so a
+# finishing turn closes only its own drafts and never yanks a sibling turn's
+# live stream out from under it.
 _turn_streams: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
     "clawbits_turn_streams", default=None
 )
@@ -164,30 +170,6 @@ def _env_float(raw: Any, default: float, label: str) -> float:
         return default
 
 
-def _ws_header_kwarg(websockets_module: Any) -> str:
-    """Name of the ``websockets.connect`` kwarg that carries extra request headers.
-
-    websockets>=14 renamed ``extra_headers`` to ``additional_headers``. We send
-    the agent's Bearer credential as a header (never a URL query param — that
-    lands in access logs), so we must attach it under whichever name the
-    installed library accepts. The vendored hermes runtime pins
-    websockets==15.0.1 (``additional_headers``), but this plugin also installs
-    into other hermes venvs, so inspect the signature rather than assume. Falls
-    back to the current name if the signature can't be read.
-    """
-    import inspect
-
-    try:
-        params = inspect.signature(websockets_module.connect).parameters
-    except (TypeError, ValueError):
-        return "additional_headers"
-    if "additional_headers" in params:
-        return "additional_headers"
-    if "extra_headers" in params:
-        return "extra_headers"
-    return "additional_headers"
-
-
 class ClawbitsAdapter(BasePlatformAdapter):
     # All three are read by Hermes (gateway/platforms/base.py):
     # ``supports_status_text`` gates the live per-tool status wiring in
@@ -199,10 +181,16 @@ class ClawbitsAdapter(BasePlatformAdapter):
     splits_long_messages = True
     REQUIRES_EDIT_FINALIZE = True
 
+    # The server authenticates every sender on its own transport; there is no
+    # local allowlist for the gateway to consult.
+    @property
+    def authorization_is_upstream(self) -> bool:
+        return True
+
     def __init__(self, config: PlatformConfig) -> None:
         super().__init__(config, Platform("clawbits"))
         extra = config.extra or {}
-        self.base_url = str(extra.get("base_url") or os.getenv("CLAWBITS_BASE_URL") or DEFAULT_BASE_URL)
+        self.base_url = str(extra.get("base_url") or endpoint())
         self.api_key = str(
             config.api_key or config.token or extra.get("api_key") or os.getenv("CLAWBITS_API_KEY") or ""
         )
@@ -236,7 +224,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
             self.cli_path,
             self.base_url,
             self.api_key,
-            str(extra.get("plugin_version") or os.getenv("CLAWBITS_PLUGIN_VERSION") or PLUGIN_VERSION),
+            PLUGIN_VERSION,
             self.answer,
         )
         self._task: asyncio.Task[None] | None = None
@@ -246,10 +234,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         self._automations_task: asyncio.Task[None] | None = None
         self._automations_wake = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
-        # In-flight turn tasks (see _spawn_turn) — held so disconnect can cancel
-        # them and so the set keeps a strong reference (asyncio only weakly
-        # references running tasks; an unreferenced one can be GC'd mid-turn).
-        self._turn_tasks: set[asyncio.Task[None]] = set()
+        # "generating" heartbeats of the turns in flight, keyed by message id.
+        self._heartbeats: dict[str, asyncio.Task[None]] = {}
         # Insertion-ordered post-id dedupe window (dict, not set) capped at
         # _SEEN_CAP so it can't grow forever; _remember() evicts oldest-first.
         self._seen: dict[str, None] = {}
@@ -342,13 +328,11 @@ class ClawbitsAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             setattr(self, attr, None)
-        # In-flight turns die with the platform — they'd have nowhere to
-        # deliver anyway, and a clarify-blocked one would otherwise linger.
-        for task in list(self._turn_tasks):
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        self._turn_tasks.clear()
+        heartbeats = list(self._heartbeats.values())
+        self._heartbeats.clear()
+        for heartbeat in heartbeats:
+            heartbeat.cancel()
+        await asyncio.gather(*heartbeats, return_exceptions=True)
         for message_id, stream_chat in list(self._open_streams.items()):
             await self._close_stream_best_effort(
                 stream_chat, message_id, "_(reply interrupted)_"
@@ -548,7 +532,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
             logger.exception("Clawbits send failed")
             return SendResult(success=False, error=str(exc), retryable=not dispatched)
         finally:
-            # A stream remains generating until _run_turn finishes.
+            # A stream remains generating until the turn completes.
             await self._set_status_best_effort(
                 chat_id, "generating" if expect_edits else "online"
             )
@@ -946,11 +930,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
             )
             return
         # Authenticate via header, not URL query param (keeps the key out of
-        # access logs). The kwarg name differs by websockets version — >=14
-        # calls it ``additional_headers``, older releases ``extra_headers`` —
-        # so resolve it once against the installed library (see _ws_header_kwarg).
+        # access logs).
         auth_headers = {"Authorization": f"Bearer {self.api_key}"}
-        header_kwarg = _ws_header_kwarg(websockets)
         backoff = 1.0
         while self._running:
             try:
@@ -958,7 +939,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
                     self._events_ws_url(),
                     ping_interval=20,
                     max_size=2**22,
-                    **{header_kwarg: auth_headers},
+                    additional_headers=auth_headers,
                 ) as ws:
                     logger.info("clawbits: agent events WebSocket connected (LobsterTalk nudges live)")
                     backoff = 1.0
@@ -1048,15 +1029,12 @@ class ClawbitsAdapter(BasePlatformAdapter):
         logger.info(
             "clawbits: LobsterTalk nudge for post %s in %s — dispatching attention turn", post_id, channel_id
         )
-        # Same non-blocking dispatch as the poll loop: an attention turn that
-        # blocks (clarify, long tools) must not freeze the events WebSocket.
         paths, media_types, notes = await asyncio.to_thread(
             cache_post_attachments, self.client, post
         )
         if notes:
             text = f"{text}\n\n" + "\n".join(notes)
-        self._spawn_turn(
-            channel_id,
+        await self.handle_message(
             MessageEvent(
                 text=_build_agent_body(
                     text,
@@ -1070,7 +1048,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
                 message_id=post_id,
                 media_urls=paths,
                 media_types=media_types,
-            ),
+            )
         )
 
     async def _poll_once(self) -> None:
@@ -1508,7 +1486,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
                 media_urls=paths,
                 media_types=media_types,
             )
-            self._spawn_turn(channel_id, event)
+            await self.handle_message(event)
             self._email_watermark = uid
             self._save_watermark(uid)
 
@@ -1736,76 +1714,33 @@ class ClawbitsAdapter(BasePlatformAdapter):
             media_urls=paths,
             media_types=media_types,
         )
-        # Dispatch the turn as a BACKGROUND task — never await it here. The
-        # gateway resolves mid-turn interactions (clarify answers, messages
-        # queued into a busy session) through this same inbound path, so the
-        # poll loop must keep receiving while a turn runs. Awaiting the turn
-        # inline deadlocked exactly that: a clarify-blocked turn froze the
-        # poll loop, so the answer it was waiting for could never arrive —
-        # the agent sat posting "⏳ Working — N min" until the clarify timed
-        # out, and every later message went unread. Cross-session ordering is
-        # the gateway's job (it queues per-session); tasks here just deliver.
-        self._spawn_turn(channel.id, event)
+        # handle_message enqueues the turn and returns, so the poll loop keeps
+        # receiving while a turn runs: clarify answers and messages queued into
+        # a busy session arrive through this same inbound path.
+        await self.handle_message(event)
 
-    def _spawn_turn(self, channel_id: str, event: MessageEvent) -> None:
-        task = asyncio.create_task(self._run_turn(channel_id, event))
-        self._turn_tasks.add(task)
-        task.add_done_callback(self._turn_tasks.discard)
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        _turn_streams.set(set())
+        chat_id = event.source.chat_id
+        self._heartbeats[event.message_id] = asyncio.create_task(self._generating_heartbeat(chat_id))
+        await self._set_status_best_effort(chat_id, "generating")
 
-    async def _run_turn(self, channel_id: str, event: MessageEvent) -> None:
-        # The whole turn (model + tools + delivery) runs inside handle_message.
-        # Light the "generating" pill up front and heartbeat it for the turn's
-        # duration so a slow turn (image generation especially) keeps showing
-        # activity instead of going dark ~15s in when the presence TTL lapses.
-        #
-        # The initial status set is a SCHEDULED task, not awaited: this
-        # coroutine's first await must be handle_message itself, so turns
-        # spawned in poll order enter the gateway's session layer in that
-        # order (an awaited to_thread here let a later post's turn overtake
-        # an earlier one). The write itself still lands ~immediately.
-        opened_streams: set[str] = set()
-        _turn_streams.set(opened_streams)
-        status = asyncio.create_task(self._set_status_best_effort(channel_id, "generating"))
-        heartbeat = asyncio.create_task(self._generating_heartbeat(channel_id))
-        try:
-            await self.handle_message(event)
-            # The turn SETTLED — this is the one moment the durable read
-            # pointer may advance past the post (crash-before-here means the
-            # post re-delivers on the next boot, which is exactly right). The
-            # gateway queues turns per session, so same-channel settles land
-            # in post order and the monotonic ack can't leapfrog an earlier
-            # unsettled turn.
-            settled_seq = (
-                _post_sequence(event.raw_message)
-                if isinstance(event.raw_message, dict)
-                else 0
-            )
-            if settled_seq > 0:
-                await self._ack_read(channel_id, settled_seq)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # A failed turn must not go unlogged: nothing awaits this task, so
-            # an uncaught exception would otherwise vanish into the done-callback.
-            # Deliberately NOT acked — a failed turn is a transient refusal, and
-            # the un-advanced pointer is what re-delivers the post next boot.
-            logger.exception("clawbits: turn failed for channel %s", channel_id)
-        finally:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        chat_id = event.source.chat_id
+        heartbeat = self._heartbeats.pop(event.message_id, None)
+        if heartbeat is not None:
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
-            # A turn that raised, or produced no final reply, can leave a draft
-            # open. Close this turn's own drafts rather than letting them
-            # shimmer until the server's reaper runs minutes later.
-            for message_id in list(opened_streams):
-                if message_id in self._open_streams:
-                    await self._close_stream_best_effort(
-                        self._open_streams[message_id],
-                        message_id,
-                        "_(reply failed to generate)_",
-                    )
-            # Let the initial set finish first so a fast turn's final "online"
-            # can't be overwritten by its own late "generating".
-            with contextlib.suppress(Exception):
-                await status
-            await self._set_status_best_effort(channel_id, "online")
+        # A turn that raised, or produced no final reply, can leave its draft open.
+        for message_id in list(_turn_streams.get() or ()):
+            if message_id in self._open_streams:
+                await self._close_stream_best_effort(
+                    self._open_streams[message_id], message_id, "_(reply failed to generate)_"
+                )
+        # The durable read pointer advances only past a settled turn; a failed
+        # or cancelled one leaves it, so the post re-delivers on the next boot.
+        settled = _post_sequence(event.raw_message) if isinstance(event.raw_message, dict) else 0
+        if outcome is ProcessingOutcome.SUCCESS and settled > 0:
+            await self._ack_read(chat_id, settled)
+        await self._set_status_best_effort(chat_id, "online")

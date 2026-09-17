@@ -1,0 +1,6 @@
+streaming:
+  enabled: true
+display:
+  platforms:
+    clawbits:
+      tool_progress: "off"

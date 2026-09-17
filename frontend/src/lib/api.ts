@@ -361,6 +361,7 @@ export interface ReefCreatedAgent extends ReefDeclaredAgent {
 
 export interface ReefRole {
   name: string;
+  image: string;
   resources: Record<string, number>;
 }
 

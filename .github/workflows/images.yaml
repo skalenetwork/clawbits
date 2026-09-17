@@ -13,8 +13,8 @@ name: Images
 #
 # There are no tests: the crate resolves two registry versions and shells out to
 # buildx, so everything worth asserting needs a live registry and a docker
-# daemon. The real gate is the publish run itself, whose Dockerfile asserts both
-# plugins load before the image is pushed.
+# daemon. The real gate is the publish run itself, whose Dockerfile asserts the
+# plugin loads before the image is pushed.
 on:
   pull_request:
     paths:
@@ -63,6 +63,10 @@ jobs:
 
       # BASE is a required ARG with no default (the builder always supplies it),
       # so --check needs a value; it is never pulled, this is static analysis.
-      - name: Dockerfile
-        working-directory: images/openclaw
-        run: docker buildx build --check --build-arg BASE=alpine .
+      - name: Dockerfiles
+        working-directory: images
+        run: |
+          set -euo pipefail
+          for f in */Dockerfile; do
+            docker buildx build --check --build-arg BASE=alpine "${f%/Dockerfile}"
+          done

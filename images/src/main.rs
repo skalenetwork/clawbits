@@ -9,6 +9,7 @@ use std::process::Command;
 
 const IMAGES: &str = env!("CARGO_MANIFEST_DIR");
 const STAGED: &str = ".plugin";
+const ARCHIVE: &str = ".plugin.tar";
 const METADATA: &str = ".metadata.json";
 const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
      application/vnd.docker.distribution.manifest.list.v2+json, \
@@ -18,22 +19,51 @@ const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
 struct Recipe {
     name: &'static str,
     repo: &'static str,
-    tag: (&'static str, &'static str),
-    npm: &'static str,
-    ghcr: &'static str,
-    variant: &'static str,
-    clawhub: &'static str,
+    prefix: &'static str,
+    engine: Engine,
+    plugin: Plugin,
 }
 
-const RECIPES: &[Recipe] = &[Recipe {
-    name: "openclaw",
-    repo: "ghcr.io/skalenetwork/clawbits-openclaw",
-    tag: ("oc", "pl"),
-    npm: "openclaw",
-    ghcr: "openclaw/openclaw",
-    variant: "-browser",
-    clawhub: "clawbits-openclaw-plugin",
-}];
+enum Engine {
+    Npm {
+        package: &'static str,
+        image: &'static str,
+        suffix: &'static str,
+    },
+    Release {
+        github: &'static str,
+        image: &'static str,
+    },
+}
+
+enum Plugin {
+    ClawHub(&'static str),
+    Tree(&'static str),
+}
+
+const RECIPES: &[Recipe] = &[
+    Recipe {
+        name: "openclaw",
+        repo: "ghcr.io/skalenetwork/clawbits-openclaw",
+        prefix: "oc",
+        engine: Engine::Npm {
+            package: "openclaw",
+            image: "ghcr.io/openclaw/openclaw",
+            suffix: "-browser",
+        },
+        plugin: Plugin::ClawHub("clawbits-openclaw-plugin"),
+    },
+    Recipe {
+        name: "hermes",
+        repo: "ghcr.io/skalenetwork/clawbits-hermes",
+        prefix: "hm",
+        engine: Engine::Release {
+            github: "NousResearch/hermes-agent",
+            image: "docker.io/nousresearch/hermes-agent",
+        },
+        plugin: Plugin::Tree("extensions/hermes"),
+    },
+];
 
 struct Plan {
     dir: PathBuf,
@@ -43,7 +73,7 @@ struct Plan {
     base: String,
     engine: String,
     plugin: String,
-    stage: &'static str,
+    stage: Option<&'static str>,
 }
 
 /// Build a clawbits agent image.
@@ -74,7 +104,8 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let plan = resolve(pick(cli.image.as_deref())?, &cli)?;
+    let recipe = pick(cli.image.as_deref())?;
+    let plan = resolve(recipe, &cli)?;
 
     println!("  engine   {:<12} {}", plan.engine, plan.base);
     println!("  plugin   {}", plan.plugin);
@@ -84,9 +115,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if cli.local {
-        stage_plugin(&plan.dir)?;
-    }
+    recipe.plugin.prepare(&plan.dir, cli.local)?;
     let built = build(&plan, cli.push, cli.digest);
     fs::remove_dir_all(plan.dir.join(STAGED)).ok();
     built
@@ -105,37 +134,86 @@ fn pick(name: Option<&str>) -> Result<&'static Recipe> {
 fn resolve(recipe: &'static Recipe, cli: &Cli) -> Result<Plan> {
     let engine = match &cli.engine {
         Some(version) => version.clone(),
-        None => npm_latest(recipe.npm)?,
+        None => recipe.engine.latest()?,
     };
-    let tag = format!("{engine}{}", recipe.variant);
-    if !ghcr_has(recipe.ghcr, &tag)? {
-        bail!(
-            "ghcr.io/{}:{tag} is not published; pass --engine <version>",
-            recipe.ghcr
-        );
+    let tag = recipe.engine.tag(&engine);
+    let base = format!("{}:{tag}", recipe.engine.image());
+    if !published(recipe.engine.image(), &tag)? {
+        bail!("{base} is not published; pass --engine <version>");
     }
 
-    let plugin = match (cli.local, &cli.plugin) {
-        (true, _) => "local".to_owned(),
-        (false, Some(version)) => version.clone(),
-        (false, None) => clawhub_latest(recipe.clawhub)?,
-    };
-
-    let (e, p) = recipe.tag;
+    let plugin = recipe.plugin.version(cli)?;
+    let prefix = recipe.prefix;
     let version = match cli.local {
-        true => format!("{e}{engine}-local"),
-        false => format!("{e}{engine}-{p}{plugin}-g{}", head()?),
+        true => format!("{prefix}{engine}-local"),
+        false => format!("{prefix}{engine}-pl{plugin}-g{}", head()?),
     };
     Ok(Plan {
         dir: Path::new(IMAGES).join(recipe.name),
         repo: recipe.repo,
         image: format!("{}:{version}", recipe.repo),
         version,
-        base: format!("ghcr.io/{}:{tag}", recipe.ghcr),
+        base,
         engine,
         plugin,
-        stage: if cli.local { "local" } else { "clawhub" },
+        stage: recipe.plugin.stage(cli.local),
     })
+}
+
+impl Engine {
+    fn image(&self) -> &'static str {
+        match self {
+            Self::Npm { image, .. } | Self::Release { image, .. } => image,
+        }
+    }
+
+    fn latest(&self) -> Result<String> {
+        match self {
+            Self::Npm { package, .. } => npm_latest(package),
+            Self::Release { github, .. } => github_latest(github),
+        }
+    }
+
+    fn tag(&self, version: &str) -> String {
+        match self {
+            Self::Npm { suffix, .. } => format!("{version}{suffix}"),
+            Self::Release { .. } => format!("v{version}"),
+        }
+    }
+}
+
+impl Plugin {
+    fn version(&self, cli: &Cli) -> Result<String> {
+        match (self, cli.local, cli.plugin.as_deref()) {
+            (_, true, _) => Ok("local".to_owned()),
+            (Self::ClawHub(package), false, None) => clawhub_latest(package),
+            (Self::ClawHub(_), false, Some(version)) => Ok(version.to_owned()),
+            (Self::Tree(tree), false, None) => tree_version(tree),
+            (Self::Tree(_), false, Some(_)) => {
+                bail!("--plugin does not apply to an in-tree plugin")
+            }
+        }
+    }
+
+    fn stage(&self, local: bool) -> Option<&'static str> {
+        match self {
+            Self::ClawHub(_) => Some(if local { "local" } else { "clawhub" }),
+            Self::Tree(_) => None,
+        }
+    }
+
+    fn prepare(&self, dir: &Path, local: bool) -> Result<()> {
+        let staged = dir.join(STAGED);
+        fs::remove_dir_all(&staged).ok();
+        match (self, local) {
+            (Self::ClawHub(_), false) => Ok(()),
+            (Self::ClawHub(_), true) => stage_clawhub(&staged),
+            (Self::Tree(tree), true) => {
+                copy_tree(&Path::new(IMAGES).join("..").join(tree), &staged)
+            }
+            (Self::Tree(tree), false) => archive(tree, &staged),
+        }
+    }
 }
 
 fn get<T: DeserializeOwned>(url: &str) -> Result<T> {
@@ -157,6 +235,17 @@ fn npm_latest(package: &str) -> Result<String> {
     Ok(tags.latest)
 }
 
+fn github_latest(repo: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+    }
+    let release: Release = get(&format!(
+        "https://api.github.com/repos/{repo}/releases/latest"
+    ))?;
+    Ok(release.tag_name.trim_start_matches('v').to_owned())
+}
+
 fn clawhub_latest(package: &str) -> Result<String> {
     #[derive(Deserialize)]
     struct Response {
@@ -171,22 +260,51 @@ fn clawhub_latest(package: &str) -> Result<String> {
     Ok(body.package.latest_version)
 }
 
-fn ghcr_has(repo: &str, tag: &str) -> Result<bool> {
+fn tree_version(tree: &str) -> Result<String> {
+    let manifest = Path::new(IMAGES).join("..").join(tree).join("plugin.yaml");
+    let text =
+        fs::read_to_string(&manifest).with_context(|| format!("read {}", manifest.display()))?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("version:"))
+        .and_then(|value| {
+            let value = value.trim_start().trim_start_matches(['"', '\'']);
+            value.split(['"', '\'', '#', ' ', '\t']).next()
+        })
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned)
+        .with_context(|| format!("{} has no version", manifest.display()))
+}
+
+fn published(image: &str, tag: &str) -> Result<bool> {
     #[derive(Deserialize)]
     struct Token {
         token: String,
     }
-    let auth: Token = get(&format!(
-        "https://ghcr.io/token?scope=repository:{repo}:pull&service=ghcr.io"
-    ))?;
-    match ureq::head(&format!("https://ghcr.io/v2/{repo}/manifests/{tag}"))
+    let (host, repo) = image
+        .split_once('/')
+        .context("image has no registry host")?;
+    let (token, manifest) = match host {
+        "ghcr.io" => (
+            format!("https://ghcr.io/token?scope=repository:{repo}:pull&service=ghcr.io"),
+            format!("https://ghcr.io/v2/{repo}/manifests/{tag}"),
+        ),
+        "docker.io" => (
+            format!(
+                "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull"
+            ),
+            format!("https://registry-1.docker.io/v2/{repo}/manifests/{tag}"),
+        ),
+        other => bail!("no registry rule for {other}"),
+    };
+    let auth: Token = get(&token)?;
+    match ureq::head(&manifest)
         .header("Authorization", format!("Bearer {}", auth.token))
         .header("Accept", MANIFEST_ACCEPT)
         .call()
     {
         Ok(_) => Ok(true),
         Err(ureq::Error::StatusCode(404)) => Ok(false),
-        Err(error) => Err(error).context("ghcr manifest"),
+        Err(error) => Err(error).context("registry manifest"),
     }
 }
 
@@ -202,10 +320,8 @@ fn head() -> Result<String> {
     Ok(String::from_utf8(out.stdout)?.trim().to_owned())
 }
 
-fn stage_plugin(dir: &Path) -> Result<()> {
+fn stage_clawhub(staged: &Path) -> Result<()> {
     let plugin = Path::new(IMAGES).join("../plugin");
-    let staged = dir.join(STAGED);
-    fs::remove_dir_all(&staged).ok();
     run("bun", ["install", "--frozen-lockfile"], &plugin)?;
     run("bun", ["run", "build"], &plugin)?;
     for (script, out) in [
@@ -225,15 +341,62 @@ fn stage_plugin(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The committed plugin tree, so a published image never carries local edits.
+/// `git archive` keeps only paths under its working directory, hence the repo root.
+fn archive(tree: &str, staged: &Path) -> Result<()> {
+    let tar = staged.with_file_name(ARCHIVE);
+    let tree_ish = format!("HEAD:{tree}");
+    let repo = Path::new(IMAGES).join("..");
+    run(
+        "git",
+        [
+            "archive".as_ref(),
+            "--format=tar".as_ref(),
+            "-o".as_ref(),
+            tar.as_os_str(),
+            tree_ish.as_ref(),
+        ],
+        &repo,
+    )?;
+    fs::create_dir_all(staged)?;
+    run(
+        "tar",
+        [
+            "-xf".as_ref(),
+            tar.as_os_str(),
+            "-C".as_ref(),
+            staged.as_os_str(),
+        ],
+        &repo,
+    )?;
+    fs::remove_file(&tar).ok();
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from).with_context(|| format!("read {}", from.display()))? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if !entry.file_type()?.is_dir() {
+            fs::copy(entry.path(), &target)?;
+        } else if entry.file_name() != "__pycache__" {
+            copy_tree(&entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 fn build(plan: &Plan, push: bool, digest: bool) -> Result<()> {
     let mut args = vec!["buildx".to_owned(), "build".to_owned()];
-    for (key, value) in [
-        ("BASE", plan.base.as_str()),
-        ("PLUGIN_STAGE", plan.stage),
-        ("ENGINE_VERSION", &plan.engine),
-        ("PLUGIN_VERSION", &plan.plugin),
-        ("IMAGE_VERSION", &plan.version),
-    ] {
+    let mut vars = vec![("BASE", plan.base.as_str())];
+    vars.extend(plan.stage.map(|stage| ("PLUGIN_STAGE", stage)));
+    vars.extend([
+        ("ENGINE_VERSION", plan.engine.as_str()),
+        ("PLUGIN_VERSION", plan.plugin.as_str()),
+        ("IMAGE_VERSION", plan.version.as_str()),
+    ]);
+    for (key, value) in vars {
         args.push("--build-arg".to_owned());
         args.push(format!("{key}={value}"));
     }

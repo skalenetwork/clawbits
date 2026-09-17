@@ -38,7 +38,7 @@ import {
   type ReefHost,
   type ReefRole,
 } from "@/lib/api";
-import { formatRelativeAgo } from "@/lib/formatting";
+import { formatRelativeAgo, parseAgentImage } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -110,8 +110,10 @@ interface View {
   primary?: Action;
 }
 
-/** Reef images are OpenClaw today; the other runtimes are listed as coming. */
-const SOON: Choice[] = (["hermes", "ironclaw"] as const).map((r) => ({ ...RUNTIMES[r], soon: true }));
+/** The image tag names the runtime a role runs (`oc…`, `hm…`); an unknown or unloaded one reads as OpenClaw. */
+const roleRuntime = (role?: ReefRole): Runtime => parseAgentImage(role?.image ?? "").scheme?.runtime ?? "openclaw";
+
+const SOON: Choice[] = [{ ...RUNTIMES.ironclaw, soon: true }];
 
 /** Roles have no title yet, so the name and what it is given tell them apart. */
 function roleMeta({ name, resources }: ReefRole): string {
@@ -226,7 +228,11 @@ export default function AgentSetupPage() {
   const isRunning = hasJoined || onHost?.state === "running";
   const pickedUp = isRunning || Boolean(onHost);
   const runtime: Runtime | undefined =
-    a.where === "self" ? a.runtime : a.where === "reef" && a.role ? "openclaw" : undefined;
+    a.where === "self"
+      ? a.runtime
+      : a.where === "reef" && a.role
+        ? roleRuntime(roles.data?.find((r) => r.name === a.role))
+        : undefined;
 
   function describe(): View {
     if (!a.where) {
@@ -316,7 +322,7 @@ export default function AgentSetupPage() {
                 : undefined,
           choices: roles.data && [
             ...roles.data.map((r) => ({
-              ...RUNTIMES.openclaw,
+              ...RUNTIMES[roleRuntime(r)],
               meta: roleMeta(r),
               pick: () => {
                 const only = hosts.length === 1 ? hosts[0]!.host : undefined;
