@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { updateAgentSettings, type AgentProfile } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
+import { ModelPicker } from "@/components/composer/ModelPicker";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import { SettingsRow, SettingsSection } from "@/components/settings/Settings";
 import { Stepper } from "@/components/ui/stepper";
 import { Switch } from "@/components/ui/switch";
@@ -12,6 +15,9 @@ export function BehaviorSection({ orgId, profile }: { orgId: string; profile: Ag
   const queryClient = useQueryClient();
   const agentId = profile.agent_id;
   const profileKey = queryKeys.agentProfile(orgId, agentId);
+  const [modelOpen, setModelOpen] = useState(false);
+
+  const models = useAgentModels(orgId, agentId).data;
 
   const mutation = useMutation({
     mutationFn: (patch: SettingsPatch) => updateAgentSettings(orgId, agentId, patch),
@@ -30,6 +36,24 @@ export function BehaviorSection({ orgId, profile }: { orgId: string; profile: Ag
 
   return (
     <SettingsSection label="Behavior">
+      {models?.models && (
+        <SettingsRow
+          title="Model"
+          description="Used when a conversation has no choice of its own"
+          control={
+            <ModelPicker
+              orgId={orgId}
+              agentId={agentId}
+              channelId={null}
+              value={models.default}
+              variant="select"
+              align="end"
+              open={modelOpen}
+              onOpenChange={setModelOpen}
+            />
+          }
+        />
+      )}
       <SettingsRow
         title="Snooze"
         description={snoozed ? "Ignoring requests until switched off" : "Pause requests without disconnecting"}

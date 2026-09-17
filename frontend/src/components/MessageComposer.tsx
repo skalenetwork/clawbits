@@ -15,6 +15,7 @@ import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { MENU_SURFACE } from "@/lib/menuSurface";
 
 import { AgentTargetChip } from "@/components/composer/AgentTargetChip";
+import { ModelPicker } from "@/components/composer/ModelPicker";
 import {
   AdminCommandPopover,
   ChannelPopover,
@@ -80,6 +81,7 @@ interface MessageComposerProps {
   ref: Ref<ComposerHandle>;
   isMobile: boolean;
   wrapperRef: RefObject<HTMLDivElement | null>;
+  orgId: string | null;
   channelId: string;
   userId: number | null;
   channelType: MmChannelType | undefined;
@@ -217,6 +219,7 @@ export function MessageComposer({
   ref,
   isMobile,
   wrapperRef,
+  orgId,
   channelId,
   userId,
   channelType,
@@ -254,6 +257,7 @@ export function MessageComposer({
   const [cursor, setCursor] = useState({ key: "", index: 0, dismissed: false });
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [wrapped, setWrapped] = useState(false);
   const [emojiSearch, setEmojiSearch] = useState<typeof import("node-emoji").search | null>(null);
 
@@ -332,6 +336,10 @@ export function MessageComposer({
   );
   const targetHandle = manualTargetHandle ?? autoMention?.handle ?? null;
   const agentPicker = !agentDm && agents.length > 0;
+  const operated = members.filter(
+    (m) => m.is_operator && (agentDm || targetHandle == null || m.agent_id === targetHandle),
+  );
+  const modelAgent = operated.length === 1 ? operated[0] : undefined;
 
   const canSend = isReadyToSend && (draft.trim() !== "" || (attachments.length > 0 && uploadedFileIdsCount > 0));
   const busy = isSending || isUploading;
@@ -619,6 +627,21 @@ export function MessageComposer({
                 if (!handle && autoMention) onDismissAutoMention();
                 setPickerOpen(false);
                 refocusInput();
+              }}
+            />
+          )}
+          {orgId && modelAgent?.agent_id && modelAgent.model_choice && (
+            <ModelPicker
+              orgId={orgId}
+              agentId={modelAgent.agent_id}
+              channelId={channelId}
+              value={modelAgent.model_choice}
+              variant="pill"
+              align={stacked ? "start" : "end"}
+              open={modelPickerOpen}
+              onOpenChange={(open, refocus) => {
+                setModelPickerOpen(open);
+                if (refocus) refocusInput();
               }}
             />
           )}

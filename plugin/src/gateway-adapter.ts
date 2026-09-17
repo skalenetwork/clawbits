@@ -35,6 +35,14 @@ import {
 } from "./inbound-poller.js";
 import { runLivenessPinger } from "./liveness.js";
 import {
+  convergeAgentDefault,
+  convergeSession,
+  INHERIT,
+  operatorDmRoute,
+  type ModelChoice,
+  type ModelSelection,
+} from "./model-choice.js";
+import {
   resolveInboundDispatchGuardTarget,
   withInboundDispatchGuard,
 } from "./inbound-dispatch-guard.js";
@@ -192,8 +200,16 @@ function normalizeSessionCommand(text: string): string | null {
   return `${command}${trimmed.slice(match[0].length)}`;
 }
 
-function isHelpCommand(text: string): boolean {
-  return /^\/help(?:\s|$)/iu.test(text.trim());
+function operatorDmAnswer(text: string, choice: ModelChoice): string | null {
+  const command = /^\/([a-z]+)(?:\s|$)/iu.exec(text.trim())?.[1]?.toLowerCase();
+  if (command === "help") return buildAdminHelpText();
+  const pinned =
+    command === "model"
+      ? choice.model
+      : command === "think" || command === "thinking" || command === "t"
+        ? choice.thinking
+        : null;
+  return pinned === null ? null : "Pick the model and effort from the composer.";
 }
 
 // Bare `/usage` in OpenClaw toggles the per-reply token footer (off→tokens→full)
@@ -232,6 +248,7 @@ export interface DispatchInboundDeps {
    * path is used — the escape hatch for the runtime double-post regression.
    */
   groupChannelShimmer?: boolean;
+  modelSelection?: ModelSelection;
 }
 
 /**
@@ -300,21 +317,24 @@ export async function dispatchInboundMessage(
   const operatorDmSessionCommand = isOperatorDm ? normalizeSessionCommand(msg.text) : null;
   const operatorDmUsageCommand = isOperatorDm ? normalizeUsageCommand(msg.text) : null;
   const effectiveText = operatorDmSessionCommand ?? operatorDmUsageCommand ?? msg.text;
-  const isOperatorDmHelpCommand = isOperatorDm && isHelpCommand(msg.text);
+  const operatorDmReply = isOperatorDm
+    ? operatorDmAnswer(msg.text, deps.modelSelection?.channels.get(conversationId) ?? INHERIT)
+    : null;
   // Native host text commands (e.g. /usage) from the operator DM must run as
   // *authorized text command* turns. Without both CommandSource:"text" and
   // CommandAuthorized, the host treats the slash text as a normal model
   // message and its command detector then silently swallows it at the
   // authorized-sender gate (the "/usage gives no response" report). Session
   // commands above already authorize via ``operatorDmSessionCommand``; this
-  // covers the rest. /help is excluded — the plugin answers it directly below.
+  // covers the rest. Commands in operatorDmAnswer are excluded: the plugin
+  // answers them directly below.
   const isOperatorDmTextCommand =
     isOperatorDm &&
-    !isOperatorDmHelpCommand &&
+    !operatorDmReply &&
     /^\/[a-z][a-z-]*(?:\s|$)/iu.test(msg.text.trim());
   const isAuthorizedCommand = Boolean(operatorDmSessionCommand) || isOperatorDmTextCommand;
 
-  if (isOperatorDmHelpCommand) {
+  if (operatorDmReply) {
     setStatus?.({
       accountId: ctx.accountId,
       lastInboundAt: msg.createAt || Date.now(),
@@ -323,7 +343,7 @@ export async function dispatchInboundMessage(
     if (!client || !answers) {
       logWarn(
         ctx.log,
-        `[clawbits/${ctx.accountId}] /help command could not reply for ${msg.postId}: gateway client/answers missing`,
+        `[clawbits/${ctx.accountId}] operator DM command could not reply for ${msg.postId}: gateway client/answers missing`,
       );
       return;
     }
@@ -333,7 +353,7 @@ export async function dispatchInboundMessage(
           client,
           conversationId,
           {
-            message: buildAdminHelpText(),
+            message: operatorDmReply,
             ...(msg.traceId ? { trace_id: msg.traceId } : {}),
           },
           answer,
@@ -349,7 +369,7 @@ export async function dispatchInboundMessage(
       setStatus?.({ accountId: ctx.accountId, lastError: detail });
       logWarn(
         ctx.log,
-        `[clawbits/${ctx.accountId}] /help command reply failed for ${msg.postId}: ${detail}`,
+        `[clawbits/${ctx.accountId}] operator DM command reply failed for ${msg.postId}: ${detail}`,
       );
     }
     return;
@@ -662,8 +682,21 @@ export async function dispatchInboundMessage(
     // dispatch in, the ``deliver`` callback out), so no OpenClaw-side change is
     // needed to measure it.
     dispatchSpanStart = Date.now();
-    await withInboundDispatchGuard(dispatchGuardTarget, async () =>
-      dispatchInboundDirectDmWithRuntime({
+    await withInboundDispatchGuard(dispatchGuardTarget, async () => {
+      if (deps.modelSelection && dispatchGuardTarget?.agentId) {
+        const ownerChannelId =
+          isDirectChannel &&
+          ctx.account.channelId &&
+          dispatchGuardTarget.sessionKey === operatorDmRoute(ctx.accountId)?.sessionKey
+            ? ctx.account.channelId
+            : conversationId;
+        await convergeSession(
+          { agentId: dispatchGuardTarget.agentId, sessionKey: dispatchGuardTarget.sessionKey },
+          deps.modelSelection.channels.get(ownerChannelId) ?? INHERIT,
+          ctx.log,
+        );
+      }
+      return dispatchInboundDirectDmWithRuntime({
         cfg: ctx.cfg,
         runtime: { channel: runtime } as never,
         channel: CHANNEL_ID,
@@ -778,8 +811,8 @@ export async function dispatchInboundMessage(
             ),
           );
         },
-      }),
-    );
+      });
+    });
     consoleErrorWithFile(
       `[clawbits/${ctx.accountId}] dispatchInboundDirectDmWithRuntime done post=${msg.postId}`,
     );
@@ -978,12 +1011,31 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
     // posts that have already been approved (or were authored by the
     // agent's own approver), so the poller can dispatch every mention
     // it sees without an explicit owner-author check.
+    let modelSelection: ModelSelection | undefined;
     await runInboundPoller({
       client,
       account,
       abortSignal: ctx.abortSignal,
       log: ctx.log,
       watermarkStore: channelWatermarkStore,
+      onModelSelection: (selection) => {
+        modelSelection = selection;
+        const route = operatorDmRoute(ctx.accountId);
+        if (!route) return;
+        void convergeAgentDefault(
+          { accountId: ctx.accountId, agentId: route.agentId },
+          selection.agentDefault,
+          channelWatermarkStore,
+          ctx.log,
+        );
+        if (route.sessionKey && account.channelId) {
+          void convergeSession(
+            { agentId: route.agentId, sessionKey: route.sessionKey },
+            selection.channels.get(account.channelId) ?? INHERIT,
+            ctx.log,
+          );
+        }
+      },
       onInboundMessage: (msg) =>
         runOutsideGatewayRootWork(() =>
           dispatchInboundMessage(ctx, msg, {
@@ -991,6 +1043,7 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
             answers,
             setStatus: ctx.setStatus,
             groupChannelShimmer: account.groupChannelShimmer,
+            modelSelection,
           }),
         ),
     });

@@ -1580,6 +1580,8 @@ class TableRead:
                 TableRead._unread_count(
                     AgentChannelState, MmPost.agent_id, agent_id, mention_regex
                 ).label("unread_mention_count"),
+                AgentChannelState.model,
+                AgentChannelState.thinking,
             )
             .join(MmChannelMember, MmChannelMember.channel_id == MmChannel.channel_id)
             .join(
@@ -1599,16 +1601,28 @@ class TableRead:
                 "last_read_post_id": last_read_post_id,
                 "unread_count": unread_count,
                 "unread_mention_count": unread_mention_count,
+                "model": model,
+                "thinking": thinking,
             }
-            for c, latest_post_id, last_read_post_id, unread_count, unread_mention_count in rows
+            for (
+                c,
+                latest_post_id,
+                last_read_post_id,
+                unread_count,
+                unread_mention_count,
+                model,
+                thinking,
+            ) in rows
             if c.channel_type != "direct"
             or TableRead.can_agent_access_dm(session, c.channel_id, agent_id)
         ]
 
     @staticmethod
-    def get_mm_channel_members(session: Session, channel_id: str) -> list[dict]:
+    def get_mm_channel_members(
+        session: Session, channel_id: str, viewer_human_id: int | None = None
+    ) -> list[dict]:
         return [
-            TableRead._member_to_dict(*row)
+            TableRead._member_to_dict(*row, viewer_human_id=viewer_human_id)
             for row in TableRead._member_rows(session, MmChannelMember.channel_id == channel_id)
         ]
 
@@ -1650,9 +1664,15 @@ class TableRead:
         a: Agent | None,
         p: AgentProfile | None,
         ags: AgentChannelState | None,
+        *,
+        viewer_human_id: int | None,
     ) -> dict:
         """A member row with the raw last-seen and privacy toggles; the endpoint applies the
-        privacy view and Redis presence."""
+        privacy view and Redis presence. Only the agent ``viewer_human_id`` operates carries
+        ``is_operator`` and its model choice for this channel."""
+        operates = (
+            a is not None and viewer_human_id is not None and a.operator_id == viewer_human_id
+        )
         return {
             "agent_id": m.agent_id,
             "human_id": m.human_id,
@@ -1684,6 +1704,12 @@ class TableRead:
             ),
             "agent_status": agent_liveness_status(a.last_alive_at) if a else None,
             "last_alive_at": _iso(a.last_alive_at) if a else None,
+            "is_operator": operates,
+            "model_choice": (
+                {"model": ags.model if ags else None, "thinking": ags.thinking if ags else None}
+                if operates
+                else None
+            ),
         }
 
     @staticmethod
@@ -2647,8 +2673,8 @@ class TableRead:
             row = peers.get(d["channel_id"])
             if row is None:
                 continue
-            m, u, _, a, _, _ = row
-            peer = TableRead._member_to_dict(*row)
+            m, u, *_ = row
+            peer = TableRead._member_to_dict(*row, viewer_human_id=viewer_human_id)
             name = (u.display_name or u.email) if u else peer["display_name"]
             if name:
                 d["display_name"] = name
@@ -2656,7 +2682,7 @@ class TableRead:
                 d["dm_peer_human_id"] = m.human_id
             else:
                 grant = grants.get(m.agent_id)
-                operates = a is not None and a.operator_id == viewer_human_id
+                operates = peer["is_operator"]
                 peer["can_tag"] = operates or bool(grant and grant.can_tag)
                 if not (operates or (grant and grant.can_dm)):
                     uncontactable.add(d["channel_id"])

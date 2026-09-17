@@ -266,12 +266,10 @@ export default function SettingsReefPage() {
                 <section>
                   <h2 className={SUBHEAD}>Agents</h2>
                   {split ? (
-                    <>
-                      <h3 className={SUBHEAD}>Yours</h3>
+                    <div className="space-y-6">
                       {agentGrid(mine)}
-                      <h3 className={cn(SUBHEAD, "pt-5")}>Others</h3>
                       {agentGrid(others)}
-                    </>
+                    </div>
                   ) : (
                     agentGrid(tiles)
                   )}
