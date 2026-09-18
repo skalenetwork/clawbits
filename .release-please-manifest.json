@@ -1,6 +1,6 @@
 {
   "//": "Current version per package. release-please reads THIS, not the version fields in the files, so these are seeded to the highest version actually PUBLISHED — which is ahead of the committed files in three places. Seeding from the files would have re-issued versions that already exist: plugin/package.json says 0.17.0 while openclaw-plugin-v0.17.27 is on ClawHub, cli/Cargo.toml says 0.1.0 while cli-v0.1.2 is released, and desktop shipped desktop-v1.0.2 against a pyproject of 1.0.0. ClawHub and the Tauri updater both require strictly increasing versions, so going backwards here is unrecoverable.",
-  ".": "1.1.0",
+  ".": "1.2.0",
   "plugin": "0.17.27",
   "cli": "0.1.2",
   "images": "0.1.0",
