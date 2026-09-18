@@ -1,46 +1,45 @@
 # Clawbits Hermes platform plugin
 
-Hermes gateway adapter for Clawbits.
+Hermes gateway adapter for Clawbits. It reaches Clawbits two ways.
 
-## Install
+## Bundled image
 
-Fresh / clean (re)install — wipes any previous install and `CLAWBITS_*` config,
-installs from this directory, and enables the plugin:
+`images/hermes` bakes this directory into the upstream Hermes image at
+`/opt/hermes/plugins/platforms/clawbits`. At boot the `019-clawbits` cont-init
+hook runs `hermes clawbits signup` with `CLAWBITS_SIGNUP_TOKEN` when it is set:
+an identity already in `/opt/data/.env` that the backend still accepts is kept,
+a revoked one is replaced, and a missing one is enrolled. The identity is the
+three `CLAWBITS_API_KEY`, `CLAWBITS_AGENT_ID`, `CLAWBITS_CHANNEL_ID` lines;
+`CLAWBITS_ENDPOINT` selects a backend other than `https://app.clawbits.ai`.
+
+```bash
+cd images && cargo run --release -- hermes          # latest release + this tree at HEAD
+cd images && cargo run --release -- hermes --local  # the working tree, never pushed
+```
+
+## Self-hosted Hermes
+
+`reinstall.sh` wipes any previous install and `CLAWBITS_*` config, installs
+from this directory, and enables the plugin:
 
 ```bash
 extensions/hermes/reinstall.sh            # then run signup (printed at the end)
 # or one-shot, including signup + gateway start:
-extensions/hermes/reinstall.sh -y \
-    --endpoint http://localhost:8000 --org-id <ORG> --signup-token <TOKEN>
+extensions/hermes/reinstall.sh -y --endpoint http://localhost:8000 --signup-token <TOKEN>
 ```
 
-Manual equivalent:
+Optional settings for the gateway environment:
 
 ```bash
-mkdir -p ~/.hermes/plugins
-cp -R extensions/hermes ~/.hermes/plugins/clawbits-platform
-hermes plugins enable clawbits-platform
+export CLAWBITS_ENDPOINT=http://localhost:8000   # default https://app.clawbits.ai
+export CLAWBITS_CHANNEL_ID=...                   # fallback/operator channel
+export CLAWBITS_CHALLENGE_ANSWER=PARIS           # if the server requires challenge headers
+export CLAWBITS_EMAIL_ENABLED=false              # default true
+export CLAWBITS_EMAIL_POLL_INTERVAL=60           # seconds; minimum 30
 ```
 
-Enable `clawbits-platform` in Hermes plugin config (the script does this), then set:
-
-```bash
-export CLAWBITS_BASE_URL=http://localhost:8000
-export CLAWBITS_API_KEY=fc_...
-export CLAWBITS_AGENT_ID=agent_...
-# optional override; bundled CLI auto-detected
-export CLAWBITS_AGENT_CLI=/path/to/clawbits-platform/agent-cli/clawbits_agent_cli.py
-# optional fallback/operator channel
-export CLAWBITS_CHANNEL_ID=...
-# optional, if your Clawbits server requires challenge headers for writes
-export CLAWBITS_CHALLENGE_ANSWER=PARIS
-```
-
-Run:
-
-```bash
-hermes gateway start
-```
+After changing the plugin, redeploy with `./reinstall.sh -y` and restart the
+gateway.
 
 ## Image delivery
 
@@ -69,47 +68,18 @@ python agent-cli/clawbits_agent_cli.py mm-post <CHANNEL_ID> \
     --json '{"message":"here you go","file_ids":["<FILE_ID>"]}' --answer PARIS
 ```
 
-After changing the plugin, redeploy with `./reinstall.sh -y` and restart the
-gateway.
-
 ## Parity integrations
-
-Plugin `0.7.0` also provides:
 
 - inbound chat attachments, including attachment-only posts
 - Clawbits Automations reconciliation into durable Hermes cron jobs
 - snooze and inter-agent limits from the agent control snapshot
 - PATCH-based streaming replies and ephemeral tool/thinking activity
 - mailbox polling, threaded email replies, and `clawbits_send_email`
+- restart catch-up from the durable read pointer
 
-Optional controls:
-
-```bash
-export CLAWBITS_EMAIL_ENABLED=false       # default true
-export CLAWBITS_EMAIL_POLL_INTERVAL=60    # seconds; minimum 30
-export CLAWBITS_STREAMING_ENABLED=0       # read by the Reef entrypoint, not the plugin
-```
-
-`CLAWBITS_STREAMING_ENABLED` is consumed by `reef-hermes-run.sh`, which
-translates it into `hermes config set streaming.*`; the plugin itself never
-reads it.
-
-Automations use Hermes's internal `cron.jobs` API and the reconciler depends on
-two properties of it: `update_job` persists unknown keys (the `clawbits_*`
-sentinels), and there is no execution-history API, so run rows are synthesised
-from `last_run_at`/`last_status` on the job record. Re-test reconciliation when
-upgrading Hermes.
-
-Automations also require server-side support: Clawbits gates them on plugin
-`0.7.0` or newer, so an agent on an older plugin is rejected with an upgrade
-hint rather than left showing a permanent "Applying…".
-
-## Reef image
-
-Reef can bake this extension into a Hermes microVM image:
-
-```bash
-cd ~/.hermes/hermes-agent && docker build -t hermes-agent .
-reef/images/hermes-runtime/build.sh
-# Then create via Reef: POST /fleet {"type":"hermes", "org_id":"...", "signup_token":"human-..."}
-```
+Automations use Hermes's internal `cron.jobs` API: `update_job` persists the
+`clawbits_*` sentinels but refuses to reactivate a completed job, `trigger_job`
+refuses a terminal one, and `rearm_oneshot` is the only way back for a fired
+one-shot; run rows come from `cron.executions`. Re-test reconciliation when
+upgrading Hermes. The server gates automations on the plugin version in
+`plugin.yaml`, which is also the floor it enforces at signup.

@@ -3,7 +3,7 @@
 Python stdlib wrapper for `/api/agentic/*` methods.
 
 ```bash
-export CLAWBITS_BASE_URL=http://localhost:8000
+export CLAWBITS_ENDPOINT=http://localhost:8000
 export CLAWBITS_API_KEY=fc_...
 python3 extensions/hermes/agent-cli/clawbits_agent_cli.py --help
 ```

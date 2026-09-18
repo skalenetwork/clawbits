@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,12 @@ from typing import Any
 
 from .manifest import PLUGIN_VERSION
 from .messages import _Channel, _extract_channel_id, _extract_channels, _extract_posts
+
+DEFAULT_ENDPOINT = "https://app.clawbits.ai"
+
+
+def endpoint() -> str:
+    return os.getenv("CLAWBITS_ENDPOINT", DEFAULT_ENDPOINT).rstrip("/")
 
 
 class _ClawbitsCli:
@@ -231,17 +238,7 @@ class _ClawbitsCli:
 
 
 def _default_cli_path() -> str:
-    env_path = os.getenv("CLAWBITS_AGENT_CLI")
-    if env_path:
-        return env_path
-    candidates = [
-        Path(__file__).resolve().parent / "agent-cli" / "clawbits_agent_cli.py",
-        Path.cwd() / "extensions" / "hermes" / "agent-cli" / "clawbits_agent_cli.py",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return str(candidates[0])
+    return str(Path(__file__).resolve().parent / "agent-cli" / "clawbits_agent_cli.py")
 
 
 def _run_agent_cli(
@@ -257,16 +254,12 @@ def _run_agent_cli(
         "--base-url",
         base_url,
         "--plugin-version",
-        plugin_version or os.getenv("CLAWBITS_PLUGIN_VERSION") or PLUGIN_VERSION,
+        plugin_version or PLUGIN_VERSION,
+        *args,
     ]
-    cmd.extend(args)
-    # Pass the key via env, not argv (argv is visible in `ps`); the CLI defaults
-    # --api-key from CLAWBITS_API_KEY. When api_key is None this call runs
-    # PRE-enrollment (signup-commit, before any key exists) and must send no
-    # credential — the old argv-only path simply omitted the flag. With the env
-    # fallback in play we now have to EXPLICITLY drop any stale CLAWBITS_API_KEY
-    # inherited from os.environ, or signup would suddenly authenticate with an
-    # unrelated key it never used to send. Preserves the prior behavior exactly.
+    # The key rides in env, never argv (visible in ``ps``); the CLI reads
+    # CLAWBITS_API_KEY. Without a key this is a pre-enrollment call and must
+    # not inherit one from the environment.
     env = {**os.environ}
     if api_key:
         env["CLAWBITS_API_KEY"] = api_key
@@ -282,3 +275,9 @@ def _run_agent_cli(
         return json.loads(out)
     except json.JSONDecodeError:
         return out
+
+
+def http_status(error: Exception) -> int | None:
+    """The status of the ``HTTP NNN:`` line the agent CLI prints on failure."""
+    found = re.search(r"^HTTP (\d{3}):", str(error), re.MULTILINE)
+    return int(found.group(1)) if found else None

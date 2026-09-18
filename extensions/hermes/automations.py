@@ -9,7 +9,10 @@ this module depends on:
 - ``update_job`` merges ``{**job, **updates}`` and saves, and neither it nor
   ``list_jobs`` whitelists fields — so the ``clawbits_*`` sentinel keys below
   survive a round trip. That is what lets a job carry its own reconciliation
-  state instead of needing a side table.
+  state instead of needing a side table. It refuses to reactivate a
+  completed job and ``trigger_job`` refuses a terminal one; ``rearm_oneshot``
+  is the only way back, so a fired one-shot goes through it before an edit
+  or a manual run.
 - ``cron.executions.latest_execution`` is the real run log (id, claimed/started,
   finished, error). It does not exist on older Hermes builds, so
   :func:`_run_report` falls back to synthesising a row from the job record's
@@ -507,7 +510,15 @@ def _managed_updates(
 
 def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: str) -> None:
     """One synchronous reconcile pass. Called off the event loop."""
-    from cron.jobs import create_job, list_jobs, pause_job, remove_job, trigger_job, update_job
+    from cron.jobs import (
+        create_job,
+        list_jobs,
+        pause_job,
+        rearm_oneshot,
+        remove_job,
+        trigger_job,
+        update_job,
+    )
 
     desired = client.automations_desired()
     items = desired.get("automations")
@@ -672,17 +683,24 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
                         "enabled": enabled,
                         **sentinels,
                     }
-                    if enabled:
-                        updates.update(
-                            {"state": "scheduled", "paused_at": None, "paused_reason": None}
-                        )
-                    # update_job recomputes next_run_at whenever `schedule` is
-                    # present, so sending it on an unrelated edit would restart a
-                    # native interval's grid and starve the job.
-                    if schedule_changed or not native_interval:
-                        updates["schedule"] = schedule_str
-                        if not native_interval:
-                            updates["repeat"] = {"times": 1, "completed": 0}
+                    if not native_interval and existing.get("state") == "completed":
+                        # The only call that may reactivate a completed job; it
+                        # also sets the schedule. A disabled automation is then
+                        # paused again below, marker included.
+                        existing = rearm_oneshot(job_id, schedule_str) or existing
+                        updates.pop("enabled")
+                    else:
+                        if enabled:
+                            updates.update(
+                                {"state": "scheduled", "paused_at": None, "paused_reason": None}
+                            )
+                        # update_job recomputes next_run_at whenever `schedule` is
+                        # present, so sending it on an unrelated edit would restart a
+                        # native interval's grid and starve the job.
+                        if schedule_changed or not native_interval:
+                            updates["schedule"] = schedule_str
+                            if not native_interval:
+                                updates["repeat"] = {"times": 1, "completed": 0}
                     existing = update_job(job_id, updates) or existing
                 elif existing.get(_GENERATION_KEY) != generation:
                     existing = update_job(job_id, {_GENERATION_KEY: generation}) or existing
@@ -700,17 +718,8 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
                 item_runs.append(_run_now_miss(automation_id, job_id, requested, "stopped"))
             else:
                 if terminal or existing.get("state") == "completed":
-                    existing = (
-                        update_job(
-                            job_id,
-                            {
-                                "repeat": {"times": 1, "completed": 0},
-                                "enabled": True,
-                                "state": "scheduled",
-                            },
-                        )
-                        or existing
-                    )
+                    now_ms = int(time.time() * 1000)
+                    existing = rearm_oneshot(job_id, _iso_at(now_ms)) or existing
                 try:
                     started, reason = _interpret_trigger(trigger_job(job_id))
                 except Exception as exc:  # noqa: BLE001 - reported, never raised

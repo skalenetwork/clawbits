@@ -1,16 +1,17 @@
 name: Images publish
 
-# Builds the clawbits agent image on native runners, one architecture each,
+# Builds a clawbits agent image on native runners, one architecture each,
 # pushes both by digest, then merges them into a single multi-arch tag on ghcr.
 #
 # Manual only. This is a multi-gigabyte build and a deliberate release action,
 # not something every images/ commit should trigger.
 #
-# Native runners, not QEMU: the plugin stage runs `openclaw plugins install`
-# (node, network-heavy) inside the target rootfs, which is slow enough under
-# emulation to be worth two runners instead. buildkit defaults to the worker's
-# own platform, so neither job passes --platform and the Dockerfile's TARGETARCH
-# resolves correctly on each.
+# Native runners, not QEMU: the OpenClaw plugin stage runs `openclaw plugins
+# install` (node, network-heavy) inside the target rootfs, which is slow enough
+# under emulation to be worth two runners instead; the Hermes plugin stage is a
+# copy and rides the same jobs. buildkit defaults to the worker's own platform,
+# so neither job passes --platform and the Dockerfile's TARGETARCH resolves
+# correctly on each.
 #
 # Version consistency: with both inputs blank each runner resolves "latest"
 # independently, so a release landing between the two jobs would bake different
@@ -29,11 +30,16 @@ name: Images publish
 on:
   workflow_dispatch:
     inputs:
+      image:
+        description: Image
+        type: choice
+        options: [openclaw, hermes]
+        default: openclaw
       engine:
-        description: OpenClaw version (blank = latest published)
+        description: Engine version (blank = latest published)
         type: string
       plugin:
-        description: Clawbits plugin version (blank = latest published)
+        description: Clawbits plugin version, OpenClaw only (blank = latest published)
         type: string
 
 permissions:
@@ -86,6 +92,7 @@ jobs:
       - name: Build and push by digest
         working-directory: images
         env:
+          IMAGE: ${{ inputs.image }}
           ENGINE: ${{ inputs.engine }}
           PLUGIN: ${{ inputs.plugin }}
           ARCH: ${{ matrix.arch }}
@@ -94,7 +101,7 @@ jobs:
           args=(--push --digest --yes)
           [ -z "$ENGINE" ] || args+=(--engine "$ENGINE")
           [ -z "$PLUGIN" ] || args+=(--plugin "$PLUGIN")
-          cargo run --release -- "${args[@]}" | tee build.log
+          cargo run --release -- "$IMAGE" "${args[@]}" | tee build.log
           mkdir -p "$RUNNER_TEMP/refs"
           awk '$1=="image"{i=$2} $1=="pushed"{split($2,d,"@"); print i, d[2]}' \
             build.log > "$RUNNER_TEMP/refs/$ARCH"

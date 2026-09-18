@@ -656,7 +656,7 @@ default, not something reef sets.
    the correctness guarantee.
 7. **Where Hermes skills actually live.** Phase 6 only. `/opt/data/skills` is
    *inferred* from `HERMES_HOME=/opt/data` plus the documented `~/.hermes/skills`.
-   There is zero skills code in `reef/images/hermes-runtime/`.
+   There is zero skills code in `images/hermes/`.
 
 ---
 

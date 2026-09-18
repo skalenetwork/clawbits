@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .attachments import cache_email_attachments
-from .cli_client import _ClawbitsCli, _default_cli_path
+from .cli_client import _ClawbitsCli, _default_cli_path, endpoint
 from .manifest import PLUGIN_VERSION
 
 logger = logging.getLogger(__name__)
@@ -306,12 +306,14 @@ def _email_tool_available() -> bool:
     return bool(os.getenv("CLAWBITS_API_KEY") and os.getenv("CLAWBITS_AGENT_ID"))
 
 
-def _send_email_tool(subject: str, message: str) -> str:
+def _send_email_tool(args: dict[str, Any], **_: Any) -> str:
+    subject = str(args.get("subject") or "")
+    message = str(args.get("message") or "")
     client = _ClawbitsCli(
         _default_cli_path(),
-        os.getenv("CLAWBITS_BASE_URL", "http://localhost:8000"),
+        endpoint(),
         os.getenv("CLAWBITS_API_KEY", ""),
-        os.getenv("CLAWBITS_PLUGIN_VERSION") or PLUGIN_VERSION,
+        PLUGIN_VERSION,
         os.getenv("CLAWBITS_CHALLENGE_ANSWER") or None,
     )
     result = client.email_send(
@@ -323,17 +325,14 @@ def _send_email_tool(subject: str, message: str) -> str:
 
 
 EMAIL_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "clawbits_send_email",
-        "description": "Send an email from your Clawbits mailbox to your human owner.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "subject": {"type": "string", "description": "Email subject."},
-                "message": {"type": "string", "description": "Plain-text email body."},
-            },
-            "required": ["subject", "message"],
+    "name": "clawbits_send_email",
+    "description": "Send an email from your Clawbits mailbox to your human owner.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "subject": {"type": "string", "description": "Email subject."},
+            "message": {"type": "string", "description": "Plain-text email body."},
         },
+        "required": ["subject", "message"],
     },
 }
