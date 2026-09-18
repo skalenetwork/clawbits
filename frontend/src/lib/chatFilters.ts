@@ -47,11 +47,11 @@ export function sortByRecency(channels: MmChannel[]): MmChannel[] {
     return [...channels].sort((a, b) => activityTime(b) - activityTime(a));
 }
 
-export type AgentChatGroup = {
+export interface AgentChatGroup {
     agentId: string;
     inbox: MmChannel | null;
     chats: MmChannel[];
-};
+}
 
 /** Agents-tab clusters: inbox first, named chats by recency, groups by latest activity. */
 export function groupAgentChats(channels: MmChannel[]): AgentChatGroup[] {
