@@ -464,7 +464,7 @@ class MmChannel(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint("org_id", "name", name="uq_mm_channels_org_name"),
         CheckConstraint(
-            "channel_type IN ('public', 'private', 'direct')",
+            "channel_type IN ('public', 'private', 'direct', 'agent_chat')",
             name="mm_channels_type_check",
         ),
     )

@@ -1052,6 +1052,47 @@ describe("runInboundPoller", () => {
     assert.equal(received[0]?.channelId, "dm-with-bot");
   });
 
+  it("auto-dispatches in a named agent chat without an @mention", async () => {
+    const posts: MattermostPost[] = [
+      { id: "p1", create_at: 200, human_id: 1, message: "hey", channel_id: "named-chat" },
+    ];
+    const stub = installFetchStub((url) => {
+      if (url.endsWith("/api/agentic/mm/channels")) {
+        return {
+          body: {
+            channels: [{ channel_id: "named-chat", channel_type: "agent_chat" }],
+          },
+        };
+      }
+      return {
+        body: {
+          order: posts.map((p) => p.id),
+          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
+        },
+      };
+    });
+    const ac = new AbortController();
+    const received: InboundMessage[] = [];
+    try {
+      await runInboundPoller({
+        client: makeClient(),
+        account: makeAccount(),
+        abortSignal: ac.signal,
+        initialCursor: 150,
+        pollIntervalMs: 1,
+        ownerHumanIds: new Set([1]),
+        onInboundMessage: (msg) => {
+          received.push(msg);
+          ac.abort();
+        },
+      });
+    } finally {
+      stub.restore();
+    }
+    assert.deepEqual(received.map((m) => m.postId), ["p1"]);
+    assert.equal(received[0]?.channelType, "agent_chat");
+  });
+
   it("blocks addressed inbound posts from senders outside non-empty allowFrom", async () => {
     const posts: MattermostPost[] = [
       { id: "blocked", create_at: 200, human_id: 1, message: "nope", channel_id: "chan-123" },
@@ -2642,6 +2683,16 @@ describe("runInboundPoller — server-cursor catch-up", () => {
       false,
       "a quiet channel costs zero cursor reads",
     );
+  });
+
+  it("catch-up auto-dispatches named agent chats without an @mention", async () => {
+    const { received } = await runServerCursorHarness({
+      channel: { channel_type: "agent_chat", latest_post_id: 12, last_read_post_id: 10 },
+      gapPosts: serialPosts("chan-123", 11, 12),
+    });
+    assert.equal(received.length, 1);
+    assert.equal(received[0]?.channelType, "agent_chat");
+    assert.equal(received[0]?.catchUp, true);
   });
 
   it("acks past an examined gap that never addresses the agent", async () => {

@@ -10,6 +10,7 @@ import {
     type MmChannel,
 } from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
+import {isPairChannel} from "@/lib/chatFilters";
 import {exportChatToDisk} from "@/lib/exportChat";
 import {draftStore} from "@/lib/messageDrafts";
 import {toast} from "@/lib/toast";
@@ -100,7 +101,7 @@ export function useChannelActions(): ChannelActions {
         const members = (await listMmChannelMembers(channel.channel_id).catch(() => null))?.members;
         const lastHuman = !members || members.filter((m) => m.human_id != null).length <= 1;
         if (lastHuman) {
-            const agentDm = channel.channel_type === "direct" && (members?.some((m) => m.agent_id != null) ?? false);
+            const agentDm = isPairChannel(channel) && (members?.some((m) => m.agent_id != null) ?? false);
             const ok = await confirm({
                 ...(agentDm
                     ? {
@@ -131,7 +132,7 @@ export function useChannelActions(): ChannelActions {
         toggleMute: (c) => { saveMuted({channelId: c.channel_id, muted: !c.muted}); },
         leave: (c) => { void confirmAndLeave(c); },
         deleteChannel: (c) => { void confirmAndDelete(c); },
-        canDelete: (c) => user != null && c.created_by_human === user.id,
+        canDelete: (c) => user != null && c.created_by_human === user.id && !isPairChannel(c),
         copyLink: (c) => {
             copyToClipboard(`${window.location.origin}/channels/${c.channel_id}`, "Link copied");
         },

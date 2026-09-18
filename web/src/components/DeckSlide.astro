@@ -1,0 +1,29 @@
+---
+import type { DeckSlide } from "../content/deck";
+interface Props {
+  slide: DeckSlide;
+  number: string;
+  appendix?: boolean;
+  layout?: "cover" | "aside" | "screenshot" | "flow" | "columns" | "links";
+  details?: readonly { id: string; title: string }[];
+}
+const { slide, number, appendix = false, layout = "columns", details = [] } = Astro.props;
+---
+<section id={slide.id} class:list={["slide", `layout-${layout}`, { "appendix-slide": appendix }]} aria-labelledby={`${slide.id}-title`} data-number={number}>
+  <div class="slide-frame">
+    <slot name="backdrop" />
+    <header class="slide-heading">
+      <p class="section-label">{appendix ? `Appendix / ${slide.label}` : slide.label}</p>
+      {layout === "cover" ? <h1 id={`${slide.id}-title`}>{slide.title}</h1> : <h2 id={`${slide.id}-title`}>{slide.title}</h2>}
+      <p class="lead">{slide.body}</p>
+    </header>
+    <div class="slide-body"><slot /></div>
+    <footer class="slide-footer">
+      <div>
+        {slide.note && <p class="slide-note">{slide.note}</p>}
+        {appendix ? <a href="#appendix">← Appendix</a> : details.length > 0 && <p class="detail-links">Details: {details.map((link, index) => <><a href={`#${link.id}`}>{link.title}</a>{index < details.length - 1 && " · "}</>)}</p>}
+      </div>
+      <span class="slide-number" aria-label={`Slide ${number}`}>{number}</span>
+    </footer>
+  </div>
+</section>

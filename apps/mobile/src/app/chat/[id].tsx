@@ -33,7 +33,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDerivedValue, useSharedValue } from "react-native-reanimated";
 import { api, ApiError } from "@/lib/api";
 import { historyKey, useHistory, useLiveEvents } from "@/lib/data";
-import { glyphKind } from "@/lib/chatFilters";
+import { glyphKind, isPairChannel } from "@/lib/chatFilters";
 import {
   backUnreadTitle,
   inboxUnread,
@@ -136,7 +136,7 @@ function Conversation({ id }: { id: string }) {
   connectedRef.current = connected;
   const cached = inbox.data?.channels.find((item) => item.channel_id === id);
   const active = channel.data ?? cached;
-  const named = active != null && active.channel_type !== "direct";
+  const named = active != null && !isPairChannel(active);
   const userId = session!.user.id;
   const forbidden =
     channel.error instanceof ApiError &&

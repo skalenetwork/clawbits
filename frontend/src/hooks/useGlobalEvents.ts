@@ -9,7 +9,8 @@ import { updateUserPresence } from "@/hooks/useUserPresence";
 import { useLatestRef } from "@/hooks/useLatestRef";
 import type { AgentLivenessStatus, GlobalUserStatus, MmChannel, MmChannelPost, Org } from "@/lib/api";
 import { isDesktop, notifyForPost } from "@/lib/desktop";
-import { formatChannelTitle } from "@/lib/formatting";
+import { channelListTitle } from "@/lib/formatting";
+import { isPairChannel } from "@/lib/chatFilters";
 import { messageMentionsViewer, selfMentionTokens } from "@/lib/mentions";
 import { toast } from "@/lib/toast";
 
@@ -124,10 +125,10 @@ export function useGlobalEvents(): void {
         if (skipUnread) return;
         const channel = cachedChannels(qc).find((c) => c.channel_id === evt.channel_id);
         if (!channel || channel.muted) return;
-        const title = formatChannelTitle(channel.display_name ?? channel.name);
+        const title = channelListTitle(channel);
         void notifyForPost({
           channelId: evt.channel_id,
-          channelName: channel.channel_type === "direct" ? title : `#${title}`,
+          channelName: isPairChannel(channel) ? title : `#${title}`,
           authorName: post.poster_display_name ?? "Someone",
           body: notificationBody(preview, attachments),
         });
@@ -142,11 +143,16 @@ export function useGlobalEvents(): void {
         patchChannel(qc, evt.channel_id, (c) => ({ ...c, pinned: evt.data.pinned }));
       } else if (evt.type === "channel.added") {
         const incoming = evt.data;
-        patchChannels(qc, (prev) =>
-          prev.channels.some((c) => c.channel_id === incoming.channel_id)
-            ? prev
-            : { channels: [incoming, ...prev.channels].sort(byRecency), total: prev.total + 1 },
-        );
+        qc.setQueryData(queryKeys.mm.channel(incoming.channel_id), incoming);
+        patchChannels(qc, (prev) => {
+          const exists = prev.channels.some((c) => c.channel_id === incoming.channel_id);
+          return {
+            channels: exists
+              ? prev.channels.map((c) => (c.channel_id === incoming.channel_id ? incoming : c))
+              : [incoming, ...prev.channels].sort(byRecency),
+            total: exists ? prev.total : prev.total + 1,
+          };
+        });
         void qc.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
       } else if (evt.type === "channel.removed") {
         patchChannels(qc, (prev) => {

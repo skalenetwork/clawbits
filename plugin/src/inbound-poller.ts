@@ -552,6 +552,10 @@ function hasAgentMention(message: string, agentId: string): boolean {
   return mentionRegex(agentId).test(message);
 }
 
+function isPairChat(channelType: string | null | undefined): boolean {
+  return channelType === "direct" || channelType === "agent_chat";
+}
+
 /**
  * Bare `/cb-usage` is a DM-only command answered server-side in-chat (the gateway
  * posts the agent's CB_TOKENS balance as a reply). In a DM the plugin must not
@@ -1269,6 +1273,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     }
 
     const isDirectChannel = channelType === "direct";
+    const pairChat = isPairChat(channelType);
     const isFallbackOperatorChannel = Boolean(
       fallbackChannelId && postChannelId === fallbackChannelId && channelType === null,
     );
@@ -1278,7 +1283,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     // not self, allowFrom, not already seen) still apply. Non-addressed posts
     // are never marked seen, so this can't double-fire against `post.created`.
     const isAddressedToAgent =
-      hasMention || isDirectChannel || isFallbackOperatorChannel || forceAttention;
+      hasMention || pairChat || isFallbackOperatorChannel || forceAttention;
     // `/cb-usage` is a DM-only command answered server-side; elsewhere it's a
     // normal message and must still reach the model.
     const isServerCommand = isDirectChannel && isServerHandledCommand(post.message);
@@ -1366,10 +1371,10 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     // not otherwise carry catch-up context at all — but still advance the
     // "shown" watermark so the next mention doesn't re-inject the same history.
     const channelEligible =
-      !contextOverride && backlog > 0 && !isDirectChannel && !isFallbackOperatorChannel;
+      !contextOverride && backlog > 0 && !pairChat && !isFallbackOperatorChannel;
     if (contextOverride) {
       if (contextOverride.length > 0) priorContext = contextOverride;
-      if (!isDirectChannel && !isFallbackOperatorChannel) {
+      if (!pairChat && !isFallbackOperatorChannel) {
         watermarks?.set(account.accountId, channelId, postCreateAt);
       }
     }
@@ -1408,7 +1413,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     // Reply-tagging addresses the right participant in a multi-party (inter-
     // agent) channel. In a 1:1 DM there's only one counterpart, so prefixing
     // every reply with their handle is noise — skip it in direct channels.
-    const senderTag = interAgentMode && !isDirectChannel ? senderTagForPost(post) : undefined;
+    const senderTag = interAgentMode && !pairChat ? senderTagForPost(post) : undefined;
     const msg: InboundMessage = {
       accountId: account.accountId,
       channelId: postChannelId,
@@ -1795,7 +1800,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
           continue;
         }
 
-        const isDirect = channelType === "direct";
+        const pairChat = isPairChat(channelType);
         // Mirrors processPost's operator test exactly (channelType === null):
         // a typed non-direct operator channel must NOT pick an un-mentioned
         // trigger here that processPost will then refuse as not-addressed —
@@ -1806,7 +1811,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         );
         const addressed = pending.filter(
           (p) =>
-            isDirect ||
+            pairChat ||
             isOperator ||
             (account.agentId ? hasAgentMention(p.message ?? "", account.agentId) : false),
         );

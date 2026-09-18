@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { listAgentChannels, type AgentDeliveryChannel, type Automation } from "@/lib/api";
 import { automationAccent, type AutomationVisualState } from "@/lib/automations";
+import { isPairType } from "@/lib/chatFilters";
 import { formatRelativeAgo } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
 import { describeSchedule, formatInstant, parseSchedule } from "@/lib/schedule";
@@ -36,7 +37,7 @@ function deliveryLabel(
   const channel = channels?.find((c) => c.channel_id === delivery.to);
   if (!channel) return channels ? `A channel ${agentName} has left` : "The configured channel";
   const name = channel.display_name ?? channel.name;
-  return channel.channel_type === "direct" ? name : `#${name}`;
+  return isPairType(channel.channel_type) ? name : `#${name}`;
 }
 
 function Alert({ bad = false, children }: { bad?: boolean; children: ReactNode }) {

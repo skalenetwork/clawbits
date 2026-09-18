@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   activityTime,
   filterChannelsByTab,
+  groupAgentChats,
+  isPairType,
   sortByRecency,
 } from "./chatFilters";
 import type { MmChannel } from "./api";
@@ -17,9 +19,23 @@ const channel = (overrides: Partial<MmChannel> & { channel_id: string }): MmChan
 const pub = channel({ channel_id: "pub", channel_type: "public" });
 const priv = channel({ channel_id: "priv", channel_type: "private" });
 const dm = channel({ channel_id: "dm", channel_type: "direct" });
+const chat = channel({
+  channel_id: "chat",
+  channel_type: "agent_chat",
+  dm_peer_agent_id: "atlas",
+  display_name: "Fix auth",
+});
+
+describe("isPairType", () => {
+  it("is true for inbox and named chats", () => {
+    expect(isPairType("direct")).toBe(true);
+    expect(isPairType("agent_chat")).toBe(true);
+    expect(isPairType("public")).toBe(false);
+  });
+});
 
 describe("filterChannelsByTab", () => {
-  const all = [pub, priv, dm];
+  const all = [pub, priv, dm, chat];
 
   it("returns everything for the 'all' tab", () => {
     expect(filterChannelsByTab(all, "all")).toEqual(all);
@@ -29,13 +45,19 @@ describe("filterChannelsByTab", () => {
     expect(filterChannelsByTab(all, "channels")).toEqual([pub, priv]);
   });
 
-  it("returns only direct channels for the 'dms' tab", () => {
-    expect(filterChannelsByTab(all, "dms")).toEqual([dm]);
+  it("returns only human 1:1s for the 'dms' tab", () => {
+    const inbox = channel({ channel_id: "inbox", channel_type: "direct", dm_peer_agent_id: "atlas" });
+    expect(filterChannelsByTab([inbox, chat, dm], "dms")).toEqual([dm]);
   });
 
   it("includes pinned channels in their type's tab (no exclusion)", () => {
     const pinnedDm = channel({ channel_id: "pdm", channel_type: "direct", pinned: true });
     expect(filterChannelsByTab([pinnedDm, dm], "dms")).toEqual([pinnedDm, dm]);
+  });
+
+  it("returns agent inbox and named chats for the 'agents' tab", () => {
+    const inbox = channel({ channel_id: "inbox", channel_type: "direct", dm_peer_agent_id: "atlas" });
+    expect(filterChannelsByTab([inbox, chat, dm], "agents")).toEqual([inbox, chat]);
   });
 });
 
@@ -81,5 +103,56 @@ describe("activityTime", () => {
   it("returns 0 when neither timestamp is present", () => {
     const bare = { channel_id: "x", name: "x", channel_type: "public", created_at: "" } as MmChannel;
     expect(activityTime(bare)).toBe(0);
+  });
+});
+
+describe("groupAgentChats", () => {
+  it("clusters inbox first and named chats by recency", () => {
+    const inbox = channel({
+      channel_id: "inbox",
+      channel_type: "direct",
+      dm_peer_agent_id: "atlas",
+      last_message_at: "2026-06-10T00:00:00Z",
+    });
+    const older = channel({
+      channel_id: "older",
+      channel_type: "agent_chat",
+      dm_peer_agent_id: "atlas",
+      last_message_at: "2026-06-08T00:00:00Z",
+    });
+    const newer = channel({
+      channel_id: "newer",
+      channel_type: "agent_chat",
+      dm_peer_agent_id: "atlas",
+      last_message_at: "2026-06-12T00:00:00Z",
+    });
+    const other = channel({
+      channel_id: "other",
+      channel_type: "direct",
+      dm_peer_agent_id: "bravo",
+      last_message_at: "2026-06-01T00:00:00Z",
+    });
+    const groups = groupAgentChats([older, other, inbox, newer]);
+    expect(groups.map((g) => g.agentId)).toEqual(["atlas", "bravo"]);
+    expect(groups[0]?.inbox?.channel_id).toBe("inbox");
+    expect(groups[0]?.chats.map((c) => c.channel_id)).toEqual(["newer", "older"]);
+    expect(groups[1]?.inbox?.channel_id).toBe("other");
+    expect(groups[1]?.chats).toEqual([]);
+  });
+
+  it("keeps named chats without an inbox", () => {
+    const solo = channel({
+      channel_id: "solo",
+      channel_type: "agent_chat",
+      dm_peer_agent_id: "atlas",
+    });
+    const groups = groupAgentChats([solo]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.inbox).toBeNull();
+    expect(groups[0]?.chats).toEqual([solo]);
+  });
+
+  it("skips channels without an agent peer", () => {
+    expect(groupAgentChats([dm, pub])).toEqual([]);
   });
 });

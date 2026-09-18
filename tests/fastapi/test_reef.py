@@ -14,6 +14,7 @@ import json
 import tomllib
 from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -23,7 +24,7 @@ import clawbits.fastapi.human_endpoints as he
 from clawbits import reef_repo
 from clawbits.datastructures.known_answers import get_answer_for_question
 from clawbits.db.models import Agent, Organization
-from clawbits.reef_repo import NAME_RE, ReefRepo, ReefRepoError, fleet_name
+from clawbits.reef_repo import NAME_RE, ReefRepo, ReefRepoError, fleet_name, parse_role
 from tests.fastapi._auth_helpers import auth_headers as _auth
 from tests.fastapi._auth_helpers import register_human as _register
 
@@ -801,3 +802,22 @@ def test_probe_refuses_a_repo_the_bus_cannot_run_on(monkeypatch, private, branch
         return
     with pytest.raises(ReefRepoError, match=expected):
         asyncio.run(repo.probe())
+
+
+DEV_ROLE = (
+    Path(__file__).resolve().parents[2] / "reef" / "roles" / "clawbits-openclaw-dev.toml"
+)
+
+
+def test_dev_openclaw_role_targets_the_host():
+    raw = DEV_ROLE.read_bytes()
+    data = tomllib.loads(raw.decode())
+    assert data["name"] == "clawbits-openclaw-dev"
+    assert data["env"]["CLAWBITS_ENDPOINT"] == "http://host.microsandbox.internal:8000"
+    assert data["network"]["host"] == [8000]
+    assert parse_role("clawbits-openclaw-dev", raw, "https://app.clawbits.ai") is None
+    role = parse_role(
+        "clawbits-openclaw-dev", raw, "http://host.microsandbox.internal:8000"
+    )
+    assert role is not None
+    assert role.name == "clawbits-openclaw-dev"

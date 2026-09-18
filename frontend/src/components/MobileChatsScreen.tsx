@@ -5,7 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/context/AuthContext";
 import { listMmChannels, type MmChannel } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { formatChannelTitle, formatRelativeShort } from "@/lib/formatting";
+import { channelListTitle, formatRelativeShort } from "@/lib/formatting";
+import { isPairChannel } from "@/lib/chatFilters";
 import { useMessageDrafts } from "@/hooks/useMessageDrafts";
 import { useChannelActions } from "@/hooks/useChannelActions";
 import { ChannelGlyph } from "@/components/ChannelGlyph";
@@ -59,7 +60,7 @@ export function MobileChatsScreen() {
   };
 
   const renderSubtitle = (channel: MmChannel): ReactNode => {
-    const isDm = channel.channel_type === "direct";
+    const isDm = isPairChannel(channel);
     const preview = channel.last_message_text ?? null;
     const attachmentCount = channel.last_message_attachment_count ?? 0;
     const authorName = channel.last_message_author_display_name ?? null;
@@ -129,7 +130,7 @@ export function MobileChatsScreen() {
             const mentionCount = channel.unread_mention_count ?? 0;
             const hasMention = mentionCount > 0;
             const muted = Boolean(channel.muted);
-            const isDm = channel.channel_type === "direct";
+            const isDm = isPairChannel(channel);
             // Same unread ladder as the desktop sidebar + rail: red @N for
             // mentions (pierces mute), red count for DM unreads, an ink dot
             // for channel chatter, nothing when muted (row renders dimmed).
@@ -154,7 +155,7 @@ export function MobileChatsScreen() {
                 }
                 title={
                   <span className={`${showsBold ? "font-semibold" : "font-medium"} ${muted ? "opacity-60" : ""}`}>
-                    {formatChannelTitle(channel.display_name ?? channel.name)}
+                    {channelListTitle(channel)}
                   </span>
                 }
                 subtitle={
