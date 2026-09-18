@@ -55,14 +55,14 @@ cd clawbits-ironclaw-<version>
 ./clawbits-ironclaw install --endpoint https://app.clawbits.ai --api-key ck_…
 ```
 
-CI publishes that tarball as a GitHub Release asset on the sibling
-`skalenetwork/clawbits-openclaw-plugin` repo (the same repo the OpenClaw plugin
-releases into), tagged `ironclaw-channel-v<version>`, whenever `ironclaw-channel/**`
-changes on `main` (`.github/workflows/publish-ironclaw-channel.yaml`). The version
-is automatic: `major.minor` comes from `clawbits.capabilities.json`, and CI stamps
-the patch as the count of commits touching `ironclaw-channel/` — so every change
-here publishes a fresh version with no manual bump. Bump `major`/`minor` in the
-manifest by hand only for a deliberate semantic jump.
+There is no publish pipeline. The workflow that built and uploaded this tarball
+was removed after running three times and failing all three: it published to the
+sibling `skalenetwork/clawbits-openclaw-plugin` repo through a
+`PLUGIN_MIRROR_TOKEN` secret that was never created, so no release was ever cut.
+Build and upload by hand if this channel is revived.
+
+`clawbits.capabilities.json` is still read as a version floor by
+`clawbits/fastapi/version_check.py`, which is why this crate stays in the tree.
 
 ## Install into an IronClaw agent
 

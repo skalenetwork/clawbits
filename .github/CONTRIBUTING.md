@@ -38,9 +38,14 @@ Two gates catch things people miss:
 
 Branch as `{fix|feat|refactor|chore}/{short-description}`, opened against `main`.
 
-Commit subjects follow [Conventional Commits](https://www.conventionalcommits.org/) — `feat:`,
-`fix:`, `refactor:`, `chore:`, `docs:`. Releases are cut by semantic-release from these, so the
-prefix decides the version bump.
+**Your PR title** follows [Conventional Commits](https://www.conventionalcommits.org/) — `feat:`,
+`fix:`, `refactor:`, `chore:`, `docs:`. PRs are squash-merged, so the title becomes the one commit
+subject on `main`, and release-please reads it to decide the version bump. The `PR title` check
+enforces this. Add a scope to steer which component bumps: `fix(plugin): …`.
+
+Commits on your branch are not linted and are discarded by the squash. Write them however you like.
+
+See [docs/RELEASING.md](../docs/RELEASING.md) for what each prefix does.
 
 ## Pull requests
 

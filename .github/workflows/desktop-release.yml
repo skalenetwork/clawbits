@@ -1,21 +1,33 @@
 name: Desktop release
 
 # Triggers:
-#   - push to `main`      → STAGING build, app.freeclaws.ai API, pre-release
 #   - push to `prod`      → PROD build, app.clawbits.ai API, normal release,
 #                           updater `latest.json` updated
-#   - tag `desktop-v*`    → same as prod, explicit version named after the tag
-#   - workflow_dispatch   → manual override (version + channel via inputs)
+#   - workflow_dispatch   → manual override (version + channel via inputs).
+#                           This is how you get a staging build now.
 #
-# Releases land in this repo under `desktop-v*` tags — deliberately namespaced
-# so they never collide with semantic-release's `v*` code tags, which live in
-# the same tag namespace. Staging uses GitHub's `prerelease` flag so the
-# updater's `releases/latest/` redirect only ever resolves to prod builds.
+# It used to also build on every push to `main`: a ~17 minute three-platform
+# signed build per merge, frequently cancelled by the next merge before it
+# finished, which left 73 `desktop-v*-staging.<sha>` tags against 12 real
+# releases. Staging builds are on demand now.
+#
+# The `tags: ['desktop-v*']` trigger is gone too, because it could never fire.
+# Those tags are created by this workflow using GITHUB_TOKEN, and GitHub does
+# not start workflow runs from GITHUB_TOKEN-created refs, so it was
+# self-referential and dead from the start.
+#
+# Releases land in this repo under `desktop-v*` tags. THIS IS THE ONLY WORKFLOW
+# ALLOWED TO CREATE A RELEASE WITHOUT `--latest=false`: tauri.conf.json bakes
+# releases/latest/download/latest.json into every binary ever shipped, so
+# GitHub's "Latest" pointer is a production endpoint and must always resolve
+# here. Staging uses the `prerelease` flag so it never becomes Latest.
+#
+# The version comes from desktop/src-tauri/tauri.conf.json, which release-please
+# writes (release-please-config.json, the `.` package). Nothing is bumped by hand.
 
 on:
   push:
-    branches: [main, prod]
-    tags: ['desktop-v*']
+    branches: [prod]
   workflow_dispatch:
     inputs:
       version:
@@ -31,6 +43,13 @@ on:
 
 permissions:
   contents: read
+
+# This workflow had no concurrency group at all, which is how a main push could
+# leave a half-finished signed build behind when the next one superseded it.
+# Never cancel in progress: a release mid-upload is not safe to interrupt.
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   setup:
@@ -48,8 +67,6 @@ jobs:
       - name: Compute
         id: compute
         env:
-          REF: ${{ github.ref }}
-          REF_NAME: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_CHANNEL: ${{ inputs.channel }}
@@ -58,22 +75,18 @@ jobs:
           BASE_VERSION=$(jq -r .version desktop/src-tauri/tauri.conf.json)
           SHA7=${SHA:0:7}
 
-          # Channel: input wins, then ref-derived.
-          if [[ -n "${INPUT_CHANNEL:-}" ]]; then
-            CHANNEL="$INPUT_CHANNEL"
-          elif [[ "$REF" == refs/heads/main ]]; then
-            CHANNEL=staging
-          else
-            CHANNEL=prod
-          fi
+          # Only `prod` pushes and manual dispatches reach this workflow, and
+          # dispatch always supplies a channel (it defaults to prod), so there
+          # is nothing left to derive from the ref.
+          CHANNEL="${INPUT_CHANNEL:-prod}"
 
-          # Version: input wins, then ref-derived.
+          # Version: input wins, otherwise tauri.conf.json (written by
+          # release-please). The `refs/tags/desktop-v*` branch that used to live
+          # here went with the trigger that could never fire.
           if [[ -n "${INPUT_VERSION:-}" ]]; then
             VERSION="$INPUT_VERSION"
-          elif [[ "$REF" == refs/tags/desktop-v* ]]; then
-            VERSION="${REF_NAME#desktop-v}"
           elif [[ "$CHANNEL" == staging ]]; then
-            # Staging gets a per-commit suffix so each merge produces a
+            # Staging gets a per-commit suffix so each dispatch produces a
             # unique release. Pre-release flag below keeps prod's
             # `releases/latest/` redirect untouched.
             VERSION="${BASE_VERSION}-staging.${SHA7}"

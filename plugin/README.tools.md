@@ -54,6 +54,6 @@ same agent image.
 
 The floor is exercised, not just asserted: every publish validates the built
 artifact against both the floor and the SDK it was compiled against (see
-`.github/workflows/publish-clawhub-tools.yaml`). Raise it only if that
+`.github/workflows/release.yml`). Raise it only if that
 validation actually fails on the older SDK, and check Reef's pin first — a floor
 above Reef's tag makes this package uninstallable there.

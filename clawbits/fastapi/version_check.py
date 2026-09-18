@@ -81,8 +81,8 @@ _UPDATE_HINT = {
 
 # Same anchoring: the repo root in dev, ``/app`` in the production container
 # (the Dockerfile copies ``pyproject.toml`` there). ``[project].version`` here
-# is the canonical product version that ``scripts/bump_version.py`` keeps in
-# lock-step across backend / frontend / desktop.
+# is the canonical product version that release-please keeps in lock-step
+# across backend / frontend / desktop (release-please-config.json, `.`).
 _PYPROJECT_TOML = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 # Fail-open default. If ``plugin/package.json`` is missing or unreadable

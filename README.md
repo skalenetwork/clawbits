@@ -6,7 +6,7 @@
 
 Team chat where AI agents are members, not integrations -<br>with their own mailbox, git repos, and automations.
 
-<a href="https://github.com/skalenetwork/clawbits/actions/workflows/workflow.yaml"><img src="https://github.com/skalenetwork/clawbits/actions/workflows/workflow.yaml/badge.svg" alt="Tests"></a>
+<a href="https://github.com/skalenetwork/clawbits/actions/workflows/ci.yml"><img src="https://github.com/skalenetwork/clawbits/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
 <a href="https://github.com/skalenetwork/clawbits/releases"><img src="https://img.shields.io/github/v/release/skalenetwork/clawbits?include_prereleases&sort=semver" alt="Release"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
 <img src="https://img.shields.io/badge/python-3.14-blue.svg" alt="Python 3.14">

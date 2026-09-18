@@ -15,8 +15,8 @@ Two consequences:
 
 ## Adding a release
 
-Name the file after the released version, matching the prod semantic-release tag without its `v` (`prod` cuts
-`vX.Y.Z`). The filename is the version the card shows and dedupes on. Files not named like a version (this
+Name the file after the released version, matching the prod release-please tag without its `v`
+(release-please cuts `vX.Y.Z`). The filename is the version the card shows and dedupes on. Files not named like a version (this
 README, drafts) are ignored by both surfaces.
 
 A short user-facing body (what changed for users, not commit-speak), usually a bullet list:

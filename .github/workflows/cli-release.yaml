@@ -3,21 +3,24 @@ name: CLI Release
 # Release pipeline for the `cbs` terminal client in cli/. Runs only on a push
 # to main touching cli/** (or a manual dispatch) — never on pull requests, so
 # none of these jobs show up (even as "Skipped") in a PR's checks. The PR gate
-# is cli.yaml; the `check` job here re-runs the same fmt/clippy/tests before
-# publishing, because a direct push to main would otherwise skip them.
+# is the `rust` matrix in ci.yml; the `check` job here re-runs the same
+# fmt/clippy/tests before publishing, because a direct push to main would
+# otherwise skip them.
 #
 # Publishes release binaries for four targets to a GitHub Release ON THIS
-# REPO, tagged `cli-v<version>`. That tag prefix keeps clear of the product's
-# `v*` (semantic-release), `desktop-v*`, and the plugin tags, and
-# `--latest=false` keeps the product release as the repo's "Latest".
+# REPO, tagged `cli-v<version>`. That tag prefix keeps it clear of `v*`,
+# `desktop-v*` and the plugin tags.
 #
-# Versioning mirrors publish-ironclaw-channel.yaml: major.minor is
-# hand-controlled in cli/Cargo.toml, the patch is the count of commits touching
-# cli/, so every change publishes a fresh monotonic version with no manual
-# bump. The stamp lands in the CI checkout only, never committed back.
-# Re-running the same commit yields the same version and hits the
-# skip-if-exists guard; the `force` dispatch input re-uploads that version's
-# assets.
+# `--latest=false` is MANDATORY here and everywhere except the desktop release:
+# desktop/src-tauri/tauri.conf.json bakes
+# releases/latest/download/latest.json into every shipped binary, so a CLI
+# release that took "Latest" would 404 the updater for every installed desktop
+# app.
+#
+# The version is read from cli/Cargo.toml, which release-please writes
+# (release-please-config.json, the `cli` package). Re-running the same commit
+# yields the same version and hits the skip-if-exists guard; the `force`
+# dispatch input re-uploads that version's assets.
 #
 # Linux runners are PINNED, never ubuntu-latest: binaries link the runner's
 # glibc, so the image sets the compatibility floor and `latest` would move it
@@ -97,9 +100,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # Full history: the auto version's patch component is the count of
-          # commits touching cli/.
-          fetch-depth: 0
+          persist-credentials: false
           persist-credentials: false
 
       - name: Install Rust (${{ matrix.target }})
@@ -113,31 +114,19 @@ jobs:
           workspaces: cli
           key: ${{ matrix.target }}
 
-      - name: Stamp auto version (patch = commit count)
+      # Cargo.toml already carries the release version: release-please writes it
+      # (release-please-config.json, the `cli` package). The step that used to be
+      # here rewrote it in the CI checkout as `<major.minor>.<commits touching
+      # cli/>`, which is not monotonic — `git rev-list --count` resets under
+      # squash-merge, now the only merge mode in this repo, and had already
+      # drifted below the released cli-v0.1.2.
+      - name: Read version
         working-directory: cli
         run: |
           set -euo pipefail
-          base="$(python3 -c "
-          import re
-          text = open('Cargo.toml').read()
-          v = re.search(r'(?m)^version = \"([^\"]+)\"', text).group(1)
-          print('.'.join(v.split('.')[:2]))
-          ")"
-          patch="$(git rev-list --count HEAD -- .)"
-          export STAMP_VERSION="${base}.${patch}"
-          echo "auto version = ${STAMP_VERSION}"
-          # python, not sed -i: this step runs on both Linux and macOS and
-          # BSD sed spells in-place editing differently.
-          python3 - <<'PY'
-          import os, pathlib, re
-          v = os.environ["STAMP_VERSION"]
-          cargo = pathlib.Path("Cargo.toml")
-          text, n = re.subn(r'(?m)^version = "[^"]+"', f'version = "{v}"', cargo.read_text(), count=1)
-          if n != 1:
-              raise SystemExit("failed to stamp Cargo.toml version")
-          cargo.write_text(text)
-          PY
-          echo "STAMP_VERSION=${STAMP_VERSION}" >> "$GITHUB_ENV"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "version = ${version}"
+          echo "STAMP_VERSION=${version}" >> "$GITHUB_ENV"
 
       - name: Build
         working-directory: cli
@@ -174,21 +163,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # Shallow is enough now that the version comes out of Cargo.toml
+          # instead of counting commits.
+          persist-credentials: false
 
       - name: Resolve release tag
         id: meta
         working-directory: cli
         run: |
           set -euo pipefail
-          base="$(python3 -c "
-          import re
-          text = open('Cargo.toml').read()
-          v = re.search(r'(?m)^version = \"([^\"]+)\"', text).group(1)
-          print('.'.join(v.split('.')[:2]))
-          ")"
-          patch="$(git rev-list --count HEAD -- .)"
-          version="${base}.${patch}"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=cli-v$version" >> "$GITHUB_OUTPUT"
 

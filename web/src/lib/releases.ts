@@ -161,11 +161,11 @@ let cached: Promise<DesktopRelease | null> | undefined;
 export function getDesktopRelease(): Promise<DesktopRelease | null> {
   cached ??= (async () => {
     try {
-      // The LIST endpoint, not /releases/latest. Two reasons: the desktop
-      // pipeline publishes `-staging.<sha>` prereleases constantly, and the
-      // repo also runs semantic-release for the app itself - so the single
-      // "latest" release is not guaranteed to be a desktop one. Pick the
-      // newest published release that actually carries installable assets.
+      // The LIST endpoint, not /releases/latest. The repo also cuts releases
+      // for the product, the plugin and the CLI, and staging desktop builds
+      // are prereleases - so the single "latest" release is not guaranteed to
+      // be a desktop one. Pick the newest published release that actually
+      // carries installable assets.
       const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
         headers: {
           "User-Agent": "clawbits-web-build",
@@ -238,8 +238,8 @@ export interface DesktopFacts {
  * The fallback version: the one this working tree is ON.
  *
  * Read from desktop/package.json rather than written here as a literal, so the
- * value cannot rot - scripts/bump_version.py already keeps that file current,
- * and it is the same number the pipeline will tag. Only ever reached when the
+ * value cannot rot - release-please already keeps that file current, and it is
+ * the same number the pipeline will tag. Only ever reached when the
  * build cannot talk to api.github.com (offline, or rate-limited CI).
  *
  * node:fs, not a JSON import: the file lives outside the Astro root, and an
