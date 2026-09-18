@@ -6,6 +6,7 @@ import { ANALYTICS, LINKS, SITE, type OgCard } from "../config";
 import "../styles/global.css";
 
 interface Props {
+  chrome?: boolean;
   title?: string;
   description?: string;
   /** Social card, rendered at build time by src/pages/og/[card].png.ts. */
@@ -25,6 +26,7 @@ interface Props {
 
 const {
   title,
+  chrome = true,
   /* The SHORT one: this reaches <meta name="description"> and og:description,
      both of which get truncated. The JSON-LD nodes below deliberately keep
      SITE.description, which has no length budget. */
@@ -227,11 +229,11 @@ const jsonLd = {
 
   <body>
     <a href="#main" class="skip">Skip to content</a>
-    <Nav variant={nav} />
+    {chrome && <Nav variant={nav} />}
     <main id="main">
       <slot />
     </main>
-    <Footer />
+    {chrome && <Footer />}
 
     {/* Keeps the browser chrome AND the document canvas background in step
         with what is actually under them: dark while the gradient canvas holds

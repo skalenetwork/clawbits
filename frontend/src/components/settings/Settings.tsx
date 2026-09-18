@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ReefHost } from "@/lib/api";
@@ -92,6 +93,14 @@ export function SettingsRow({
   selected?: boolean;
   expanded?: boolean;
 }) {
+  // A row that reports an expanded state gets the disclosure chevron unless it asked for its own.
+  const side =
+    control ??
+    (expanded == null ? null : (
+      <span className="disclosure-chevron inline-flex text-muted-foreground" data-open={expanded}>
+        <ChevronDown className="size-4" />
+      </span>
+    ));
   const body = (
     <>
       {leading != null && (
@@ -124,8 +133,8 @@ export function SettingsRow({
             </span>
           )}
         </span>
-        {control != null && (
-          <span className="relative flex shrink-0 items-center gap-2">{control}</span>
+        {side != null && (
+          <span className="relative flex shrink-0 items-center gap-2">{side}</span>
         )}
       </span>
     </>

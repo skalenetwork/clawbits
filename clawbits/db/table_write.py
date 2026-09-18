@@ -11,12 +11,13 @@ from datetime import datetime
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from eth_utils import to_hex
-from sqlalchemy import func
+from sqlalchemy import func, literal
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, delete, select, update
 
-from clawbits.agent_marks import MarkKind
+from clawbits.agent_marks import DAY_MARKS, TRACK_MARKS, DayTrack, MarkKind
 from clawbits.avatars.config import CURRENT_AVATAR_VERSION
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.api_key import ApiKey
@@ -35,6 +36,7 @@ from clawbits.db.models import (
     AgentChannelState,
     AgentClaim,
     AgentContactPermission,
+    AgentDay,
     AgentMark,
     AgentModelCatalog,
     AgentPost,
@@ -107,6 +109,13 @@ _UNSET = _Sentinel()
 # :class:`~clawbits.datastructures.agent_id.AgentId` validator (alphanumeric
 # and underscore only) can never mint, so it can't collide with a real agent.
 DELETED_AGENT_ID = "deleted-agent"
+
+# A crew is three agents in one room; the mark lands when the third joins.
+CREW_SIZE = 3
+
+# A green run means the automation did not crash, not that the task succeeded — which is exactly
+# what the run and clockwork marks claim, so these statuses are the only ones that do not count.
+_FAILED_RUN_STATUSES = frozenset({"error", "failed", "failure"})
 
 
 # Accepted time window for self-reported usage events. Events older than the
@@ -1035,6 +1044,7 @@ class TableWrite:
             delete(AgentSkillSyncState).where(AgentSkillSyncState.agent_id == agent_id)
         )
         session.exec(delete(AgentMark).where(AgentMark.agent_id == agent_id))
+        session.exec(delete(AgentDay).where(AgentDay.agent_id == agent_id))
         session.exec(delete(AgentModelCatalog).where(AgentModelCatalog.agent_id == agent_id))
         # The agent's own read pointers: its restart cursor per channel, not
         # content, and a NOT NULL ``agent_id`` FK with no cascade.
@@ -2059,8 +2069,13 @@ class TableWrite:
         session.add(MmChannelMember(channel_id=channel_id, agent_id=agent_id))
         session.flush()
         channel = session.get(MmChannel, channel_id)
-        if channel.channel_type != "direct" and channel.name != agent_default_channel_name(agent_id):
-            TableWrite.award_mark(session, agent_id, "channel", {"channel_id": channel_id})
+        if channel.channel_type == "direct" or channel.name == agent_default_channel_name(agent_id):
+            return
+        TableWrite.award_mark(session, agent_id, "channel", {"channel_id": channel_id})
+        from clawbits.db.table_read import TableRead
+
+        if TableRead.count_channel_agents(session, channel_id) >= CREW_SIZE:
+            TableWrite.award_channel_agents_mark(session, channel_id, "crew")
 
     # ------------------------------------------------------------------
     # Agent contact permissions (operator-managed contact allowlist)
@@ -2400,6 +2415,7 @@ class TableWrite:
         ``(automation_id, gateway_run_id)``. Runs for an automation that does
         not belong to ``agent_id`` are ignored. Returns the number upserted."""
         runs = (runs or [])[:max_runs]
+        run_days: set[_dt.date] = set()
         count = 0
         for item in runs:
             automation_id = item.get("automation_id")
@@ -2440,7 +2456,11 @@ class TableWrite:
                 target.diagnostics = item["diagnostics"]
             session.add(target)
             count += 1
+            if (target.status or "").lower() not in _FAILED_RUN_STATUSES:
+                stamp = target.finished_at or target.started_at or _dt.datetime.now(_dt.UTC)
+                run_days.add(stamp.astimezone(_dt.UTC).date())
         session.flush()
+        TableWrite.award_run_marks(session, agent_id, sorted(run_days))
         return count
 
     @staticmethod
@@ -3418,6 +3438,8 @@ class TableWrite:
             post.pinned_by_human_id = human_id
             session.add(post)
             session.flush()
+            if post.agent_id is not None and post.agent_id != DELETED_AGENT_ID:
+                TableWrite.award_mark(session, post.agent_id, "pinned")
         return post
 
     @staticmethod
@@ -3688,29 +3710,145 @@ class TableWrite:
 
     @staticmethod
     def award_mark(
-        session: Session, agent_id: str, kind: MarkKind, detail: dict[str, int | str] | None = None
+        session: Session,
+        agent_id: str,
+        kind: MarkKind,
+        detail: dict[str, int | str] | None = None,
+        earned: set[str] | None = None,
     ) -> None:
-        """Record a first-time achievement. Insert-only: an earned mark is never touched again,
-        and the lookup first keeps a repeat award to one primary key read."""
-        if session.get(AgentMark, (agent_id, kind)) is not None:
+        """Record a first-time achievement. Insert-only: an earned mark is never touched again.
+        ``earned`` is the agent's kinds where the caller already holds them — it stands in for the
+        primary key read, and is kept current so a later check in the same pass sees this award."""
+        if earned is not None:
+            if kind in earned:
+                return
+        elif session.get(AgentMark, (agent_id, kind)) is not None:
             return
         session.execute(
             pg_insert(AgentMark)
             .values(agent_id=agent_id, kind=kind, detail=detail)
             .on_conflict_do_nothing(index_elements=["agent_id", "kind"])
         )
+        if earned is not None:
+            earned.add(kind)
+
+    @staticmethod
+    def award_channel_agents_mark(session: Session, channel_id: str, kind: MarkKind) -> None:
+        """One mark for every agent in the channel, in one statement. A file passing through, or a
+        crew forming, is earned by everyone who was in the room for it."""
+        session.execute(
+            pg_insert(AgentMark)
+            .from_select(
+                ["agent_id", "kind", "detail"],
+                select(
+                    MmChannelMember.agent_id,
+                    literal(kind),
+                    literal({"channel_id": channel_id}, JSONB),
+                ).where(
+                    MmChannelMember.channel_id == channel_id,
+                    MmChannelMember.agent_id.is_not(None),
+                    MmChannelMember.agent_id != DELETED_AGENT_ID,
+                ),
+            )
+            .on_conflict_do_nothing(index_elements=["agent_id", "kind"])
+        )
+
+    @staticmethod
+    def award_day_marks(
+        session: Session, agent_id: str, track: DayTrack, day: _dt.date, earned: set[str]
+    ) -> None:
+        """Log one working day on ``track`` and award every deep-water mark it completes.
+
+        Only a day that was not already on the tally can complete anything, so the insert's own
+        conflict is the gate: every later post that day costs this one statement and nothing else.
+        """
+        from clawbits.db.table_read import TableRead
+
+        wanted = {
+            kind: (needed, run)
+            for kind, (on, needed, run) in DAY_MARKS.items()
+            if on == track and kind not in earned
+        }
+        if not wanted:
+            return
+        logged = session.execute(
+            pg_insert(AgentDay)
+            .values(agent_id=agent_id, track=track, day=day)
+            .on_conflict_do_nothing(index_elements=["agent_id", "track", "day"])
+        ).rowcount
+        if not logged:
+            return
+        streaks = [needed for needed, consecutive in wanted.values() if consecutive]
+        recent = TableRead.recent_agent_days(session, agent_id, track, day, max(streaks, default=1))
+        streak = 0
+        while streak < len(recent) and recent[streak] == day - _dt.timedelta(days=streak):
+            streak += 1
+        total = (
+            TableRead.count_agent_days(session, agent_id, track)
+            if len(streaks) < len(wanted)
+            else 0
+        )
+        for kind, (needed, consecutive) in wanted.items():
+            if (streak if consecutive else total) >= needed:
+                TableWrite.award_mark(session, agent_id, kind, earned=earned)
+
+    @staticmethod
+    def award_run_marks(session: Session, agent_id: str, days: list[_dt.date]) -> None:
+        """The days, oldest first, on which an automation run did not crash: the first earns its
+        mark, seven days running earn clockwork. One report carries a batch, so the agent's kinds
+        are read once and carried through it."""
+        if not days:
+            return
+        from clawbits.db.table_read import TableRead
+
+        earned = TableRead.get_agent_mark_kinds(session, agent_id)
+        TableWrite.award_mark(session, agent_id, "run", earned=earned)
+        for day in days:
+            if earned.issuperset(TRACK_MARKS["run"]):
+                return
+            TableWrite.award_day_marks(session, agent_id, "run", day, earned)
+
+    @staticmethod
+    def _award_teamwork(
+        session: Session, agent_id: str, peer_agent_id: str, earned: set[str] | None
+    ) -> None:
+        """Teamwork names the first peer an agent worked with; a different one later is a
+        handoff."""
+        if earned is not None and earned.issuperset({"teamwork", "handoff"}):
+            return
+        held = session.get(AgentMark, (agent_id, "teamwork"))
+        if held is None:
+            TableWrite.award_mark(
+                session, agent_id, "teamwork", {"peer_agent_id": peer_agent_id}, earned
+            )
+        elif (held.detail or {}).get("peer_agent_id") not in (None, peer_agent_id):
+            TableWrite.award_mark(
+                session, agent_id, "handoff", {"peer_agent_id": peer_agent_id}, earned
+            )
 
     @staticmethod
     def award_post_marks(session: Session, agent_id: str, channel_id: str, post_id: int) -> None:
-        """Conversation and teamwork for a post the agent published in a direct channel. The
-        latest earlier post by the other side names the human it answered, or the peer agent,
-        and teamwork goes to both agents. Server-authored posts never come through here."""
+        """Every mark a published agent post can earn, in any channel: agents answer people and
+        each other in team rooms as much as in DMs. The latest earlier post by the other side names
+        the human it answered, or the peer agent, and teamwork goes to both agents. Server-authored
+        posts never come through here.
+
+        The agent's earned kinds are read once and gate everything after, so an agent that already
+        holds a mark never pays for its check again.
+        """
+        from clawbits.db.table_read import TableRead
+
+        earned = TableRead.get_agent_mark_kinds(session, agent_id)
+        if "thread" not in earned:
+            post = session.get(MmPost, post_id)
+            if post is not None and post.parent_post_id is not None:
+                TableWrite.award_mark(session, agent_id, "thread", earned=earned)
+        if "night" not in earned and TableRead.is_operator_away(session, agent_id):
+            TableWrite.award_mark(session, agent_id, "night", earned=earned)
         other = session.exec(
             select(MmPost.human_id, MmPost.agent_id)
-            .join(MmChannel, MmChannel.channel_id == MmPost.channel_id)
             .where(
                 MmPost.channel_id == channel_id,
-                MmChannel.channel_type == "direct",
                 MmPost.post_id < post_id,
                 MmPost.status == "published",
                 MmPost.agent_id.is_distinct_from(agent_id),
@@ -3722,10 +3860,15 @@ class TableWrite:
             return
         human_id, peer_agent_id = other
         if human_id is not None:
-            TableWrite.award_mark(session, agent_id, "conversation", {"human_id": human_id})
+            TableWrite.award_mark(
+                session, agent_id, "conversation", {"human_id": human_id}, earned
+            )
+            if not earned.issuperset(TRACK_MARKS["talk"]):
+                today = _dt.datetime.now(_dt.UTC).date()
+                TableWrite.award_day_marks(session, agent_id, "talk", today, earned)
         elif peer_agent_id != DELETED_AGENT_ID:
-            TableWrite.award_mark(session, agent_id, "teamwork", {"peer_agent_id": peer_agent_id})
-            TableWrite.award_mark(session, peer_agent_id, "teamwork", {"peer_agent_id": agent_id})
+            TableWrite._award_teamwork(session, agent_id, peer_agent_id, earned)
+            TableWrite._award_teamwork(session, peer_agent_id, agent_id, None)
 
     # ---------------- agent actions ----------------
 
@@ -4065,6 +4208,7 @@ class TableWrite:
                 raise ValueError(f"file {fid} not owned by caller")
             r.post_id = post_id
         session.flush()
+        TableWrite.award_channel_agents_mark(session, channel_id, "file")
 
     @staticmethod
     def soft_delete_mm_file(
@@ -4573,6 +4717,7 @@ class TableWrite:
         row.missing_since = None
         row.updated_at = now
         session.flush()
+        TableWrite.award_mark(session, agent_id, "skill", {"skill_id": skill.skill_id})
         return row
 
     @staticmethod

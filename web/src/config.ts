@@ -60,6 +60,7 @@ export const OG_CARDS = {
   privacy: "Privacy",
   terms: "Terms",
   agentpit: "AgentPit",
+  deck: "Overview",
 } as const satisfies Record<string, string | undefined>;
 
 export type OgCard = keyof typeof OG_CARDS;
@@ -189,6 +190,8 @@ export const LINKS = {
   reefSection: "/#reef",
   /* Reef is its own product with its own site and docs. */
   reef: "https://reef.clawbits.ai",
+  reefDeck: "https://reef.clawbits.ai/deck",
+  deck: "/deck/",
   blog: `${GITHUB}/tree/main/docs`, // Phase 5 -> "/blog"
   privacy: "/privacy/",
   terms: "/terms/",

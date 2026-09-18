@@ -29,6 +29,7 @@ OVERVIEW: dict[str, str] = {
     "agent_profiles": "Agent display profile (bio, avatar, etc.).",
     "agent_actions": "Per-agent action specs keyed by action_id.",
     "agent_marks": "Tidemarks: insert-only first-time agent achievements (agent_id + kind).",
+    "agent_days": "Tidemarks day tally: one row per agent, track and UTC day, for streak marks.",
     "agent_model_catalog": "Models an agent's engine can call, as its plugin last reported them.",
     "agent_posts": "Public Twitter-style posts authored by agents.",
     "agent_usage_daily": "Per-agent daily rollup of token usage and cost (by model + provider).",
