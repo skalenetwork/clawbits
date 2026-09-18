@@ -18,18 +18,23 @@ from sqlmodel import Session, select
 from clawbits.cloudflare.r2_presign import R2Presigner
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.mm_models import (
+    AGENT_CHAT,
+    NEW_CHAT_TITLE,
+    PAIR_CHANNEL_TYPES,
     GlobalUserStatus,
     LinkPreviewRequest,
     LinkPreviewResponse,
     MmAddMemberUnifiedRequest,
     MmAdminChannelListResponse,
     MmAdminChannelResponse,
+    MmAgentChatRequest,
     MmChannelEventListResponse,
     MmChannelEventResponse,
     MmChannelExportResponse,
     MmChannelListResponse,
     MmChannelMemberResponse,
     MmChannelMembersListResponse,
+    MmChannelPatchRequest,
     MmChannelResponse,
     MmDirectUnifiedRequest,
     MmDiscoverableChannelListResponse,
@@ -137,6 +142,15 @@ def _require_human_member(db: Session, channel_id: str, human_id: int) -> None:
         raise HTTPException(status_code=403, detail="Not a member of this channel")
     agent_id = TableRead.dm_agent_peer(db, channel_id)
     if agent_id and not TableRead.can_dm_agent(db, agent_id, human_id=human_id):
+        raise HTTPException(status_code=403, detail="Not permitted to contact this agent")
+
+
+def _require_agent_dm(db: Session, org_id: str, agent_id: str, human_id: int) -> None:
+    if TableRead.get_agent_by_agentid(db, AgentId(agent_id)) is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+    if TableRead.get_agent_org_id(db, agent_id) != org_id:
+        raise HTTPException(status_code=403, detail="Agent does not belong to this organization")
+    if not TableRead.can_dm_agent(db, agent_id, human_id=human_id):
         raise HTTPException(status_code=403, detail="Not permitted to contact this agent")
 
 
@@ -515,6 +529,37 @@ async def get_channel(
     return MmChannelResponse(**ch)
 
 
+@human_mm_router.patch("/api/human/mm/channels/{channel_id}", response_model=MmChannelResponse)
+async def patch_channel(
+    channel_id: str,
+    body: MmChannelPatchRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    def save() -> dict:
+        with _get_db(request) as db:
+            _require_human_member(db, channel_id, user["id"])
+            row = db.get(MmChannel, channel_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="Channel not found")
+            if row.channel_type != AGENT_CHAT:
+                raise HTTPException(status_code=400, detail="Only named chats can be renamed")
+            row.display_name = body.display_name.strip()
+            if not row.display_name:
+                raise HTTPException(status_code=400, detail="Name is required")
+            db.add(row)
+            db.commit()
+            ch = TableRead.get_mm_channel(db, channel_id)
+            TableRead.apply_dm_peers(db, [ch], user["id"])
+            return ch
+
+    ch = await asyncio.to_thread(save)
+    await _present_dm_peers([ch])
+    response = MmChannelResponse(**ch)
+    fire_and_forget(publish_channel_added(get_bus(), user["id"], response.model_dump()))
+    return response
+
+
 @human_mm_router.delete(
     "/api/human/mm/channels/{channel_id}",
     status_code=204,
@@ -531,7 +576,7 @@ def admin_delete_channel(
         channel = TableRead.get_mm_channel(db, channel_id)
         if channel is None:
             raise HTTPException(status_code=404, detail="Channel not found")
-        if channel["channel_type"] == "direct":
+        if channel["channel_type"] in PAIR_CHANNEL_TYPES:
             raise HTTPException(
                 status_code=400, detail="Direct message channels cannot be deleted this way"
             )
@@ -571,7 +616,7 @@ def add_member(
         ch = TableRead.get_mm_channel(db, channel_id)
         if ch is None:
             raise HTTPException(status_code=404, detail="Channel not found")
-        if ch["channel_type"] == "direct":
+        if ch["channel_type"] in PAIR_CHANNEL_TYPES:
             raise HTTPException(
                 status_code=400, detail="Cannot add members to a direct message channel"
             )
@@ -658,7 +703,7 @@ def remove_member(
         removed_human_id = int(member_id) if member_type == "human" else None
         removed_agent_id = None if member_type == "human" else member_id
         if removed_human_id != user["id"]:
-            if channel["channel_type"] == "direct":
+            if channel["channel_type"] in PAIR_CHANNEL_TYPES:
                 raise HTTPException(
                     status_code=400,
                     detail="Cannot remove the other party from a direct message channel",
@@ -806,6 +851,11 @@ def create_post(
                 )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        titled = None
+        if TableWrite.autotitle_agent_chat(db, channel_id, body.message):
+            titled = TableRead.get_mm_channel(db, channel_id)
+            if titled is not None:
+                TableRead.apply_dm_peers(db, [titled], user["id"])
         TableWrite.mark_mm_channel_read(db, channel_id, user["id"], post_id)
         usage_reply_id = (
             _create_usage_reply(db, channel_id, post_id, body.trace_id)
@@ -830,6 +880,8 @@ def create_post(
             bus, channel_id, response.model_dump(), member_human_ids=member_human_ids
         )
     )
+    if titled is not None:
+        fire_and_forget(publish_channel_added(bus, user["id"], MmChannelResponse(**titled).model_dump()))
     if attention_ctx is not None:
         fire_and_forget(
             consider_post(
@@ -1571,18 +1623,7 @@ async def create_or_get_direct(
                 peer_name = target.get("display_name") or target.get("email", str(target_human_id))
                 human_ids, agent_ids = [human_id, target_human_id], []
             else:
-                if TableRead.get_agent_by_agentid(db, AgentId(body.target_id)) is None:
-                    raise HTTPException(
-                        status_code=404, detail=f"Agent '{body.target_id}' not found"
-                    )
-                if TableRead.get_agent_org_id(db, body.target_id) != org_id:
-                    raise HTTPException(
-                        status_code=403, detail="Agent does not belong to this organization"
-                    )
-                if not TableRead.can_dm_agent(db, body.target_id, human_id=human_id):
-                    raise HTTPException(
-                        status_code=403, detail="Not permitted to contact this agent"
-                    )
+                _require_agent_dm(db, org_id, body.target_id, human_id)
                 existing = TableRead.find_dm_channel_human_agent(
                     db, human_id, body.target_id, org_id
                 )
@@ -1631,6 +1672,43 @@ async def create_or_get_direct(
         await publish_agent_channel_added(
             bus, body.target_id, MmChannelResponse(**created).model_dump()
         )
+    return response
+
+
+@human_mm_router.post("/api/human/mm/agent-chats", response_model=MmChannelResponse)
+async def create_agent_chat(
+    body: MmAgentChatRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    human_id = user["id"]
+
+    def create() -> dict:
+        with _get_db(request) as db:
+            if not TableRead.is_org_member(db, body.org_id, human_id):
+                raise HTTPException(status_code=403, detail="Not a member of this organization")
+            _require_agent_dm(db, body.org_id, body.agent_id, human_id)
+            channel_id = str(uuid.uuid4())
+            TableWrite.create_mm_channel(
+                db, channel_id, f"chat-{channel_id}", AGENT_CHAT,
+                display_name=NEW_CHAT_TITLE,
+                org_id=body.org_id,
+                created_by_human=human_id,
+            )
+            TableWrite.add_mm_channel_member_human(db, channel_id, human_id)
+            TableWrite.add_mm_channel_member(db, channel_id, body.agent_id)
+            db.commit()
+            channel = TableRead.get_mm_channel(db, channel_id)
+            TableRead.apply_dm_peers(db, [channel], human_id)
+            return channel
+
+    channel = await asyncio.to_thread(create)
+    await _present_dm_peers([channel])
+    await await_channel_avatar(channel_id=channel["channel_id"], channel_type=AGENT_CHAT)
+    response = MmChannelResponse(**channel)
+    bus = get_bus()
+    fire_and_forget(publish_channel_added(bus, human_id, response.model_dump()))
+    await publish_agent_channel_added(bus, body.agent_id, response.model_dump())
     return response
 
 

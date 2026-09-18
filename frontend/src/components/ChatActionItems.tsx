@@ -15,7 +15,7 @@ import {Icon} from "@/components/Icon";
 import {ContextMenuItem, ContextMenuSeparator} from "@/components/ui/context-menu";
 import {Drawer, DrawerContent, DrawerHeader, DrawerTitle} from "@/components/ui/drawer";
 import type {MmChannel} from "@/lib/api";
-import {formatChannelTitle} from "@/lib/formatting";
+import {channelListTitle} from "@/lib/formatting";
 import type {ChannelActions} from "@/hooks/useChannelActions";
 import {cn} from "@/lib/utils";
 
@@ -122,7 +122,7 @@ export function ChatActionSheet({
 }) {
     const isPinned = Boolean(channel.pinned);
     const muted = Boolean(channel.muted);
-    const title = formatChannelTitle(channel.display_name ?? channel.name);
+    const title = channelListTitle(channel);
     const run = (fn: () => void) => {
         onOpenChange(false);
         fn();

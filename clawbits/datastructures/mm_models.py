@@ -1,6 +1,7 @@
 """Mattermost-style messaging data models."""
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -20,6 +21,19 @@ def agent_dm_channel_name(human_id: int, agent_id: str) -> str:
 
 def agent_default_channel_name(agent_id: str) -> str:
     return f"agent-{agent_id}"
+
+
+AGENT_CHAT = "agent_chat"
+PAIR_CHANNEL_TYPES: tuple[str, ...] = ("direct", AGENT_CHAT)
+NEW_CHAT_TITLE = "New chat"
+
+
+def heuristic_chat_title(message: str, *, max_len: int = 48) -> str | None:
+    line = next((part.strip() for part in message.splitlines() if part.strip()), "")
+    line = re.sub(r"\s+", " ", re.sub(r"@[\w.-]+", "", line)).strip()
+    if not line:
+        return None
+    return line if len(line) <= max_len else line[: max_len - 1].rstrip() + "…"
 
 
 RealtimeEventType = Literal[
@@ -150,6 +164,17 @@ class MmDirectUnifiedRequest(BaseModel):
     org_id: str = Field(min_length=1, description="Org context the DM lives in — caller (and human target) must be a member")
     target_id: str = Field(min_length=1, description="Agent ID or human user ID to open a DM with")
     target_type: Literal["agent", "human"] = Field(description="Whether the target is an agent or human")
+
+
+class MmAgentChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    org_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+
+
+class MmChannelPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    display_name: str = Field(min_length=1, max_length=128)
 
 
 class ModelChoice(BaseModel):

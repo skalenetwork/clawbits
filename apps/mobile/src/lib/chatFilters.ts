@@ -10,19 +10,19 @@ export const CHAT_TAB_LABEL: Record<ChatTab, string> = {
   agents: "Agents",
 };
 
+export function isPairChannel(channel: Pick<Channel, "channel_type">): boolean {
+  return channel.channel_type === "direct" || channel.channel_type === "agent_chat";
+}
+
 export function filterChannelsByTab(
   channels: Channel[],
   tab: ChatTab,
 ): Channel[] {
-  if (tab === "channels")
-    return channels.filter((channel) => channel.channel_type !== "direct");
+  if (tab === "channels") return channels.filter((channel) => !isPairChannel(channel));
   if (tab === "dms")
-    return channels.filter((channel) => channel.channel_type === "direct");
+    return channels.filter((channel) => isPairChannel(channel) && channel.dm_peer_agent_id == null);
   if (tab === "agents")
-    return channels.filter(
-      (channel) =>
-        channel.channel_type === "direct" && channel.dm_peer_agent_id != null,
-    );
+    return channels.filter((channel) => isPairChannel(channel) && channel.dm_peer_agent_id != null);
   return channels;
 }
 
@@ -42,7 +42,7 @@ export function previewText(channel: Channel, userId: number): string {
   const text = channel.last_message_text?.replace(/\s+/g, " ").trim();
   if (text) {
     const own = channel.last_message_author_human_id === userId;
-    if (channel.channel_type === "direct")
+    if (isPairChannel(channel))
       return own ? `You: ${text}` : text;
     const name = channel.last_message_author_display_name?.trim().split(/\s+/)[0];
     const who = own ? "You" : name;
@@ -52,10 +52,10 @@ export function previewText(channel: Channel, userId: number): string {
     return channel.last_message_attachment_count === 1
       ? "Attachment"
       : `${channel.last_message_attachment_count} attachments`;
-  return channel.channel_type === "direct" ? "Start a conversation" : "No messages";
+  return isPairChannel(channel) ? "Start a conversation" : "No messages";
 }
 
 export function glyphKind(channel: Channel): "human" | "agent" | "channel" {
-  if (channel.channel_type !== "direct") return "channel";
+  if (!isPairChannel(channel)) return "channel";
   return channel.dm_peer_agent_id ? "agent" : "human";
 }

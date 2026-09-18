@@ -1,6 +1,7 @@
 import {ChannelGlyph} from "@/components/ChannelGlyph";
 import {useLongPress} from "@/hooks/useLongPress";
-import {formatChannelTitle} from "@/lib/formatting";
+import { isPairChannel } from "@/lib/chatFilters";
+import {channelListTitle} from "@/lib/formatting";
 import type {MmChannel} from "@/lib/api";
 import {cn} from "@/lib/utils";
 
@@ -18,12 +19,12 @@ function PinnedContact({
     onLongPress: () => void;
 }) {
     const longPress = useLongPress(onLongPress);
-    const label = formatChannelTitle(channel.display_name ?? channel.name);
+    const label = channelListTitle(channel);
     const unread = channel.unread_count ?? 0;
     const mentionCount = channel.unread_mention_count ?? 0;
     const hasMention = mentionCount > 0;
     const muted = Boolean(channel.muted);
-    const isDm = channel.channel_type === "direct";
+    const isDm = isPairChannel(channel);
     // Same unread ladder as everywhere else: red @N for mentions (pierces
     // mute), red count for DM unreads, an ink dot for channel chatter,
     // nothing when muted.

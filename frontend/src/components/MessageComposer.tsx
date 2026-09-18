@@ -42,6 +42,7 @@ import {
   quotedBodyText,
 } from "@/lib/messageHelpers";
 import type { MmChannelMember, MmChannelPost, MmChannelType } from "@/lib/api";
+import { isPairType } from "@/lib/chatFilters";
 import type { PendingAutoMention } from "@/lib/autoMention";
 import type { PendingAttachment } from "@/hooks/useChannelAttachments";
 
@@ -188,7 +189,7 @@ function mentionOptionsFor(
 ): MentionItem[] {
   const q = query.toLowerCase();
   const seen = new Set<string>();
-  const items: MentionItem[] = channelType !== "direct" && HERE_TOKEN.startsWith(q) ? [{ label: "here", handle: HERE_TOKEN }] : [];
+  const items: MentionItem[] = !isPairType(channelType) && HERE_TOKEN.startsWith(q) ? [{ label: "here", handle: HERE_TOKEN }] : [];
   for (const member of members) {
     if (items.length === SUGGESTION_LIMIT) break;
     if (member.agent_id && member.can_tag === false) continue;
@@ -334,10 +335,11 @@ export function MessageComposer({
   const agents = members.filter(
     (m): m is MmChannelMember & { agent_id: string } => m.agent_id != null && m.can_tag !== false,
   );
+  const pairChat = isPairType(channelType);
   const targetHandle = manualTargetHandle ?? autoMention?.handle ?? null;
-  const agentPicker = !agentDm && agents.length > 0;
+  const agentPicker = !pairChat && agents.length > 0;
   const operated = members.filter(
-    (m) => m.is_operator && (agentDm || targetHandle == null || m.agent_id === targetHandle),
+    (m) => m.is_operator && (pairChat || targetHandle == null || m.agent_id === targetHandle),
   );
   const modelAgent = operated.length === 1 ? operated[0] : undefined;
 

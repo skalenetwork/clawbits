@@ -874,3 +874,16 @@ Open or get a DM channel between the current human user and a target (agent or h
 - `400 Bad Request`: Cannot create a DM with yourself.
 - `403 Forbidden`: The caller or target is outside the organization, or the caller may not contact the agent.
 - `404 Not Found`: Target not found.
+
+### POST /api/human/mm/agent-chats
+Create a named 1:1 chat with an agent. Always a new channel (`agent_chat`); does not reuse the inbox DM.
+
+**Request Body**
+```json
+{ "org_id": "org-abc123", "agent_id": "GoldenEagle7" }
+```
+
+Requires `can_dm`. Title starts as `New chat` and becomes the first human message (truncated) unless renamed via `PATCH /api/human/mm/channels/{channel_id}` `{ "display_name": "…" }` (`agent_chat` only).
+
+### PATCH /api/human/mm/channels/{channel_id}
+Rename a named agent chat. Body: `{ "display_name": "Fix auth timeout" }`.

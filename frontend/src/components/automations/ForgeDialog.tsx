@@ -31,6 +31,7 @@ import {
 import {agentDisplay} from "@/lib/agentDisplay";
 import {queryKeys} from "@/lib/queryKeys";
 import {errMsg, toast} from "@/lib/toast";
+import { isPairType } from "@/lib/chatFilters";
 import {cn} from "@/lib/utils";
 import {Button} from "@/components/ui/button";
 import {Label} from "@/components/ui/label";
@@ -55,7 +56,7 @@ interface SpecShape {
 }
 
 function channelOptionLabel(c: AgentDeliveryChannel): string {
-    if (c.channel_type === "direct") return c.display_name ?? c.name;
+    if (isPairType(c.channel_type)) return c.display_name ?? c.name;
     const prefix = c.channel_type === "private" ? "🔒 " : "# ";
     return prefix + (c.display_name ?? c.name);
 }
@@ -166,8 +167,8 @@ function ForgeForm({orgId, template, editing, agent, onOpenChange}: ForgeProps) 
     });
     const channels = channelsQuery.data?.channels ?? [];
     const channelGroups = [
-        {label: "Channels", channels: channels.filter(c => c.channel_type !== "direct")},
-        {label: "Direct messages", channels: channels.filter(c => c.channel_type === "direct")},
+        {label: "Channels", channels: channels.filter(c => !isPairType(c.channel_type))},
+        {label: "Direct messages", channels: channels.filter(c => isPairType(c.channel_type))},
     ];
     const targetMissing =
         channelId !== "" &&

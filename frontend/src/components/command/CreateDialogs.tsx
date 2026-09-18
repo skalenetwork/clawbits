@@ -5,12 +5,6 @@ import {BrowseChannelsDialog} from "@/components/BrowseChannelsDialog";
 import {useAuth} from "@/context/AuthContext";
 import {createDialogAtom, closeCreate} from "./createStore";
 
-/**
- * The create dialogs (new DM, channel, browse), mounted once in the app shell
- * and driven by {@link createStore}. This lets the ⌘K command palette open them
- * from its Actions group without each surface mounting its own copies. Auth-gated
- * so it stays inert on the login / public routes.
- */
 export function CreateDialogs() {
     const {user} = useAuth();
     const kind = useSelector(createDialogAtom);
@@ -22,6 +16,7 @@ export function CreateDialogs() {
     return (
         <>
             <NewDmDialog open={kind === "dm"} onOpenChange={onClose} />
+            <NewDmDialog named open={kind === "chat"} onOpenChange={onClose} />
             <NewChannelDialog open={kind === "channel"} onOpenChange={onClose} />
             <BrowseChannelsDialog open={kind === "browse"} onOpenChange={onClose} />
         </>

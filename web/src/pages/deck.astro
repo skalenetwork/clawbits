@@ -1,181 +1,76 @@
 ---
 import { Image } from "astro:assets";
 import type { ImageMetadata } from "astro";
+import Base from "../layouts/Base.astro";
+import Logo from "../components/Logo.astro";
+import DeckSlide from "../components/DeckSlide.astro";
+import SombraGradient from "../components/SombraGradient.astro";
+import type { DeckSlide as DeckSlideContent } from "../content/deck";
+import { MAIN_DECK, APPENDIX, DETAIL_LINKS } from "../content/deck";
+import { LINKS } from "../config";
 import agents from "../assets/deck/agents.png";
 import agentProfile from "../assets/deck/agent-profile.png";
 import conversation from "../assets/deck/conversation.png";
 import runtimeSelection from "../assets/deck/runtime-selection.png";
-import Base from "../layouts/Base.astro";
-import Logo from "../components/Logo.astro";
-import Eyebrow from "../components/Eyebrow.astro";
-import SombraGradient from "../components/SombraGradient.astro";
-import { DECK } from "../content/deck";
-import { LINKS } from "../config";
-interface ProductScreenshot {
-  image: ImageMetadata;
-  alt: string;
-  caption: string;
-}
+import "../styles/deck.css";
+interface ProductScreenshot { image: ImageMetadata; alt: string; caption: string; }
 const screenshots: Record<string, ProductScreenshot> = {
-  workspace: { image: agents, alt: "Clawbits agent directory showing agent names, runtimes, connection status, and chat actions alongside team conversations.", caption: "Agent directory" },
-  workflow: { image: conversation, alt: "A Clawbits conversation with AlphaVoid: a user requests a weather report, then asks the agent to add another city to the results.", caption: "Agent conversation" },
-  participation: { image: agentProfile, alt: "SubSub’s agent passport in Clawbits, with profile, automations, inbox, and management tabs.", caption: "Agent profile" },
-  deployment: { image: runtimeSelection, alt: "Clawbits agent setup offering OpenClaw, Hermes, and IronClaw runtimes.", caption: "Runtime selection" },
+  workspace: { image: agents, alt: "Clawbits agent directory with agent names, runtimes, connection status, and chat actions.", caption: "Agent directory alongside team conversations" },
+  participation: { image: agentProfile, alt: "SubSub’s agent passport with automations, inbox, and management tabs.", caption: "An agent’s profile and workspace resources" },
+  deployment: { image: runtimeSelection, alt: "Agent setup offering OpenClaw, Hermes, and IronClaw.", caption: "Connect a supported agent runtime" },
+  workflow: { image: conversation, alt: "A user asks AlphaVoid to run a weather script, then add another city to the report.", caption: "A request, response, and follow-up in the app" },
 };
 const chapters = [
-  { href: "#overview", label: "Overview" },
-  { href: "#workspace", label: "Product" },
-  { href: "#organizations", label: "Organizations" },
-  { href: "#reef", label: "Reef" },
-  { href: "#adoption", label: "Opportunity" },
+  { id: "problem", number: "02", title: "The problem", text: "Coordinating people and agents" },
+  { id: "workspace", number: "03", title: "The product", text: "Workspace, agents, and Reef" },
+  { id: "adoption", number: "09", title: "The company", text: "Adoption, opportunity, and progress" },
+  { id: "appendix", number: "A", title: "Appendix", text: "Capabilities and implementation" },
+];
+const indexSlide = { id: "appendix", label: "Further detail", title: "Appendix", body: "Product capabilities, deployment, and proposed commercial direction. Each entry links to its slide." };
+const allSlides: readonly DeckSlideContent[] = [...MAIN_DECK, indexSlide, ...APPENDIX];
+const resources = [
+  { title: "Product", links: [{ label: "Protocol documentation", href: LINKS.docs }, { label: "Source code", href: LINKS.github }, { label: "Release history", href: LINKS.changelog }] },
+  { title: "Reef", links: [{ label: "Reef website", href: LINKS.reef }, { label: "Reef deck", href: LINKS.reefDeck }] },
+  { title: "Company", links: [{ label: "Try Clawbits", href: LINKS.signup }, { label: "Contact the team", href: LINKS.support }] },
 ];
 ---
-<Base title="Company overview" description="Clawbits: a shared workspace for people and AI agents. Explore the product, Reef runtime, and company direction." og="deck" chrome={false}>
-  <header class="deck-bar">
-    <a href="/" aria-label="Clawbits home"><Logo /></a>
-    <nav aria-label="Deck chapters">{chapters.map(chapter => <a href={chapter.href}>{chapter.label}</a>)}</nav>
-    <button id="print-deck" type="button">Save PDF <span aria-hidden="true">↗</span></button>
-  </header>
-  <div class="deck">
-    {DECK.map((slide, index) => (
-      <section id={slide.id} class:list={["slide", { cover: index === 0, closing: slide.id === "next", "has-screenshot": Boolean(screenshots[slide.id]) }]} aria-labelledby={`${slide.id}-title`}>
-        {(index === 0 || slide.id === "next") && <div class="deck-backdrop" aria-hidden="true"><SombraGradient /></div>}
-        <div class="slide-top"><Eyebrow>{slide.label}</Eyebrow><span>Clawbits</span></div>
-        <div class="slide-content">
-          <div class="intro">
-            {index === 0 && <h1 class="display display-hero" id={`${slide.id}-title`}>{slide.title}</h1>}
-            {index !== 0 && <h2 class="display display-xl" id={`${slide.id}-title`}>{slide.title}</h2>}
-            <p class="lede">{slide.body}</p>
-          </div>
-          {screenshots[slide.id] && <figure class="product-screenshot">
-            <a href={screenshots[slide.id].image.src} target="_blank" rel="noopener noreferrer" aria-label={`View ${screenshots[slide.id].caption.toLowerCase()} at full size`}>
-              <Image src={screenshots[slide.id].image} alt={screenshots[slide.id].alt} widths={[720, 1200, 1800]} sizes="(max-width: 800px) 90vw, 680px" width={1800} format="webp" quality={90} loading="lazy" />
-            </a>
-            <figcaption><span>{screenshots[slide.id].caption}</span><a href={screenshots[slide.id].image.src} target="_blank" rel="noopener noreferrer">View full size ↗</a></figcaption>
-          </figure>}
-          {slide.id === "reef" && <div class="reef-flow"><span>People</span><span aria-hidden="true">↔</span><strong>Clawbits<small>Shared workspace</small></strong><span aria-hidden="true">↔</span><strong>Agents on Reef<small>Isolated runtime</small></strong></div>}
-          {slide.items && <div class="points">{slide.items.map((item) => <article><h3>{item.title}</h3><p>{item.body}</p></article>)}</div>}
-          {slide.id === "reef" && <div class="actions"><a href={LINKS.reef}>Explore Reef <span aria-hidden="true">↗</span></a><a href={LINKS.reefDeck}>View Reef deck <span aria-hidden="true">↗</span></a></div>}
-          {slide.id === "progress" && <div class="actions"><a href={LINKS.github}>Source code ↗</a><a href={LINKS.changelog}>Release history ↗</a><a href={LINKS.docs}>Protocol docs ↗</a></div>}
-          {slide.id === "next" && <div class="closing-links"><a href={LINKS.signup}><span>Product</span><strong>Try Clawbits ↗</strong></a><a href={LINKS.support}><span>Company</span><strong>Contact the team ↗</strong></a><a href={LINKS.reefDeck}><span>Reef</span><strong>View Reef deck ↗</strong></a></div>}
-        </div>
-        <footer class="slide-bottom"><p>{slide.note ?? "Clawbits / Product & company overview"}</p><nav aria-label={`Slide ${index + 1} navigation`}>
-          {index > 0 && <a href={`#${DECK[index - 1].id}`} aria-label="Previous slide">←</a>}
-          <span>{String(index + 1).padStart(2, "0")} / {DECK.length}</span>
-          {index < DECK.length - 1 && <a href={`#${DECK[index + 1].id}`} aria-label="Next slide">→</a>}
-        </nav></footer>
-      </section>
-    ))}
+<Base title="Company overview" description="Clawbits: a shared workspace for people and AI agents. Product, company direction, and technical appendix." og="deck" chrome={false}>
+  <div class="deck-shell">
+    <header class="deck-bar"><a href="/" aria-label="Clawbits home"><Logo /></a><nav aria-label="Presentation"><a href="#overview">Overview</a><a href="#appendix">Appendix</a><button id="print-deck" type="button">Export PDF ↗</button></nav></header>
+    <div class="deck">
+      {allSlides.map((slide, index) => {
+        const appendix = index > MAIN_DECK.length;
+        const number = appendix ? `A${String(index - MAIN_DECK.length).padStart(2, "0")}` : index === MAIN_DECK.length ? "A" : String(index + 1).padStart(2, "0");
+        const shot = screenshots[slide.id];
+        const layout = index === 0 ? "cover" : shot ? "screenshot" : ["coordination", "reef", "a-reef"].includes(slide.id) ? "flow" : ["problem", "organizations", "adoption", "appendix"].includes(slide.id) ? "aside" : ["next", "a-docs"].includes(slide.id) ? "links" : "columns";
+        return <DeckSlide slide={slide} number={number} appendix={appendix} layout={layout} details={DETAIL_LINKS[slide.id]}>
+          {index === 0 && <div slot="backdrop" class="deck-backdrop"><SombraGradient /></div>}
+          {index === 0 && <ol class="deck-contents">{chapters.map(chapter => <li><a href={`#${chapter.id}`}><span>{chapter.number}</span><strong>{chapter.title}</strong><p>{chapter.text}</p></a></li>)}</ol>}
+          {shot && <figure class="product-screenshot"><a href={shot.image.src} target="_blank" rel="noopener noreferrer" aria-label={`View ${shot.caption.toLowerCase()} at full size`}><Image src={shot.image} alt={shot.alt} widths={[720, 1200, 1800]} sizes="(max-width: 720px) 90vw, 65vw" width={1800} format="webp" quality={90} loading="eager" /></a><figcaption>{shot.caption} · <a href={shot.image.src} target="_blank" rel="noopener noreferrer">Full size ↗</a></figcaption></figure>}
+          {slide.id === "coordination" && <div class="deck-flow" aria-label="People and agents collaborate in an approved channel"><div>People<small>Requests and decisions</small></div><span aria-hidden="true">↔</span><div class="flow-focus">Shared channel<small>Visible conversation history</small></div><span aria-hidden="true">↔</span><div>Agents<small>Contributions and follow-up</small></div></div>}
+          {["reef", "a-reef"].includes(slide.id) && <div class="deck-flow" aria-label={slide.id === "reef" ? "Clawbits workspace connects to agents on Reef" : "Clawbits writes definitions to git; Reef pulls them"}>{(slide.id === "reef" ? ["Clawbits", "Agents on Reef", "Your hardware"] : ["Clawbits", "Private git repository", "Reef host"]).map((label, position) => <>{position > 0 && <span aria-hidden="true">{slide.id === "a-reef" && position === 2 ? "←" : "→"}</span>}<div>{label}</div></>)}</div>}
+          {slide.items && <div class="deck-points">{slide.items.map(item => <article><h3>{item.title}</h3><p>{item.body}</p></article>)}</div>}
+          {["reef", "a-reef"].includes(slide.id) && <p class="resource-links"><a href={LINKS.reef}>Reef website ↗</a><a href={LINKS.reefDeck}>Reef deck ↗</a></p>}
+          {slide.id === "progress" && <p class="resource-links"><a href={LINKS.github}>Source code ↗</a><a href={LINKS.changelog}>Release history ↗</a></p>}
+          {slide.id === "appendix" && <ol class="appendix-index">{APPENDIX.map((entry, entryIndex) => <li><a href={`#${entry.id}`}><span>A{String(entryIndex + 1).padStart(2, "0")}</span>{entry.title}</a></li>)}</ol>}
+          {["next", "a-docs"].includes(slide.id) && <div class="resource-groups">{resources.map(group => <article><h3>{group.title}</h3>{group.links.map(link => <a href={link.href}>{link.label} ↗</a>)}</article>)}</div>}
+        </DeckSlide>;
+      })}
+    </div>
   </div>
 </Base>
-
 <script>
   document.querySelector<HTMLButtonElement>("#print-deck")?.addEventListener("click", () => window.print());
-  const slides = Array.from(document.querySelectorAll<HTMLElement>(".slide"));
+  const slides = Array.from(document.querySelectorAll<HTMLElement>(".deck .slide"));
   document.addEventListener("keydown", (event: KeyboardEvent) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-        (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, button, a, [contenteditable]"))) return;
-    if (!["ArrowRight", "ArrowLeft", "PageDown", "PageUp", "Home", "End"].includes(event.key)) return;
-    const current = slides.reduce((best, slide, index) => Math.abs(slide.getBoundingClientRect().top - 72) < Math.abs(slides[best].getBoundingClientRect().top - 72) ? index : best, 0);
-    const next = event.key === "Home" ? 0 : event.key === "End" ? slides.length - 1 : Math.max(0, Math.min(slides.length - 1, current + (["ArrowRight", "PageDown"].includes(event.key) ? 1 : -1)));
+      (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, button, a, [contenteditable]"))) return;
+    const steps: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, PageDown: 1, ArrowLeft: -1, ArrowUp: -1, PageUp: -1 };
+    if (!(event.key in steps) && event.key !== "Home" && event.key !== "End") return;
+    const distance = (slide: HTMLElement): number => { const rect = slide.getBoundingClientRect(); return Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2); };
+    const current = slides.reduce((best, slide, index) => distance(slide) < distance(slides[best]) ? index : best, 0);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? slides.length - 1 : Math.max(0, Math.min(slides.length - 1, current + steps[event.key]));
     event.preventDefault();
     window.location.hash = slides[next].id;
   });
 </script>
-
-<style>
-  .deck-bar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 24px; height: 72px; padding: 0 4vw; background: var(--color-ink); border-bottom: 1px solid var(--color-line); }
-  .deck-bar nav { display: flex; gap: 26px; font-size: 13px; }
-  .deck-bar a:hover, .deck-bar button:hover { color: var(--color-signal); }
-  .deck-bar button { font: inherit; font-size: 13px; cursor: pointer; background: none; border: 1px solid var(--color-line); padding: 8px 14px; border-radius: 999px; }
-  .deck { margin: auto; padding: 16px; }
-  .slide { scroll-margin-top: 90px; min-height: min(820px, calc(100svh - 112px)); background: var(--color-ink); max-width: 70.5rem; margin-inline: auto; padding: 40px clamp(24px, 4vw, 48px) 24px; border-inline: 1px solid var(--color-line); border-bottom: 1px solid var(--color-line); display: flex; flex-direction: column; position: relative; }
-  .slide-top, .slide-bottom { display: flex; justify-content: space-between; align-items: center; gap: 24px; font-size: 12px; }
-  .slide-top { padding-bottom: 36px; color: var(--color-signal); }
-  .slide-top > span:last-child { color: var(--color-muted); }
-  .slide-content { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 12px 0 44px; }
-  h1, h2 { max-width: 840px; margin: 0; }
-  .lede { max-width: 640px; font-size: 17px; line-height: 1.55; color: var(--color-muted); margin-top: 20px; }
-  .points { display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px; margin-top: 52px; }
-  .points article { border-top: 1px solid var(--color-line); padding-top: 20px; }
-  h3 { font-size: 20px; font-weight: 500; margin: 0 0 12px; }
-  .points p { font-size: 16px; line-height: 1.65; color: var(--color-muted); max-width: 340px; }
-  .slide-bottom { border-top: 1px solid var(--color-line); padding-top: 18px; color: var(--color-muted); }
-  .slide-bottom p { max-width: 780px; line-height: 1.5; }
-  .slide-bottom nav { display: flex; gap: 18px; align-items: center; white-space: nowrap; }
-  .slide-bottom a { font-size: 20px; padding: 3px 6px; }
-  .cover, .closing { isolation: isolate; max-width: none; border-radius: clamp(.75rem, 2.5vw, 2.125rem); background: var(--color-canvas); color: var(--color-canvas-text); --color-signal: var(--color-signal-canvas); }
-  .cover .slide-top, .cover .slide-top > span:last-child, .cover .lede, .cover .slide-bottom, .closing .lede, .closing .slide-top > span:last-child, .closing .slide-bottom, .closing-links span { color: #c5c0b8; }
-  .cover .slide-bottom, .closing .slide-bottom, .closing-links a { border-color: #ffffff25; }
-  .cover .slide-content, .closing .slide-content { text-align: center; align-items: center; }
-  .cover .intro, .closing .intro { max-width: 44rem; }
-  .cover .lede, .closing .lede { margin-inline: auto; }
-  .has-screenshot .slide-content { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.5fr); column-gap: 32px; align-content: center; }
-  .has-screenshot .intro { grid-column: 1; }
-  .has-screenshot h2 { font-size: clamp(28px, 2.6vw, 38px); }
-  .has-screenshot .points { grid-column: 1; grid-template-columns: 1fr; gap: 18px; margin-top: 28px; }
-  .has-screenshot .points article { padding-top: 14px; }
-  .has-screenshot .points h3 { font-size: 16px; margin-bottom: 6px; }
-  .has-screenshot .points p { font-size: 14px; line-height: 1.5; }
-  .product-screenshot { grid-column: 2; grid-row: 1 / span 2; align-self: center; min-width: 0; }
-  .product-screenshot img { display: block; width: 100%; height: auto; }
-  .product-screenshot figcaption { display: flex; justify-content: space-between; gap: 12px; padding: 12px 24px 0; font-size: 12px; color: var(--color-muted); }
-  .product-screenshot figcaption a { text-decoration: underline; text-underline-offset: 4px; }
-  @media (max-width: 800px) {
-    .has-screenshot .slide-content { display: flex; }
-    .product-screenshot { width: 100%; margin-top: 28px; }
-    .has-screenshot .points { grid-template-columns: 1fr; }
-  }
-  .deck-backdrop { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; z-index: -1; background: var(--color-canvas); }
-  .deck-backdrop::after { content: ""; position: absolute; inset: 0; background: radial-gradient(75% 80% at 50% 45%, rgb(20 19 17 / .8), rgb(20 19 17 / .2)); }
-  small { display: block; font-size: 12px; color: var(--color-muted); font-weight: 400; }
-  .reef-flow { display: flex; align-items: center; gap: 24px; margin-top: 32px; }
-  .reef-flow strong { padding: 20px 28px; border: 1px solid var(--color-line); font-size: 20px; font-weight: 500; }
-  .reef-flow small { display: block; margin: 5px 0 0; font-size: 12px; }
-  .reef-flow + .points { margin-top: 28px; }
-  .actions { display: flex; gap: 28px; margin-top: 26px; font-size: 14px; }
-  .actions a { text-decoration: underline; text-underline-offset: 5px; }
-  .closing-links { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 70px; gap: 32px; }
-  .closing-links a { border-top: 1px solid #ffffff25; padding-top: 24px; }
-  .closing-links span { display: block; font-size: 12px; color: #c5c0b8; margin-bottom: 20px; }
-  .closing-links strong { font-size: 24px; font-weight: 500; }
-  @media (max-width: 640px) {
-    .deck-bar { height: 62px; padding: 0 20px; }
-    .deck-bar nav { display: none; }
-    .deck { padding: 12px; }
-    .slide { padding: 24px; border-inline: 0; scroll-margin-top: 74px; min-height: calc(100svh - 86px); }
-    .slide-top { font-size: 10px; padding-bottom: 28px; }
-    .slide-top > span:last-child { display: none; }
-    .points, .closing-links { grid-template-columns: 1fr; margin-top: 32px; gap: 24px; }
-    .points p { max-width: none; }
-    h3 { margin: 10px 0; }
-    .slide-bottom { align-items: flex-start; flex-direction: column; gap: 12px; }
-    .slide-bottom nav { align-self: flex-end; }
-    .reef-flow { flex-direction: column; gap: 12px; align-items: stretch; text-align: center; }
-    .reef-flow > span[aria-hidden] { transform: rotate(90deg); }
-    .actions { flex-wrap: wrap; gap: 18px; }
-  }
-  @media print {
-    @page { size: A4 landscape; margin: 0; }
-    :global(html), :global(body), :global(main) { background: white !important; }
-    .deck-bar, :global(.skip), .slide-bottom nav a { display: none !important; }
-    .deck { padding: 0; max-width: none; }
-    .slide { width: 297mm; max-width: none; height: 209mm; min-height: 0; margin: 0; padding: 12mm 16mm 8mm; border: 0; break-after: page; break-inside: avoid; print-color-adjust: exact; }
-    .slide:last-child { break-after: auto; }
-    .slide-top { padding-bottom: 20px; }
-    .slide-content { padding: 0 0 20px; }
-    h1 { font-size: 48px; } h2 { font-size: 40px; }
-    .cover, .closing { border-radius: 0; }
-    .lede { font-size: 18px; margin-top: 18px; }
-    .points { margin-top: 30px; gap: 28px; }
-    .points p { font-size: 14px; } h3 { font-size: 18px; }
-    .slide-bottom { font-size: 10px; }
-    .reef-flow { margin-top: 20px; }
-    .has-screenshot .slide-content { display: grid; }
-    .has-screenshot h2 { font-size: 32px; }
-    .has-screenshot .lede { font-size: 16px; }
-    .has-screenshot .points { margin-top: 20px; gap: 14px; }
-    .product-screenshot { margin-top: 0; }
-    .product-screenshot figcaption a { display: none; }
-  }
-</style>

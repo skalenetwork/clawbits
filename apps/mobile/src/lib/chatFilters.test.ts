@@ -27,8 +27,14 @@ const agent = channel({
   dm_peer_agent_id: "atlas",
 });
 
+const agentChat = channel({
+  channel_id: "chat",
+  channel_type: "agent_chat",
+  dm_peer_agent_id: "atlas",
+});
+
 describe("filterChannelsByTab", () => {
-  const all = [pub, priv, dm, agent];
+  const all = [pub, priv, dm, agent, agentChat];
 
   test("all keeps every conversation", () => {
     expect(filterChannelsByTab(all, "all")).toEqual(all);
@@ -38,12 +44,12 @@ describe("filterChannelsByTab", () => {
     expect(filterChannelsByTab(all, "channels")).toEqual([pub, priv]);
   });
 
-  test("dms keeps human and agent directs", () => {
-    expect(filterChannelsByTab(all, "dms")).toEqual([dm, agent]);
+  test("dms keeps only human directs", () => {
+    expect(filterChannelsByTab(all, "dms")).toEqual([dm]);
   });
 
   test("agents keeps only agent directs", () => {
-    expect(filterChannelsByTab(all, "agents")).toEqual([agent]);
+    expect(filterChannelsByTab(all, "agents")).toEqual([agent, agentChat]);
   });
 });
 

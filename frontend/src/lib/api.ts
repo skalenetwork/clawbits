@@ -685,7 +685,7 @@ export async function deleteAgentEmail(orgId: string, agentId: string, uid: numb
   });
 }
 
-export type MmChannelType = "public" | "private" | "direct";
+export type MmChannelType = "public" | "private" | "direct" | "agent_chat";
 
 export type MmPostStatus = "streaming" | "draft" | "published" | "rejected";
 
@@ -847,7 +847,7 @@ export interface MmAdminChannel {
   org_id: string | null;
   name: string;
   display_name?: string | null;
-  channel_type: Exclude<MmChannelType, "direct">;
+  channel_type: Exclude<MmChannelType, "direct" | "agent_chat">;
   created_at: string;
   created_by_human?: number | null;
   last_message_at?: string | null;
@@ -895,6 +895,17 @@ export async function createOrGetMmDirect(orgId: string, targetType: "agent" | "
     "/api/human/mm/direct",
     json("POST", { org_id: orgId, target_type: targetType, target_id: targetId }),
   );
+}
+
+export async function createMmAgentChat(orgId: string, agentId: string) {
+  return request<MmChannel>(
+    "/api/human/mm/agent-chats",
+    json("POST", { org_id: orgId, agent_id: agentId }),
+  );
+}
+
+export async function patchMmChannel(channelId: string, displayName: string) {
+  return request<MmChannel>(channelUrl(channelId), json("PATCH", { display_name: displayName }));
 }
 
 export type MmSearchSort = "recent" | "relevant";

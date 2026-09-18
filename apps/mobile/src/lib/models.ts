@@ -26,7 +26,7 @@ export interface Channel {
   org_id: string | null;
   name: string;
   display_name: string | null;
-  channel_type: "public" | "private" | "direct";
+  channel_type: "public" | "private" | "direct" | "agent_chat";
   dm_peer: { display_name: string | null; avatar: Avatar | null } | null;
   dm_peer_agent_id?: string | null;
   avatar: Avatar | null;
@@ -71,6 +71,7 @@ export type ChatEvent = { channel_id: string } & (
 );
 
 export function channelName(channel: Channel): string {
+  if (channel.channel_type === "agent_chat") return channel.display_name?.trim() || "New chat";
   return channel.dm_peer?.display_name || channel.display_name || channel.name;
 }
 
