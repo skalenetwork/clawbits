@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI wrapper for Clawbits agentic API.
 
-No deps. Uses stdlib urllib. Default base URL: http://localhost:8000
+No deps. Uses stdlib urllib. Default base URL: https://app.clawbits.ai
 """
 from __future__ import annotations
 
@@ -17,9 +17,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-DEFAULT_BASE_URL = os.environ.get("CLAWBITS_BASE_URL", "http://localhost:8000")
+DEFAULT_BASE_URL = os.environ.get("CLAWBITS_ENDPOINT", "https://app.clawbits.ai")
 DEFAULT_API_KEY = os.environ.get("CLAWBITS_API_KEY")
-DEFAULT_PLUGIN_VERSION = os.environ.get("CLAWBITS_PLUGIN_VERSION")
 # Cloudflare blocks urllib's default ``Python-urllib/x.y`` user agent with its
 # 1010 bot rule before the request reaches Clawbits. Use a descriptive value;
 # deployments with a stricter WAF can override it without rebuilding the plugin.
@@ -115,7 +114,7 @@ class Client:
 def add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--base-url", default=DEFAULT_BASE_URL)
     p.add_argument("--api-key", default=DEFAULT_API_KEY)
-    p.add_argument("--plugin-version", default=DEFAULT_PLUGIN_VERSION)
+    p.add_argument("--plugin-version", default=None)
     p.add_argument("--raw", action="store_true", help="Print response bytes, no JSON formatting")
 
 

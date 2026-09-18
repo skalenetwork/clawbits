@@ -23,7 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlmodel import Session, select
 
-from clawbits.agent_marks import Mark
+from clawbits.agent_marks import DayTrack, Mark
 from clawbits.avatars.payloads import (
     avatar_ref_for_agent,
     avatar_ref_for_channel,
@@ -39,6 +39,7 @@ from clawbits.db.models import (
     AgentAction,
     AgentChannelState,
     AgentContactPermission,
+    AgentDay,
     AgentMark,
     AgentPost,
     AgentProfile,
@@ -3232,9 +3233,69 @@ class TableRead:
         ]
 
     @staticmethod
+    def get_agent_mark_kinds(session: Session, agent_id: str) -> set[str]:
+        """Every kind the agent already holds. One small read stands in for a primary key lookup
+        per mark, and lets the post path skip the checks it would only throw away."""
+        return set(session.exec(select(AgentMark.kind).where(AgentMark.agent_id == agent_id)).all())
+
+    @staticmethod
+    def count_channel_agents(session: Session, channel_id: str) -> int:
+        from clawbits.db.table_write import DELETED_AGENT_ID
+
+        return session.exec(
+            select(func.count())
+            .select_from(MmChannelMember)
+            .where(
+                MmChannelMember.channel_id == channel_id,
+                MmChannelMember.agent_id.is_not(None),
+                MmChannelMember.agent_id != DELETED_AGENT_ID,
+            )
+        ).one()
+
+    @staticmethod
+    def is_operator_away(session: Session, agent_id: str) -> bool:
+        """True when the agent's operator has not been seen for six hours — the night shift. An
+        operator who has never been seen at all proves nothing, so it reads False."""
+        seen = session.exec(
+            select(HumanUser.last_seen_at)
+            .join(Agent, Agent.operator_id == HumanUser.id)
+            .where(Agent.agent_id == agent_id)
+        ).first()
+        return seen is not None and datetime.now(UTC) - (
+            seen if seen.tzinfo else seen.replace(tzinfo=UTC)
+        ) >= timedelta(hours=6)
+
+    @staticmethod
+    def count_agent_days(session: Session, agent_id: str, track: DayTrack) -> int:
+        return session.exec(
+            select(func.count())
+            .select_from(AgentDay)
+            .where(AgentDay.agent_id == agent_id, AgentDay.track == track)
+        ).one()
+
+    @staticmethod
+    def recent_agent_days(
+        session: Session, agent_id: str, track: DayTrack, day: date, window: int
+    ) -> list[date]:
+        """Days on ``track`` at or before ``day``, newest first, reaching back ``window`` days —
+        the longest streak any mark asks for, so a longer run costs nothing to ignore."""
+        return list(
+            session.exec(
+                select(AgentDay.day)
+                .where(
+                    AgentDay.agent_id == agent_id,
+                    AgentDay.track == track,
+                    AgentDay.day <= day,
+                    AgentDay.day > day - timedelta(days=window + 1),
+                )
+                .order_by(AgentDay.day.desc())
+            ).all()
+        )
+
+    @staticmethod
     def _mark_label(session: Session, detail: dict) -> str | None:
-        """The human's display name, a public channel's name, or the peer agent's name. Never an
-        id, and never a private channel's name."""
+        """The human's display name, a public channel's name, the peer agent's name, or the
+        skill's. Never an id, and never a private channel's name."""
         if human_id := detail.get("human_id"):
             return session.exec(
                 select(HumanUser.display_name).where(HumanUser.id == human_id)
@@ -3250,6 +3311,10 @@ class TableRead:
                 .select_from(Agent)
                 .outerjoin(AgentProfile, AgentProfile.agent_id == Agent.agent_id)
                 .where(Agent.agent_id == peer_agent_id)
+            ).first()
+        if skill_id := detail.get("skill_id"):
+            return session.exec(
+                select(Skill.display_name).where(Skill.skill_id == skill_id)
             ).first()
         return None
 

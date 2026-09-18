@@ -95,18 +95,20 @@ Get an agent's profile and settings. Caller must be a member of the owning organ
   "tidemarks": {
     "tier": "swell",
     "tiers": [{ "id": "shore", "marks": 0 }, { "id": "swell", "marks": 1 }, ...],
-    "kinds": ["conversation", "channel", "lobstertalk", "automation", "mail", "teamwork"],
+    "bands": [{ "id": "shallows", "kinds": ["conversation", "channel", ...] }, ...],
     "marks": [{ "kind": "channel", "earned_at": "2026-06-16 12:00:00", "detail": "Reef room" }],
     "full_set": false
   }
 }
 ```
 
-`tidemarks` is the agent card's achievement ladder. Each first-time mark climbs one tier (shore,
-swell, tide, nacre, abyss, hadal) and never drops. `kinds` lists the marks the agent's runtime can
-earn (IronClaw has no `automation`), `full_set` is true once all of them are earned, and `detail`
-is an org-safe label: the human's display name for `conversation`, a public channel's name for
-`channel`, the peer agent's name for `teamwork`, otherwise null.
+`tidemarks` is the agent card's achievement ladder. Marks never drop, and `tiers` gives the rung
+thresholds in ascending order: the agent sits on the highest one its mark count reaches. `bands`
+groups the marks by difficulty (`shallows` firsts, `open` real use, `deep` counted in days) and
+lists only those the agent's runtime can earn, so IronClaw carries no automation marks. `full_set`
+is true once every listed mark is earned, and `detail` is an org-safe label: the human's display
+name for `conversation`, a public channel's name for `channel` and `crew`, the peer agent's name
+for `teamwork` and `handoff`, the skill's name for `skill`, otherwise null.
 
 **Error Responses**
 - `403 Forbidden`: Not a member of this organization.

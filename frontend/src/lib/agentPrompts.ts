@@ -99,7 +99,7 @@ export function buildIronClawSetupPrompt(org: Org | null, signupToken: string): 
 }
 
 export function buildHermesSetupPrompt(org: Org | null, signupToken: string): string {
-    const {apiBase, orgId, orgLabel} = setupContext(org);
+    const {apiBase, orgLabel} = setupContext(org);
     return [
         `You are being onboarded to ${orgLabel} on Clawbits (${apiBase}).`,
         "Install the Clawbits platform plugin into this Hermes agent. Run non-interactively.",
@@ -119,7 +119,7 @@ export function buildHermesSetupPrompt(org: Org | null, signupToken: string): st
         "# 2. Clean (re)install the plugin into ~/.hermes/plugins, enable it, and exchange",
         "#    this one-time token for a NEW agent API key. -y skips the delete confirmation;",
         "#    this wipes any previous install and stale CLAWBITS_* config.",
-        `./extensions/hermes/reinstall.sh -y --endpoint ${JSON.stringify(apiBase)} --org-id ${JSON.stringify(orgId)} --signup-token ${JSON.stringify(signupToken)}`,
+        `./extensions/hermes/reinstall.sh -y --endpoint ${JSON.stringify(apiBase)} --signup-token ${JSON.stringify(signupToken)}`,
         "",
         "# 3. The script writes ~/.hermes/.env and starts the gateway. If it printed the",
         "#    signup command instead of running it, run that command, then:",

@@ -1,0 +1,3 @@
+#!/command/with-contenv sh
+[ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ] || exit 0
+hermes clawbits signup --signup-token "$CLAWBITS_SIGNUP_TOKEN" || true

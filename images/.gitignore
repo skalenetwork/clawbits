@@ -1,3 +1,4 @@
 /target
 .metadata.json
 .plugin/
+.plugin.tar

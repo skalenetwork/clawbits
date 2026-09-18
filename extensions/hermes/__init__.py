@@ -1,7 +1,8 @@
 """Clawbits platform plugin for Hermes Agent.
 
-Install by copying this directory to ``~/.hermes/plugins/clawbits-platform``
-and enabling ``clawbits-platform`` in Hermes plugin config.
+The bundled image (``images/hermes``) ships this directory under
+``/opt/hermes/plugins/platforms/clawbits`` and signs up at first boot; a
+self-hosted Hermes installs it with ``reinstall.sh``.
 
 Layout — this package is split by responsibility; ``__init__`` holds only the
 gateway-facing surface (``register`` and its config hooks) and re-exports the
@@ -47,17 +48,15 @@ from . import (
 from .adapter import (
     _ATTENTION_PREAMBLE,
     _SEEN_CAP,
-    DEFAULT_BASE_URL,
     DEFAULT_LIVENESS_INTERVAL_SECONDS,
     DEFAULT_POLL_INTERVAL_SECONDS,
     GENERATING_HEARTBEAT_INTERVAL_SECONDS,
     ClawbitsAdapter,
     _env_float,
-    _ws_header_kwarg,
 )
-from .cli_client import _ClawbitsCli, _default_cli_path, _run_agent_cli
+from .cli_client import _ClawbitsCli, _default_cli_path, _run_agent_cli, endpoint
 from .email_integration import EMAIL_TOOL_SCHEMA, _email_tool_available, _send_email_tool
-from .manifest import _FALLBACK_PLUGIN_VERSION, PLUGIN_VERSION, _read_plugin_version
+from .manifest import PLUGIN_VERSION, _read_plugin_version
 from .media import (
     _ALLOW_PRIVATE_HOSTS_ENV,
     _IMAGE_DOWNLOAD_MAX_BYTES,
@@ -89,13 +88,12 @@ from .signup import (
     _cli_command,
     _load_known_answers,
     _mint_initial_tokens,
-    _save_hermes_env,
+    _save_identity,
     _setup_cli,
 )
 
 __all__ = [
     "ClawbitsAdapter",
-    "DEFAULT_BASE_URL",
     "DEFAULT_LIVENESS_INTERVAL_SECONDS",
     "DEFAULT_POLL_INTERVAL_SECONDS",
     "GENERATING_HEARTBEAT_INTERVAL_SECONDS",
@@ -117,7 +115,6 @@ __all__ = [
     "_ATTENTION_PREAMBLE",
     "_Channel",
     "_ClawbitsCli",
-    "_FALLBACK_PLUGIN_VERSION",
     "_IMAGE_DOWNLOAD_MAX_BYTES",
     "_MAX_POST_CHARS",
     "_PrivateHostRejectingRedirectHandler",
@@ -145,70 +142,39 @@ __all__ = [
     "_read_plugin_version",
     "_reject_private_host",
     "_run_agent_cli",
-    "_save_hermes_env",
+    "_save_identity",
     "_setup_cli",
     "_split_message_chunks",
     "_timestamp_ms",
     "_trace_id_from_metadata",
-    "_ws_header_kwarg",
 ]
 
 
 def _env_enablement() -> dict[str, Any] | None:
-    api_key = os.getenv("CLAWBITS_API_KEY")
-    agent_id = os.getenv("CLAWBITS_AGENT_ID")
+    api_key, agent_id = os.getenv("CLAWBITS_API_KEY"), os.getenv("CLAWBITS_AGENT_ID")
     if not api_key or not agent_id:
         return None
-    extra: dict[str, Any] = {
-        "base_url": os.getenv("CLAWBITS_BASE_URL", DEFAULT_BASE_URL),
-        "api_key": api_key,
-        "agent_id": agent_id,
-    }
+    seed: dict[str, Any] = {"base_url": endpoint(), "api_key": api_key, "agent_id": agent_id}
     channel_id = os.getenv("CLAWBITS_CHANNEL_ID")
     if channel_id:
-        extra["channel_id"] = channel_id
-        extra["home_channel"] = {
-            "platform": "clawbits",
-            "chat_id": channel_id,
-            "name": "Clawbits",
-        }
-    return {"enabled": True, "api_key": api_key, "extra": extra}
+        seed["channel_id"] = channel_id
+        seed["home_channel"] = {"platform": "clawbits", "chat_id": channel_id, "name": "Clawbits"}
+    return seed
 
 
 def check_requirements() -> bool:
     return True
 
 
-def validate_config(config: PlatformConfig) -> tuple[bool, str]:
+def validate_config(config: PlatformConfig) -> bool:
     extra = config.extra or {}
     api_key = config.api_key or config.token or extra.get("api_key") or os.getenv("CLAWBITS_API_KEY")
     agent_id = extra.get("agent_id") or os.getenv("CLAWBITS_AGENT_ID")
-    if not api_key:
-        return False, "Missing CLAWBITS_API_KEY"
-    if not agent_id:
-        return False, "Missing CLAWBITS_AGENT_ID"
-    return True, "ok"
+    return bool(api_key and agent_id)
 
 
 def is_connected(config: PlatformConfig | None = None) -> bool:
-    """Whether Clawbits credentials are configured.
-
-    The gateway's enablement gate calls this with the candidate
-    ``PlatformConfig`` (env-seeded extras layered on), so it MUST accept that
-    argument — a no-arg signature raises ``TypeError`` there, which the gate
-    swallows and treats as "not configured", silently skipping the platform.
-    Kept callable with no args too (CLI/status checks). Honors both
-    ``config.extra`` and the ``CLAWBITS_*`` env vars, mirroring
-    :func:`validate_config`.
-    """
-    extra = (config.extra or {}) if config is not None else {}
-    api_key = (
-        (config.api_key or config.token if config is not None else None)
-        or extra.get("api_key")
-        or os.getenv("CLAWBITS_API_KEY")
-    )
-    agent_id = extra.get("agent_id") or os.getenv("CLAWBITS_AGENT_ID")
-    return bool(api_key and agent_id)
+    return validate_config(config or PlatformConfig())
 
 
 def register(ctx: Any) -> None:
@@ -235,7 +201,7 @@ def register(ctx: Any) -> None:
         adapter_factory=lambda cfg: ClawbitsAdapter(cfg),
         check_fn=check_requirements,
         validate_config=validate_config,
-        required_env=["CLAWBITS_BASE_URL", "CLAWBITS_API_KEY", "CLAWBITS_AGENT_ID"],
+        required_env=["CLAWBITS_API_KEY", "CLAWBITS_AGENT_ID"],
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="CLAWBITS_CHANNEL_ID",
         is_connected=is_connected,

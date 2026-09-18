@@ -722,7 +722,9 @@ html[data-media-viewer] [data-vt-contextual] {
   --access-quiet: rgb(28 28 26 / 0.36);
   --access-edge: rgb(28 28 26 / 0.08);
   --access-detail: oklch(0.6 0.12 var(--access-h));
-  --access-glint: linear-gradient(105deg, transparent calc(var(--mx) * 160% - 60%), rgb(255 255 255 / calc(var(--tilt) * 0.9)) calc(var(--mx) * 160% - 30%), transparent calc(var(--mx) * 160%));
+  --access-glint-c: 255 255 255;
+  --access-glint-a: 0.9;
+  --access-glint: linear-gradient(105deg, transparent calc(var(--mx) * 160% - 60%), rgb(var(--access-glint-c) / calc(var(--tilt) * var(--access-glint-a))) calc(var(--mx) * 160% - 30%), transparent calc(var(--mx) * 160%));
   --access-foil: var(--access-ink);
   --access-label: var(--access-sub);
   --access-namefoil: var(--access-ink);
@@ -766,6 +768,15 @@ html[data-media-viewer] [data-vt-contextual] {
   --access-ring-w: 1cqw;
   --access-ring-blend: soft-light, normal;
 }
+.access-card[data-tier="reef"] {
+  --access-stock: radial-gradient(105% 62% at 2% -4%, oklch(0.94 0.055 196 / 0.95), transparent 66%), radial-gradient(102% 62% at 104% 104%, oklch(0.925 0.072 42 / 0.95), transparent 68%), linear-gradient(172deg, #fdfaf6, #f7f1e9);
+  --access-foil: var(--access-glint), linear-gradient(118deg, #a1522f, #e79a66 26%, #4fb0a3 58%, #1c6f78 88%);
+  --access-label: var(--access-foil);
+  --access-tex: var(--access-brush) 0 0 / 240px 240px;
+  --access-tex-o: 0.05;
+  --access-ring: conic-gradient(from calc(var(--mx) * 110deg - 40deg), #a9552d, #f2b382 22%, #63bfb1 48%, #1c6f78 70%, #c2734a 88%, #a9552d);
+  --access-ring-w: max(1px, 0.52cqw);
+}
 .access-card[data-tier="nacre"] {
   --access-stock: radial-gradient(95% 55% at 12% 0%, oklch(0.975 0.018 350 / 0.9), transparent 70%), radial-gradient(90% 60% at 100% 100%, oklch(0.965 0.02 225 / 0.9), transparent 72%), linear-gradient(172deg, #fdfcf9, #f4f2ee);
   --access-foil: var(--access-glint), linear-gradient(calc(100deg + var(--mx) * 40deg), oklch(0.6 0.07 350), oklch(0.62 0.06 255) 30%, oklch(0.64 0.06 175) 55%, oklch(0.6 0.07 305)) calc(var(--mx) * 100%) 0 / 240% 100%;
@@ -775,6 +786,80 @@ html[data-media-viewer] [data-vt-contextual] {
   --access-sheen: linear-gradient(calc(105deg + var(--mx) * 50deg), transparent 18%, oklch(0.9 0.07 345) 36%, oklch(0.92 0.06 250) 50%, oklch(0.93 0.06 165) 63%, transparent 82%) calc(var(--mx) * 100%) calc(var(--my) * 100%) / 220% 220% no-repeat;
   --access-sheen-blend: multiply;
   --access-sheen-o: 0.5;
+}
+/* The dark tiers all foil their wordmark and lay texture flat over the stock. */
+.access-card[data-tier="twilight"],
+.access-card[data-tier="kelp"],
+.access-card[data-tier="vent"],
+.access-card[data-tier="abyss"],
+.access-card[data-tier="hadal"] {
+  --access-label: var(--access-foil);
+  --access-namefoil: var(--access-foil);
+  --access-tex-blend: normal;
+}
+.access-card[data-tier="twilight"] {
+  --access-metal: #8d9ab0;
+  --access-metal-hi: #e8eef8;
+  --access-metal-lo: #48536a;
+  --access-thread: #6c85b6;
+  --access-stock: linear-gradient(184deg, #2b3c60 0%, #17243d 36%, #0a1021 100%);
+  --access-ink: #e9effb;
+  --access-sub: rgb(233 239 251 / 0.56);
+  --access-quiet: rgb(233 239 251 / 0.33);
+  --access-edge: rgb(190 214 255 / 0.08);
+  --access-detail: oklch(0.79 0.075 var(--access-h));
+  --access-glint-c: 226 238 255;
+  --access-glint-a: 0.85;
+  --access-foil: var(--access-glint), linear-gradient(150deg, #8fa5c6, #dde8f8 32%, #8da7d0 60%, #c7d7ef 88%);
+  --access-cutline: rgb(180 205 245 / 0.22);
+  --access-tex: var(--access-soft) 0 0 / 200px 200px;
+  --access-tex-o: 0.09;
+  --access-ring: linear-gradient(#c3d5f0, #2e4870 62%, #16233c);
+  --access-ring-w: max(1px, 0.3cqw);
+  --access-sheen: linear-gradient(rgb(196 218 255 / 0.5), transparent 46%);
+  --access-sheen-o: 0.5;
+}
+.access-card[data-tier="kelp"] {
+  --access-metal: #8d9479;
+  --access-metal-hi: #eaf0dc;
+  --access-metal-lo: #4c5340;
+  --access-thread: #b3c186;
+  --access-stock: radial-gradient(115% 62% at 18% 0%, rgb(92 118 64 / 0.4), transparent 68%), linear-gradient(176deg, #172018, #0a110c);
+  --access-ink: #ebf1e4;
+  --access-sub: rgb(235 241 228 / 0.55);
+  --access-quiet: rgb(235 241 228 / 0.32);
+  --access-edge: rgb(206 234 186 / 0.07);
+  --access-detail: oklch(0.79 0.09 135);
+  --access-glint-c: 238 250 216;
+  --access-glint-a: 0.82;
+  --access-foil: var(--access-glint), linear-gradient(150deg, #78894a, #d2de9c 30%, #91a75e 58%, #e2ebb6 84%, #6c7c42);
+  --access-cutline: rgb(196 216 150 / 0.24);
+  --access-tex: var(--access-brush) 0 0 / 240px 240px;
+  --access-tex-o: 0.12;
+  --access-ring: conic-gradient(from calc(var(--mx) * 100deg + 40deg), #4f5a33, #cfdc9a 20%, #7c8c4c 44%, #e4edb8 66%, #45502e 86%, #4f5a33);
+  --access-ring-w: max(1px, 0.34cqw);
+  --access-sheen: radial-gradient(70% 50% at calc(var(--mx) * 100%) calc(var(--my) * 100%), rgb(206 236 150 / 0.09), transparent 70%);
+}
+.access-card[data-tier="vent"] {
+  --access-metal: #7e7268;
+  --access-metal-hi: #e6d8c7;
+  --access-metal-lo: #3f372f;
+  --access-thread: #c96a3a;
+  --access-stock: radial-gradient(125% 52% at 50% 119%, rgb(199 82 26 / 0.55), transparent 66%), linear-gradient(176deg, #1a1613, #0a0807);
+  --access-ink: #f2e8dd;
+  --access-sub: rgb(242 232 221 / 0.55);
+  --access-quiet: rgb(242 232 221 / 0.32);
+  --access-edge: rgb(255 214 170 / 0.07);
+  --access-detail: oklch(0.73 0.13 44);
+  --access-glint-c: 255 219 180;
+  --access-glint-a: 0.8;
+  --access-foil: var(--access-glint), linear-gradient(140deg, #8c4722, #e08a4c 32%, #b35f2c 58%, #f0a86a 84%, #793d1c);
+  --access-cutline: rgb(236 168 112 / 0.26);
+  --access-tex: var(--access-soft) 0 0 / 200px 200px;
+  --access-tex-o: 0.14;
+  --access-ring: conic-gradient(from calc(var(--mx) * 100deg), #57301d, #e08a4c 18%, #78421f 40%, #f2b070 62%, #4c2a18 84%, #57301d);
+  --access-ring-w: max(1px, 0.34cqw);
+  --access-sheen: radial-gradient(72% 44% at 50% 100%, rgb(255 140 60 / 0.2), transparent 70%);
 }
 .access-card[data-tier="abyss"] {
   --access-metal: #c19c5e;
@@ -787,13 +872,12 @@ html[data-media-viewer] [data-vt-contextual] {
   --access-quiet: rgb(243 237 225 / 0.34);
   --access-edge: rgb(255 238 205 / 0.07);
   --access-detail: oklch(0.8 0.075 var(--access-h));
-  --access-foil: linear-gradient(105deg, transparent calc(var(--mx) * 160% - 60%), rgb(255 243 212 / calc(var(--tilt) * 0.85)) calc(var(--mx) * 160% - 30%), transparent calc(var(--mx) * 160%)), linear-gradient(160deg, #b88d4c, #efd79f 36%, #c49b58 58%, #e8cb8c 80%, #a47c41);
-  --access-label: var(--access-foil);
-  --access-namefoil: var(--access-foil);
+  --access-glint-c: 255 243 212;
+  --access-glint-a: 0.85;
+  --access-foil: var(--access-glint), linear-gradient(160deg, #b88d4c, #efd79f 36%, #c49b58 58%, #e8cb8c 80%, #a47c41);
   --access-cutline: rgb(222 188 122 / 0.28);
   --access-tex: var(--access-soft) 0 0 / 200px 200px;
   --access-tex-o: 0.11;
-  --access-tex-blend: normal;
   --access-ring: conic-gradient(from calc(var(--mx) * 90deg), #8a6934, #eed49b 14%, #a78247 32%, #f5e2b3 52%, #94733d 70%, #e2c486 86%, #8a6934);
   --access-ring-w: max(1px, 0.32cqw);
   --access-sheen: radial-gradient(70% 50% at calc(var(--mx) * 100%) calc(var(--my) * 100%), rgb(255 222 160 / 0.09), transparent 70%);
@@ -809,13 +893,12 @@ html[data-media-viewer] [data-vt-contextual] {
   --access-quiet: rgb(230 236 246 / 0.34);
   --access-edge: rgb(205 225 255 / 0.07);
   --access-detail: url(#access-g-plat) #d5dbe3;
-  --access-foil: linear-gradient(105deg, transparent calc(var(--mx) * 160% - 60%), rgb(240 252 255 / calc(var(--tilt) * 0.9)) calc(var(--mx) * 160% - 30%), transparent calc(var(--mx) * 160%)), linear-gradient(115deg, #b9c1cc, #f2f5f9 24%, #b4dfe8 44%, #cfc6ef 62%, #eef1f6 80%, #aab3bf) calc(var(--mx) * 100%) 0 / 220% 100%;
-  --access-label: var(--access-foil);
-  --access-namefoil: var(--access-foil);
+  --access-glint-c: 240 252 255;
+  --access-glint-a: 0.9;
+  --access-foil: var(--access-glint), linear-gradient(115deg, #b9c1cc, #f2f5f9 24%, #b4dfe8 44%, #cfc6ef 62%, #eef1f6 80%, #aab3bf) calc(var(--mx) * 100%) 0 / 220% 100%;
   --access-cutline: rgb(190 220 250 / 0.2);
   --access-tex: var(--access-glass) 0 0 / 160px 160px;
   --access-tex-o: 0.12;
-  --access-tex-blend: normal;
   --access-ring: conic-gradient(from calc(var(--mx) * 120deg + 200deg), #aab4c2, #f0faff 10%, #8fe0ee 24%, #b6a4f4 40%, #e6ebf2 55%, #80d4e6 72%, #c3b2f6 86%, #aab4c2);
   --access-ring-w: max(1px, 0.4cqw);
   --access-sheen: radial-gradient(70% 50% at calc(var(--mx) * 100%) calc(var(--my) * 100%), rgb(170 220 255 / 0.08), transparent 70%);
@@ -991,6 +1074,7 @@ html[data-media-viewer] [data-vt-contextual] {
 .access-foot,
 .access-bhead,
 .access-marks,
+.access-next,
 .access-issued {
   position: relative;
 }
@@ -1106,57 +1190,53 @@ html[data-media-viewer] [data-vt-contextual] {
   stroke-linecap: round;
 }
 
-.access-bhead {
+.access-bhead,
+.access-band {
   display: flex;
-  align-items: baseline;
   justify-content: space-between;
-  margin-top: 22cqw;
-  font-size: 3.8cqw;
+  font-size: 3.6cqw;
   color: var(--access-sub);
 }
-.access-btitle {
+.access-bhead {
+  align-items: baseline;
+  margin-top: 22cqw;
+}
+.access-btitle,
+.access-band b {
   font-weight: 600;
   color: var(--access-ink);
 }
 .access-marks {
-  margin-top: 4cqw;
+  margin-top: 4.4cqw;
 }
 .access-marks > span {
-  display: flex;
-  align-items: center;
-  gap: 2.6cqw;
-  height: 9cqw;
-  font-size: 3.8cqw;
+  display: block;
+  padding-block: 4.6cqw;
   border-top: 1px solid var(--access-edge);
 }
 .access-marks > span:last-child {
   border-bottom: 1px solid var(--access-edge);
 }
-.access-marks i {
-  flex: none;
-  width: 1.8cqw;
-  height: 1.8cqw;
-  border-radius: 50%;
-  background: var(--access-quiet);
-  opacity: 0.45;
+.access-pips {
+  display: flex;
+  gap: 2.2cqw;
+  margin-top: 3cqw;
 }
-.access-marks [data-on] i {
+.access-pips i {
+  flex: 1;
+  height: 2cqw;
+  border-radius: 99px;
+  background: var(--access-quiet);
+  opacity: 0.4;
+}
+.access-pips i[data-on] {
   background: var(--access-foil);
   opacity: 1;
 }
-.access-what {
-  flex: 1;
-  color: var(--access-sub);
-}
-.access-marks [data-on] .access-what {
-  color: var(--access-ink);
-}
-.access-when {
+.access-next {
+  margin-top: 3.4cqw;
+  font-size: 3.4cqw;
   color: var(--access-quiet);
-  font-variant-numeric: tabular-nums;
-}
-.access-marks [data-on] .access-when {
-  color: var(--access-sub);
 }
 .access-issued {
   display: flex;

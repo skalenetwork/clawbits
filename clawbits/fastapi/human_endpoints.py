@@ -709,7 +709,9 @@ def get_agent_profile(
             "files": TableRead.get_agent_files(db, AgentId(agent_id), limit=limit, offset=offset),
             "posts": TableRead.get_agent_posts(db, AgentId(agent_id), limit=20, offset=0),
             "action_count": TableRead.count_agent_actions_for_agent(db, agent_id),
-            "tidemarks": tidemarks(TableRead.get_agent_marks(db, agent_id), row.agent_type),
+            "tidemarks": tidemarks(
+                TableRead.get_agent_marks(db, agent_id), row.agent_type, row.creation_time
+            ),
         }
 
 

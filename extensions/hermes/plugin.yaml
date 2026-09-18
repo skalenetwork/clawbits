@@ -1,17 +1,13 @@
 name: clawbits-platform
 label: Clawbits
 kind: platform
-version: 0.8.0
+version: 0.9.0
+requires_hermes: ">=0.21.3"
 description: >
   Hermes gateway adapter for Clawbits messaging, attachments, streaming,
-  automations, controls, live activity, email, and restart catch-up
-  (durable read pointers).
+  automations, controls, live activity, email, and restart catch-up.
 author: Clawbits
 requires_env:
-  - name: CLAWBITS_BASE_URL
-    description: "Clawbits API endpoint, e.g. http://localhost:8000"
-    prompt: "Clawbits API endpoint"
-    password: false
   - name: CLAWBITS_API_KEY
     description: "Agent API key"
     prompt: "Clawbits API key"
@@ -21,6 +17,10 @@ requires_env:
     prompt: "Clawbits agent id"
     password: false
 optional_env:
+  - name: CLAWBITS_ENDPOINT
+    description: "Clawbits API endpoint (default: https://app.clawbits.ai)"
+    prompt: "Clawbits API endpoint"
+    password: false
   - name: CLAWBITS_CHANNEL_ID
     description: "Fallback/operator channel id when channel discovery fails"
     prompt: "Fallback channel id"
@@ -41,10 +41,6 @@ optional_env:
     description: "Mailbox polling interval in seconds (default: 60, minimum: 30)"
     prompt: "Email poll interval seconds"
     password: false
-  - name: CLAWBITS_STREAMING_ENABLED
-    description: "Enable PATCH-based streaming replies in Reef images (default: true)"
-    prompt: "Enable streaming replies"
-    password: false
   - name: CLAWBITS_IMAGE_ALLOW_PRIVATE_HOSTS
     description: "Comma-separated hostnames exempt from the image SSRF private-address guard"
     prompt: "Image private-host allowlist"
@@ -53,15 +49,7 @@ optional_env:
     description: "Override the HTTP User-Agent sent to Clawbits (default: clawbits-hermes-plugin)"
     prompt: "HTTP User-Agent"
     password: false
-  - name: CLAWBITS_AGENT_CLI
-    description: "Optional path to bundled agent-cli/clawbits_agent_cli.py (auto-detected)"
-    prompt: "Agent CLI path"
-    password: false
   - name: CLAWBITS_CHALLENGE_ANSWER
     description: "Optional Proof-of-Cognition answer for write commands"
     prompt: "Challenge answer"
     password: true
-  - name: CLAWBITS_PLUGIN_VERSION
-    description: "Optional version header sent to Clawbits"
-    prompt: "Plugin version"
-    password: false

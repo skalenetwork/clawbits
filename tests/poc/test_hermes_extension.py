@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import importlib.util
+import json
 import sys
 import types
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -34,15 +37,43 @@ class _FakePlatform(str):
     pass
 
 
+class _FakeProcessingOutcome(Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
+
+
 class _FakeBasePlatformAdapter:
+    """``handle_message`` enqueues the turn like the gateway does: a background
+    task brackets the overridable ``turn`` with the processing hooks."""
+
     def __init__(self, config: _FakePlatformConfig, platform: _FakePlatform) -> None:
         self.config = config
         self.platform = platform
         self._running = False
         self.events: list[Any] = []
+        self.tasks: list[asyncio.Task[None]] = []
 
     async def handle_message(self, event: Any) -> None:
         self.events.append(event)
+        self.tasks.append(asyncio.create_task(self._process(event)))
+
+    async def _process(self, event: Any) -> None:
+        await self.on_processing_start(event)
+        try:
+            outcome = await self.turn(event)
+        except Exception:
+            outcome = _FakeProcessingOutcome.FAILURE
+        await self.on_processing_complete(event, outcome)
+
+    async def turn(self, event: Any) -> Any:
+        return _FakeProcessingOutcome.SUCCESS
+
+    async def on_processing_start(self, event: Any) -> None:
+        pass
+
+    async def on_processing_complete(self, event: Any, outcome: Any) -> None:
+        pass
 
 
 class _FakeMessageType:
@@ -98,6 +129,7 @@ def _load_hermes_module():
     base.MessageEvent = _FakeMessageEvent
     base.MessageType = _FakeMessageType
     base.SendResult = _FakeSendResult
+    base.ProcessingOutcome = _FakeProcessingOutcome
     sys.modules["gateway.platforms.base"] = base
 
     session = types.ModuleType("gateway.session")
@@ -121,6 +153,22 @@ def _load_hermes_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+async def _drain(adapter) -> None:
+    """Finish the turns handle_message enqueued."""
+    await asyncio.gather(*[task for task in adapter.tasks if not task.done()])
+    adapter.tasks.clear()
+
+
+def _event(message_id: str, chat_id: str = "chan", **raw: Any) -> _FakeMessageEvent:
+    return _FakeMessageEvent(
+        text="hi",
+        message_type="text",
+        source=_FakeSessionSource(platform="clawbits", chat_id=chat_id),
+        raw_message=raw,
+        message_id=message_id,
+    )
 
 
 def test_post_id_and_cursor_handle_clawbits_shape() -> None:
@@ -180,8 +228,7 @@ def test_poll_dispatches_same_second_post_ids_after_seed() -> None:
         # Turns are spawned as background tasks (non-blocking dispatch);
         # drain them so the events are visible to the assertions.
         await adapter._poll_once()
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(poll_and_drain())
     assert adapter.events == []
@@ -229,8 +276,8 @@ def test_poll_keeps_receiving_while_a_turn_is_blocked() -> None:
         unblock = asyncio.Event()
         handled: list[str] = []
 
-        async def blocking_handle(event: Any) -> None:
-            # The prompt is now fronted by the Clawbits context block; the
+        async def blocking_turn(event: Any) -> Any:
+            # The prompt is fronted by the Clawbits context block; the
             # message itself is the trailing paragraph.
             message = event.text.rsplit("\n\n", 1)[-1]
             handled.append(message)
@@ -238,18 +285,18 @@ def test_poll_keeps_receiving_while_a_turn_is_blocked() -> None:
                 await unblock.wait()  # the "clarify" park: turn 1 waits
             elif message == "answer":
                 unblock.set()  # the answer is what unblocks turn 1
+            return _FakeProcessingOutcome.SUCCESS
 
-        adapter.handle_message = blocking_handle
+        adapter.turn = blocking_turn
         await adapter._poll_once()  # seed cursors
         await adapter._poll_once()  # dispatches "question" (parks)
         # The poll loop must still be able to run and deliver the answer.
         await asyncio.wait_for(adapter._poll_once(), timeout=2)
-        await asyncio.wait_for(asyncio.gather(*adapter._turn_tasks), timeout=2)
+        await asyncio.wait_for(_drain(adapter), timeout=2)
         return handled
 
     handled = asyncio.run(scenario())
     assert handled == ["question", "answer"]
-    assert not adapter._turn_tasks
 
 
 def test_first_poll_greets_once_and_unblocks_liveness(monkeypatch, tmp_path) -> None:
@@ -426,19 +473,18 @@ def test_generating_status_heartbeats_through_the_turn(monkeypatch) -> None:
     adapter = mod.ClawbitsAdapter(cfg)
     adapter.client = FakeClient()
 
-    async def slow_turn(event: object) -> None:
+    async def slow_turn(event: object) -> Any:
         await asyncio.sleep(0.05)  # ~5 heartbeat intervals
+        return _FakeProcessingOutcome.SUCCESS
 
-    adapter.handle_message = slow_turn  # type: ignore[assignment,method-assign]
+    adapter.turn = slow_turn  # type: ignore[assignment,method-assign]
 
     channel = mod._Channel("chan", "direct", "Chat")
     post = {"post_id": 5, "created_at": "2026-06-04 12:00:01", "message": "hi", "human_id": 1}
 
     async def dispatch_and_drain() -> None:
-        # Dispatch spawns the turn as a background task; drain it so the
-        # status sequence is complete before asserting.
         await adapter._maybe_dispatch(channel, post)
-        await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(dispatch_and_drain())
 
@@ -509,7 +555,7 @@ def test_channel_dispatch_strips_mention_but_keeps_raw() -> None:
         adapter._seen.clear()
         adapter.events.clear()
         await adapter._maybe_dispatch(channel, post)
-        await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     # A mention of @agent_12 (we are @agent_1) must not trigger us.
     asyncio.run(dispatch({
@@ -572,52 +618,135 @@ def test_garbage_interval_env_falls_back_to_default(monkeypatch) -> None:
     assert adapter.liveness_interval == mod.DEFAULT_LIVENESS_INTERVAL_SECONDS
 
 
-def test_ws_header_kwarg_matches_installed_websockets() -> None:
-    """The Bearer auth header rides whichever kwarg the installed websockets
-    version accepts: ``additional_headers`` (>=14) or ``extra_headers`` (older).
-    An unintrospectable connect falls back to the current name."""
+def test_events_url_carries_no_secret() -> None:
+    """The Bearer credential rides a header; a query param would land in logs."""
     mod = _load_hermes_module()
-
-    class NewWebsockets:
-        def connect(self, uri, *, additional_headers=None, **kw):  # noqa: ANN001
-            ...
-
-    class OldWebsockets:
-        def connect(self, uri, *, extra_headers=None, **kw):  # noqa: ANN001
-            ...
-
-    class OpaqueWebsockets:
-        connect = 123  # not a callable with an introspectable signature
-
-    assert mod._ws_header_kwarg(NewWebsockets()) == "additional_headers"
-    assert mod._ws_header_kwarg(OldWebsockets()) == "extra_headers"
-    assert mod._ws_header_kwarg(OpaqueWebsockets()) == "additional_headers"
-
-    # The events URL no longer carries the secret as a query param.
     cfg = _FakePlatformConfig(extra={"api_key": "sekret", "agent_id": "agent"})
     adapter = mod.ClawbitsAdapter(cfg)
     url = adapter._events_ws_url()
     assert "api_key" not in url
     assert "sekret" not in url
     assert url.endswith("/api/agentic/mm/events/ws")
+    assert adapter.authorization_is_upstream is True
 
 
-def test_fallback_plugin_version_matches_manifest() -> None:
-    """``_FALLBACK_PLUGIN_VERSION`` is the last-resort value used only when
-    plugin.yaml can't be read; it must not drift from the manifest's ``version:``
-    line (the real floor the server enforces). Parse with the module's regex."""
-    import re
-
+def test_validate_config_answers_with_a_bool(monkeypatch) -> None:
+    """A ``(False, reason)`` tuple is truthy, which enabled a platform with no credentials."""
     mod = _load_hermes_module()
-    manifest = Path(__file__).resolve().parents[2] / "extensions" / "hermes" / "plugin.yaml"
-    version = None
-    for line in manifest.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"""^version:\s*['"]?([^'"\s#]+)""", line)
-        if match:
-            version = match.group(1)
-            break
-    assert version is not None, "no version: line found in plugin.yaml"
-    assert mod._FALLBACK_PLUGIN_VERSION == version
+    monkeypatch.delenv("CLAWBITS_API_KEY", raising=False)
+    monkeypatch.delenv("CLAWBITS_AGENT_ID", raising=False)
+    assert mod.validate_config(_FakePlatformConfig()) is False
+    assert mod.is_connected() is False
+    assert mod.validate_config(_FakePlatformConfig(extra={"api_key": "k", "agent_id": "a"})) is True
+
+
+def test_env_enablement_seed_is_flat(monkeypatch) -> None:
+    """The gateway lifts the seed into ``extra`` itself (only ``home_channel`` is popped)."""
+    mod = _load_hermes_module()
+    monkeypatch.setenv("CLAWBITS_API_KEY", "k")
+    monkeypatch.setenv("CLAWBITS_AGENT_ID", "a")
+    monkeypatch.setenv("CLAWBITS_CHANNEL_ID", "chan")
+    monkeypatch.delenv("CLAWBITS_ENDPOINT", raising=False)
+    seed = mod._env_enablement()
+    assert (seed["api_key"], seed["agent_id"], seed["base_url"]) == ("k", "a", "https://app.clawbits.ai")
+    assert seed["home_channel"]["chat_id"] == "chan"
+    assert "extra" not in seed and "enabled" not in seed
+
+
+def test_send_email_tool_takes_the_args_dict_and_fits_the_body(monkeypatch) -> None:
+    """Hermes calls a plugin tool as ``handler(args, **kwargs)`` and wraps the schema itself."""
+    _load_hermes_module()
+    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
+    sent: list[tuple[Any, ...]] = []
+
+    class FakeCli:
+        def __init__(self, *args: Any) -> None:
+            pass
+
+        def email_send(self, *args: Any) -> dict[str, str]:
+            sent.append(args)
+            return {"status": "sent"}
+
+    monkeypatch.setattr(email_mod, "_ClawbitsCli", FakeCli)
+    monkeypatch.setenv("CLAWBITS_AGENT_ID", "agent")
+    result = email_mod._send_email_tool({"subject": "Hi", "message": "x" * 40_000})
+    assert json.loads(result) == {"status": "sent"}
+    agent_id, subject, body = sent[0]
+    assert (agent_id, subject) == ("agent", "Hi")
+    assert len(body) <= 10_000
+    assert email_mod.EMAIL_TOOL_SCHEMA["name"] == "clawbits_send_email"
+    assert "function" not in email_mod.EMAIL_TOOL_SCHEMA
+
+
+# --- signup ------------------------------------------------------------------
+
+_IDENTITY_ENV = (
+    "OPENROUTER_API_KEY=or-1\nCLAWBITS_API_KEY=old-key\nCLAWBITS_AGENT_ID=old-agent\n"
+    "CLAWBITS_POLL_INTERVAL=5\n"
+)
+
+
+def _signup(monkeypatch, tmp_path, responses: dict[str, Any]) -> tuple[list[str], Path]:
+    """Run ``hermes clawbits signup`` over a stored identity, against a fake
+    agent CLI that answers (or raises) per command; returns the commands it saw."""
+    hermes_constants = types.ModuleType("hermes_constants")
+    hermes_constants.get_hermes_home = lambda: str(tmp_path)
+    monkeypatch.setitem(sys.modules, "hermes_constants", hermes_constants)
+    env = tmp_path / ".env"
+    env.write_text(_IDENTITY_ENV, encoding="utf-8")
+
+    _load_hermes_module()
+    signup_mod = sys.modules["hermes_clawbits_test.signup"]
+    seen: list[str] = []
+
+    def fake_cli(cli_path: str, base_url: str, *args: str, **_: Any) -> Any:
+        seen.append(args[0])
+        answer = responses[args[0]]
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(signup_mod, "_run_agent_cli", fake_cli)
+    monkeypatch.setattr(signup_mod, "_mint_initial_tokens", lambda *a, **k: True)
+    args = argparse.Namespace(clawbits_command="signup", endpoint=None, signup_token="tok")
+    assert signup_mod._cli_command(args) == 0
+    return seen, env
+
+
+def test_signup_keeps_an_identity_the_backend_accepts(monkeypatch, tmp_path) -> None:
+    seen, env = _signup(monkeypatch, tmp_path, {"agent-info": {"agent_id": "old-agent"}})
+    assert seen == ["agent-info"], "a current identity never re-enrols"
+    assert env.read_text() == _IDENTITY_ENV
+
+
+def test_signup_replaces_a_revoked_identity(monkeypatch, tmp_path) -> None:
+    seen, env = _signup(
+        monkeypatch,
+        tmp_path,
+        {
+            "agent-info": RuntimeError('HTTP 401: {"detail": "invalid api key"}'),
+            "signup-commit": {"agent_id": "new-agent", "api_key": "new-key"},
+            "mm-operator-channel": {"channel_id": "chan-9"},
+        },
+    )
+    assert seen == ["agent-info", "signup-commit", "mm-operator-channel"]
+    assert env.read_text().splitlines() == [
+        "OPENROUTER_API_KEY=or-1",
+        "CLAWBITS_POLL_INTERVAL=5",
+        "CLAWBITS_API_KEY=new-key",
+        "CLAWBITS_AGENT_ID=new-agent",
+        "CLAWBITS_CHANNEL_ID=chan-9",
+    ], "only the identity lines move; other settings stay where they were"
+
+
+def test_signup_keeps_the_identity_through_an_outage(monkeypatch, tmp_path) -> None:
+    import subprocess
+
+    seen, env = _signup(
+        monkeypatch, tmp_path, {"agent-info": subprocess.TimeoutExpired("agent-cli", 60)}
+    )
+    assert seen == ["agent-info"], "only a 401/403 counts as revoked"
+    assert env.read_text() == _IDENTITY_ENV
 
 
 def test_agent_body_names_the_agent_and_matches_plugin_wording() -> None:
@@ -685,8 +814,7 @@ def test_attention_dispatch_carries_context_and_framing() -> None:
 
     async def dispatch_and_drain() -> None:
         await adapter._dispatch_attention(event)
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(dispatch_and_drain())
     assert len(adapter.events) == 1
@@ -733,8 +861,7 @@ def test_unaddressed_post_stays_nudgeable_after_polling() -> None:
         await adapter._poll_once()          # seed
         await adapter._poll_once()          # sees the post, must not dispatch
         await adapter._poll_once()          # and must not remember it via cursor
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
         assert adapter.events == [], "unaddressed post must not be dispatched by polling"
         assert "7" not in adapter._seen, "skipped post must stay nudgeable"
 
@@ -744,8 +871,7 @@ def test_unaddressed_post_stays_nudgeable_after_polling() -> None:
             "channel_id": "chan",
             "data": {"post_id": 7, "message": "staging is down, anyone?", "human_id": 1},
         })
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(scenario())
     assert len(adapter.events) == 1, "attention nudge dispatched after the poller skipped it"
@@ -783,8 +909,7 @@ def test_dispatched_post_is_remembered_so_a_nudge_cannot_double_fire() -> None:
     async def scenario() -> None:
         await adapter._poll_once()
         await adapter._poll_once()
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
         assert len(adapter.events) == 1, "DM is dispatched by the poll loop"
         assert "8" in adapter._seen
 
@@ -793,8 +918,7 @@ def test_dispatched_post_is_remembered_so_a_nudge_cannot_double_fire() -> None:
             "channel_id": "chan",
             "data": {"post_id": 8, "message": "hello there", "human_id": 1},
         })
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(scenario())
     assert len(adapter.events) == 1, "nudge for an already-dispatched post is deduped"
@@ -872,7 +996,7 @@ def test_attachment_only_post_reaches_hermes_media(monkeypatch) -> None:
 
     async def scenario() -> None:
         await adapter._maybe_dispatch(mod._Channel("chan", "direct", "DM"), post)
-        await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(scenario())
     assert len(adapter.events) == 1
@@ -922,7 +1046,7 @@ def test_snooze_and_inter_agent_limit_are_enforced() -> None:
             channel,
             {"post_id": 3, "created_at": "2026-06-04 12:00:03", "message": "@me second", "agent_id": "peer"},
         )
-        await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(scenario())
     assert len(adapter.events) == 1
@@ -963,7 +1087,7 @@ def test_email_reply_context_preserves_threading_headers() -> None:
             "References": "<abc@example>",
         },
     )
-    assert mod.PLUGIN_VERSION == "0.8.0"
+    assert mod.PLUGIN_VERSION == "0.9.0"
 
 
 def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> None:
@@ -988,9 +1112,11 @@ def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> 
 #
 # The fake below mirrors the real ``/opt/hermes/cron/jobs.py`` contract, checked
 # against the shipped ``hermes-agent`` image: ``update_job`` merges unknown keys
-# and returns the merged record, ``remove_job`` returns False (never raises) for
-# a job that is already gone, ``repeat`` is stored as ``{"times", "completed"}``
-# even though ``create_job`` takes it as an int, and only ``id`` is immutable.
+# and returns the merged record but refuses to reactivate a completed job,
+# ``trigger_job`` refuses a terminal job, ``rearm_oneshot`` is the one way back,
+# ``remove_job`` returns False (never raises) for a job that is already gone,
+# ``repeat`` is stored as ``{"times", "completed"}`` even though ``create_job``
+# takes it as an int, and only ``id`` is immutable.
 
 
 class _FakeCronJobs:
@@ -1023,13 +1149,42 @@ class _FakeCronJobs:
     def list_jobs(self, include_disabled: bool = False) -> list[dict[str, Any]]:
         return [dict(j) for j in self.jobs if include_disabled or j.get("enabled", True)]
 
+    def _find(self, job_id: str) -> int | None:
+        return next((i for i, job in enumerate(self.jobs) if job["id"] == str(job_id)), None)
+
     def update_job(self, job_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         self.calls.append(("update_job", str(job_id), dict(updates)))
-        for index, job in enumerate(self.jobs):
-            if job["id"] == str(job_id):
-                self.jobs[index] = {**job, **updates}
-                return dict(self.jobs[index])
-        return None
+        index = self._find(job_id)
+        if index is None:
+            return None
+        if self.jobs[index].get("state") == "completed" and (
+            updates.get("state") not in (None, "completed")
+            or updates.get("enabled") is True
+            or updates.get("next_run_at") is not None
+            or "schedule" in updates
+        ):
+            raise ValueError("Cannot activate terminal cron job through update_job")
+        self.jobs[index] = {**self.jobs[index], **updates}
+        return dict(self.jobs[index])
+
+    def rearm_oneshot(self, job_id: str, run_at: Any) -> dict[str, Any] | None:
+        self.calls.append(("rearm_oneshot", str(job_id), run_at))
+        index = self._find(job_id)
+        if index is None:
+            return None
+        if (self.jobs[index].get("repeat") or {}).get("times") is None:
+            raise ValueError("Cannot re-arm recurring jobs")
+        self.jobs[index] = {
+            **self.jobs[index],
+            "schedule": run_at,
+            "next_run_at": run_at,
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "repeat": {"times": 1, "completed": 0},
+        }
+        return dict(self.jobs[index])
 
     def pause_job(self, job_id: str, reason: str | None = None) -> dict[str, Any] | None:
         self.calls.append(("pause_job", str(job_id), reason))
@@ -1047,6 +1202,9 @@ class _FakeCronJobs:
         self.calls.append(("trigger_job", str(job_id)))
         if self.trigger_raises is not None:
             raise self.trigger_raises
+        index = self._find(job_id)
+        if index is not None and self.jobs[index].get("state") == "completed":
+            raise ValueError("Cannot run: job is completed (terminal)")
         return self.trigger_result
 
 
@@ -1074,6 +1232,7 @@ def _install_fake_cron(fake: _FakeCronJobs) -> None:
         "list_jobs",
         "update_job",
         "pause_job",
+        "rearm_oneshot",
         "remove_job",
         "trigger_job",
     ):
@@ -1152,7 +1311,8 @@ def test_fired_one_shot_reports_applied_not_failed(monkeypatch) -> None:
     assert entry["reported_state"]["state"] == "completed"
     assert "nextRunAtMs" not in entry["reported_state"]
     assert not any(
-        call[0] == "update_job" and "schedule" in call[2] for call in fake.calls
+        call[0] == "rearm_oneshot" or (call[0] == "update_job" and "schedule" in call[2])
+        for call in fake.calls
     ), "a terminal one-shot must never be re-armed"
 
 
@@ -1175,7 +1335,126 @@ def test_edited_one_shot_rearms(monkeypatch) -> None:
     report = _run_pass(mod, fake, client)
 
     assert _managed(report)[0]["status"] == "applied"
-    assert any(call[0] == "update_job" and "schedule" in call[2] for call in fake.calls)
+    rearms = [call for call in fake.calls if call[0] == "rearm_oneshot"]
+    assert rearms == [("rearm_oneshot", "1", mod._iso_at(now_ms + 3_600_000))]
+    assert fake.jobs[0]["state"] == "scheduled"
+
+
+def _fired_one_shot(monkeypatch, mod, now_ms: int) -> tuple[_FakeCronJobs, _FakeAutomationsClient]:
+    """A one-shot that fired at ``now_ms + 600_000``, as Hermes leaves it."""
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(schedule={"kind": "at", "at": now_ms + 600_000}))])
+    _run_pass(mod, fake, client)
+    fake.jobs[0].update(
+        {
+            "state": "completed",
+            "enabled": False,
+            "next_run_at": None,
+            "repeat": {"times": 1, "completed": 1},
+            "last_run_at": mod._iso_at(now_ms + 600_000),
+            "last_status": "ok",
+        }
+    )
+    monkeypatch.setattr(mod.time, "time", lambda: (now_ms + 900_000) / 1000)
+    return fake, client
+
+
+def test_run_now_on_a_fired_one_shot_rearms_then_triggers(monkeypatch) -> None:
+    """``trigger_job`` refuses a terminal job, so a manual run re-arms it first."""
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    fake, client = _fired_one_shot(monkeypatch, mod, now_ms)
+    client.items = [
+        _desired(_spec(schedule={"kind": "at", "at": now_ms + 600_000}), run_requested_generation=1)
+    ]
+    report = _run_pass(mod, fake, client)
+
+    names = [call[0] for call in fake.calls]
+    assert names.index("rearm_oneshot") < names.index("trigger_job")
+    rearms = [call for call in fake.calls if call[0] == "rearm_oneshot"]
+    assert rearms == [("rearm_oneshot", "1", mod._iso_at(now_ms + 900_000))]
+    assert _managed(report)[0]["run_observed_generation"] == 1
+    assert not any(run["summary"].get("did_not_run") for run in report["runs"])
+
+
+def test_retiming_a_fired_one_shot_while_disabled_rearms_it_paused(monkeypatch) -> None:
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    fake, client = _fired_one_shot(monkeypatch, mod, now_ms)
+    later = now_ms + 3_600_000
+    client.items = [
+        _desired(_spec(schedule={"kind": "at", "at": later}, enabled=False), desired_generation=2)
+    ]
+    report = _run_pass(mod, fake, client)
+
+    assert _managed(report)[0]["status"] == "applied"
+    rearms = [call for call in fake.calls if call[0] == "rearm_oneshot"]
+    assert rearms == [("rearm_oneshot", "1", mod._iso_at(later))]
+    assert fake.jobs[0]["enabled"] is False
+    assert fake.jobs[0]["state"] == "paused", "re-paused through pause_job, marker included"
+    assert fake.jobs[0]["paused_reason"] == "Paused in Clawbits"
+    assert fake.jobs[0]["next_run_at"] == mod._iso_at(later)
+
+
+def test_declined_run_now_on_a_fired_one_shot_disarms_again(monkeypatch) -> None:
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    fake, client = _fired_one_shot(monkeypatch, mod, now_ms)
+    fake.trigger_result = None
+    client.items = [
+        _desired(_spec(schedule={"kind": "at", "at": now_ms + 600_000}), run_requested_generation=1)
+    ]
+    report = _run_pass(mod, fake, client)
+
+    assert any(call[0] == "rearm_oneshot" for call in fake.calls)
+    assert fake.jobs[0]["state"] == "completed", "a declined run leaves nothing armed"
+    runs = [r for r in report["runs"] if r["gateway_run_id"] == "run-now:1"]
+    assert runs[0]["summary"]["did_not_run"] is True
+
+
+def test_prompt_edit_on_a_pending_one_shot_does_not_rearm(monkeypatch) -> None:
+    """A pending one-shot is not a reactivation: the edit goes through
+    update_job with its time intact, and a live run claim cannot refuse it."""
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    at = now_ms + 600_000
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(schedule={"kind": "at", "at": at}))])
+    _run_pass(mod, fake, client)
+
+    spec = _spec(schedule={"kind": "at", "at": at})
+    spec["payload"] = {"kind": "agentTurn", "message": "changed"}
+    client.items = [_desired(spec, desired_generation=2)]
+    report = _run_pass(mod, fake, client)
+
+    assert _managed(report)[0]["status"] == "applied"
+    assert not any(call[0] == "rearm_oneshot" for call in fake.calls)
+    assert fake.jobs[0]["prompt"] == "changed"
+    assert fake.jobs[0]["schedule"] == mod._iso_at(at)
+    assert fake.jobs[0]["state"] == "scheduled"
+
+
+def test_prompt_edit_on_a_paused_one_shot_keeps_it_paused(monkeypatch) -> None:
+    mod = _automations_mod()
+    now_ms = 2_000_000_000_000
+    monkeypatch.setattr(mod.time, "time", lambda: now_ms / 1000)
+    schedule = {"kind": "at", "at": now_ms + 600_000}
+    fake = _FakeCronJobs()
+    client = _FakeAutomationsClient([_desired(_spec(schedule=schedule, enabled=False))])
+    _run_pass(mod, fake, client)
+    assert fake.jobs[0]["state"] == "paused"
+
+    spec = _spec(schedule=schedule, enabled=False)
+    spec["payload"] = {"kind": "agentTurn", "message": "changed"}
+    client.items = [_desired(spec, desired_generation=2)]
+    _run_pass(mod, fake, client)
+
+    assert not any(call[0] == "rearm_oneshot" for call in fake.calls)
+    assert fake.jobs[0]["enabled"] is False
+    assert fake.jobs[0]["state"] == "paused", "the pause marker survives an edit"
+    assert fake.jobs[0]["paused_reason"] == "Paused in Clawbits"
 
 
 def test_bad_generation_does_not_abort_pass() -> None:
@@ -1748,11 +2027,11 @@ def test_failed_turn_closes_the_streaming_post() -> None:
             # The draft is opened mid-turn, as the gateway does, and then the
             # turn dies before anything finalizes it.
             await adapter.send("chan", "partial", metadata={"expect_edits": True})
-            assert adapter._open_streams == {"91": "chan"}
             raise RuntimeError("model died")
 
-        adapter.handle_message = boom  # type: ignore[method-assign]
-        await adapter._run_turn("chan", object())
+        adapter.turn = boom  # type: ignore[method-assign]
+        await adapter.handle_message(_event("5"))
+        await _drain(adapter)
 
     asyncio.run(scenario())
     closing = [p for p in adapter.client.patches if p[2].get("done")]
@@ -1829,8 +2108,7 @@ def test_unknown_channel_is_not_treated_as_a_dm() -> None:
                 },
             }
         )
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(scenario())
     assert adapter.events == [], "no mention, unknown channel type: not our turn"
@@ -1865,7 +2143,7 @@ def test_attention_dispatches_an_attachment_only_post(monkeypatch) -> None:
                 },
             }
         )
-        await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(scenario())
     assert len(adapter.events) == 1
@@ -1887,25 +2165,25 @@ def test_a_finishing_turn_does_not_close_a_sibling_turns_stream() -> None:
     not yank the other's live draft."""
     mod = _load_hermes_module()
     adapter = _stream_adapter(mod)
-    ready = asyncio.Event()
 
     async def scenario() -> None:
-        async def slow_turn(_event: Any) -> None:
-            await adapter.send("chan", "B partial", metadata={"expect_edits": True})
-            ready.set()
-            await asyncio.sleep(0.2)
+        ready = asyncio.Event()
 
-        async def fast_turn(_event: Any) -> None:
-            await ready.wait()
+        async def turn(event: Any) -> Any:
+            if event.message_id == "slow":
+                await adapter.send("chan", "B partial", metadata={"expect_edits": True})
+                ready.set()
+                await asyncio.sleep(0.2)
+            else:
+                await ready.wait()
+            return _FakeProcessingOutcome.SUCCESS
 
-        adapter.handle_message = slow_turn  # type: ignore[method-assign]
-        slow = asyncio.create_task(adapter._run_turn("chan", object()))
-        await ready.wait()
-        open_id = next(iter(adapter._open_streams))
-
-        adapter.handle_message = fast_turn  # type: ignore[method-assign]
-        await adapter._run_turn("chan", object())
-        assert open_id in adapter._open_streams, "the sibling turn's draft is still live"
+        adapter.turn = turn  # type: ignore[method-assign]
+        await adapter.handle_message(_event("slow"))
+        await adapter.handle_message(_event("fast"))
+        slow, fast = adapter.tasks
+        await fast
+        assert adapter._open_streams == {"91": "chan"}, "the sibling turn's draft is still live"
         await slow
 
     asyncio.run(scenario())
@@ -1965,7 +2243,7 @@ def test_owner_email_is_resolved_from_agent_info(tmp_path, monkeypatch) -> None:
 
     async def scenario() -> None:
         await adapter._poll_email_once()
-        await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(scenario())
     assert adapter._email_owner == "boss@corp.com"
@@ -2000,8 +2278,7 @@ def test_autoresponder_mail_is_not_dispatched(tmp_path, monkeypatch) -> None:
 
     async def scenario() -> None:
         await adapter._poll_email_once()
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(scenario())
     assert adapter.events == [], "answering an autoresponder is how mail loops start"
@@ -2122,8 +2399,7 @@ def _catch_up_adapter(mod, client):
 def _poll_and_drain(adapter):
     async def run() -> None:
         await adapter._poll_once()
-        if adapter._turn_tasks:
-            await asyncio.gather(*adapter._turn_tasks)
+        await _drain(adapter)
 
     asyncio.run(run())
 
@@ -2275,3 +2551,23 @@ def test_ws_post_on_an_unseeded_channel_defers_to_the_poll() -> None:
     asyncio.run(deliver())
     assert adapter.events == []
     assert "chan" not in adapter._cursors, "no cursor may be invented pre-seed"
+
+
+def test_read_pointer_acks_only_a_settled_turn() -> None:
+    # A failed turn leaves the pointer, so the post re-delivers on the next boot.
+    mod = _load_hermes_module()
+    client = _CatchUpClient([], [])
+    adapter = _catch_up_adapter(mod, client)
+
+    async def scenario(outcome: Any) -> None:
+        async def turn(_event: Any) -> Any:
+            return outcome
+
+        adapter.turn = turn
+        await adapter.handle_message(_event("7", post_id=7))
+        await _drain(adapter)
+
+    asyncio.run(scenario(_FakeProcessingOutcome.FAILURE))
+    assert client.acks == []
+    asyncio.run(scenario(_FakeProcessingOutcome.SUCCESS))
+    assert client.acks == [("chan", 7)]
