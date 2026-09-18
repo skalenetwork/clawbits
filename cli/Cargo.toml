@@ -1,6 +1,6 @@
 [package]
 name = "clawbits-cli"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 # Matches desktop/src-tauri, the only other first-party crate that pins one.
 rust-version = "1.85"

@@ -1,0 +1,367 @@
+name: Release
+
+# Everything that happens when main moves.
+#
+#   release-please  keeps every version file and CHANGELOG in the repo, derived
+#                   from Conventional Commit subjects. It opens a release PR;
+#                   merging that PR is what cuts a release.
+#   plugin          publishes the OpenClaw tools + channel packages to ClawHub.
+#
+# Replaces publish-clawhub-tools.yaml + publish-clawhub-plugin.yaml (599 lines,
+# two workflows chained by `workflow_run`) and release.yaml (semantic-release).
+#
+# The two ClawHub packages are ONE job now. They were split across two
+# workflows so the second could verify the first had published, which cost a
+# `workflow_run` hop, a second full install/typecheck/test/build of the same
+# tree, a 5-minute propagation poll, and a cross-version guard that could fail
+# the channel release outright. Publishing both from one job makes their
+# versions equal by construction, so all of that machinery is simply gone.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Never cancel a publish in flight. Note GitHub keeps only ONE pending run per
+# group, so a third push while one is running drops the middle one — acceptable
+# here only because every job below is idempotent and keyed on a version that
+# lives in the tree, so the next run republishes whatever was missed.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Every release this repo cuts must be explicitly NOT "Latest", except the
+      # desktop one. `desktop/src-tauri/tauri.conf.json` bakes
+      # https://github.com/skalenetwork/clawbits/releases/latest/download/latest.json
+      # into every binary ever shipped, so GitHub's "Latest" pointer is a
+      # production endpoint for installed desktop apps. release-please creates
+      # releases with make_latest defaulting to true and exposes no way to
+      # change that, so it is corrected immediately here.
+      #
+      # This leaves a window of seconds where the updater endpoint resolves to a
+      # release with no latest.json. A failed update check is a no-op for Tauri
+      # (it retries on the next poll), which is why the window is acceptable;
+      # a release left Latest permanently would not be.
+      - name: Keep release-please releases out of "Latest"
+        if: steps.rp.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUTS: ${{ toJSON(steps.rp.outputs) }}
+        run: |
+          set -euo pipefail
+          echo "$OUTPUTS" | jq -r 'to_entries[] | select(.key | endswith("tag_name")) | .value // empty' \
+            | while read -r tag; do
+                [ -n "$tag" ] || continue
+                echo "un-latesting $tag"
+                gh release edit "$tag" --latest=false
+              done
+
+  plugin:
+    name: Publish plugin to ClawHub
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # No history needed. The version used to be `git rev-list --count`,
+          # which required a full clone and was not monotonic: it resets under
+          # squash-merge (now the only merge mode here) and had already drifted
+          # below a published tag. release-please owns the version now and it
+          # is read straight out of the tree.
+          persist-credentials: false
+
+      # Cheap pre-flight, before any toolchain setup. On a push that did not
+      # change the plugin version this job is a checkout and two curls.
+      - name: Resolve version and decide whether to publish
+        id: guard
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version plugin/package.json)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Plugin version: $version"
+
+          published() {
+            curl -fsS "https://clawhub.ai/api/v1/packages/$1/versions" 2>/dev/null \
+              | jq -e --arg v "$version" '[.items[]?.version] | index($v)' >/dev/null 2>&1
+          }
+          if published clawbits-openclaw-tools && published clawbits-openclaw-plugin; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Both packages are already on ClawHub at $version; nothing to do."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: ./.github/actions/setup-bun
+        if: steps.guard.outputs.publish == 'true'
+        with:
+          workspace: plugin
+          # The staging, validation and registry steps shell out to node/npm, so
+          # the runner's default would silently decide their behaviour. Pinned to
+          # match the `engines.node: ">=22"` this package publishes. It matters
+          # most during validation: dist/tools-entry.js calls AbortSignal.any,
+          # absent before Node 20.3, which would surface as a bogus plugin error
+          # rather than an environment one.
+          node-version: '24'
+
+      - name: Typecheck
+        if: steps.guard.outputs.publish == 'true'
+        working-directory: plugin
+        run: bun --bun run typecheck
+
+      - name: Test
+        if: steps.guard.outputs.publish == 'true'
+        working-directory: plugin
+        run: bun run test
+
+      - name: Build
+        if: steps.guard.outputs.publish == 'true'
+        working-directory: plugin
+        run: bun --bun run build
+
+      # release-please writes package.json and openclaw.plugin.json. The two
+      # tools manifests carry the same version and are stamped here rather than
+      # committed, so tools and channel cannot disagree. ClawBitsClient sends
+      # this value in X-Clawbits-Plugin-Version and
+      # clawbits/fastapi/version_check.py reads plugin/package.json as the
+      # OpenClaw floor, so they must match exactly.
+      - name: Stamp tools manifests from package.json
+        if: steps.guard.outputs.publish == 'true'
+        working-directory: plugin
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          node - "$VERSION" <<'NODE'
+          const fs = require('node:fs');
+          const version = process.argv[2];
+          for (const path of ['package.tools.json', 'openclaw.tools.plugin.json']) {
+            const json = JSON.parse(fs.readFileSync(path, 'utf8'));
+            json.version = version;
+            if (json.openclaw?.version) json.openclaw.version = version;
+            fs.writeFileSync(path, JSON.stringify(json, null, 2) + '\n');
+          }
+          NODE
+
+      - name: Stage tools artifact
+        if: steps.guard.outputs.publish == 'true'
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          target="../publish/clawbits-openclaw-tools"
+          node stage-tools.mjs "$target"
+          test ! -e "$target/src"
+          test ! -e "$target/dist/index.js"
+          test ! -e "$target/dist/gateway-adapter.js"
+          test -e "$target/skills"
+          node - "$target" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.argv[2];
+          const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+          const manifest = JSON.parse(fs.readFileSync(path.join(root, 'openclaw.plugin.json'), 'utf8'));
+          const expected = './dist/tools-entry.js';
+          if (pkg.name !== 'clawbits-openclaw-tools') throw new Error('wrong package name');
+          if (pkg.openclaw?.id !== 'clawbits-tools') throw new Error('wrong plugin id');
+          if (pkg.openclaw?.extensions?.length !== 1 || pkg.openclaw.extensions[0] !== expected) {
+            throw new Error('tools package must load only dist/tools-entry.js');
+          }
+          if (!fs.existsSync(path.join(root, expected))) throw new Error('compiled tools entry missing');
+          const tools = manifest.contracts?.tools || [];
+          if (tools.length === 0) throw new Error('manifest declares no tools');
+          for (const name of tools) {
+            if (manifest.toolMetadata?.[name]?.optional !== true) {
+              throw new Error(`tool ${name} must be optional`);
+            }
+          }
+          NODE
+
+      - name: Stage channel artifact
+        if: steps.guard.outputs.publish == 'true'
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          staged=../publish/clawbits-openclaw-plugin
+          node stage-channel.mjs "$staged"
+          test ! -e "$staged/src"
+          test ! -e "$staged/skills"
+          test ! -e "$staged/dist/tools-entry.js"
+
+      # Validate BOTH artifacts against every distinct OpenClaw version they
+      # claim to support: the compat floor AND the SDK they were built against.
+      # The floor is exercised rather than trusted, so an artifact that can no
+      # longer load on the oldest supported host fails the release instead of
+      # shipping a false claim. Both packages install into the same agent image
+      # (images/openclaw), which is why they share a floor.
+      #
+      # Newline-separated + `read`, not word-splitting on an unquoted expansion:
+      # the latter silently degrades to a single iteration carrying both
+      # versions under shells that don't split, which looks like a pass while
+      # validating nothing.
+      - name: Validate staged artifacts against the floor and pinned SDKs
+        if: steps.guard.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          for kind in tools channel; do
+            case "$kind" in
+              tools)   pkg=clawbits-openclaw-tools ;;
+              channel) pkg=clawbits-openclaw-plugin ;;
+            esac
+            root="$(mktemp -d)"
+            cp -R "publish/$pkg" "$root/plugin"
+            pushd "$root/plugin" >/dev/null
+            sdk_versions="$(node -p "const o=require('./package.json').openclaw; [...new Set([o.compat.minGatewayVersion, o.build.openclawVersion])].join('\n')")"
+            echo "Validating $pkg against:"; echo "$sdk_versions"
+            while read -r sdk_version; do
+              [ -n "$sdk_version" ] || continue
+              echo "::group::$pkg on openclaw@${sdk_version}"
+              rm -rf node_modules
+              npm install --ignore-scripts --no-audit --no-fund --package-lock=false --no-save \
+                "openclaw@${sdk_version}"
+              # `plugins validate --entry` is defineToolPlugin-only; these are
+              # mixed/channel entries, so load them against the real SDK instead.
+              node "$GITHUB_WORKSPACE/plugin/validate-artifact.mjs" "$kind" .
+              echo "::endgroup::"
+            done <<< "$sdk_versions"
+            popd >/dev/null
+            rm -rf "$root"
+          done
+
+      # GitHub Releases are cut BEFORE the ClawHub publish on purpose: the two
+      # are independent distribution channels, so a registry-side failure (auth,
+      # ownership, outage) still leaves an installable tarball on the release.
+      # Both are individually idempotent, so a re-run converges.
+      #
+      # --latest=false on both: see the note in the release-please job. A plugin
+      # release displacing "Latest" breaks the desktop updater endpoint.
+      - name: Publish GitHub Releases
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          publish_release() {
+            local pkg="$1" tag="$2" title="$3" notes="$4"
+            local asset="${pkg}-${VERSION}.tgz"
+            tar -czf "$asset" -C publish "$pkg"
+            if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release create "$tag" \
+                --repo "$GITHUB_REPOSITORY" \
+                --latest=false \
+                --target "$GITHUB_SHA" \
+                --title "$title" \
+                --notes "$notes"
+            fi
+            gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          }
+
+          publish_release clawbits-openclaw-tools "openclaw-tools-v${VERSION}" \
+            "Clawbits OpenClaw tools v$VERSION" \
+            "Optional tools plus Clawbits cron, email, usage, and skills services.
+
+          Install before upgrading the channel plugin:
+          \`\`\`
+          openclaw plugins install clawhub:clawbits-openclaw-tools --pin
+          \`\`\`"
+
+          publish_release clawbits-openclaw-plugin "openclaw-plugin-v${VERSION}" \
+            "Clawbits OpenClaw plugin v$VERSION" \
+            "OpenClaw channel plugin bridging an agent to its Clawbits organization.
+
+          Install from ClawHub:
+          \`\`\`
+          openclaw plugins install clawhub:clawbits-openclaw-plugin --pin
+          \`\`\`
+          Or install the attached tarball directly: extract it and run \`openclaw plugins install <dir>\`."
+
+      # clawhub is invoked via `bunx --bun` rather than a global install: the
+      # package's bin has a `#!/usr/bin/env node` shebang, so a global symlink
+      # would still need node on PATH. Auth state lives in $HOME, so one login
+      # covers both publishes.
+      - name: Authenticate ClawHub CLI
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          CLAWHUB_API_TOKEN: ${{ secrets.CLAWHUB_API_TOKEN }}
+        run: |
+          if [ -z "$CLAWHUB_API_TOKEN" ]; then
+            echo "::error::Missing required secret CLAWHUB_API_TOKEN"
+            exit 1
+          fi
+          bunx --bun clawhub@latest login --token "$CLAWHUB_API_TOKEN" --no-browser
+          bunx --bun clawhub@latest whoami
+
+      # Tools first, then the channel: an agent installs the tools package
+      # before upgrading the channel plugin.
+      #
+      # Idempotency is handled HERE, not only in the pre-flight guard, because
+      # the collision it recovers from happens INSIDE the publish command.
+      # Observed on run 31523895558: the guard correctly saw no 0.15.9, the
+      # registry gained 0.15.9 two minutes later, and the same command then
+      # exited 1 with "already exists" — a client-side timeout silently retrying
+      # and racing its own successful first attempt. The package was live and
+      # tagged `latest`; only the job was red. So on failure, ask the registry
+      # whether OUR version is now present. This cannot mask a genuine error: it
+      # only passes when the exact version we set out to publish exists.
+      - name: Publish packages to ClawHub
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          set -uo pipefail
+          publish_pkg() {
+            local pkg="$1"
+            if bunx --bun clawhub@latest package publish "publish/$pkg" \
+                --family code-plugin \
+                --source-repo "$GITHUB_REPOSITORY" \
+                --source-commit "$GITHUB_SHA" \
+                --source-ref "$GITHUB_REF"; then
+              echo "Published $pkg@$VERSION"
+              return 0
+            fi
+            echo "::warning::$pkg publish exited non-zero; checking whether $VERSION landed anyway"
+            local versions_json
+            versions_json="$(curl -fsS "https://clawhub.ai/api/v1/packages/$pkg/versions" || true)"
+            if [ -z "$versions_json" ]; then
+              echo "::error::$pkg publish failed and the registry could not be reached to confirm"
+              return 1
+            fi
+            if jq -e --arg v "$VERSION" '[.items[]?.version] | index($v)' >/dev/null 2>&1 <<<"$versions_json"; then
+              echo "::notice::$pkg@$VERSION is on the registry despite the non-zero exit; treating as success."
+              return 0
+            fi
+            echo "::error::$pkg publish failed and $VERSION is NOT on the registry"
+            return 1
+          }
+
+          publish_pkg clawbits-openclaw-tools || exit 1
+          publish_pkg clawbits-openclaw-plugin || exit 1
+
+      - name: Summary
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          {
+            echo "Published \`clawbits-openclaw-tools\` and \`clawbits-openclaw-plugin\` at \`$VERSION\`"
+            echo ""
+            echo "\`\`\`"
+            echo "openclaw plugins install clawhub:clawbits-openclaw-tools --pin"
+            echo "openclaw plugins install clawhub:clawbits-openclaw-plugin --pin"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

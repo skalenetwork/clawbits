@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "//": "Versioning is derived from Conventional Commit subjects, which are trustworthy here only because the repo is squash-merge-only and the PR title (which becomes the squashed commit subject) is linted by ci.yml. Replaces scripts/bump_version.py and semantic-release. The five groups below mirror how the repo actually ships: backend+frontend+desktop move as one product version (as bump_version.py enforced by hand), everything else moves on its own cadence.",
+  "separate-pull-requests": false,
+  "pull-request-title-pattern": "chore: release ${version}",
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "package-name": "clawbits",
+      "//": "The product version: backend, frontend and desktop share it. pyproject.toml is the anchor because clawbits/fastapi/version_check.py:server_version() reads it at runtime. uv.lock and desktop/src-tauri/Cargo.lock are deliberately NOT listed: neither can be addressed by jsonpath, `uv sync --frozen` and `cargo build` both tolerate the drift, and each self-heals on the next `uv lock` / `cargo build`.",
+      "//exclude-paths": "A root package matches EVERY file in the repo, so without this a `feat(plugin):` would bump the product version as well as the plugin's. These are the paths that version on their own (the four packages below) or do not ship a version at all (web, ironclaw-channel).",
+      "exclude-paths": [
+        "plugin",
+        "cli",
+        "images",
+        "apps/mobile",
+        "web",
+        "ironclaw-channel"
+      ],
+      "include-component-in-tag": false,
+      "extra-files": [
+        { "type": "json", "path": "frontend/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "desktop/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "desktop/src-tauri/tauri.conf.json", "jsonpath": "$.version" },
+        { "type": "toml", "path": "desktop/src-tauri/Cargo.toml", "jsonpath": "$.package.version" }
+      ]
+    },
+    "plugin": {
+      "release-type": "node",
+      "component": "openclaw-plugin",
+      "//": "Keeps the existing openclaw-plugin-v* tag namespace. The tools and channel packages share this one version by construction now that a single job publishes both.",
+      "extra-files": [
+        { "type": "json", "path": "openclaw.plugin.json", "jsonpath": "$.version" }
+      ]
+    },
+    "cli": {
+      "release-type": "rust",
+      "component": "cli"
+    },
+    "images": {
+      "release-type": "rust",
+      "component": "images"
+    },
+    "apps/mobile": {
+      "release-type": "node",
+      "component": "mobile",
+      "//": "scripts/sync_native_versions.py still mirrors this into CFBundleShortVersionString / versionCode; its leader file is the one release-please writes here.",
+      "extra-files": [
+        { "type": "json", "path": "app.json", "jsonpath": "$.expo.version" }
+      ]
+    }
+  }
+}

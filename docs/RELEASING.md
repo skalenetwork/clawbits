@@ -1,72 +1,100 @@
 # Releasing
 
-Everything is cut by [semantic-release](https://semantic-release.gitbook.io/) from commit subjects.
-Nobody edits a version by hand.
+Every version in this repo is derived by
+[release-please](https://github.com/googleapis/release-please) from Conventional Commit subjects.
+Nobody edits a version by hand, and there is no bump script any more.
 
-## The four release lanes
+## How a version gets decided
 
-| Lane | Trigger | Tag | Where it lands |
-| --- | --- | --- | --- |
-| **Backend + web** | push to `main` / `prod` (after Test passes) | `v1.2.3` / `v1.2.3-rc.N` | this repo's Releases |
-| **Desktop app** | push to `main` / `prod`, or a `desktop-v*` tag | `desktop-v1.2.3` | this repo's Releases, plus `latest.json` for the updater |
-| **OpenClaw plugin** | push to `main` touching `plugin/` | `v1.2.3` in the mirror repo | `skalenetwork/clawbits-openclaw-plugin` → ClawHub |
-| **IronClaw channel** | push to `main` touching `ironclaw-channel/` | — | release asset on the mirror repo |
+The repo is **squash-merge only**, so a PR becomes exactly one commit on `main` and its **title**
+becomes that commit's subject. The title is linted by the `PR title` check in
+[`ci.yml`](../.github/workflows/ci.yml), which is what makes the derivation trustworthy — before
+that gate, 6 of 135 commits were conventional and the old semantic-release setup produced three tags
+in the repo's lifetime while writing no version anywhere.
 
-The two tag namespaces are deliberately separate. Code releases take `v*`; desktop takes
-`desktop-v*`. They share one repo, so a collision would otherwise be a matter of time — the version
-lines are simply far apart today.
+Commits on your own branch are never inspected; squashing discards them.
 
-## What decides the version
-
-The [Conventional Commits](https://www.conventionalcommits.org/) prefix on each subject:
-
-| Prefix | Bump |
+| PR title prefix | Bump |
 | --- | --- |
 | `feat:` | minor |
 | `fix:`, `perf:`, `refactor:`, `revert:` | patch |
-| `BREAKING CHANGE:` in the body, or `feat!:` | major |
-| `chore:`, `docs:`, `test:`, `style:`, `ci:` | no release |
+| `feat!:`, or `BREAKING CHANGE:` in the body | major |
+| `chore:`, `docs:`, `test:`, `style:`, `ci:`, `build:` | no release |
 
-`main` publishes prereleases (`-rc.N`); `prod` publishes final versions. Config lives in
-[`.releaserc.json`](../.releaserc.json) — it is short on purpose, because the default preset already
-handles every case above.
+Scope the title to steer which component bumps, e.g. `fix(plugin): drop stale tool count`.
 
-## Cutting a release
+## The release PR
 
-Merge to `main`. That is the whole procedure.
+release-please keeps an open PR titled `chore: release …`. It accumulates every unreleased change,
+updates the version files and `CHANGELOG.md`, and does nothing else.
 
-`Test` runs first; `Release` only fires on a green run (`workflow_run` with
-`conclusion == 'success'`). Nothing needs triggering by hand, though both `Release` and
-`Desktop release` accept `workflow_dispatch`.
+**Merging that PR is what cuts a release.** Until then, nothing is published.
+
+## The five version lanes
+
+Configured in [`release-please-config.json`](../release-please-config.json); current versions live
+in [`.release-please-manifest.json`](../.release-please-manifest.json), which is the source of
+truth — not the version fields in the files.
+
+| Lane | Files it writes | Tag |
+| --- | --- | --- |
+| **Product** (backend + frontend + desktop) | `pyproject.toml`, `frontend/package.json`, `desktop/package.json`, `tauri.conf.json`, `src-tauri/Cargo.toml` | `v1.2.3` |
+| **OpenClaw plugin** | `plugin/package.json`, `plugin/openclaw.plugin.json` | `openclaw-plugin-v1.2.3` |
+| **CLI** | `cli/Cargo.toml` | `cli-v1.2.3` |
+| **Images** | `images/Cargo.toml` | `images-v1.2.3` |
+| **Mobile** | `apps/mobile/package.json`, `apps/mobile/app.json` | `mobile-v1.2.3` |
+
+Backend, frontend and desktop deliberately share one version, as the old `bump_version.py` enforced
+by hand.
+
+`uv.lock` and `desktop/src-tauri/Cargo.lock` are **not** managed. Neither can be addressed by
+jsonpath, `uv sync --frozen` and `cargo build` both tolerate the drift, and each self-heals on the
+next `uv lock` / `cargo build`. Only `uv lock --check` would object, and nothing runs it.
+
+## What publishes, and when
+
+| Artifact | Trigger |
+| --- | --- |
+| ClawHub tools + channel packages | push to `main`, when `plugin/package.json`'s version is not yet on ClawHub |
+| CLI binaries | push to `main` touching `cli/**` |
+| Marketing site | push to `main` (staging) / `prod` (production) |
+| Desktop app | push to `prod`, or `workflow_dispatch` for a staging build |
+| Agent image | `workflow_dispatch` only — it is a multi-gigabyte deliberate action |
 
 Promote to production by merging `main` → `prod`.
 
-## Desktop specifics
+## The "Latest" release is a production endpoint
 
-Staging builds (from `main`) are marked GitHub **prereleases**, so the updater's
-`releases/latest/` redirect only ever resolves to a `prod` build. Staging testers download
-manually.
+`releases/latest/download/latest.json` is baked into every desktop binary ever shipped
+([`tauri.conf.json`](../desktop/src-tauri/tauri.conf.json)), so GitHub's "Latest" pointer must
+always resolve to a desktop release.
 
-The updater endpoint is baked into each binary at build time
-([`tauri.conf.json`](../desktop/src-tauri/tauri.conf.json)), so changing it only affects *future*
-builds — installs already in the wild keep polling whatever URL they shipped with. Treat that
-endpoint as approximately permanent.
+**Every `gh release create` in this repo passes `--latest=false` except the desktop one.** The
+`Release` workflow also un-latests anything release-please creates, immediately after creation.
+If you add a workflow that cuts a release, it passes `--latest=false` or it breaks the updater for
+every installed app.
 
-Signing keys and notarisation: [`desktop/SIGNING.md`](../desktop/SIGNING.md).
+Changing the endpoint only affects *future* builds; installs in the wild keep polling whatever URL
+they shipped with. Treat it as approximately permanent.
 
-## Version numbers in the tree
+Staging desktop builds are marked GitHub **prereleases**, so they can never take the pointer.
+Signing and notarisation: [`desktop/SIGNING.md`](../desktop/SIGNING.md).
 
-Two helpers, for when a version needs to exist in more than one manifest:
+## Other version helpers
 
-- [`scripts/bump_version.py`](../scripts/bump_version.py) — bumps backend, frontend and desktop together
-- [`scripts/sync_native_versions.py`](../scripts/sync_native_versions.py) — propagates the desktop
-  version into the iOS and Android native projects
+[`scripts/sync_native_versions.py`](../scripts/sync_native_versions.py) propagates the marketing
+version into the iOS and Android native projects (`CFBundleShortVersionString`, `versionCode`).
+Its leader files — `apps/mobile/package.json` and `desktop/src-tauri/Cargo.toml` — are both written
+by release-please, so run it after a release PR merges.
 
 ## If a release goes wrong
 
-Code releases are additive — there is no version file to revert. Delete the GitHub release and its
-tag, then push a corrected commit; semantic-release recomputes from history.
+Code releases are additive. Delete the GitHub release and its tag, correct the version in
+`.release-please-manifest.json`, and push; release-please recomputes from there.
 
-A desktop release is different: once `latest.json` points at a build, clients fetch it. To pull a bad
-build, delete that release so `releases/latest/` falls back to the previous one, then confirm the
-redirect resolves where you expect before walking away.
+A desktop release is different: once `latest.json` points at a build, clients fetch it. To pull a
+bad build, delete that release so `releases/latest/` falls back to the previous one, then confirm
+the redirect resolves where you expect before walking away.
+
+ClawHub and the Tauri updater both require **strictly increasing** versions, and neither lets you
+republish a version. Never lower a number in `.release-please-manifest.json`.

@@ -1,0 +1,53 @@
+name: Setup Bun workspace
+description: Install bun, restore the workspace's dependency cache, and install from the frozen lockfile.
+
+# Replaces four near-identical 20-line blocks (frontend, apps/mobile, plugin,
+# web) that each set up bun, declared their own actions/cache with a
+# hand-written key, and installed. The cache key namespaces on the workspace so
+# one job never restores another's node_modules, which is the bug the original
+# comments were written to prevent.
+#
+# A composite action rather than a reusable workflow: the duplication here is
+# step-level, and `workflow_call` shares whole jobs and renders extra rows in
+# the checks list.
+
+inputs:
+  workspace:
+    description: Path to the workspace, relative to the repo root (e.g. frontend, apps/mobile).
+    required: true
+  node-version:
+    description: Optional Node version to install alongside bun. Leave empty to skip.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    # Only web/ needs this: Astro's build runs sharp and the Fonts API
+    # downloader on node, and CI should not be the first place they meet bun's
+    # runtime. Everything else uses `bun --bun`.
+    - if: inputs.node-version != ''
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - uses: actions/cache@v6
+      with:
+        # Both bun's global module store and the resolved node_modules, so a
+        # warm run links nothing. Keyed on the real lockfile name (bun.lock,
+        # not the obsolete binary bun.lockb).
+        path: |
+          ~/.bun/install/cache
+          ${{ inputs.workspace }}/node_modules
+        key: ${{ runner.os }}-bun-${{ inputs.workspace }}-${{ hashFiles(format('{0}/bun.lock', inputs.workspace)) }}
+        restore-keys: |
+          ${{ runner.os }}-bun-${{ inputs.workspace }}-
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.workspace }}
+      run: bun install --frozen-lockfile

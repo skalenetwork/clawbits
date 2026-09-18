@@ -7,7 +7,7 @@ import path from 'path'
 import { readFileSync } from 'node:fs'
 
 // The product version baked into the bundle, read from package.json (kept in
-// lock-step with the backend by scripts/bump_version.py). The running server
+// lock-step with the backend by release-please). The running server
 // announces its own version on the global SSE stream; when the two diverge —
 // i.e. a tab has been open across a deploy — the app prompts a reload.
 const buildVersion = (
