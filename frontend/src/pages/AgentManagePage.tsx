@@ -9,6 +9,7 @@ import { useAgentDmExport } from "@/hooks/useAgentDmExport";
 import { useAgentTab } from "@/components/agent/agentTabContext";
 import { DeleteAgentDialog } from "@/components/agent/DeleteAgentDialog";
 import { AccessSection } from "@/components/agent/manage/AccessSection";
+import { ModelSection } from "@/components/agent/manage/ModelSection";
 import { BehaviorSection } from "@/components/agent/manage/BehaviorSection";
 import { IdentitySection } from "@/components/agent/manage/IdentitySection";
 import { MachineSection } from "@/components/agent/manage/MachineSection";
@@ -41,6 +42,7 @@ export default function AgentManagePage() {
   return (
     <>
       <IdentitySection orgId={orgId} profile={profile} />
+      {profile.is_operator && <ModelSection orgId={orgId} agentId={agentId} />}
       {profile.is_operator && <BehaviorSection orgId={orgId} profile={profile} />}
       {profile.reef_host && profile.reef_name ? (
         <MachineSection orgId={orgId} host={profile.reef_host} name={profile.reef_name} />

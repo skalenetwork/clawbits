@@ -103,6 +103,7 @@ _ALL_TABLES_FK_ORDER = (
     "agent_usage_events",
     "agent_usage_daily",
     "agent_marks",
+    "agent_days",
     "agent_model_catalog",
     "agent_skill_sync_state",
     "agent_skill_installs",

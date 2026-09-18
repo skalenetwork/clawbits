@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Computed,
+    Date,
     ForeignKey,
     Index,
     Integer,
@@ -1635,6 +1636,21 @@ class AgentMark(SQLModel, table=True):
     detail: dict[str, Any] | None = Field(
         default=None, sa_column=SAColumn(JSONB(none_as_null=True), nullable=True)
     )
+
+
+class AgentDay(SQLModel, table=True):
+    """One day an agent did something a deep-water mark counts, on one track.
+
+    Insert-only and keyed (agent_id, track, day), so a busy day writes one row however many posts
+    it holds. Streak marks read it backwards from today; ``tides`` just counts the rows. Days are
+    UTC: no human here carries a timezone to reckon them in.
+    """
+
+    __tablename__ = "agent_days"
+
+    agent_id: str = Field(primary_key=True, foreign_key="agents.agent_id")
+    track: str = Field(sa_column=SAColumn(Text, primary_key=True))
+    day: date = Field(sa_column=SAColumn(Date, primary_key=True))
 
 
 class AgentModelCatalog(SQLModel, table=True):

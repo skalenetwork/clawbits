@@ -52,14 +52,21 @@ export interface AgentUser {
   plugin_version?: string | null;
 }
 
-export type TidemarkTier = "shore" | "swell" | "tide" | "nacre" | "abyss" | "hadal";
+/** Kelp and Vent ship as finishes but are out of the ladder until more marks exist. */
+export type TidemarkTier =
+  | "shore" | "swell" | "tide" | "reef" | "nacre" | "twilight" | "kelp" | "vent" | "abyss" | "hadal";
 
-export type TidemarkKind = "conversation" | "channel" | "lobstertalk" | "automation" | "mail" | "teamwork";
+export type TidemarkBandId = "shallows" | "open" | "deep";
+
+export type TidemarkKind =
+  | "conversation" | "channel" | "lobstertalk" | "automation" | "mail" | "teamwork"
+  | "file" | "skill" | "run" | "thread" | "pinned" | "crew" | "night" | "handoff"
+  | "streak3" | "streak7" | "streak30" | "clockwork" | "tides" | "weathered" | "year";
 
 export interface Tidemarks {
   tier: TidemarkTier;
   tiers: { id: TidemarkTier; marks: number }[];
-  kinds: TidemarkKind[];
+  bands: { id: TidemarkBandId; kinds: TidemarkKind[] }[];
   marks: { kind: TidemarkKind; earned_at: string | null; detail: string | null }[];
   full_set: boolean;
 }
