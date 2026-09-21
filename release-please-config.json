@@ -29,8 +29,11 @@
       "release-type": "node",
       "component": "openclaw-plugin",
       "//": "Keeps the existing openclaw-plugin-v* tag namespace. The tools and channel packages share this one version by construction now that a single job publishes both.",
+      "//tools-manifests": "The tools pair is listed so the tree is never self-inconsistent: plugin/test/tools-entry.test.ts asserts package.tools.json and package.json agree, which on a release PR only holds if release-please writes both. One updater per path — the nested `openclaw.version` blocks are left to release.yml, which stamps every manifest at publish.",
       "extra-files": [
-        { "type": "json", "path": "openclaw.plugin.json", "jsonpath": "$.version" }
+        { "type": "json", "path": "openclaw.plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "package.tools.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "openclaw.tools.plugin.json", "jsonpath": "$.version" }
       ]
     },
     "cli": {

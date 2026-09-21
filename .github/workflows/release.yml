@@ -134,13 +134,13 @@ jobs:
         working-directory: plugin
         run: bun --bun run build
 
-      # release-please writes package.json and openclaw.plugin.json. The two
-      # tools manifests carry the same version and are stamped here rather than
-      # committed, so tools and channel cannot disagree. ClawBitsClient sends
-      # this value in X-Clawbits-Plugin-Version and
-      # clawbits/fastapi/version_check.py reads plugin/package.json as the
-      # OpenClaw floor, so they must match exactly.
-      - name: Stamp tools manifests from package.json
+      # release-please writes every top-level "version" in the four manifests,
+      # but nothing writes the nested `openclaw.version` blocks, so they are
+      # stamped here: a published plugin must not declare a version its own
+      # package.json disagrees with. ClawBitsClient sends this value in
+      # X-Clawbits-Plugin-Version and clawbits/fastapi/version_check.py reads
+      # plugin/package.json as the OpenClaw floor, so they must match exactly.
+      - name: Stamp every manifest from the release version
         if: steps.guard.outputs.publish == 'true'
         working-directory: plugin
         env:
@@ -150,7 +150,7 @@ jobs:
           node - "$VERSION" <<'NODE'
           const fs = require('node:fs');
           const version = process.argv[2];
-          for (const path of ['package.tools.json', 'openclaw.tools.plugin.json']) {
+          for (const path of ['package.json', 'openclaw.plugin.json', 'package.tools.json', 'openclaw.tools.plugin.json']) {
             const json = JSON.parse(fs.readFileSync(path, 'utf8'));
             json.version = version;
             if (json.openclaw?.version) json.openclaw.version = version;
