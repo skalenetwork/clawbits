@@ -53,9 +53,9 @@ import {queryKeys} from "@/lib/queryKeys";
 import {captureReturnPath, withNext} from "@/lib/returnPath";
 import {fuzzyScoreAny} from "@/lib/fuzzy";
 import {frecencyKey, frecencyScore, loadFrecency, recordVisit} from "@/lib/frecency";
-import {formatChannelTitle, formatRelativeShort} from "@/lib/formatting";
+import {channelListTitle, formatChannelTitle, formatRelativeShort} from "@/lib/formatting";
 import {parseSearchQuery, type ParsedQuery} from "@/lib/searchQuery";
-import {activityTime} from "@/lib/chatFilters";
+import {activityTime, isPairType} from "@/lib/chatFilters";
 import {isDesktop} from "@/lib/desktop";
 import {isMac} from "@/lib/shortcuts/platform";
 import {useShortcut} from "@/lib/shortcuts";
@@ -183,7 +183,7 @@ function Row({item, id, active, onHover, onSelect}: {
                         <span className="flex items-baseline gap-1.5">
                             <span className="truncate">{author}</span>
                             <span className="truncate font-normal text-muted-foreground">
-                                in {formatChannelTitle(m.channel_display_name, m.channel_type === "direct" ? "Direct message" : "Channel")}
+                                in {formatChannelTitle(m.channel_display_name, isPairType(m.channel_type) ? "Direct message" : "Channel")}
                             </span>
                             <span className="ml-auto shrink-0 pl-3 text-[12px] font-normal tabular-nums text-muted-foreground">
                                 {formatRelativeShort(m.created_at)}
@@ -325,13 +325,15 @@ function Palette({mobile}: {mobile: boolean}) {
 
     const agentIds = new Set(sources.agents.map((a) => a.agent_id));
     const dmHumans = new Set(sources.channels.map((c) => c.dm_peer_human_id));
-    const agentDms = new Map(sources.channels.map((c) => [c.dm_peer_agent_id, c]));
+    const agentDms = new Map(
+        sources.channels.filter((c) => c.channel_type === "direct").map((c) => [c.dm_peer_agent_id, c]),
+    );
     const chats: Item[] = [
         ...sources.channels
-            .filter((c) => !agentIds.has(c.dm_peer_agent_id ?? ""))
+            .filter((c) => c.channel_type === "agent_chat" || !agentIds.has(c.dm_peer_agent_id ?? ""))
             .map((c): Item => {
-                const dm = c.channel_type === "direct";
-                const label = formatChannelTitle(c.display_name ?? c.name, dm ? "Direct message" : "Channel");
+                const dm = isPairType(c.channel_type);
+                const label = channelListTitle(c);
                 return {
                     id: `channel:${c.channel_id}`,
                     label,
@@ -388,6 +390,7 @@ function Palette({mobile}: {mobile: boolean}) {
                 newAgent,
                 newChannel,
                 action("new-dm", "New direct message", MessageSquarePlus, create("dm"), "dm message chat"),
+                action("new-chat", "New agent chat", MessageSquarePlus, create("chat"), "agent session"),
                 action("join", "Join a channel", LogIn, create("browse"), "browse"),
                 invite,
             ],

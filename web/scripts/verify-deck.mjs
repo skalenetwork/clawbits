@@ -7,14 +7,24 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
   await page.setViewport({ width: 1440, height: 1000 });
-  await page.goto(process.env.DECK_URL ?? "http://localhost:4321/deck/", { waitUntil: "networkidle0" });
+  await page.goto(process.env.DECK_URL ?? "http://127.0.0.1:4327/deck/", { waitUntil: "networkidle0" });
   assert.equal(await page.$$eval("h1", nodes => nodes.length), 1);
   assert.equal(await page.$$(".app-preview, .message, img[src^='/avatars/']").then(nodes => nodes.length), 0, "No fabricated product UI");
-  assert.equal(await page.$$eval(".slide", nodes => nodes.length), 14);
+  assert.equal(await page.$$eval(".slide", nodes => nodes.length), 21);
   assert.equal(await page.$$eval("[id]", nodes => new Set(nodes.map(node => node.id)).size === nodes.length), true);
+  assert.equal(await page.$$(".appendix-slide").then(nodes => nodes.length), 8);
+  assert.equal(await page.$$eval('.deck a[href^="#"]', nodes => nodes.every(node => document.getElementById(node.hash.slice(1)))), true, "All slide links resolve");
+  await page.click('.deck-bar a[href="#appendix"]');
+  await page.waitForFunction(() => location.hash === "#appendix");
+  await page.click('.appendix-index a[href="#a-controls"]');
+  await page.waitForFunction(() => location.hash === "#a-controls");
+  await page.click('#a-controls .slide-footer a[href="#appendix"]');
+  await page.waitForFunction(() => location.hash === "#appendix");
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); location.hash = "overview"; });
   for (const href of ["https://reef.clawbits.ai", "https://reef.clawbits.ai/deck"]) assert.ok(await page.$(`#reef a[href="${href}"]`));
-  for (const [key, hash] of [["ArrowRight", "#problem"], ["End", "#next"], ["Home", "#overview"]]) {
+  for (const [key, hash] of [["ArrowRight", "#problem"], ["End", "#a-docs"], ["Home", "#overview"]]) {
     await page.keyboard.press(key);
     await page.waitForFunction(value => location.hash === value, {}, hash);
   }
@@ -26,9 +36,22 @@ try {
   assert.equal(await page.$eval("body", node => node.dataset.printTest), "called");
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await page.screenshot({ path: "/tmp/clawbits-deck-desktop.png" });
-  for (const width of [1440, 768, 390]) {
-    await page.setViewport({ width, height: 1000 });
+  for (const [width, height] of [[1440, 1000], [1280, 720], [768, 1000], [390, 844]]) {
+    await page.setViewport({ width, height });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `No overflow at ${width}px`);
+    if (width > 720) {
+      const issues = await page.$$eval(".slide", slides => slides.flatMap(slide => {
+        const rect = slide.getBoundingClientRect();
+        const result = [];
+        if (Math.abs(rect.width / rect.height - 16 / 9) > .01) result.push(`${slide.id}: aspect ratio`);
+        for (const element of slide.querySelectorAll(".slide-heading, .slide-body, .slide-footer, article, figcaption, .appendix-index")) {
+          const box = element.getBoundingClientRect();
+          if (box.width && (box.bottom > rect.bottom + 1 || box.right > rect.right + 1)) result.push(`${slide.id}: clipped ${element.className || element.tagName}`);
+        }
+        return result;
+      }));
+      assert.deepEqual(issues, [], `Slides fit at ${width}×${height}`);
+    }
   }
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await page.screenshot({ path: "/tmp/clawbits-deck-mobile.png" });

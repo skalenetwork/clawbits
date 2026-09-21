@@ -32,7 +32,7 @@ from clawbits.avatars.payloads import (
 )
 from clawbits.datastructures.agent import Agent as AgentDS
 from clawbits.datastructures.agent_id import AgentId
-from clawbits.datastructures.mm_models import agent_liveness_status
+from clawbits.datastructures.mm_models import AGENT_CHAT, PAIR_CHANNEL_TYPES, agent_liveness_status
 from clawbits.db.models import (
     SKILL_SCHEMA_VERSION,
     Agent,
@@ -1015,7 +1015,7 @@ class TableRead:
         from clawbits.db.table_write import DELETED_AGENT_ID
 
         ch = session.get(MmChannel, channel_id)
-        if ch is None or ch.channel_type != "direct":
+        if ch is None or ch.channel_type not in PAIR_CHANNEL_TYPES:
             return True
         # Exclude the deleted-agent tombstone: a DM whose former agent was
         # deleted keeps a sentinel member row, and treating it as a live
@@ -1062,7 +1062,7 @@ class TableRead:
             select(MmChannelMember.agent_id)
             .join(MmChannel, MmChannel.channel_id == MmChannelMember.channel_id)
             .where(MmChannelMember.channel_id == channel_id)
-            .where(MmChannel.channel_type == "direct")
+            .where(MmChannel.channel_type.in_(PAIR_CHANNEL_TYPES))
             .where(MmChannelMember.agent_id.is_not(None))
             .where(MmChannelMember.agent_id != DELETED_AGENT_ID)
         ).first()
@@ -1614,7 +1614,7 @@ class TableRead:
                 model,
                 thinking,
             ) in rows
-            if c.channel_type != "direct"
+            if c.channel_type not in PAIR_CHANNEL_TYPES
             or TableRead.can_agent_access_dm(session, c.channel_id, agent_id)
         ]
 
@@ -2112,7 +2112,7 @@ class TableRead:
             .where(~has_dm_grant)
             .exists()
         )
-        filters.append(or_(MmChannel.channel_type != "direct", ~blocking_agent))
+        filters.append(or_(~MmChannel.channel_type.in_(PAIR_CHANNEL_TYPES), ~blocking_agent))
         return filters
 
     @staticmethod
@@ -2644,19 +2644,20 @@ class TableRead:
     def apply_dm_peers(
         session: Session, channels: list[dict], viewer_human_id: int
     ) -> set[str]:
-        """Resolve each direct channel's other participant in-place, from the
-        viewer's side: ``display_name`` becomes the peer's name, ``dm_peer`` the
-        peer as :meth:`get_mm_channel_members` returns it (``can_tag`` included
-        for an agent), and ``dm_peer_human_id`` or ``dm_peer_agent_id`` its id.
-        Presence is the endpoint's to apply. Returns the agent DMs the viewer
+        """Resolve each 1:1 channel's other participant in-place, from the
+        viewer's side: ``display_name`` becomes the peer's name (inbox DMs only;
+        named agent chats keep their title), ``dm_peer`` the peer as
+        :meth:`get_mm_channel_members` returns it (``can_tag`` included for an
+        agent), and ``dm_peer_human_id`` or ``dm_peer_agent_id`` its id.
+        Presence is the endpoint's to apply. Returns the agent 1:1s the viewer
         may no longer contact. Two statements for the whole list."""
-        direct_ids = [d["channel_id"] for d in channels if d["channel_type"] == "direct"]
-        if not direct_ids:
+        pair_ids = [d["channel_id"] for d in channels if d["channel_type"] in PAIR_CHANNEL_TYPES]
+        if not pair_ids:
             return set()
         peers: dict[str, MemberRow] = {}
         for row in TableRead._member_rows(
             session,
-            MmChannelMember.channel_id.in_(direct_ids),
+            MmChannelMember.channel_id.in_(pair_ids),
             MmChannelMember.human_id.is_distinct_from(viewer_human_id),
         ):
             peers.setdefault(row[0].channel_id, row)
@@ -2677,7 +2678,7 @@ class TableRead:
             m, u, *_ = row
             peer = TableRead._member_to_dict(*row, viewer_human_id=viewer_human_id)
             name = (u.display_name or u.email) if u else peer["display_name"]
-            if name:
+            if name and d["channel_type"] != AGENT_CHAT:
                 d["display_name"] = name
             if m.agent_id is None:
                 d["dm_peer_human_id"] = m.human_id

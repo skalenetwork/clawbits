@@ -88,17 +88,23 @@ export function Squircle({
     );
 }
 
+/** One card for the whole home page: the tiles and the composer above them. */
+export const HOME_SURFACE = "rounded-[18px] border border-border/60 bg-card";
+
+/** The glyph every tile draws at: one number so art, avatars and channel glyphs agree. */
+export const TILE_GLYPH = 36;
+
 const TILE_CLASS =
-    "group flex min-h-16 min-w-0 items-center gap-3 rounded-[18px] border border-border/60 bg-card " +
-    "px-3 py-2 text-left transition-[transform,border-color] " +
+    `group flex min-h-14 min-w-0 items-center gap-2.5 ${HOME_SURFACE} ` +
+    "px-2.5 py-2 text-left transition-[transform,border-color] " +
     "duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] hover:border-border " +
     "active:scale-[0.99] focus-visible:outline-2 " +
     "focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 /** Keycap chrome: a real key in the command tile (`<kbd>`), a decorative hint elsewhere (`<span>`). */
 export const KEYCAP_CLASS =
-    "grid h-8 min-w-8 place-items-center rounded-[10px] border border-border " +
-    "bg-linear-to-b from-card to-background px-2 font-sans text-[15.5px] font-medium " +
+    "grid h-7 min-w-7 place-items-center rounded-[9px] border border-border " +
+    "bg-linear-to-b from-card to-background px-1.5 font-sans text-[13.5px] font-medium " +
     "text-muted-foreground transition-colors group-hover:text-foreground";
 
 /** Fires on an unmodified digit (⌘-digit already jumps to nav and pinned chats), never while anything else owns
@@ -161,10 +167,10 @@ export function HomeTile({
         <>
             <span className="relative shrink-0">{glyph}</span>
             <span className="flex min-w-0 flex-col gap-[3px]">
-                <span className="truncate text-[13px] leading-[1.15] text-muted-foreground">
+                <span className="truncate text-[12.5px] leading-[1.15] text-muted-foreground">
                     {label}
                 </span>
-                <span className="truncate text-[17px] font-medium leading-[1.15] tracking-[-0.015em] tabular-nums">
+                <span className="truncate text-[15px] leading-[1.2] tracking-[-0.01em] tabular-nums">
                     {value}
                 </span>
             </span>

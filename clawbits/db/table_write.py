@@ -23,10 +23,14 @@ from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.api_key import ApiKey
 from clawbits.datastructures.long_name import LongName
 from clawbits.datastructures.mm_models import (
+    AGENT_CHAT,
+    NEW_CHAT_TITLE,
+    PAIR_CHANNEL_TYPES,
     ModelStateReportRequest,
     SetAgentModelRequest,
     agent_default_channel_name,
     agent_dm_channel_name,
+    heuristic_chat_title,
 )
 from clawbits.datastructures.nickname import NickName
 from clawbits.db.models import (
@@ -1272,7 +1276,7 @@ class TableWrite:
         return list(
             session.exec(
                 select(MmChannel.channel_id)
-                .where(MmChannel.channel_type == "direct")
+                .where(MmChannel.channel_type.in_(PAIR_CHANNEL_TYPES))
                 .where(
                     MmChannel.channel_id.in_(
                         select(MmChannelMember.channel_id).where(
@@ -2069,7 +2073,7 @@ class TableWrite:
         session.add(MmChannelMember(channel_id=channel_id, agent_id=agent_id))
         session.flush()
         channel = session.get(MmChannel, channel_id)
-        if channel.channel_type == "direct" or channel.name == agent_default_channel_name(agent_id):
+        if channel.channel_type in PAIR_CHANNEL_TYPES or channel.name == agent_default_channel_name(agent_id):
             return
         TableWrite.award_mark(session, agent_id, "channel", {"channel_id": channel_id})
         from clawbits.db.table_read import TableRead
@@ -2824,6 +2828,18 @@ class TableWrite:
         return post.post_id
 
     @staticmethod
+    def autotitle_agent_chat(session: Session, channel_id: str, message: str) -> bool:
+        ch = session.get(MmChannel, channel_id)
+        if ch is None or ch.channel_type != AGENT_CHAT or ch.display_name != NEW_CHAT_TITLE:
+            return False
+        title = heuristic_chat_title(message)
+        if not title:
+            return False
+        ch.display_name = title
+        session.add(ch)
+        return True
+
+    @staticmethod
     def create_mm_channel_event(
         session: Session,
         channel_id: str,
@@ -2849,7 +2865,7 @@ class TableWrite:
           is always rendered as a delegated action even if the IDs
           coincidentally match across namespaces."""
         ch = session.get(MmChannel, channel_id)
-        if ch is None or ch.channel_type == "direct":
+        if ch is None or ch.channel_type in PAIR_CHANNEL_TYPES:
             return 0
         # Self-action: null the subject so renderer picks "joined"/"left"
         if (

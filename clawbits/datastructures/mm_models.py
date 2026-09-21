@@ -1,6 +1,7 @@
 """Mattermost-style messaging data models."""
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -20,6 +21,58 @@ def agent_dm_channel_name(human_id: int, agent_id: str) -> str:
 
 def agent_default_channel_name(agent_id: str) -> str:
     return f"agent-{agent_id}"
+
+
+AGENT_CHAT = "agent_chat"
+PAIR_CHANNEL_TYPES: tuple[str, ...] = ("direct", AGENT_CHAT)
+NEW_CHAT_TITLE = "New chat"
+
+
+TITLE_MAX_LEN = 40
+
+_TITLE_MENTION = re.compile(r"@[\w.-]+")
+_TITLE_MARKUP = re.compile(r"^(?:[>#•]+\s*|[-*+]\s+|\d+[.)]\s+)+")
+# Openers that say nothing in a list: the ask starts after them.
+_TITLE_OPENER = re.compile(
+    r"^(?:(?:hey|hi|hello|yo|ok|okay|so|pls|plz|please|thanks|thx)[\s,!.]+)*"
+    r"(?:(?:can|could|would|will)\s+(?:you|u)\s+|i\s+(?:need|want)\s+(?:you\s+)?to\s+|let'?s\s+)?",
+    re.IGNORECASE,
+)
+# A cut title should not end on a word that was reaching for the next one.
+_TITLE_DANGLING = re.compile(
+    r"^(?:an?|and|are|as|at|be|but|by|for|from|in|is|its?|my|of|on|or|that|the|this|to"
+    r"|was|were|will|with|your?)$",
+    re.IGNORECASE,
+)
+_TITLE_TAIL = ".,;:?!…"
+
+
+def heuristic_chat_title(message: str, *, max_len: int = TITLE_MAX_LEN) -> str | None:
+    """A short handle for a chat, taken from the message that opened it.
+
+    Reads as a phrase, not a severed sentence: the ask starts after any greeting,
+    a cut lands on a word boundary, and a trailing function word left reaching for
+    the next one is dropped. Casing stays the writer's, so ``npm`` survives, and an
+    ellipsis appears only where a single word had to be cut through.
+    """
+    lines = (
+        re.sub(r"\s+", " ", _TITLE_MARKUP.sub("", _TITLE_MENTION.sub("", raw).strip()))
+        for raw in message.splitlines()
+        if not raw.lstrip().startswith("```")
+    )
+    line = next((s for s in (p.strip() for p in lines) if s), "")
+    line = _TITLE_OPENER.sub("", line, count=1).strip(" ,:;-").rstrip(_TITLE_TAIL)
+    if not line:
+        return None
+    if len(line) <= max_len:
+        return line
+    head, boundary, _ = line[: max_len + 1].rpartition(" ")
+    if not boundary:
+        return line[:max_len] + "…"
+    words = head.split(" ")
+    while len(words) > 1 and _TITLE_DANGLING.match(words[-1].strip(_TITLE_TAIL)):
+        words.pop()
+    return " ".join(words).rstrip(_TITLE_TAIL)
 
 
 RealtimeEventType = Literal[
@@ -150,6 +203,17 @@ class MmDirectUnifiedRequest(BaseModel):
     org_id: str = Field(min_length=1, description="Org context the DM lives in — caller (and human target) must be a member")
     target_id: str = Field(min_length=1, description="Agent ID or human user ID to open a DM with")
     target_type: Literal["agent", "human"] = Field(description="Whether the target is an agent or human")
+
+
+class MmAgentChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    org_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+
+
+class MmChannelPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    display_name: str = Field(min_length=1, max_length=128)
 
 
 class ModelChoice(BaseModel):

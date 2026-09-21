@@ -501,7 +501,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `avatar_version` | `INTEGER` | NOT NULL, default `1` |
 | `lobstertalk_approved` | `BOOLEAN` | NOT NULL, default `false` |
 
-- **Check** `mm_channels_type_check`: `channel_type IN ('public', 'private', 'direct')`
+- **Check** `mm_channels_type_check`: `channel_type IN ('public', 'private', 'direct', 'agent_chat')`
 
 - **Unique** `uq_mm_channels_org_name`: (org_id, name)
 

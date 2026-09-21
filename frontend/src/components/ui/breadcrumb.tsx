@@ -1,8 +1,6 @@
 import * as React from "react";
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
-import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
-import { Icon } from "@/components/Icon";
 import { cn } from "@/lib/utils";
 
 /**
@@ -70,7 +68,7 @@ function BreadcrumbPage({ className, ...props }: React.ComponentProps<"span">) {
       role="link"
       aria-disabled="true"
       aria-current="page"
-      className={cn(CRUMB_BASE, "font-semibold text-foreground", className)}
+      className={cn(CRUMB_BASE, "font-medium text-foreground", className)}
       {...props}
     />
   );
@@ -82,10 +80,10 @@ function BreadcrumbSeparator({ children, className, ...props }: React.ComponentP
       data-slot="breadcrumb-separator"
       role="presentation"
       aria-hidden="true"
-      className={cn("shrink-0 text-muted-foreground/40 [&>svg]:size-3.5", className)}
+      className={cn("shrink-0 px-0.5 text-muted-foreground/40", className)}
       {...props}
     >
-      {children ?? <Icon icon={ArrowRight01Icon} className="size-3.5" />}
+      {children ?? "/"}
     </li>
   );
 }

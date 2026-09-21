@@ -50,6 +50,7 @@ import { useLongPress } from "@/hooks/useLongPress";
 import { useSmoothedText } from "@/hooks/useSmoothedText";
 import type { AgentActivity, ThinkingStep, ToolStep } from "@/hooks/useChannelEvents";
 import type { MmChannelMember, MmChannelPost, MmChannelType } from "@/lib/api";
+import { isPairType } from "@/lib/chatFilters";
 import { matchAdminCommandText } from "@/lib/adminCommands";
 import { burstEmojiAt, burstEmojiFrom } from "@/lib/emojiBurst";
 import { extractUrls } from "@/lib/extractUrls";
@@ -100,7 +101,7 @@ function receiptOf(
   currentUserId: number | null,
   members: MmChannelMember[],
 ) {
-  if (channelType !== "direct" || currentUserId == null) return null;
+  if (!isPairType(channelType) || currentUserId == null) return null;
   if (post.human_id !== currentUserId || post.agent_id != null) return null;
   if (post.status === "draft" || post.status === "rejected") return null;
   if (post.post_id < 0 || post.status === "streaming") return RECEIPTS.sending;

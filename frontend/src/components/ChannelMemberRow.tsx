@@ -71,7 +71,7 @@ export function ChannelMemberRow({
           : <UserAvatar size={20} name={seed} src={avatarUrl}/>}
         {(showHumanDot || showAgentDot) && (
           <span className="pointer-events-none absolute -right-0.5 -bottom-0.5">
-            <PresenceDot status={dotStatus} size={7} ringClassName="ring-sidebar" label={dotTitle}/>
+            <PresenceDot status={dotStatus} size={6} ringClassName="ring-sidebar" label={dotTitle}/>
           </span>
         )}
       </span>

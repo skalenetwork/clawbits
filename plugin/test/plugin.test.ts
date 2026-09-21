@@ -1037,6 +1037,34 @@ describe("dispatchInboundMessage", () => {
     assert.notDeepEqual(peerA, peerB);
   });
 
+  it("routes agent_chat posts as a channel peer so they do not share the inbox session", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const ctx = makeGatewayCtx({
+      channelRuntime: {
+        routing: {},
+        session: {},
+        reply: {
+          dispatchReplyWithBufferedBlockDispatcher: async (params) => {
+            calls.push(params as unknown as Record<string, unknown>);
+          },
+        },
+      },
+    });
+    await dispatchInboundMessage(ctx, {
+      accountId: "default",
+      channelId: "chat-1",
+      postId: "p-chat",
+      senderId: "human-7",
+      text: "hi",
+      createAt: 1,
+      channelType: "agent_chat",
+      raw: { id: "p-chat", create_at: 1 },
+    });
+    const dispatched = calls[0]! as { ctx: Record<string, unknown> };
+    assert.deepEqual(dispatched.ctx.Peer, { kind: "channel", id: "chat-1" });
+    assert.equal(dispatched.ctx.ChatType, "channel");
+  });
+
   it("downloads inbound attachments into OpenClaw media context", async () => {
     const originalFetch = globalThis.fetch;
     const calls: Array<Record<string, unknown>> = [];
