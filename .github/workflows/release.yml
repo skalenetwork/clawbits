@@ -46,19 +46,26 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # Every release this repo cuts must be explicitly NOT "Latest", except the
-      # desktop one. `desktop/src-tauri/tauri.conf.json` bakes
+      # `desktop/src-tauri/tauri.conf.json` bakes
       # https://github.com/skalenetwork/clawbits/releases/latest/download/latest.json
       # into every binary ever shipped, so GitHub's "Latest" pointer is a
-      # production endpoint for installed desktop apps. release-please creates
-      # releases with make_latest defaulting to true and exposes no way to
-      # change that, so it is corrected immediately here.
+      # production endpoint for installed desktop apps, and only a desktop
+      # release may hold it. release-please publishes with make_latest defaulting
+      # to true and exposes no way to change that, so it is corrected here.
+      #
+      # Clearing the flag is NOT enough on its own: make_latest only governs
+      # publish time, and /releases/latest still resolves to the newest published
+      # release, so un-latesting the batch simply hands the pointer to the next
+      # one down (seen 2026-09-21: all four cleared, GitHub still served
+      # mobile-v1.1.0). The pointer has to be claimed back explicitly, and an
+      # explicit claim outranks recency — desktop-v1.1.0 from the 17th holds it
+      # over releases cut on the 21st.
       #
       # This leaves a window of seconds where the updater endpoint resolves to a
       # release with no latest.json. A failed update check is a no-op for Tauri
       # (it retries on the next poll), which is why the window is acceptable;
       # a release left Latest permanently would not be.
-      - name: Keep release-please releases out of "Latest"
+      - name: Return "Latest" to the desktop release
         if: steps.rp.outputs.releases_created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -74,6 +81,19 @@ jobs:
                 echo "un-latesting $tag"
                 gh release edit "$tag" --latest=false
               done
+
+          # Newest first, so the first published (non-draft, non-prerelease)
+          # desktop release is the one the updater should be pointed at. Staging
+          # builds are prereleases and are skipped by construction.
+          desktop=$(gh release list --limit 100 --json tagName,isDraft,isPrerelease \
+            --jq '[.[] | select(.tagName | startswith("desktop-"))
+                       | select(.isDraft == false and .isPrerelease == false)][0].tagName // empty')
+          if [ -z "$desktop" ]; then
+            echo "::warning::no published desktop release — /releases/latest is left on whatever GitHub picks"
+            exit 0
+          fi
+          echo "returning Latest to $desktop"
+          gh release edit "$desktop" --latest
 
   plugin:
     name: Publish plugin to ClawHub
