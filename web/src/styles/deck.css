@@ -1,0 +1,99 @@
+/* Presentation geometry follows Reef; visual tokens come from the Clawbits site. */
+html:has(.deck-shell) { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+.deck-shell { --deck-bar: 64px; --deck-width: min(100%, calc((100svh - 128px) * 16 / 9)); max-width: 1440px; margin-inline: auto; padding-inline: 24px; }
+.deck-bar { position: sticky; top: 0; z-index: 20; height: var(--deck-bar); width: var(--deck-width); margin-inline: auto; background: var(--color-ink); display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.deck-bar nav { display: flex; align-items: center; gap: 24px; font-size: 13px; }
+.deck-bar button { background: none; border: 0; padding: 8px 0; font: inherit; cursor: pointer; }
+.deck-bar a:hover, .deck-bar button:hover { color: var(--color-signal); }
+.deck { display: grid; gap: var(--deck-bar); padding-bottom: var(--deck-bar); }
+.deck .slide { position: relative; container-type: inline-size; width: var(--deck-width); aspect-ratio: 16 / 9; margin-inline: auto; border: 1px solid var(--color-line); border-radius: 16px; overflow: hidden; scroll-snap-align: center; scroll-margin-block: 0; }
+.deck .slide-frame { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 1.8em; padding: 2.5em 3em 2em; font-size: 1.2cqw; line-height: 1.5; }
+.deck .slide-heading { display: flex; flex-direction: column; gap: .75em; }
+.deck .section-label { color: var(--color-signal); font-size: .85em; font-weight: 500; }
+.deck h1, .deck h2 { font-family: var(--font-display); font-weight: 450; line-height: 1.12; letter-spacing: -.015em; text-wrap: balance; margin: 0; }
+.deck h1 { font-size: 3.1em; max-width: 22ch; }
+.deck h2 { font-size: 2.15em; max-width: 34ch; }
+.deck .lead { max-width: 72ch; color: var(--color-muted); }
+.deck .slide-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 1.8em; justify-content: center; }
+.deck h3 { font-size: 1em; font-weight: 550; margin: 0 0 .5em; }
+.deck .deck-points { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2em; }
+.deck .deck-points:has(article:nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.deck .deck-points article { padding-top: 1em; border-top: 1px solid var(--color-line); }
+.deck .deck-points p { color: var(--color-muted); }
+.deck .slide-footer { margin-top: auto; display: flex; justify-content: space-between; align-items: flex-end; gap: 2em; font-size: .76em; color: var(--color-muted); }
+.deck .slide-footer > div { display: grid; gap: .5em; max-width: 88%; }
+.deck .slide-footer a { color: var(--color-paper); text-decoration: underline; text-underline-offset: 3px; }
+.deck .slide-number { white-space: nowrap; }
+.deck .layout-cover { isolation: isolate; color: var(--color-canvas-text); background: var(--color-canvas); --color-signal: var(--color-signal-canvas); }
+.deck .deck-backdrop { position: absolute; inset: 0; z-index: -1; overflow: hidden; }
+.deck .deck-backdrop::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, rgb(20 19 17 / .88), rgb(20 19 17 / .38)); }
+.deck .layout-cover .slide-heading { gap: 1.2em; }
+.deck .layout-cover .lead { max-width: 55ch; font-size: 1.15em; color: var(--color-canvas-text); }
+.deck .layout-cover .slide-footer { color: var(--color-canvas-text); }
+.deck .layout-cover .slide-body { justify-content: flex-end; }
+.deck .deck-contents { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2em; border-top: 1px solid #ffffff40; padding-top: 1.2em; }
+.deck .deck-contents a { display: flex; flex-direction: column; gap: .35em; }
+.deck .deck-contents span, .deck .deck-contents p { color: #e0dbd3; font-size: .85em; }
+.deck .deck-contents strong { font-weight: 500; }
+.deck .layout-aside .slide-frame { display: grid; grid-template-columns: minmax(0, .75fr) minmax(0, 1.4fr); grid-template-rows: 1fr auto; gap: 2em 3em; }
+.deck .layout-aside .slide-heading { align-self: start; }
+.deck .layout-aside .slide-footer { grid-column: 1 / -1; }
+.deck .layout-aside .deck-points { grid-template-columns: 1fr; gap: 1.5em; }
+.deck .layout-aside .deck-points article { display: grid; grid-template-columns: .8fr 1.5fr; gap: 1.2em; }
+.deck .layout-screenshot .slide-frame { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.5fr); grid-template-rows: auto 1fr auto; gap: 1.5em 1.5em; }
+.deck .layout-screenshot .slide-heading { grid-column: 1; }
+.deck .layout-screenshot h2 { font-size: 1.9em; }
+.deck .layout-screenshot .slide-body { display: contents; }
+.deck .layout-screenshot .deck-points { grid-column: 1; grid-row: 2; grid-template-columns: 1fr; gap: .8em; align-self: start; font-size: .88em; }
+.deck .layout-screenshot .deck-points article { padding-top: .7em; }
+.deck .layout-screenshot .slide-footer { grid-column: 1 / -1; grid-row: 3; }
+.deck .product-screenshot { grid-column: 2; grid-row: 1 / span 2; align-self: center; min-width: 0; display: flex; flex-direction: column; gap: .4em; }
+.deck .product-screenshot img { display: block; width: 100%; height: auto; }
+.deck .product-screenshot figcaption { font-size: .75em; text-align: center; color: var(--color-muted); }
+.deck .product-screenshot figcaption a { text-decoration: underline; text-underline-offset: 3px; }
+.deck .deck-flow { display: flex; align-items: center; gap: 1em; }
+.deck .deck-flow > div { flex: 1; text-align: center; border: 1px solid var(--color-line); border-radius: 10px; background: var(--color-ink-raised); padding: 1.5em .75em; font-weight: 500; }
+.deck .deck-flow small { display: block; margin-top: .5em; font-size: .8em; color: var(--color-muted); font-weight: 400; }
+.deck .deck-flow .flow-focus { border-color: var(--color-signal); }
+.deck .resource-links { display: flex; gap: 2em; font-size: .85em; }
+.deck .resource-links a, .deck .resource-groups a { text-decoration: underline; text-underline-offset: 4px; }
+.deck .resource-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2em; }
+.deck .resource-groups article { border-top: 1px solid var(--color-line); padding-top: 1em; display: flex; flex-direction: column; align-items: flex-start; gap: .9em; }
+.deck .appendix-index { list-style: none; padding: 0; display: grid; gap: 0; }
+.deck .appendix-index li { border-top: 1px solid var(--color-line); }
+.deck .appendix-index a { display: grid; grid-template-columns: 2.75em 1fr; gap: 1em; padding: .85em 0; }
+.deck .appendix-index span { color: var(--color-muted); }
+.deck a:hover { text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 720px) {
+  html:has(.deck-shell) { scroll-snap-type: none; }
+  .deck-shell { --deck-bar: 60px; --deck-width: 100%; padding-inline: 12px; }
+  .deck-bar nav { gap: 16px; font-size: 12px; }
+  .deck-bar nav > a:first-child { display: none; }
+  .deck { gap: 24px; }
+  .deck .slide { aspect-ratio: auto; overflow: visible; }
+  .deck .slide-frame, .deck .layout-aside .slide-frame, .deck .layout-screenshot .slide-frame { position: relative; display: flex; padding: 24px; gap: 28px; font-size: 16px; }
+  .deck h1 { font-size: 2em; }
+  .deck h2, .deck .layout-screenshot h2 { font-size: 1.75em; }
+  .deck .layout-cover { overflow: hidden; }
+  .deck .slide-body, .deck .layout-screenshot .slide-body { display: flex; gap: 24px; }
+  .deck .deck-points, .deck .deck-points:has(article:nth-child(4)), .deck .deck-contents, .deck .resource-groups { grid-template-columns: 1fr; gap: 24px; }
+  .deck .layout-aside .deck-points article { grid-template-columns: 1fr; gap: 6px; }
+  .deck .layout-screenshot .deck-points { font-size: 1em; }
+  .deck .product-screenshot { width: 100%; }
+  .deck .slide-footer { padding-top: 16px; }
+  .deck .deck-flow { flex-direction: column; align-items: stretch; }
+  .deck .deck-flow > span { align-self: center; transform: rotate(90deg); }
+  .deck .resource-links { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) { html:has(.deck-shell) { scroll-behavior: auto; } }
+@media print {
+  @page { size: 297mm 167.0625mm; margin: 0; }
+  html:has(.deck-shell) { scroll-snap-type: none; scroll-behavior: auto; }
+  .deck-shell { max-width: none; padding: 0; }
+  .deck-bar, body > .skip { display: none !important; }
+  .deck { display: block; padding: 0; }
+  .deck * { print-color-adjust: exact; -webkit-print-color-adjust: exact; animation: none !important; }
+  .deck .slide { width: 297mm; height: 167.0625mm; aspect-ratio: auto; margin: 0; border: 0; border-radius: 0; break-inside: avoid; break-after: page; }
+  .deck .slide:last-child { break-after: auto; }
+  .deck .product-screenshot figcaption a { display: none; }
+}

@@ -1,0 +1,392 @@
+name: CI
+
+# The single pull-request gate. Replaces workflow.yaml ("Test"), lockfile-check.yaml,
+# cli.yaml and images.yaml.
+#
+# Two properties this file exists to hold:
+#
+#   1. ONE RUN PER CHANGE. The old gate had no paths filter and triggered on both
+#      `push` and `pull_request`, so a change reaching prod ran it four times
+#      (PR->main, push main, PR->prod, push prod) for ~43 minutes of duplicate
+#      work. `pull_request` already tests refs/pull/N/merge — the PR head merged
+#      into the base — so the push run only ever re-tested a tree that had just
+#      been tested. It is gone, and the PR trigger is scoped to base `main` so the
+#      main->prod promotion PR (which carries an already-green SHA) adds nothing.
+#
+#      Because there is no push trigger, enable "Require branches to be up to
+#      date before merging" on the main ruleset, or a merge queue. Without one of
+#      those, a PR that went green before main advanced can merge untested. The
+#      `merge_group` trigger below is already wired for the queue.
+#
+#   2. ONLY THE AFFECTED WORK. Every job is gated on a paths filter evaluated once
+#      in `changes`. A frontend-only PR no longer pays for the 12-minute backend
+#      suite. The cost is that skipped jobs still render as rows in the PR checks
+#      list; `ci-ok` is the one required check, so that is cosmetic.
+#
+# paths-filter runs on `pull_request`, where it resolves the base through the
+# Files API and needs no git history — which is why `fetch-depth` stays at 1
+# everywhere in this file. Do not copy this job to a `push` workflow without
+# giving it an explicit base and a deep fetch; on push it diffs the local clone.
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read   # paths-filter reads the PR's file list through the API
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      plugin: ${{ steps.filter.outputs.plugin }}
+      locks: ${{ steps.filter.outputs.locks }}
+      rust: ${{ steps.rust.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Always-on, never path-gated. Its entire live surface is
+      # apps/mobile/.env.production (.env.example is skipped by design), so
+      # gating it on backend paths would silently disarm it. Pure stdlib, no
+      # dependencies, ~2s — which is why it can afford to run unconditionally.
+      # The regression it guards against already shipped once: three credentials
+      # sat in plaintext in .env.development for months.
+      - name: No plaintext secrets in tracked env files
+        run: python3 scripts/check_env_encrypted.py
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Written out per filter, no YAML anchors. This block is a string that
+          # dorny parses itself, so anchors would technically resolve — but an
+          # alias to a sequence splices a nested list into a list of globs, and
+          # the failure is silent (the filter just stops matching). Every filter
+          # names ci.yml so a change to this file re-runs everything.
+          filters: |
+            backend:
+              - '.github/workflows/ci.yml'
+              - 'clawbits/**'
+              - 'tests/**'
+              - 'alembic/**'
+              - 'alembic.ini'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'compose.yaml'
+              - 'compose.override.yaml'
+              - 'Dockerfile'
+            frontend:
+              - '.github/workflows/ci.yml'
+              - 'frontend/**'
+            plugin:
+              - '.github/workflows/ci.yml'
+              - 'plugin/**'
+            cli:
+              - '.github/workflows/ci.yml'
+              - 'cli/**'
+            images:
+              - '.github/workflows/ci.yml'
+              - 'images/**'
+            locks:
+              - '.github/workflows/ci.yml'
+              - '**/package.json'
+              - '**/bun.lock'
+
+      # The three standalone Rust crates had three near-identical 60-line gate
+      # workflows. They are one matrix now, computed from the filter booleans so
+      # an untouched crate contributes no matrix leg at all.
+      - name: Build Rust matrix
+        id: rust
+        env:
+          CLI: ${{ steps.filter.outputs.cli }}
+          IMAGES: ${{ steps.filter.outputs.images }}
+        run: |
+          crates=()
+          [ "$CLI" = "true" ] && crates+=('"cli"')
+          [ "$IMAGES" = "true" ] && crates+=('"images"')
+          printf 'matrix=[%s]\n' "$(IFS=,; echo "${crates[*]}")" >> "$GITHUB_OUTPUT"
+
+  backend:
+    name: Backend
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Same db / redis / stalwart containers as local dev, so the Stalwart v0.16
+      # deterministic recovery admin and the healthchecks are defined once in
+      # compose.yaml + compose.override.yaml instead of reimplemented here.
+      # `--wait` blocks until every container is healthy, so the tests never race
+      # a half-initialised mailserver.
+      - name: Start dependency containers
+        env:
+          # Seeds the database the alembic-check step connects to directly; the
+          # pytest harness creates its own DBs via the `postgres` maintenance DB.
+          POSTGRES_DB: clawbits_test
+          # compose.yaml's fail-closed recovery-admin guard interpolates this at
+          # parse time; the actual dev credential is pinned by the override.
+          STALWART_SVC_PASSWORD: dev-svc-secret
+        run: docker compose -f compose.yaml -f compose.override.yaml up -d --wait --wait-timeout 180 db redis stalwart
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Verify db_schema.md is up to date
+        run: |
+          uv run python -m clawbits.db.render_schema
+          if ! git diff --exit-code clawbits/db/db_schema.md; then
+            echo "::error::clawbits/db/db_schema.md is out of date. Run 'uv run python -m clawbits.db.render_schema' and commit the result."
+            exit 1
+          fi
+
+      - name: Verify alembic migrations match models
+        env:
+          CLAWBITS_DATABASE_URL: postgresql+psycopg://clawbits:clawbits@localhost:5432/clawbits_test
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+
+      - name: Run tests
+        env:
+          CLAWBITS_TEST_DATABASE_URL: postgresql+psycopg://clawbits:clawbits@localhost:5432/clawbits_test
+          # Stalwart v0.16 (JMAP mgmt + admin impersonation). Must match the dev
+          # recovery admin pinned in compose.override.yaml (admin:dev-svc-secret).
+          # compose.override.yaml `!override`s Stalwart's published ports onto a
+          # high-port range (see its OrbStack-workaround note): mgmt 8080->18080,
+          # IMAP 993->10993, SMTP 465->10465. CI reaches those over localhost (the
+          # static 172.30.99.10 IP is a macOS-only path). Set here so the values
+          # are present before any module import, regardless of collection order.
+          STALWART_EMAIL_DOMAIN: mail.clawbits.ai
+          STALWART_SVC_USER: admin
+          STALWART_SVC_PASSWORD: dev-svc-secret
+          STALWART_IMPERSONATE_SEP: "%"
+          STALWART_MGMT_URL: http://localhost:18080
+          STALWART_IMAP_HOST: localhost
+          STALWART_IMAP_PORT: 10993
+          STALWART_IMAP_USE_SSL: "true"
+          STALWART_IMAP_VERIFY_SSL: "false"
+          STALWART_SMTP_HOST: localhost
+          STALWART_SMTP_PORT: 10465
+          STALWART_SMTP_IMPLICIT_TLS: "true"
+          STALWART_SMTP_VERIFY_SSL: "false"
+        run: uv run pytest -q -x        # paths come from pyproject testpaths — one source of truth
+
+  frontend:
+    name: Frontend
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-bun
+        with:
+          workspace: frontend
+
+      # --bun forces bun's runtime for tsc/vite (which carry `#!/usr/bin/env node`
+      # shebangs) so we don't need setup-node.
+      - name: Build (tsc + vite)
+        run: bun --bun run build
+
+      # `bun run test` maps to bare `vitest`, which watches; `run` forces a
+      # single pass.
+      - name: Test (vitest)
+        run: bunx vitest run
+
+      # Blocks on errors only. The React Compiler family is deliberately advisory
+      # (see eslint.config.js) and reports as warnings.
+      - name: Lint (eslint)
+        run: bunx eslint . --no-warn-ignored
+
+  plugin:
+    name: Plugin
+    needs: changes
+    if: needs.changes.outputs.plugin == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: plugin
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-bun
+        with:
+          workspace: plugin
+
+      - name: Typecheck
+        run: bun --bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+  rust:
+    name: Rust (${{ matrix.crate }})
+    needs: changes
+    if: needs.changes.outputs.rust != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.changes.outputs.rust) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Per-crate cache scope. There is no Cargo workspace in this repo; each
+      # crate has its own lockfile, so each gets its own cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      # images/ has no tests — it resolves two registry versions and shells out
+      # to buildx, so everything worth asserting needs a live registry. This
+      # static Dockerfile lint is its only real assertion; do not let the shared
+      # matrix swallow it. BASE is a required ARG with no default, so --check
+      # needs a value; nothing is pulled.
+      # Every image's Dockerfile, not just openclaw's — matches the loop added
+      # on main. BASE is a required ARG with no default, so --check needs a
+      # value; nothing is pulled.
+      - name: Dockerfile lint
+        if: matrix.crate == 'images'
+        working-directory: images
+        run: |
+          set -euo pipefail
+          for f in */Dockerfile; do
+            docker buildx build --check --build-arg BASE=alpine "${f%/Dockerfile}"
+          done
+
+  locks:
+    name: Lockfiles
+    needs: changes
+    if: needs.changes.outputs.locks == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Discovered, not listed. The old hard-coded matrix had already drifted
+      # once (plugin/ was missing, so a package.json/bun.lock desync surfaced
+      # later as a confusing "lockfile is frozen" error inside another job). A
+      # new workspace is covered the moment it has a bun.lock.
+      - name: bun install --frozen-lockfile in every workspace
+        run: |
+          fail=0
+          for lock in $(git ls-files '**/bun.lock' 'bun.lock'); do
+            dir="$(dirname "$lock")"
+            echo "::group::$dir"
+            ( cd "$dir" && bun install --frozen-lockfile ) || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+  # release-please derives every version in the repo from commit subjects, and
+  # the repo is squash-merge-only, so the PR TITLE becomes the one commit on
+  # main and is the only text that decides a version bump. Before this gate the
+  # rate was 6 conventional subjects out of 135 (CONTRIBUTING.md claimed
+  # otherwise), which is why the old semantic-release setup produced three tags
+  # in the repo's lifetime and never wrote a version anywhere.
+  #
+  # Nothing here constrains commits on your branch — squash discards them.
+  pr-title:
+    name: PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            chore
+            test
+            build
+            ci
+            style
+            revert
+          requireScope: false
+          # A single-commit PR otherwise has its commit subject validated
+          # instead of the title, which is not what gets squashed.
+          validateSingleCommit: false
+
+  # The one required status check. Everything above is path-gated and may be
+  # skipped, and a skipped job satisfies a required check on its own — so
+  # requiring the individual jobs would let a PR merge green when the `changes`
+  # detector failed and every job skipped. This job depends on `changes` too, so
+  # that failure propagates here instead of vanishing.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [changes, pr-title, backend, frontend, plugin, rust, locks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify no job failed or was cancelled
+        run: |
+          if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
+            echo "::error::a required job failed or was cancelled"
+            exit 1
+          fi
+          echo "all gates passed"

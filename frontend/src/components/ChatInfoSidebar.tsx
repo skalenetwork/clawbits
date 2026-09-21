@@ -6,6 +6,7 @@ import { useChannelActions } from "@/hooks/useChannelActions";
 import { memberKey, memberRowProps, useChannelMembers } from "@/hooks/useChannelMembers";
 import { getMmChannel, type MmChannelMember } from "@/lib/api";
 import { formatChannelTitle } from "@/lib/formatting";
+import { isPairChannel } from "@/lib/chatFilters";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg } from "@/lib/toast";
 import { ChannelMemberRow } from "./ChannelMemberRow";
@@ -37,7 +38,7 @@ export default function ChatInfoSidebar({ channelId, open, onClose }: {
   });
   const { query: membersQuery, members } = useChannelMembers(channelId);
   const orgId = channel?.org_id ?? null;
-  const canManage = channel?.channel_type !== "direct" && orgId !== null;
+  const canManage = channel != null && !isPairChannel(channel) && orgId !== null;
 
   // Its own provider: this panel sits beside the routed page, outside ChannelPage's, and has no composer.
   return (

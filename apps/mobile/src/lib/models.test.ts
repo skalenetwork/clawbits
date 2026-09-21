@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  channelName,
   historyPosts,
   memberCountLabel,
   mergePost,
   orgName,
   reconcilePage,
   removePost,
+  type Channel,
   type History,
   type Post,
 } from "./models";
@@ -133,6 +135,23 @@ describe("workspace labels", () => {
         is_personal: false,
       }),
     ).toBe("Acme");
+  });
+  test("channelName uses the named-chat title, not the agent peer", () => {
+    const chat = {
+      channel_id: "c",
+      org_id: "org",
+      name: "chat-c",
+      display_name: "Fix auth",
+      channel_type: "agent_chat",
+      dm_peer: { display_name: "Atlas", avatar: null },
+      avatar: null,
+      last_message_at: null,
+      last_message_text: null,
+      last_message_attachment_count: 0,
+      unread_count: 0,
+    } satisfies Channel;
+    expect(channelName(chat)).toBe("Fix auth");
+    expect(channelName({ ...chat, display_name: "  " })).toBe("New chat");
   });
   test("memberCountLabel is singular for one member", () => {
     expect(memberCountLabel(1)).toBe("1 member");

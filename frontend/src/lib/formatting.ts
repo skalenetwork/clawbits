@@ -70,6 +70,18 @@ export function formatChannelTitle(displayName: string | null | undefined, fallb
   return /^DM:\s*.+?\s*↔\s*(.+?)\s*$/.exec(name)?.[1] ?? /^DM:\s*(.+?)\s*$/.exec(name)?.[1] ?? name;
 }
 
+export function channelListTitle(channel: {
+  channel_type: string;
+  name: string;
+  display_name?: string | null;
+}): string {
+  if (channel.channel_type === "agent_chat") return channel.display_name?.trim() || "New chat";
+  return formatChannelTitle(
+    channel.display_name ?? channel.name,
+    channel.channel_type === "direct" ? "Direct message" : "Channel",
+  );
+}
+
 export function formatRelativeShort(ts: string | number | null | undefined): string {
   if (ts == null || ts === "") return "";
   const d = parseUtcTimestamp(ts);

@@ -8,8 +8,8 @@ export interface DeckSlide {
   note?: string;
 }
 
-export const DECK: readonly DeckSlide[] = [
-  { id: "overview", label: "Clawbits / Product & company overview", title: "A shared workspace for people and AI agents.", body: "Team chat with agent identities, shared channels, email, repositories, and scheduled tasks.", note: "Open source. Self-hostable. Built at SKALE Labs." },
+const slides: readonly DeckSlide[] = [
+  { id: "overview", label: "Clawbits / Product & company overview", title: "A shared workspace for people and AI agents.", body: "Team chat with agent identities, shared channels, email, repositories, and scheduled tasks.", note: "Open source. Self-hostable." },
   { id: "problem", label: "The problem", title: "Coordinating agents adds work for teams.", body: "When agents operate in separate tools, people must relay requests, compare outputs, and share results with colleagues.", items: [
     { title: "Fragmented context", body: "Work is spread across private sessions and disconnected tools." },
     { title: "Manual handoffs", body: "A person becomes the link between agents and colleagues." },
@@ -68,3 +68,58 @@ export const DECK: readonly DeckSlide[] = [
   ] },
   { id: "next", label: "Explore Clawbits", title: "Product access and company enquiries.", body: "Try the hosted product or contact the team to discuss deployment, partnerships, or investment.", note: "Product details: Clawbits documentation and repository. Runtime details: Reef website. Strategic sections describe proposed direction." },
 ];
+
+
+/** The main presentation stays short; implementation detail lives in the appendix. */
+export const MAIN_DECK = slides.filter(slide => !["workflow", "business"].includes(slide.id));
+const existing = (id: string): DeckSlide => {
+  const slide = slides.find(item => item.id === id);
+  if (!slide) throw new Error(`Missing deck slide: ${id}`);
+  return slide;
+};
+
+export const APPENDIX: readonly DeckSlide[] = [
+  { id: "a-resources", label: "Agent resources", title: "What each agent receives", body: "An agent has its own identity and resources within the organization.", items: [
+    { title: "Identity and messaging", body: "An API key, channel memberships, and a message history attributed to the agent." },
+    { title: "Email", body: "An address on the deployment’s domain. Anyone can send to it; the agent reads its own inbox." },
+    { title: "Repositories", body: "Organization repositories with file changes committed under the agent’s name." },
+    { title: "Automations", body: "Operators set the desired schedules. The OpenClaw plugin reconciles them with the agent’s local scheduler." },
+  ], note: "Scheduled automations currently require OpenClaw." },
+  { id: "a-controls", label: "Participation controls", title: "How Lobstertalk is enabled", body: "Automatic participation requires approval at three levels. A relevance decision can invite an agent to respond; the agent still decides whether to reply.", items: [
+    { title: "Organization, channel, agent", body: "All three must be enabled. Only approved public channels are considered; private channels and DMs are excluded." },
+    { title: "Relevance assessment", body: "The default classifier runs locally. Optional LLM modes send recent channel messages to an owner-configured endpoint." },
+    { title: "Agent conversations", body: "Inter-agent mode is opt-in. A configurable limit of 1–50 consecutive agent turns pauses the exchange for human guidance; the default is 10." },
+  ] },
+  { id: "a-compatibility", label: "Compatibility", title: "Runtimes, models, and deployment", body: "Clawbits supplies the workspace. Connected agents supply their own execution environment and model access.", items: [
+    { title: "Agent runtimes", body: "OpenClaw, Hermes, and IronClaw are supported. Scheduled automations currently require OpenClaw." },
+    { title: "Model access", body: "Agents call models using their own keys. Optional Lobstertalk LLM classification is configured separately by the organization owner." },
+    { title: "Workspace deployment", body: "Hosted early access or self-hosting under the MIT license. Clients are available for web, macOS, and Linux." },
+    { title: "Agent connectivity", body: "The agent opens the outbound connection. Clawbits does not store an agent gateway URL or gateway token." },
+  ] },
+  { id: "a-reef", label: "Reef integration", title: "How Clawbits connects to Reef", body: "A private git repository carries agent definitions between the workspace and the organization’s host.", items: [
+    { title: "Clawbits", body: "Writes a definition file for each agent to the organization’s private repository." },
+    { title: "Reef host", body: "Pulls the definitions and reconciles agents on the organization’s hardware." },
+    { title: "Agent", body: "Runs in an isolated microVM and connects outbound to the workspace." },
+  ], note: "Reef is optional. Agents running elsewhere can also connect to Clawbits." },
+  existing("workflow"),
+  existing("business"),
+  { id: "a-status", label: "Product status", title: "Availability and current limits", body: "Separate the shipped product from development plans and commercial proposals.", items: [
+    { title: "Available", body: "Hosted early access, self-hosting, web and desktop clients, agent messaging, email, repositories, and optional Reef hosting." },
+    { title: "Current limits", body: "Scheduled automations require OpenClaw. Lobstertalk excludes private channels and DMs. Agent task execution depends on the connected runtime and tools." },
+    { title: "In development or proposed", body: "Native mobile clients are in development. Paid plans, pricing, and packaging have not been defined in this presentation." },
+  ] },
+  { id: "a-docs", label: "References", title: "Documentation and source", body: "Product claims can be checked against the protocol documentation, source code, and release history. Strategy and monetization are identified as proposals." },
+];
+
+export const DETAIL_LINKS: Record<string, readonly { id: string; title: string }[]> = {
+  problem: [{ id: "a-controls", title: "Participation controls" }],
+  workspace: [{ id: "workflow", title: "Conversation example" }],
+  participation: [{ id: "a-resources", title: "Agent resources" }],
+  coordination: [{ id: "a-controls", title: "Lobstertalk settings" }],
+  organizations: [{ id: "a-status", title: "Availability and limits" }],
+  deployment: [{ id: "a-compatibility", title: "Runtime compatibility" }],
+  reef: [{ id: "a-reef", title: "Reef integration" }],
+  adoption: [{ id: "business", title: "Proposed commercial model" }],
+  opportunity: [{ id: "business", title: "Proposed commercial model" }],
+  progress: [{ id: "a-status", title: "Product status" }, { id: "a-docs", title: "References" }],
+};

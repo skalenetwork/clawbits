@@ -31,6 +31,9 @@ on:
       - 'docs/**'
       - '.github/workflows/web.yaml'
   pull_request:
+    # Scoped to base `main`. The main->prod promotion PR carries a SHA that
+    # already built green on main, so building it again was pure duplication.
+    branches: [main]
     paths:
       - 'web/**'
       - 'frontend/src/release-notes/**'
@@ -64,33 +67,15 @@ jobs:
           # Full checkout, NOT sparse: the build reads ../frontend and ../docs
           # (see the paths filter above).
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      # Node is pinned, unlike frontend/ which uses `bun --bun`. Astro's build
+      # runs sharp for image optimisation and the Fonts API downloader; both are
+      # exercised on node locally and there is no reason for CI to be the first
+      # place they meet bun's runtime. package.json engines requires >=22.12, so
+      # the runner's default node is not assumed either.
+      - uses: ./.github/actions/setup-bun
         with:
-          bun-version: latest
-
-      - name: Setup Node
-        # Unlike frontend/, this does not use `bun --bun`. Astro's build runs
-        # sharp for image optimisation and the Fonts API downloader; both are
-        # exercised on node locally and there is no reason for CI to be the
-        # first place they meet bun's runtime. package.json engines requires
-        # >=22.12, so the runner's default node is not assumed either.
-        uses: actions/setup-node@v7
-        with:
+          workspace: web
           node-version: '24'
-
-      - name: Cache bun dependencies
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.bun/install/cache
-            web/node_modules
-          key: ${{ runner.os }}-bun-web-${{ hashFiles('web/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-web-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Resolve deploy target
         id: target

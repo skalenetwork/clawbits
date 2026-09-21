@@ -23,7 +23,7 @@ export function CollapsibleGroup({
     };
     return (
         <SidebarGroup className="p-0">
-            <div className="group/section flex h-7 items-center pr-2.5">
+            <div className="group/section flex h-7 items-center pr-1">
                 <button
                     type="button"
                     onClick={toggle}

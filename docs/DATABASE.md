@@ -108,7 +108,7 @@ runs the same gates.
 
 ## CI guard rails
 
-[`.github/workflows/workflow.yaml`](../.github/workflows/workflow.yaml) runs
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs
 two checks on every PR:
 
 1. `uv run python -m clawbits.db.render_schema` followed by

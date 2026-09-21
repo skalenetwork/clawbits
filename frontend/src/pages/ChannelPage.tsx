@@ -16,6 +16,7 @@ import {
   listMmChannelPosts,
   listMmChannels,
   markMmChannelRead,
+  patchMmChannel,
   toggleMmPostReaction,
   type MmChannel,
   type MmChannelMember,
@@ -24,7 +25,8 @@ import {
   type MmPostListPayload,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { formatChannelTitle } from "@/lib/formatting";
+import { channelListTitle } from "@/lib/formatting";
+import { isPairChannel } from "@/lib/chatFilters";
 import { draftStore } from "@/lib/messageDrafts";
 import { trackRecentChannel } from "@/lib/desktop";
 import { errMsg, toast } from "@/lib/toast";
@@ -115,6 +117,39 @@ export default function ChannelPage() {
   return <ChannelView key={channelId} channelId={channelId} />;
 }
 
+function AgentChatTitle({ title, onSave }: { title: string; onSave: (name: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className="min-w-0 truncate rounded text-left text-muted-foreground outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring/40"
+        onClick={() => { setDraft(title); setEditing(true); }}
+      >
+        {title}
+      </button>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      value={draft}
+      className="min-w-0 flex-1 bg-transparent text-muted-foreground outline-none"
+      onChange={(e) => { setDraft(e.target.value); }}
+      onBlur={() => {
+        const next = draft.trim();
+        setEditing(false);
+        if (next && next !== title) onSave(next);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Escape") { setDraft(title); setEditing(false); }
+      }}
+    />
+  );
+}
+
 function ChannelView({ channelId }: { channelId: string }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -196,7 +231,8 @@ function ChannelView({ channelId }: { channelId: string }) {
     placeholderData: () => findCachedChannel(queryClient, channelId),
   });
   const channel = channelQuery.data;
-  const isDirect = channel?.channel_type === "direct";
+  const isPair = channel != null && isPairChannel(channel);
+  const isAgentChat = channel?.channel_type === "agent_chat";
   const channelOrgId = channel?.org_id ?? null;
 
   const postsQuery = useQuery({
@@ -256,7 +292,7 @@ function ChannelView({ channelId }: { channelId: string }) {
   } = useChannelEvents(channelId);
   const { signalTyping } = useChannelPresence(channelId);
 
-  const channelTitle = formatChannelTitle(channel?.display_name ?? channel?.name, isDirect ? "Direct message" : "Channel");
+  const channelTitle = channel ? channelListTitle(channel) : "Channel";
 
   useEffect(() => {
     if (channel) trackRecentChannel({ id: channelId, name: channelTitle, path: `/channels/${channelId}` });
@@ -536,11 +572,11 @@ function ChannelView({ channelId }: { channelId: string }) {
     }
     const channelsByToken = new Map<string, MmChannel>();
     for (const c of joinedChannels ?? []) {
-      if (c.channel_type !== "direct") channelsByToken.set(c.name.toLowerCase(), c);
+      if (!isPairChannel(c)) channelsByToken.set(c.name.toLowerCase(), c);
     }
     for (const c of discoverableChannels ?? []) {
       const token = c.name.toLowerCase();
-      if (c.channel_type !== "direct" && !channelsByToken.has(token)) channelsByToken.set(token, c);
+      if (!isPairChannel(c) && !channelsByToken.has(token)) channelsByToken.set(token, c);
     }
     return {
       memberByToken,
@@ -557,7 +593,7 @@ function ChannelView({ channelId }: { channelId: string }) {
   const pendingAgentMention = useMemo(
     () => computePendingAutoMention({
       currentUserId: user?.id ?? null,
-      isDirectChannel: isDirect,
+      isDirectChannel: isPair,
       members,
       posts: latestPosts,
       replyingTo,
@@ -568,7 +604,7 @@ function ChannelView({ channelId }: { channelId: string }) {
       windowMs: 5 * 60_000,
       channelEnteredAtMs: channelEnteredAt,
     }),
-    [user?.id, isDirect, members, latestPosts, replyingTo, autoMentionNow, channelEnteredAt],
+    [user?.id, isPair, members, latestPosts, replyingTo, autoMentionNow, channelEnteredAt],
   );
   const autoMention = pendingAgentMention?.triggerKey !== dismissedAutoMentionKey ? pendingAgentMention : null;
 
@@ -589,7 +625,7 @@ function ChannelView({ channelId }: { channelId: string }) {
     const lowered = message.toLowerCase();
     const targetAgentId =
       explicitTarget
-      ?? (isDirect ? members.find((m) => m.agent_id != null)?.agent_id : undefined)
+      ?? (isPair ? members.find((m) => m.agent_id != null)?.agent_id : undefined)
       ?? members.find((m) => m.agent_id != null && lowered.includes(`@${mentionHandle(m).toLowerCase()}`))?.agent_id
       ?? null;
     const now = new Date().toISOString();
@@ -641,8 +677,18 @@ function ChannelView({ channelId }: { channelId: string }) {
     if (last) setEditingPostId(last.post_id);
   };
 
+  const renameChat = useMutation({
+    mutationFn: (displayName: string) => patchMmChannel(channelId, displayName),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(queryKeys.mm.channel(channelId), updated);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
+    },
+    onError: (e) => { toast.error(errMsg(e, "Couldn't rename")); },
+  });
+
+  const peerName = channel?.dm_peer?.display_name ?? channel?.dm_peer_agent_id ?? channelTitle;
   const agentHref =
-    channel?.channel_type === "direct" && channel.dm_peer_agent_id
+    isPair && channel?.dm_peer_agent_id
       ? `/agents/${encodeURIComponent(channel.dm_peer_agent_id)}`
       : null;
   const glyph = channel
@@ -674,7 +720,9 @@ function ChannelView({ channelId }: { channelId: string }) {
           ) : glyph
         }
         title={
-          agentHref ? (
+          isAgentChat ? (
+            <AgentChatTitle title={channelTitle} onSave={(name) => { renameChat.mutate(name); }} />
+          ) : agentHref ? (
             <Link
               to={agentHref}
               viewTransition
@@ -701,7 +749,7 @@ function ChannelView({ channelId }: { channelId: string }) {
             )}
             {panels && (
               <PanelToggle open={panels.panel === "info"} onToggle={() => { panels.togglePanel("info"); }} noun="channel details">
-                {!isDirect && memberCount > 0 && <span className="tabular-nums">{memberCount}</span>}
+                {!isPair && memberCount > 0 && <span className="tabular-nums">{memberCount}</span>}
                 <Icon icon={UserMultiple02Icon} className="size-3.5 shrink-0"/>
               </PanelToggle>
             )}
@@ -732,10 +780,10 @@ function ChannelView({ channelId }: { channelId: string }) {
             )}
             <h2 className="mt-4 text-lg font-semibold tracking-tight text-foreground">{channelTitle}</h2>
             <p className="mt-1.5 max-w-xs text-pretty text-sm leading-relaxed text-muted-foreground">
-              {isDirect ? (
+              {isPair ? (
                 <>
                   This is the very beginning of your conversation with{" "}
-                  <span className="font-medium text-foreground">{channelTitle}</span>.
+                  <span className="font-medium text-foreground">{peerName}</span>.
                   Say hi{user?.display_name ? `, ${user.display_name}` : ""}! 👋
                 </>
               ) : (
@@ -883,9 +931,16 @@ function ChannelView({ channelId }: { channelId: string }) {
           history.isAnchored ? history.returnToPresent : () => { messageListRef.current?.scrollToBottom(true); }
         }
         activityPeople={activityPeople}
-        agentDm={isDirect && members.some((m) => m.agent_id != null)}
+        agentDm={channel?.channel_type === "direct" && members.some((m) => m.agent_id != null)}
         onTyping={signalTyping}
-        placeholder={channel && (isDirect ? `Message ${channel.display_name ?? channel.name}` : `Message #${channel.name}`)}
+        placeholder={
+          channel &&
+          (!isPair
+            ? `Message #${channel.name}`
+            : channel.dm_peer_agent_id
+              ? `Ask ${peerName} to do something…`
+              : `Message ${peerName}`)
+        }
       />
 
       <Dialog open={postIdToDelete !== null} onOpenChange={(next) => { if (!next) setPostIdToDelete(null); }}>

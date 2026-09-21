@@ -4,7 +4,7 @@
 // build — no version endpoint or build-time injection needed.
 
 export interface Release {
-  /** "1.4.0" — matches the prod semantic-release tag; the card dedupes on it. */
+  /** "1.4.0" — matches the prod release-please tag; the card dedupes on it. */
   version: string;
   /** ISO date string from frontmatter, or null. */
   date: string | null;

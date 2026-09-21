@@ -34,6 +34,10 @@ export interface DraftInput {
   targetAgentId: string | null;
 }
 
+/** The home composer's draft, kept beside the per-channel ones. No channel id
+ *  can collide with it, so it stays invisible to every chat list. */
+export const HOME_DRAFT_KEY = "home";
+
 const PERSIST_DEBOUNCE_MS = 400;
 /** Hard cap on stored drafts; the oldest beyond this are pruned on write. */
 const MAX_ENTRIES = 50;

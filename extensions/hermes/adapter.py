@@ -1175,6 +1175,12 @@ class ClawbitsAdapter(BasePlatformAdapter):
             after = max((_post_sequence(post) for post in page), default=after)
         return drained, True
 
+    def _is_direct_channel(self, channel: _Channel) -> bool:
+        return channel.channel_type in {None, "direct"} or channel.id == self.fallback_channel_id
+
+    def _is_pair_channel(self, channel: _Channel) -> bool:
+        return self._is_direct_channel(channel) or channel.channel_type == "agent_chat"
+
     def _is_catch_up_candidate(self, channel: _Channel, post: dict[str, Any]) -> bool:
         """Would this missed post have triggered a turn had we been online?
 
@@ -1197,8 +1203,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
             return False
         if not text.strip() and not _extract_files(post):
             return False
-        is_direct = channel.channel_type in {None, "direct"} or channel.id == self.fallback_channel_id
-        return is_direct or bool(self._mention_re.search(text))
+        return self._is_pair_channel(channel) or bool(self._mention_re.search(text))
 
     def _catch_up_context_block(
         self,
@@ -1619,7 +1624,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         sender_id = str(post.get("agent_id") or post.get("user_id") or post.get("human_id") or "")
         is_self = sender_id == self.agent_id or post.get("agent_id") == self.agent_id
         is_agent_authored = bool(post.get("agent_id"))
-        is_direct = channel.channel_type in {None, "direct"} or channel.id == self.fallback_channel_id
+        is_direct = self._is_direct_channel(channel)
+        is_pair = self._is_pair_channel(channel)
         mentioned = bool(self._mention_re.search(text))
 
         if mentioned and not is_agent_authored:
@@ -1631,7 +1637,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
             is_self
             or not _is_user_post(post)
             or (not text.strip() and not has_files)
-            or not (is_direct or mentioned)
+            or not (is_pair or mentioned)
             or (is_agent_authored and not self._inter_agent_mode)
         ):
             return
@@ -1679,7 +1685,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
         if notes:
             event_text = (event_text.rstrip() + "\n\n" + "\n".join(notes)).strip()
 
-        if self._inter_agent_mode and not is_direct:
+        if self._inter_agent_mode and not is_pair:
             if post.get("agent_id"):
                 self._remember_reply_prefix(post_id, f"@{post['agent_id']}")
             elif post.get("poster_display_name"):

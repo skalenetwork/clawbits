@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Clawbits",
   "mainBinaryName": "clawbits",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "identifier": "ai.clawbits.desktop",
   "build": {
     "frontendDist": "../../frontend/dist",
@@ -22,8 +22,16 @@
         "transparent": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 15, "y": 22 },
-        "windowEffects": { "effects": ["sidebar"], "state": "active" }
+        "trafficLightPosition": {
+          "x": 15,
+          "y": 22
+        },
+        "windowEffects": {
+          "effects": [
+            "sidebar"
+          ],
+          "state": "active"
+        }
       }
     ],
     "security": {
@@ -34,7 +42,9 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["clawbits"]
+        "schemes": [
+          "clawbits"
+        ]
       }
     },
     "updater": {
@@ -47,7 +57,12 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["app", "dmg", "deb", "appimage"],
+    "targets": [
+      "app",
+      "dmg",
+      "deb",
+      "appimage"
+    ],
     "category": "Productivity",
     "homepage": "https://clawbits.ai",
     "publisher": "Clawbits",

@@ -15,6 +15,7 @@ import {
     HUMAN_AVATAR_SHAPE,
     withSpeciesShape,
 } from "@/lib/avatarShapes";
+import { isPairChannel } from "@/lib/chatFilters";
 import { cn } from "@/lib/utils";
 
 /** A channel's visual prefix: the DM peer's avatar, the channel's generated tile, or a `#` or lock icon at 16px and
@@ -25,7 +26,7 @@ export function ChannelGlyph({ channel, size = 16, showPresenceDot = true, class
     showPresenceDot?: boolean;
     className?: string;
 }) {
-    if (channel.channel_type === "direct") {
+    if (isPairChannel(channel)) {
         return (
             <DmGlyph
                 peer={channel.dm_peer}
@@ -104,7 +105,7 @@ function PeerDot({ peer, size }: { peer: MmChannelMember; size: number }) {
         <span className="pointer-events-none absolute bottom-0 right-0" title={label}>
             <PresenceDot
                 status={isAgent ? agentStatus : userStatus}
-                size={Math.max(7, Math.round(size * 0.22))}
+                size={Math.max(6, Math.round(size * 0.18))}
                 ringClassName="ring-sidebar-accent"
                 label={label}
             />

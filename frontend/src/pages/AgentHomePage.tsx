@@ -6,7 +6,8 @@ import { PresenceDot } from "@/components/PresenceDot";
 import { useAgentStatus } from "@/hooks/useAgentPresence";
 import { useUserStatus } from "@/hooks/useUserPresence";
 import { MobileChatsScreen } from "@/components/MobileChatsScreen";
-import { HomeTile, KEYCAP_CLASS, Squircle, SquircleDefs } from "@/components/home/tiles";
+import { HomeComposer } from "@/components/home/HomeComposer";
+import { HomeTile, KEYCAP_CLASS, Squircle, SquircleDefs, TILE_GLYPH } from "@/components/home/tiles";
 import { openCommandPalette } from "@/components/command/paletteStore";
 import { openCreate } from "@/components/command/createStore";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -14,8 +15,9 @@ import { useActiveOrg } from "@/hooks/useActiveOrg";
 import { useAuth } from "@/context/AuthContext";
 import { getAgents, getReef, listMmChannels, type AgentUser, type MmChannel } from "@/lib/api";
 import { agentLivenessStatus } from "@/lib/agentLiveness";
-import { frecencyKey, frecencyScore, loadFrecency } from "@/lib/frecency";
-import { activityTime } from "@/lib/chatFilters";
+import { rankDmAgents } from "@/lib/dmAgents";
+import { loadFrecency } from "@/lib/frecency";
+import { activityTime, isAgentPair } from "@/lib/chatFilters";
 import { usePushSubscription } from "@/lib/push";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatChannelTitle } from "@/lib/formatting";
@@ -65,16 +67,10 @@ function DesktopHome() {
     enabled: Boolean(activeOrgId),
   });
 
-  // Contact is closed by default, so an org can hold agents that are not yours
-  // to talk to and a tile pointing at one would be a dead end.
-  const topAgent: AgentUser | null =
-    (agentsQuery.data?.agents ?? [])
-      .filter((a) => a.can_dm)
-      .sort((a, b) => {
-        const sa = frecencyScore(frecencyKey("agent", a.agent_id), frecency, now);
-        const sb = frecencyScore(frecencyKey("agent", b.agent_id), frecency, now);
-        return sa === sb ? (b.creation_time ?? "").localeCompare(a.creation_time ?? "") : sb - sa;
-      })[0] ?? null;
+  // A tile pointing at an agent you may not contact would be a dead end, and the
+  // composer opens on the head of this same ranking, so the two always agree.
+  const dmAgents = rankDmAgents(agentsQuery.data?.agents ?? [], frecency, now);
+  const topAgent: AgentUser | null = dmAgents[0] ?? null;
 
   const topAgentDm = topAgent
     ? (channels.find(
@@ -82,47 +78,59 @@ function DesktopHome() {
       ) ?? null)
     : null;
 
+  // Two rows is the whole budget once the composer is up, so four half tiles:
+  // search, the people you were last with, and reef. Agents already have the
+  // composer, so their 1:1s give up their slots and the agent tile stands down.
+  const composerOrg = dmAgents.length > 0 ? activeOrgId : null;
+  const slots = composerOrg ? (isOwner ? 2 : 3) : 2;
+
   // Unread first, recency inside each band, so a live thread beats a stale one
   // either way. The agent tile already owns its own DM.
-  const topChannels = channels
+  const topChannels = (composerOrg ? channels.filter((c) => !isAgentPair(c)) : channels)
     .filter((c) => c.channel_id !== topAgentDm?.channel_id)
     .sort((a, b) => unreadFirst(a) - unreadFirst(b) || activityTime(b) - activityTime(a))
-    .slice(0, 2);
+    .slice(0, slots);
+  // A run of conversation tiles, or the one that offers to start the first.
+  const conversations: (MmChannel | null)[] = topChannels.length > 0 ? topChannels : [null];
   const nextShortcut = isOwner ? 3 : 2;
+
+  const reefProps = {
+    connected: Boolean(org?.reef_connected),
+    hosts: reefQuery.data?.hosts.length ?? null,
+    agents: reefQuery.data
+      ? reefQuery.data.hosts.reduce((n, h) => n + h.agents.length, 0)
+      : null,
+  };
 
   return (
     <>
       <SquircleDefs />
 
-      <div className="flex flex-1 flex-col justify-center px-2 py-10 sm:px-4">
+      <div className="flex flex-1 flex-col justify-center gap-2.5 px-2 py-10 sm:px-4">
+        {composerOrg && (
+          <div className="home-composer mx-auto w-full max-w-2xl">
+            <HomeComposer orgId={composerOrg} agents={dmAgents}/>
+          </div>
+        )}
         <div className="home-tiles mx-auto grid w-full max-w-2xl grid-cols-4 gap-2.5">
           <SearchTile />
-          {isOwner && (
-            <ReefTile
-              connected={Boolean(org?.reef_connected)}
-              hosts={reefQuery.data?.hosts.length ?? null}
-              agents={
-                reefQuery.data
-                  ? reefQuery.data.hosts.reduce((n, h) => n + h.agents.length, 0)
-                  : null
-              }
-              shortcut={1}
-            />
-          )}
-          <AgentTile
-            agent={topAgent}
-            dm={topAgentDm}
-            shortcut={isOwner ? 2 : 1}
-            className={isOwner ? "col-span-2" : "col-span-4"}
-          />
-          {topChannels.length === 0 ? (
-            <ConversationTile channel={null} shortcut={nextShortcut} />
+          {composerOrg ? (
+            <>
+              {conversations.map((c, i) => (
+                <ConversationTile key={c?.channel_id ?? "empty"} channel={c} shortcut={1 + i} />
+              ))}
+              {isOwner && <ReefTile {...reefProps} shortcut={1 + conversations.length} />}
+            </>
           ) : (
-            topChannels.map((c, i) => (
-              <ConversationTile key={c.channel_id} channel={c} shortcut={nextShortcut + i} />
-            ))
+            <>
+              {isOwner && <ReefTile {...reefProps} shortcut={1} />}
+              <AgentTile agent={topAgent} dm={topAgentDm} shortcut={isOwner ? 2 : 1}/>
+              {conversations.map((c, i) => (
+                <ConversationTile key={c?.channel_id ?? "empty"} channel={c} shortcut={nextShortcut + i} />
+              ))}
+              <HomeNudges shortcut={nextShortcut + conversations.length} />
+            </>
           )}
-          <HomeNudges shortcut={nextShortcut + Math.max(topChannels.length, 1)} />
         </div>
       </div>
     </>
@@ -167,11 +175,12 @@ function ReefTile({
 /** A native Icon Composer asset: it ships its own squircle and its own depth,
  *  so it is rendered bare. Our glass on top of one reads as a smudge. */
 function AppIcon({ src, dark }: { src: string; dark?: string }) {
-  if (!dark) return <img src={src} alt="" className="size-[42px]" width={42} height={42} />;
+  const size = { width: TILE_GLYPH, height: TILE_GLYPH };
+  if (!dark) return <img src={src} alt="" {...size} />;
   return (
     <>
-      <img src={src} alt="" className="size-[42px] dark:hidden" width={42} height={42} />
-      <img src={dark} alt="" className="hidden size-[42px] dark:block" width={42} height={42} />
+      <img src={src} alt="" className="dark:hidden" {...size} />
+      <img src={dark} alt="" className="hidden dark:block" {...size} />
     </>
   );
 }
@@ -187,7 +196,7 @@ function TileGlyph({
 }) {
   return (
     <>
-      <Squircle className="bg-muted">{children}</Squircle>
+      <Squircle size={TILE_GLYPH} className="bg-muted">{children}</Squircle>
       {status && (
         <PresenceDot status={status} className="absolute -right-px -bottom-px ring-card" />
       )}
@@ -201,17 +210,15 @@ function AgentTile({
   agent,
   dm,
   shortcut,
-  className,
 }: {
   agent: AgentUser | null;
   dm: MmChannel | null;
   shortcut: number;
-  className: string;
 }) {
   if (!agent) {
     return (
       <HomeTile
-        className={className}
+        className="col-span-2"
         shortcut={shortcut}
         to="/setup/agent"
         glyph={<AppIcon src="/plus.webp" />}
@@ -223,7 +230,7 @@ function AgentTile({
   const name = agent.display_name || agent.nickname || agent.agent_id;
   return (
     <HomeTile
-      className={className}
+      className="col-span-2"
       shortcut={shortcut}
       to={dm ? `/channels/${dm.channel_id}` : `/agents/${agent.agent_id}`}
       glyph={
@@ -231,7 +238,7 @@ function AgentTile({
           <AgentFaceAvatar
             name={name}
             src={agent.avatar?.url}
-            size={42}
+            size={TILE_GLYPH}
             framed={false}
             className="rounded-none"
           />
@@ -287,7 +294,7 @@ function ConversationTile({
         >
           <ChannelGlyph
             channel={channel}
-            size={42}
+            size={TILE_GLYPH}
             showPresenceDot={false}
             className="rounded-none"
           />
@@ -307,7 +314,7 @@ function ConversationTile({
 function SearchTile() {
   return (
     <HomeTile
-      className="col-span-4"
+      className="col-span-2"
       onClick={() => {
         openCommandPalette();
       }}
