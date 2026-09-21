@@ -2,7 +2,7 @@
   "expo": {
     "name": "Clawbits",
     "slug": "clawbits-mobile",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "orientation": "portrait",
     "runtimeVersion": {
       "policy": "fingerprint"
@@ -60,6 +60,8 @@
       }
     },
     "owner": "dmtkk",
-    "platforms": ["ios"]
+    "platforms": [
+      "ios"
+    ]
   }
 }
