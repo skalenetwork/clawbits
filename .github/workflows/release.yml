@@ -62,6 +62,9 @@ jobs:
         if: steps.rp.outputs.releases_created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job never checks the repo out, so `gh` has no git remote to read
+          # the repository from and every call dies on "not a git repository".
+          GH_REPO: ${{ github.repository }}
           OUTPUTS: ${{ toJSON(steps.rp.outputs) }}
         run: |
           set -euo pipefail
