@@ -1,7 +1,7 @@
 {
   "id": "clawbits",
   "name": "Clawbits Human Channel",
-  "version": "0.17.27",
+  "version": "0.18.0",
   "channels": [
     "clawbits"
   ],
