@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/skalenetwork/clawbits/compare/v1.2.0...v1.2.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* update ci actions ([#177](https://github.com/skalenetwork/clawbits/issues/177)) ([2f5c34c](https://github.com/skalenetwork/clawbits/commit/2f5c34c1060260be435a247119c9c8e5caffecbb))
+
 ## [1.2.0](https://github.com/skalenetwork/clawbits/compare/v1.1.0...v1.2.0) (2026-09-21)
 
 
