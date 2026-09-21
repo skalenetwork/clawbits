@@ -28,12 +28,51 @@ PAIR_CHANNEL_TYPES: tuple[str, ...] = ("direct", AGENT_CHAT)
 NEW_CHAT_TITLE = "New chat"
 
 
-def heuristic_chat_title(message: str, *, max_len: int = 48) -> str | None:
-    line = next((part.strip() for part in message.splitlines() if part.strip()), "")
-    line = re.sub(r"\s+", " ", re.sub(r"@[\w.-]+", "", line)).strip()
+TITLE_MAX_LEN = 40
+
+_TITLE_MENTION = re.compile(r"@[\w.-]+")
+_TITLE_MARKUP = re.compile(r"^(?:[>#•]+\s*|[-*+]\s+|\d+[.)]\s+)+")
+# Openers that say nothing in a list: the ask starts after them.
+_TITLE_OPENER = re.compile(
+    r"^(?:(?:hey|hi|hello|yo|ok|okay|so|pls|plz|please|thanks|thx)[\s,!.]+)*"
+    r"(?:(?:can|could|would|will)\s+(?:you|u)\s+|i\s+(?:need|want)\s+(?:you\s+)?to\s+|let'?s\s+)?",
+    re.IGNORECASE,
+)
+# A cut title should not end on a word that was reaching for the next one.
+_TITLE_DANGLING = re.compile(
+    r"^(?:an?|and|are|as|at|be|but|by|for|from|in|is|its?|my|of|on|or|that|the|this|to"
+    r"|was|were|will|with|your?)$",
+    re.IGNORECASE,
+)
+_TITLE_TAIL = ".,;:?!…"
+
+
+def heuristic_chat_title(message: str, *, max_len: int = TITLE_MAX_LEN) -> str | None:
+    """A short handle for a chat, taken from the message that opened it.
+
+    Reads as a phrase, not a severed sentence: the ask starts after any greeting,
+    a cut lands on a word boundary, and a trailing function word left reaching for
+    the next one is dropped. Casing stays the writer's, so ``npm`` survives, and an
+    ellipsis appears only where a single word had to be cut through.
+    """
+    lines = (
+        re.sub(r"\s+", " ", _TITLE_MARKUP.sub("", _TITLE_MENTION.sub("", raw).strip()))
+        for raw in message.splitlines()
+        if not raw.lstrip().startswith("```")
+    )
+    line = next((s for s in (p.strip() for p in lines) if s), "")
+    line = _TITLE_OPENER.sub("", line, count=1).strip(" ,:;-").rstrip(_TITLE_TAIL)
     if not line:
         return None
-    return line if len(line) <= max_len else line[: max_len - 1].rstrip() + "…"
+    if len(line) <= max_len:
+        return line
+    head, boundary, _ = line[: max_len + 1].rpartition(" ")
+    if not boundary:
+        return line[:max_len] + "…"
+    words = head.split(" ")
+    while len(words) > 1 and _TITLE_DANGLING.match(words[-1].strip(_TITLE_TAIL)):
+        words.pop()
+    return " ".join(words).rstrip(_TITLE_TAIL)
 
 
 RealtimeEventType = Literal[

@@ -11,9 +11,10 @@ import type {MmChannel} from "@/lib/api";
 /** The scope filter shown as tabs at the top of the chat list. */
 export type ChatTab = "all" | "channels" | "dms" | "agents";
 
-/** Tab descriptors in display order — drives the segmented control. */
-export const CHAT_TABS: {id: ChatTab; label: string; icon: AppIcon}[] = [
-    {id: "all", label: "All", icon: BubbleChatIcon},
+/** Tab descriptors in display order — drives the segmented control. ``long`` is
+ *  the name where there is room for it; the mobile strip only fits ``label``. */
+export const CHAT_TABS: {id: ChatTab; label: string; long?: string; icon: AppIcon}[] = [
+    {id: "all", label: "All", long: "All chats", icon: BubbleChatIcon},
     {id: "channels", label: "Channels", icon: HashtagIcon},
     {id: "dms", label: "DMs", icon: Message01Icon},
     {id: "agents", label: "Agents", icon: Bot},
@@ -33,12 +34,17 @@ export function activityTime(c: MmChannel): number {
     return at ? new Date(at).getTime() : 0;
 }
 
+/** A 1:1 with an agent: its inbox DM or a named session. */
+export function isAgentPair(c: MmChannel): boolean {
+    return isPairChannel(c) && c.dm_peer_agent_id != null;
+}
+
 /** The channels matching a scope tab. ``all`` is the full set; ``channels``
  *  is rooms; ``dms`` is human 1:1s; ``agents`` is agent inboxes and named chats. */
 export function filterChannelsByTab(channels: MmChannel[], tab: ChatTab): MmChannel[] {
     if (tab === "channels") return channels.filter((c) => !isPairChannel(c));
     if (tab === "dms") return channels.filter((c) => isPairChannel(c) && c.dm_peer_agent_id == null);
-    if (tab === "agents") return channels.filter((c) => isPairChannel(c) && c.dm_peer_agent_id != null);
+    if (tab === "agents") return channels.filter(isAgentPair);
     return channels;
 }
 

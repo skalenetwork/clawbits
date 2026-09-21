@@ -55,6 +55,7 @@ export function ModelPicker({
   align,
   open,
   onOpenChange,
+  onChange,
 }: {
   orgId: string;
   agentId: string;
@@ -64,6 +65,9 @@ export function ModelPicker({
   align: "start" | "end";
   open: boolean;
   onOpenChange: (open: boolean, refocus: boolean) => void;
+  /** Reports the pick instead of storing it: a chat that does not exist yet has
+   *  nowhere to save a model, and the agent's own default must not be rewritten. */
+  onChange?: (choice: ModelChoice) => void;
 }) {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
@@ -98,12 +102,13 @@ export function ModelPicker({
   const names = new Map<string, number>();
   for (const m of data.models) names.set(nameOf(m.ref), (names.get(nameOf(m.ref)) ?? 0) + 1);
   const runtime = data.runtime_default;
-  const inherited = (channelId ? data.default.model : null) ?? runtime?.model ?? null;
+  const scoped = channelId != null || onChange != null;
+  const inherited = (scoped ? data.default.model : null) ?? runtime?.model ?? null;
   const model = value.model ?? inherited;
   const option = model == null ? undefined : byRef.get(model);
   const thinking =
     value.thinking ??
-    (channelId ? data.default.thinking : null) ??
+    (scoped ? data.default.thinking : null) ??
     (model === runtime?.model ? runtime?.thinking : option?.default_level) ??
     null;
   const effort = effortOptions(option?.levels ?? []);
@@ -129,7 +134,10 @@ export function ModelPicker({
   ];
 
   const save = (choice: ModelChoice) => {
-    if (choice.model !== value.model || choice.thinking !== value.thinking) mutation.mutate(choice);
+    if (choice.model !== value.model || choice.thinking !== value.thinking) {
+      if (onChange) onChange(choice);
+      else mutation.mutate(choice);
+    }
     input.current?.focus();
   };
 

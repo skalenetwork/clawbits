@@ -9,9 +9,9 @@
 
 /* .dark lands on <html> with :root, so var() tokens re-resolve per theme: .dark restates only what differs. */
 :root {
-  --background: oklch(1 0 0);
+  --background: oklch(0.9880 0.0015 85);
   --foreground: oklch(0.2350 0 0);
-  --panel: oklch(0.9702 0.002 85);
+  --panel: oklch(0.9620 0.002 85);
   --card: oklch(0.9702 0.002 85);
   --card-foreground: var(--foreground);
   --popover: var(--card);
@@ -1313,6 +1313,7 @@ html[data-media-viewer] [data-vt-contextual] {
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 /* backwards, not both: both pins the transform forever and kills the tile's active:scale press. */
+.home-composer,
 .home-tiles > * {
   animation: tile-in 460ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
@@ -1340,6 +1341,7 @@ html[data-media-viewer] [data-vt-contextual] {
   .animate-activity-in,
   .animate-settle-fade,
   .working-dot,
+  .home-composer,
   .home-tiles > *,
   .access {
     animation: none;

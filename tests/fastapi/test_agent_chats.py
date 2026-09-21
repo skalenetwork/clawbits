@@ -24,8 +24,22 @@ def _create_chat(tc, token, org_id, agent_id):
 
 def test_heuristic_chat_title():
     assert heuristic_chat_title("Fix the auth timeout") == "Fix the auth timeout"
-    assert heuristic_chat_title("@atlas hey there") == "hey there"
-    assert heuristic_chat_title("a" * 60) == "a" * 47 + "…"
+    # The greeting and the ask-wrapper are scaffolding; the ask is the title.
+    assert heuristic_chat_title("@atlas hey, can you check the deploy logs?") == "check the deploy logs"
+    assert (
+        heuristic_chat_title("please update the openclaw version on staging")
+        == "update the openclaw version on staging"
+    )
+    # Cut on a word boundary, then drop the word left reaching for the next one.
+    assert (
+        heuristic_chat_title("update the deploy pipeline so that it stops responding")
+        == "update the deploy pipeline so"
+    )
+    # Markdown scaffolding is not the message: bullets go, fences are stepped over.
+    assert heuristic_chat_title("- fix the CI matrix") == "fix the CI matrix"
+    assert heuristic_chat_title("```python\nprint(1)\n```") == "print(1)"
+    # Only a word cut through keeps an ellipsis.
+    assert heuristic_chat_title("a" * 60) == "a" * 40 + "…"
     assert heuristic_chat_title("  \n  ") is None
 
 

@@ -933,7 +933,14 @@ function ChannelView({ channelId }: { channelId: string }) {
         activityPeople={activityPeople}
         agentDm={channel?.channel_type === "direct" && members.some((m) => m.agent_id != null)}
         onTyping={signalTyping}
-        placeholder={channel && (isPair ? `Message ${peerName}` : `Message #${channel.name}`)}
+        placeholder={
+          channel &&
+          (!isPair
+            ? `Message #${channel.name}`
+            : channel.dm_peer_agent_id
+              ? `Ask ${peerName} to do something…`
+              : `Message ${peerName}`)
+        }
       />
 
       <Dialog open={postIdToDelete !== null} onOpenChange={(next) => { if (!next) setPostIdToDelete(null); }}>

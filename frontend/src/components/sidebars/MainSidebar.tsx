@@ -30,7 +30,6 @@ import {ChannelGlyph} from "@/components/ChannelGlyph";
 import {CREATE_OPTIONS, openCreate} from "@/components/command/createStore";
 import {openCommandPalette} from "@/components/command/paletteStore";
 import {isMac} from "@/lib/shortcuts/platform";
-import {CollapsibleGroup} from "./CollapsibleGroup";
 import {SIDEBAR_SCROLL} from "@/components/ProgressiveBlur";
 import {SidebarToggle} from "./SidebarToggle";
 import {isDesktop} from "@/lib/desktop";
@@ -125,7 +124,8 @@ export function MainSidebar() {
             </div>
 
             <div className={SIDEBAR_SCROLL}>
-                <CollapsibleGroup id="chats" label="Chats" action={<ScopeMenu tab={tab} onChange={setTab}/>}>
+                <ScopeMenu tab={tab} onChange={setTab}/>
+                <SidebarMenu>
                     {lingering && <ChatRow channel={lingering} active actions={actions}/>}
                     {grouped && groups.length > 0 ? (
                         groups.map((g, i) => (
@@ -172,27 +172,36 @@ export function MainSidebar() {
                                     : "No conversations yet"}
                         </li>
                     )}
-                </CollapsibleGroup>
+                </SidebarMenu>
             </div>
         </>
     );
 }
 
+/** Named, not a funnel: the scope is a view to switch between — the per-agent
+ *  one is a different shape of list — and a bare icon never said which was on. */
 function ScopeMenu({tab, onChange}: {tab: ChatTab; onChange: (tab: ChatTab) => void}) {
+    const current = CHAT_TABS.find((t) => t.id === tab);
+    const label = current ? (current.long ?? current.label) : "All chats";
     return (
         <DropdownMenu>
             <DropdownMenuTrigger
-                title="Filter chats"
-                aria-label="Filter chats"
-                className={`grid size-6 place-items-center rounded-md outline-hidden transition-colors hover:bg-[var(--sb-hover)] ${tab === "all" ? "text-muted-foreground hover:text-sidebar-foreground" : "text-signal"}`}
+                aria-label={`Scope: ${label}`}
+                // A row like any other, minus the glyph, with the funnel in the same
+                // 20px well a pin sits in. Not a chevron: at the head of a list that
+                // reads as "collapse me", which is what this control used to be.
+                render={<SidebarMenuButton className="pr-1.5 text-muted-foreground"/>}
             >
-                <ListFilter className="size-3" strokeWidth={2.5}/>
+                <span className="flex-1 truncate">{label}</span>
+                <span className="grid w-5 place-items-center">
+                    <ListFilter className="size-3.5"/>
+                </span>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" sideOffset={4} className="min-w-40">
+            <DropdownMenuContent align="start" sideOffset={4} className="min-w-40">
                 {CHAT_TABS.map((t) => (
                     <DropdownMenuItem key={t.id} onClick={() => { onChange(t.id); }}>
                         <Icon icon={t.icon} className="size-4"/>
-                        <span className="flex-1">{t.label}</span>
+                        <span className="flex-1">{t.long ?? t.label}</span>
                         {t.id === tab && <Check className="size-4 text-muted-foreground"/>}
                     </DropdownMenuItem>
                 ))}

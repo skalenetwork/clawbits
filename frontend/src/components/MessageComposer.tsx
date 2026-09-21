@@ -618,8 +618,9 @@ export function MessageComposer({
             <div className="flex min-w-0 items-center">
               {agentPicker && (
                 <AgentTargetChip
-                  agents={agents}
-                  targetHandle={targetHandle}
+                  agents={agents.map((a) => ({ id: a.agent_id, label: mentionLabel(a), avatarUrl: a.avatar?.url }))}
+                  targetId={targetHandle}
+                  clearable
                   open={pickerOpen}
                   onOpenChange={(open, refocus) => {
                     setPickerOpen(open);
