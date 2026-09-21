@@ -1,6 +1,6 @@
 {
   "name": "clawbits-openclaw-tools",
-  "version": "0.17.27",
+  "version": "0.18.0",
   "description": "OpenClaw tools and companion services for Clawbits.",
   "type": "module",
   "main": "dist/tools-entry.js",
