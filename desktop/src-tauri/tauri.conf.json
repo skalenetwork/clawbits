@@ -35,7 +35,20 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval'",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "img-src": "'self' data: blob: https:",
+        "media-src": "blob: https://*.r2.cloudflarestorage.com",
+        "connect-src": "'self' ipc: http://ipc.localhost https://app.clawbits.ai https://app.freeclaws.ai http://localhost:8000 https://*.r2.cloudflarestorage.com",
+        "frame-src": "blob:",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'self'"
+      },
+      "dangerousDisableAssetCspModification": ["style-src"]
     },
     "macOSPrivateApi": true
   },

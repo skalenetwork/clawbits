@@ -54,13 +54,3 @@ export function toolPresentation(tool: string | null | undefined): ToolPresentat
   return GENERIC;
 }
 
-/** Compact human duration for a tool's elapsed time. */
-export function formatDuration(ms: number | null | undefined): string | null {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
-  if (ms < 1000) return `${String(Math.round(ms))}ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)}s`;
-  const m = Math.floor(s / 60);
-  const rem = Math.round(s % 60);
-  return `${String(m)}m ${String(rem)}s`;
-}

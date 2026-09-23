@@ -69,7 +69,7 @@ from clawbits.datastructures.mm_models import (
     MmUserPresenceResponse,
     agent_dm_channel_name,
 )
-from clawbits.db.models import MmChannel, MmPost
+from clawbits.db.models import Agent, MmChannel, MmPost
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
 from clawbits.fastapi.avatar_hooks import await_channel_avatar
@@ -90,7 +90,7 @@ from clawbits.fastapi.search_helpers import (
     encode_search_cursor,
     parse_search_date,
 )
-from clawbits.fastapi.version_check import server_version
+from clawbits.fastapi.version_check import server_version, supports_turn_stop
 from clawbits.fastapi.workos_auth import get_current_human_user, revalidate_stream_credential
 from clawbits.link_preview.extract import extract_urls
 from clawbits.link_preview.service import get_link_preview
@@ -116,6 +116,7 @@ from clawbits.realtime import (
     publish_post_created,
     publish_post_deleted,
     publish_post_updated,
+    publish_turn_stop,
     publish_user_status,
     stream_channel_events,
     stream_human_events,
@@ -154,20 +155,45 @@ def _require_agent_dm(db: Session, org_id: str, agent_id: str, human_id: int) ->
         raise HTTPException(status_code=403, detail="Not permitted to contact this agent")
 
 
+def _is_channel_admin(db: Session, channel: dict, human_id: int) -> bool:
+    org_id = channel["org_id"]
+    return org_id is not None and (
+        channel["created_by_human"] == human_id
+        or TableRead.get_org_member_role(db, org_id, human_id) == "owner"
+    )
+
+
 def _require_channel_admin(db: Session, channel: dict, human_id: int, action: str) -> None:
     """The channel creator or an org owner: one authority for deleting a channel and for
     removing others, or any member could evict everyone and leave, deleting the channel."""
-    org_id = channel["org_id"]
-    if org_id is None:
+    if channel["org_id"] is None:
         raise HTTPException(status_code=400, detail="Channel is not scoped to an organization")
-    if (
-        channel["created_by_human"] != human_id
-        and TableRead.get_org_member_role(db, org_id, human_id) != "owner"
-    ):
+    if not _is_channel_admin(db, channel, human_id):
         raise HTTPException(
             status_code=403,
             detail=f"Only the channel creator or an organization admin can {action}",
         )
+
+
+def _stoppable_agent_ids(
+    db: Session, channel_id: str, human_id: int, agent_ids: list[str], taggable: set[str]
+) -> set[str]:
+    """Agents whose running turn here the caller may stop: the runtime handles ``turn.stop``,
+    and the caller could have started the turn (DM peer, taggable) or is a channel admin."""
+    capable = {
+        agent_id
+        for agent_id, agent_type, version in db.exec(
+            select(Agent.agent_id, Agent.agent_type, Agent.plugin_version).where(
+                Agent.agent_id.in_(agent_ids)
+            )
+        )
+        if supports_turn_stop(agent_type, version)
+    }
+    allowed = capable & (taggable | {TableRead.dm_agent_peer(db, channel_id)})
+    admin = allowed != capable and _is_channel_admin(
+        db, TableRead.get_mm_channel(db, channel_id), human_id
+    )
+    return capable if admin else allowed
 
 
 def _resolve_presence_view(
@@ -765,20 +791,21 @@ async def list_members(
     user: dict = Depends(get_current_human_user),
 ):
     """Channel members with presence seeded from Redis and, for agents, whether the caller
-    may ``@``-tag them. The agent the caller operates carries its model choice for this
-    conversation. Caller must be a member."""
+    may ``@``-tag them and stop their running turn. The agent the caller operates carries its
+    model choice for this conversation. Caller must be a member."""
     caller_id = user["id"]
 
     def load() -> list[dict]:
         with _get_db(request) as db:
             _require_human_member(db, channel_id, caller_id)
             members = TableRead.get_mm_channel_members(db, channel_id, caller_id)
-            taggable = TableRead.taggable_agent_ids(
-                db, [m["agent_id"] for m in members if m["agent_id"] is not None], human_id=caller_id
-            )
+            agent_ids = [m["agent_id"] for m in members if m["agent_id"] is not None]
+            taggable = TableRead.taggable_agent_ids(db, agent_ids, human_id=caller_id)
+            stoppable = _stoppable_agent_ids(db, channel_id, caller_id, agent_ids, taggable)
             for m in members:
                 if m["agent_id"] is not None:
                     m["can_tag"] = m["agent_id"] in taggable
+                    m["can_stop"] = m["agent_id"] in stoppable
             return members
 
     members = await asyncio.to_thread(load)
@@ -1791,6 +1818,35 @@ def typing_heartbeat(
         bus = get_bus()
         fire_and_forget(bus.presence_set(channel_id, "human", user["id"], "typing"))
         fire_and_forget(publish_member_status(bus, channel_id, "human", str(user["id"]), "typing"))
+    return Response(status_code=204)
+
+
+@human_mm_router.post(
+    "/api/human/mm/channels/{channel_id}/agents/{agent_id}/stop",
+    status_code=204,
+    response_class=Response,
+)
+async def stop_agent_turn(
+    channel_id: str,
+    agent_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Ask an agent to stop the reply it is generating here; the turn settles through the
+    usual post and status events. 409 when no live agent socket heard it."""
+
+    def authorize() -> None:
+        with _get_db(request) as db:
+            _require_human_member(db, channel_id, user["id"])
+            if not TableRead.is_mm_channel_member(db, channel_id, agent_id):
+                raise HTTPException(status_code=404, detail="Agent is not in this channel")
+            taggable = TableRead.taggable_agent_ids(db, [agent_id], human_id=user["id"])
+            if not _stoppable_agent_ids(db, channel_id, user["id"], [agent_id], taggable):
+                raise HTTPException(status_code=403, detail="Not permitted to stop this agent")
+
+    await asyncio.to_thread(authorize)
+    if not await publish_turn_stop(get_bus(), agent_id, channel_id):
+        raise HTTPException(status_code=409, detail="The agent is not connected")
     return Response(status_code=204)
 
 

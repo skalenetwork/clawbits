@@ -54,7 +54,7 @@ import { isPairType } from "@/lib/chatFilters";
 import { matchAdminCommandText } from "@/lib/adminCommands";
 import { burstEmojiAt, burstEmojiFrom } from "@/lib/emojiBurst";
 import { extractUrls } from "@/lib/extractUrls";
-import { formatFullDate, formatRelativeAgo, formatTimeOnly } from "@/lib/formatting";
+import { formatRelativeAgo, formatTimeOnly, postMoments } from "@/lib/formatting";
 import { mentionHandle, messageLink, posterName, quotedBodyText } from "@/lib/messageHelpers";
 import { MENU_SURFACE } from "@/lib/menuSurface";
 import { formatReactors } from "@/lib/reactionTooltip";
@@ -378,6 +378,35 @@ function ReactionsStrip({
         </div>
       </div>
     </div>
+  );
+}
+
+function PostTime({ post, className }: { post: MmChannelPost; className?: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        delay={1200}
+        render={
+          <span className={cn("shrink-0 cursor-default text-[11px] tabular-nums text-muted-foreground", className)}>
+            {formatTimeOnly(post.created_at)}
+          </span>
+        }
+      />
+      <TooltipContent side="top" sideOffset={6} className="px-2 py-1 text-[11px]">
+        <PostMoments post={post}/>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function PostMoments({ post }: { post: MmChannelPost }) {
+  return (
+    <dl className="grid grid-cols-[auto_auto] gap-x-2 gap-y-0.5">
+      {postMoments(post).flatMap(({ label, at }) => [
+        <dt key={label} className="opacity-60">{label}</dt>,
+        <dd key={`${label}-at`} className="tabular-nums">{at}</dd>,
+      ])}
+    </dl>
   );
 }
 
@@ -775,19 +804,7 @@ export const MessageRow = memo(function MessageRow({
           >
             <span className="truncate font-medium text-muted-foreground hover:underline">{posterName(post)}</span>
           </ProfileMenuTrigger>
-          <Tooltip>
-            <TooltipTrigger
-              delay={1200}
-              render={
-                <span className="shrink-0 cursor-default text-[11px] tabular-nums text-muted-foreground">
-                  {formatTimeOnly(post.created_at)}
-                </span>
-              }
-            />
-            <TooltipContent side="top" sideOffset={6} className="px-2 py-1 text-[11px]">
-              {formatFullDate(post.created_at)}
-            </TooltipContent>
-          </Tooltip>
+          <PostTime post={post}/>
           {post.edited_at && !isEditing && <EditedIndicator editedAt={post.edited_at} />}
           {isPinned && (
             <span role="img" aria-label="Pinned" title="Pinned" className="shrink-0 text-muted-foreground">
@@ -798,6 +815,12 @@ export const MessageRow = memo(function MessageRow({
             <MessageActionsBar actions={actions} leading={reactionPicker} className="ml-auto -my-0.5"/>
           )}
         </div>
+      )}
+      {!isGroupStart && (
+        <PostTime
+          post={post}
+          className="invisible absolute top-1.5 left-0 w-14 text-center group-hover/row:visible"
+        />
       )}
       {post.parent_preview && !isEditing && (
         <ParentQuoteBlock preview={post.parent_preview} onJump={onJumpToParent}/>

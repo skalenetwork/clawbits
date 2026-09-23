@@ -11,8 +11,9 @@ import type { ClawBitsClient } from "../src/client.js";
 import type { ResolvedClawBitsAccount } from "../src/types.js";
 import { dispatchInboundMessage } from "../src/gateway-adapter.js";
 import type { InboundMessage } from "../src/inbound-poller.js";
-import { __resetDraftRegistryForTest } from "../src/draft-registry.js";
+import { __resetDraftRegistryForTest, stopTurn } from "../src/draft-registry.js";
 import { __resetTurnRegistryForTest } from "../src/activity/turn-registry.js";
+import { routeAgentEvent } from "../src/activity/subscription.js";
 
 interface RecordedCall {
   method: string;
@@ -77,7 +78,10 @@ function makeAccount(): ResolvedClawBitsAccount {
 }
 
 function makeCtx(
-  reply: (params: { deliver?: (payload: unknown) => Promise<unknown> }) => Promise<void>,
+  reply: (params: {
+    ctx: Record<string, unknown>;
+    deliver?: (payload: unknown) => Promise<unknown>;
+  }) => Promise<void>,
 ): ChannelGatewayContext<ResolvedClawBitsAccount> {
   const ac = new AbortController();
   return {
@@ -106,31 +110,37 @@ const MSG: InboundMessage = {
   raw: { id: "post-1", create_at: 1 },
 };
 
+/** Dispatches MSG through a stub runtime and returns what reached the server. */
+async function run(reply: Parameters<typeof makeCtx>[0]): Promise<RecordedCall[]> {
+  __resetDraftRegistryForTest();
+  __resetTurnRegistryForTest();
+  const client = new FakeClient();
+  await dispatchInboundMessage(makeCtx(reply), MSG, {
+    client: client as unknown as ClawBitsClient,
+    answers: { "2+2": "4" },
+  });
+  return client.calls;
+}
+
+const lastPatch = (calls: RecordedCall[]) => calls.filter((c) => c.method === "PATCH").at(-1)?.json;
+
 describe("deliver multi-payload guard", () => {
   it("finalizes the draft once, drops identical retries, posts distinct continuations", async () => {
-    __resetDraftRegistryForTest();
-    __resetTurnRegistryForTest();
-    const client = new FakeClient();
-    const ctx = makeCtx(async ({ deliver }) => {
+    const calls = await run(async ({ deliver }) => {
       assert.ok(deliver, "stub must forward the deliver callback");
       await deliver!({ text: "block one" });
       await deliver!({ text: "block one" }); // queue retry — dropped
       await deliver!({ text: "block two" }); // distinct — follow-up post
     });
 
-    await dispatchInboundMessage(ctx, MSG, {
-      client: client as unknown as ClawBitsClient,
-      answers: { "2+2": "4" },
-    });
-
     // First deliver finalized the pre-opened draft in place.
-    const patches = client.calls.filter((c) => c.method === "PATCH");
+    const patches = calls.filter((c) => c.method === "PATCH");
     assert.equal(patches.length, 1);
     assert.deepEqual(patches[0]!.json, { replace: "block one", done: true });
 
     // The identical retry minted nothing; the distinct payload posted once.
     // (The draft create also POSTs /posts but carries status:"streaming".)
-    const messagePosts = client.calls.filter(
+    const messagePosts = calls.filter(
       (c) =>
         c.method === "POST" &&
         c.path.endsWith("/posts") &&
@@ -139,5 +149,44 @@ describe("deliver multi-payload guard", () => {
     );
     assert.equal(messagePosts.length, 1);
     assert.equal(messagePosts[0]!.json.message, "block two");
+  });
+});
+
+describe("turn stop", () => {
+  it("aborts with one authorized /stop on the turn's route and keeps the streamed text", async () => {
+    const stops: Record<string, unknown>[] = [];
+    const calls = await run(async ({ ctx: turn }) => {
+      if (turn.CommandBody === "/stop") {
+        stops.push(turn);
+        return;
+      }
+      routeAgentEvent({ runId: "run-1", stream: "lifecycle", data: { phase: "start" } });
+      routeAgentEvent({ runId: "run-1", stream: "assistant", data: { text: "partial answer" } });
+      await stopTurn("default", "chan-1");
+      await stopTurn("default", "chan-1");
+      routeAgentEvent({ runId: "run-1", stream: "lifecycle", data: { phase: "error" } });
+    });
+    await stopTurn("default", "chan-1");
+
+    assert.equal(stops.length, 1);
+    assert.deepEqual(
+      [stops[0]!.CommandAuthorized, stops[0]!.CommandSource, stops[0]!.MessageId, stops[0]!.Timestamp],
+      [true, "text", "stop-post-1", MSG.createAt],
+    );
+    assert.deepEqual(lastPatch(calls), { replace: "partial answer\n\n_(stopped)_", done: true });
+  });
+
+  it("cancels the draft when the stopped turn streamed nothing", async () => {
+    const calls = await run(async ({ ctx: turn }) => {
+      if (turn.CommandBody !== "/stop") await stopTurn("default", "chan-1");
+    });
+    assert.deepEqual(lastPatch(calls), { cancel: true });
+  });
+
+  it("tombstones the draft when an unstopped dispatch throws", async () => {
+    const calls = await run(async () => {
+      throw new Error("model died");
+    });
+    assert.deepEqual(lastPatch(calls), { replace: "_(reply failed to generate)_", done: true });
   });
 });

@@ -421,6 +421,7 @@ def test_human_edit_own_post_stamps_edited_at(test_client):
     ch_id = _create_channel(test_client, token, "edit-chat")["channel_id"]
     post = _post(test_client, token, ch_id, "first draft")
     assert post["edited_at"] is None
+    assert post["published_at"] == post["created_at"]
 
     r = test_client.patch(
         f"/api/human/mm/posts/{post['post_id']}",
@@ -435,6 +436,7 @@ def test_human_edit_own_post_stamps_edited_at(test_client):
     row = next(p for p in _posts(test_client, token, ch_id) if p["post_id"] == post["post_id"])
     assert row["message"] == "the polished version"
     assert row["edited_at"] == edited["edited_at"]
+    assert row["published_at"] == post["published_at"]
 
 
 def test_human_edit_missing_post_404(test_client):

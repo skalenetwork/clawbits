@@ -10,6 +10,7 @@ throttle that bounds ``post.updated`` fan-out.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -17,7 +18,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from clawbits.datastructures.mm_models import ACTIVITY_LABEL_MAX_CHARS
-from clawbits.db.models import Agent
+from clawbits.db.models import Agent, MmPost
 from clawbits.fastapi.clawbits_server import ClawBitsServer
 from tests.fastapi.test_mattermost import _auth, _create_owned_agent, _write_headers
 
@@ -165,6 +166,34 @@ def test_streaming_lane_billing(test_client: TestClient, _test_engine):
     )
     assert r.status_code == 204, r.text
     assert _tokens(_test_engine, agent_id) == 7 * WRITE_COST
+
+
+def test_published_at_marks_the_finalize_not_the_draft(test_client: TestClient, _test_engine):
+    agent = _create_owned_agent(test_client)
+    channel_id = _make_channel(test_client, agent)
+    post_id = _make_streaming_post(test_client, agent, channel_id)
+    with Session(_test_engine) as db:
+        post = db.get_one(MmPost, post_id)
+        post.created_at -= timedelta(minutes=20)
+        db.add(post)
+        db.commit()
+    url = f"/api/agentic/mm/channels/{channel_id}/posts/{post_id}"
+
+    r = test_client.patch(url, json={"append": "Hello"}, headers=_auth(agent["api_key"]))
+    assert r.status_code == 200, r.text
+    assert r.json()["published_at"] is None
+
+    r = test_client.patch(url, json={"done": True}, headers=_auth(agent["api_key"]))
+    assert r.status_code == 200, r.text
+    assert r.json()["published_at"] > r.json()["created_at"]
+
+    r = test_client.post(
+        f"/api/agentic/mm/channels/{channel_id}/posts",
+        json={"message": "at once"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["published_at"] == r.json()["created_at"]
 
 
 def test_finalize_402_leaves_draft_open(test_client: TestClient, _test_engine):

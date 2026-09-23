@@ -809,6 +809,7 @@ export interface MmChannelPost {
   created_at: string;
   status: MmPostStatus;
   updated_at?: string | null;
+  published_at?: string | null;
   edited_at?: string | null;
   pinned_at?: string | null;
   pinned_by_human_id?: number | null;
@@ -1139,6 +1140,13 @@ export async function sendMmTypingHeartbeat(channelId: string) {
   await fetch(channelUrl(channelId, "/typing"), { credentials: "include", method: "POST" });
 }
 
+export async function stopAgentTurn(channelId: string, agentId: string) {
+  await send(channelUrl(channelId, `/agents/${encodeURIComponent(agentId)}/stop`), {
+    method: "POST",
+    detail: true,
+  });
+}
+
 export type GlobalUserStatus = "online" | "idle" | "offline";
 
 export type AgentLivenessStatus = "setup" | "available" | "offline";
@@ -1170,6 +1178,7 @@ export interface MmChannelMember {
   last_alive_at?: string | null;
   /** Null means allowed. */
   can_tag?: boolean | null;
+  can_stop?: boolean;
   is_operator?: boolean;
   model_choice?: ModelChoice | null;
 }

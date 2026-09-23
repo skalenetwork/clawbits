@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDuration, toolPresentation } from "./toolPresentation";
+import { toolPresentation } from "./toolPresentation";
 
 describe("toolPresentation", () => {
   it("maps web search to a human 'Searching the web' verb", () => {
@@ -27,29 +27,5 @@ describe("toolPresentation", () => {
   it("always resolves an icon", () => {
     expect(toolPresentation("web_search").icon).toBeTruthy();
     expect(toolPresentation("anything").icon).toBeTruthy();
-  });
-});
-
-describe("formatDuration", () => {
-  it("formats sub-second durations as milliseconds", () => {
-    expect(formatDuration(340)).toBe("340ms");
-  });
-
-  it("formats single-digit seconds with one decimal", () => {
-    expect(formatDuration(2140)).toBe("2.1s");
-  });
-
-  it("formats double-digit seconds without a decimal", () => {
-    expect(formatDuration(23000)).toBe("23s");
-  });
-
-  it("formats minutes and seconds", () => {
-    expect(formatDuration(65000)).toBe("1m 5s");
-  });
-
-  it("returns null for missing or invalid input", () => {
-    expect(formatDuration(null)).toBeNull();
-    expect(formatDuration(undefined)).toBeNull();
-    expect(formatDuration(-5)).toBeNull();
   });
 });

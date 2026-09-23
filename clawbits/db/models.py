@@ -771,6 +771,7 @@ class MmPost(SQLModel, table=True):
     )
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
     status: str = Field(default="published", nullable=False)
+    # Stamped by every streaming PATCH and heartbeat, then frozen: a published post's publish time.
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column())
     edited_at: datetime | None = Field(
         default=None,

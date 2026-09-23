@@ -9,7 +9,7 @@ import {
   type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowDown, ArrowUp, Plus, Reply, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus, Reply, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { MENU_SURFACE } from "@/lib/menuSurface";
@@ -100,6 +100,9 @@ interface MessageComposerProps {
   isReadyToSend: boolean;
   uploadedFileIdsCount: number;
   onSubmit: (text: string) => Promise<unknown>;
+  /** Null when no agent this user may stop is generating here. */
+  onStop: (() => void) | null;
+  isStopping: boolean;
   onEditLast: () => void;
   isSending: boolean;
   isChatAtBottom: boolean;
@@ -238,6 +241,8 @@ export function MessageComposer({
   isReadyToSend,
   uploadedFileIdsCount,
   onSubmit,
+  onStop,
+  isStopping,
   onEditLast,
   isSending,
   isChatAtBottom,
@@ -345,6 +350,7 @@ export function MessageComposer({
 
   const canSend = isReadyToSend && (draft.trim() !== "" || (attachments.length > 0 && uploadedFileIdsCount > 0));
   const busy = isSending || isUploading;
+  const stop = !canSend && !busy ? onStop ?? undefined : undefined;
 
   const submit = () => {
     if (!canSend || isSending) return;
@@ -668,17 +674,20 @@ export function MessageComposer({
               agentShortcuts={agentPicker}
             />
             <button
-              type="submit"
-              disabled={!canSend || busy}
-              aria-label={isUploading ? "Waiting for uploads" : "Send message"}
+              type={stop ? "button" : "submit"}
+              onClick={stop}
+              disabled={stop ? isStopping : !canSend || busy}
+              aria-label={stop ? "Stop generating" : isUploading ? "Waiting for uploads" : "Send message"}
               className={`grid size-7 shrink-0 place-items-center rounded-full transition-all disabled:cursor-not-allowed ${
-                canSend && !busy
-                  ? "bg-primary text-primary-foreground hover:bg-primary/90 active:scale-95"
+                stop || (canSend && !busy)
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90 active:scale-95 disabled:opacity-60"
                   : "bg-foreground/10 text-muted-foreground"
               }`}
             >
               {busy ? (
                 <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"/>
+              ) : stop ? (
+                <Square className="size-3 fill-current"/>
               ) : (
                 <ArrowUp className="size-4"/>
               )}

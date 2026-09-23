@@ -11,7 +11,7 @@ import {
   type OpenDraftRef,
 } from "./draft-registry.js";
 import { finishReporting } from "./activity/reporter.js";
-import { finishStreaming } from "./activity/stream-patcher.js";
+import { finishStreaming, streamedText } from "./activity/stream-patcher.js";
 import {
   registerInFlightTurn,
   unregisterInFlightTurn,
@@ -485,7 +485,6 @@ export async function dispatchInboundMessage(
     generatingHeartbeat.unref?.();
     if (draftResult.status === "fulfilled") {
       draftRef.id = draftResult.value.post_id;
-      registerOpenDraft(ctx.accountId, conversationId, draftRef);
     } else {
       logWarn(
         ctx.log,
@@ -663,9 +662,87 @@ export async function dispatchInboundMessage(
     });
   };
 
+  // The turn and a `/stop` aimed at it share one route: OpenClaw only aborts
+  // the run on the session the stop resolves to.
+  const route = {
+    cfg: ctx.cfg,
+    runtime: { channel: runtime } as never,
+    channel: CHANNEL_ID,
+    channelLabel: CHANNEL_ID,
+    accountId: ctx.accountId,
+    // The host publishes `peer` as `DirectDmRoutePeer` (`kind: "direct"`),
+    // narrower than what it accepts: it only reads `peer.id` and forwards
+    // the object to `resolveAgentRoute`, whose `RoutePeer.kind` is the full
+    // `ChatType` ("direct" | "group" | "channel"). A channel peer is what
+    // keys a room's isolated session, so it must survive the call.
+    peer: routePeer as DirectDmRoutePeer,
+    senderId,
+    senderAddress: senderAddr,
+    recipientAddress: recipientAddr,
+    conversationLabel: isDirectChannel
+      ? `Clawbits DM ${conversationId}`
+      : `Clawbits channel ${conversationId}`,
+    // OpenClaw 2026.8 ("2.0") only records conversation-route context,
+    // persists DM sender identity, captures pending turn replies and
+    // restores archived sessions when the channel attests that its own
+    // guard admitted the event. Clawbits admits inbound server-side — the
+    // agentic GET only returns posts the org already approved (see the
+    // note further down this file) — plus the allowFrom/mention gate in
+    // inbound-poller, so the attestation is truthful here.
+    inboundAccessAuthorized: true,
+    // Also the abort cutoff a stop persists: later posts still run.
+    timestamp: msg.createAt || Date.now(),
+    provider: CHANNEL_ID,
+    surface: CHANNEL_ID,
+    originatingChannel: CHANNEL_ID,
+    originatingTo: recipientAddr,
+  };
+  const routeContext = {
+    ConversationId: conversationId,
+    SenderId: msg.senderId,
+    // Override the default ``"direct"`` ChatType for non-DM inbound so
+    // the runner doesn't address the reply to the operator's DM peer
+    // and instead funnels it back through our ``deliver`` callback,
+    // which posts to ``msg.channelId`` (the originating channel).
+    ChatType: isDirectChannel ? "direct" : "channel",
+  };
+
+  // `turn.stop` reaches this while the turn holds the inbound queue; OpenClaw's
+  // fast abort takes an authorized `/stop` ahead of the session's reply lock.
+  let stopRequested = false;
+  const warnStop = (err: unknown): void =>
+    logWarn(
+      ctx.log,
+      `[clawbits/${ctx.accountId}] stop failed for ${msg.postId}: ${String((err as Error)?.message ?? err)}`,
+    );
+  draftRef.stop = async () => {
+    if (stopRequested) return;
+    stopRequested = true;
+    try {
+      await runOutsideGatewayRootWork(() =>
+        dispatchInboundDirectDmWithRuntime({
+          ...route,
+          rawBody: "/stop",
+          commandBody: "/stop",
+          commandAuthorized: true,
+          messageId: `stop-${msg.postId}`,
+          extraContext: { ...routeContext, CommandSource: "text" },
+          deliver: async () => {},
+          onRecordError: warnStop,
+          onDispatchError: warnStop,
+        }),
+      );
+      logInfo(ctx.log, `[clawbits/${ctx.accountId}] stopped turn for ${msg.postId}`);
+    } catch (err) {
+      warnStop(err);
+    }
+  };
+  registerOpenDraft(ctx.accountId, conversationId, draftRef);
+
   // Set right before the runtime dispatch; read in ``finally`` so the
   // ``agent_turn`` span fires on success and error alike. 0 until set.
   let dispatchSpanStart = 0;
+  let failed = false;
   try {
     consoleErrorWithFile(
       `[clawbits/${ctx.accountId}] dispatchInboundDirectDmWithRuntime start post=${msg.postId}`,
@@ -697,23 +774,7 @@ export async function dispatchInboundMessage(
         );
       }
       return dispatchInboundDirectDmWithRuntime({
-        cfg: ctx.cfg,
-        runtime: { channel: runtime } as never,
-        channel: CHANNEL_ID,
-        channelLabel: CHANNEL_ID,
-        accountId: ctx.accountId,
-        // The host publishes `peer` as `DirectDmRoutePeer` (`kind: "direct"`),
-        // narrower than what it accepts: it only reads `peer.id` and forwards
-        // the object to `resolveAgentRoute`, whose `RoutePeer.kind` is the full
-        // `ChatType` ("direct" | "group" | "channel"). A channel peer is what
-        // keys a room's isolated session, so it must survive the call.
-        peer: routePeer as DirectDmRoutePeer,
-        senderId,
-        senderAddress: senderAddr,
-        recipientAddress: recipientAddr,
-        conversationLabel: isDirectChannel
-          ? `Clawbits DM ${conversationId}`
-          : `Clawbits channel ${conversationId}`,
+        ...route,
         rawBody: msg.text,
         // `rawBody` stays untouched (audit trail); `bodyForAgent` carries the
         // ClawBits preamble plus any attachment summary so the model knows
@@ -748,28 +809,9 @@ export async function dispatchInboundMessage(
         }),
         commandBody: effectiveText,
         commandAuthorized: isAuthorizedCommand ? true : undefined,
-        // OpenClaw 2026.8 ("2.0") only records conversation-route context,
-        // persists DM sender identity, captures pending turn replies and
-        // restores archived sessions when the channel attests that its own
-        // guard admitted the event. Clawbits admits inbound server-side — the
-        // agentic GET only returns posts the org already approved (see the
-        // note further down this file) — plus the allowFrom/mention gate in
-        // inbound-poller, so the attestation is truthful here.
-        inboundAccessAuthorized: true,
         messageId: msg.postId,
-        timestamp: msg.createAt || Date.now(),
-        provider: CHANNEL_ID,
-        surface: CHANNEL_ID,
-        originatingChannel: CHANNEL_ID,
-        originatingTo: recipientAddr,
         extraContext: {
-          ConversationId: conversationId,
-          SenderId: msg.senderId,
-          // Override the default ``"direct"`` ChatType for non-DM inbound so
-          // the runner doesn't address the reply to the operator's DM peer
-          // and instead funnels it back through our ``deliver`` callback,
-          // which posts to ``msg.channelId`` (the originating channel).
-          ChatType: isDirectChannel ? "direct" : "channel",
+          ...routeContext,
           ...(isAuthorizedCommand ? { CommandSource: "text" } : {}),
           ...(msg.senderTag ? { SenderTag: msg.senderTag } : {}),
           // NB: prior context is rendered into `bodyForAgent` above, not passed
@@ -830,30 +872,9 @@ export async function dispatchInboundMessage(
         err instanceof Error ? err.message : String(err)
       }`,
     );
-    // Tombstone the draft only when the dispatcher actually threw — i.e.
-    // an error escaped runtime execution and we never reached a clean
-    // deliver(). On normal completion the runner may legitimately choose
-    // a silent reply; printing "reply failed to generate" there is a
-    // false signal that confused operators (and made it look like the
-    // agent posted two replies when a later inbound succeeded). A draft
-    // already consumed by deliver/sendText (ref emptied) is left alone —
-    // the reply went out before the turn errored.
-    const tombstoneDraftId = draftRef.id;
-    if (tombstoneDraftId !== undefined && client) {
-      draftRef.id = undefined;
-      try {
-        await realtimeTools.patchDraftPost(client, conversationId, tombstoneDraftId, {
-          replace: "_(reply failed to generate)_",
-          done: true,
-        });
-      } catch (cleanupErr) {
-        logWarn(
-          ctx.log,
-          `[clawbits/${ctx.accountId}] draft cleanup patch failed for ${msg.postId}: ${String((cleanupErr as Error)?.message ?? cleanupErr)}`,
-        );
-      }
-    }
+    failed = true;
   } finally {
+    unregisterOpenDraft(ctx.accountId, conversationId, draftRef);
     // Stop the live-activity lanes FIRST: the patcher must not race the
     // draft cancel below, and the reporter must not land a late
     // "generating" activity after clearGenerating() flips status online.
@@ -890,29 +911,32 @@ export async function dispatchInboundMessage(
         chat_type: isDirectChannel ? "direct" : "channel",
       });
     }
-    // If the dispatcher returned cleanly but never reached deliver()
-    // (silent reply, runtime opted to skip, draft never patched), the
-    // streaming draft would stay as an open shimmer forever. Cancel it
-    // — the server deletes the row instead of publishing an empty post,
-    // so the channel UI doesn't render a placeholder where the shimmer
-    // used to be. The "failed to generate" tombstone in the catch
-    // branch above still fires for real errors. A draft consumed by
-    // deliver/sendText already left the ref empty, so nothing fires here.
+    // Settle a draft that deliver/sendText never claimed, or it shimmers
+    // forever. A stopped turn keeps what it streamed; only a thrown dispatch
+    // earns the tombstone, since a clean return may be a deliberate silent
+    // reply; anything else is cancelled (the server deletes the placeholder).
     const leftoverDraftId = draftRef.id;
     if (leftoverDraftId !== undefined && client) {
       draftRef.id = undefined;
+      const partial = stopRequested && activityTurn ? streamedText(activityTurn).trim() : "";
       try {
-        await realtimeTools.patchDraftPost(client, conversationId, leftoverDraftId, {
-          cancel: true,
-        });
+        await realtimeTools.patchDraftPost(
+          client,
+          conversationId,
+          leftoverDraftId,
+          partial
+            ? { replace: tagReplyBody(`${partial}\n\n_(stopped)_`, msg.senderTag), done: true }
+            : failed && !stopRequested
+              ? { replace: "_(reply failed to generate)_", done: true }
+              : { cancel: true },
+        );
       } catch (cleanupErr) {
         logWarn(
           ctx.log,
-          `[clawbits/${ctx.accountId}] draft silent-cancel failed for ${msg.postId}: ${String((cleanupErr as Error)?.message ?? cleanupErr)}`,
+          `[clawbits/${ctx.accountId}] draft cleanup failed for ${msg.postId}: ${String((cleanupErr as Error)?.message ?? cleanupErr)}`,
         );
       }
     }
-    unregisterOpenDraft(ctx.accountId, conversationId, draftRef);
     await clearGenerating();
   }
 }
