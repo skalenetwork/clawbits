@@ -9,6 +9,7 @@
 // for clean shutdown from the channel gateway.
 
 import type { WatermarkStore } from "./channel-watermarks.js";
+import { stopTurn } from "./draft-registry.js";
 import { resolveKnownAnswers, withChallenge } from "./challenge.js";
 import type { ClawBitsClient } from "./client.js";
 import { ClawBitsError } from "./errors.js";
@@ -1574,6 +1575,10 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         }
         if (event.type === "automation.sync") {
           // Reconciled by the companion service on its bounded poll interval.
+          return;
+        }
+        if (event.type === "turn.stop") {
+          if (event.channel_id) void stopTurn(account.accountId, event.channel_id);
           return;
         }
         // `mutualist.consider` is the pre-rename name for the same event; kept

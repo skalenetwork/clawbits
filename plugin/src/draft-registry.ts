@@ -15,7 +15,9 @@
 // (account, channel); `sendText` claims it and finalizes it in place instead
 // of posting separately. The shared mutable ref means whichever path handles
 // the draft first (deliver, sendText, turn-end cleanup) empties it
-// synchronously, so no second path double-handles it.
+// synchronously, so no second path double-handles it. The same handle
+// carries the turn's stop, which the agent WebSocket's `turn.stop` reaches
+// outside the serial inbound queue the turn is holding.
 
 /**
  * Mutable handle to a turn's open draft. `id === undefined` means the draft
@@ -25,6 +27,7 @@
  */
 export interface OpenDraftRef {
   id: number | string | undefined;
+  stop?: () => Promise<void>;
 }
 
 const openDrafts = new Map<string, OpenDraftRef>();
@@ -36,7 +39,7 @@ function draftKey(accountId: string, channelId: string): string {
 }
 
 /**
- * Track the reply draft opened for the in-flight turn on (account, channel).
+ * Track the in-flight turn's handle on (account, channel).
  * Last registration wins — if two turns somehow overlap in one channel, the
  * newer draft is the one an outbound send should resolve into.
  */
@@ -75,6 +78,11 @@ export function unregisterOpenDraft(
 ): void {
   const key = draftKey(accountId, channelId);
   if (openDrafts.get(key) === ref) openDrafts.delete(key);
+}
+
+/** Stop the turn running in (account, channel); a no-op when none is. */
+export async function stopTurn(accountId: string, channelId: string): Promise<void> {
+  await openDrafts.get(draftKey(accountId, channelId))?.stop?.();
 }
 
 /** Test seam: forget every registered draft between cases. */

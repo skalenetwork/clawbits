@@ -17,6 +17,7 @@ import {
   listMmChannels,
   markMmChannelRead,
   patchMmChannel,
+  stopAgentTurn,
   toggleMmPostReaction,
   type MmChannel,
   type MmChannelMember,
@@ -502,6 +503,16 @@ function ChannelView({ channelId }: { channelId: string }) {
     () => generatingAgentsOf(presence, history.posts, members),
     [presence, history.posts, members],
   );
+  const stoppableAgentIds = useMemo(
+    () => members.flatMap((m) =>
+      m.agent_id && m.can_stop && presence[memberKey("agent", m.agent_id)] === "generating" ? [m.agent_id] : [],
+    ),
+    [members, presence],
+  );
+  const { mutate: stopAgents, isPending: isStopping } = useMutation({
+    mutationFn: (agentIds: string[]) => Promise.all(agentIds.map((id) => stopAgentTurn(channelId, id))),
+    onError: (err) => { toast.error(errMsg(err, "Couldn't stop the agent")); },
+  });
   const queuedOwnPostIds = useMemo(
     () => queuedOwnPostIdsOf(history.posts, generatingAgents.length > 0, user?.id),
     [history.posts, generatingAgents.length, user?.id],
@@ -924,6 +935,8 @@ function ChannelView({ channelId }: { channelId: string }) {
         isReadyToSend={isReadyToSend}
         uploadedFileIdsCount={uploadedFileIds.length}
         onSubmit={send}
+        onStop={stoppableAgentIds.length > 0 ? () => { stopAgents(stoppableAgentIds); } : null}
+        isStopping={isStopping}
         onEditLast={editLastOwnMessage}
         isSending={isSending}
         isChatAtBottom={!history.isAnchored && isAtBottom}

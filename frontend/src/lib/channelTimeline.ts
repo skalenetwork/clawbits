@@ -1,5 +1,5 @@
 import type { MmChannelEvent, MmChannelMember, MmChannelPost } from "@/lib/api";
-import { parseUtcTimestamp } from "@/lib/formatting";
+import { parseUtcTimestamp, sameDay } from "@/lib/formatting";
 import type { PresenceMap } from "@/hooks/useChannelEvents";
 
 const STALE_STREAMING_MS = 60 * 60 * 1000;
@@ -92,10 +92,6 @@ export function queuedOwnPostIdsOf(
     .slice(posts.findLastIndex((p) => p.agent_id) + 1)
     .filter((p) => p.agent_id == null && p.human_id === currentUserId);
   return new Set(own.slice(1).map((p) => p.post_id));
-}
-
-function sameDay(a: number, b: number): boolean {
-  return new Date(a).toDateString() === new Date(b).toDateString();
 }
 
 export function decorateRows({

@@ -1872,6 +1872,7 @@ class TableRead:
                 **identity(p),
                 "status": p.status,
                 "updated_at": _iso(p.updated_at),
+                "published_at": _iso(p.updated_at) if p.status == "published" else None,
                 "edited_at": _iso(p.edited_at),
                 "pinned_at": _iso(p.pinned_at),
                 "pinned_by_human_id": p.pinned_by_human_id,

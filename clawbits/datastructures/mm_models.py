@@ -268,6 +268,7 @@ class MmChannelMemberResponse(BaseModel):
     last_alive_at: str | None = None
     # None where not computed; clients treat it as allowed.
     can_tag: bool | None = None
+    can_stop: bool = False
     is_operator: bool = False
     model_choice: ModelChoice | None = None
 
@@ -405,6 +406,7 @@ class MmPostResponse(BaseModel):
     created_at: str
     status: MmPostStatus = "published"
     updated_at: str | None = None
+    published_at: str | None = None
     edited_at: str | None = None
     pinned_at: str | None = None
     pinned_by_human_id: int | None = None
