@@ -32,6 +32,11 @@ COPY --chown=node:node .plugin/ /tmp/plugin/
 RUN /tmp/pi /tmp/plugin/channel --force && /tmp/pi /tmp/plugin/tools --force
 
 FROM ${PLUGIN_STAGE}
+# Installs the bundled runtime dependencies the engine's own channels import.
+# Without it the image ships an openclaw whose bundled `reef` channel dies on
+# `Cannot find package 'openclaw' ... ERR_MODULE_NOT_FOUND` at every boot, and
+# the engine itself is the thing that tells you to run this.
+RUN openclaw doctor --fix
 RUN openclaw plugins list --json | node -e 'const p=JSON.parse(require("fs").readFileSync(0,"utf8")).plugins||[];for(const id of["clawbits","clawbits-tools"]){const x=p.find(y=>y.id===id)||{};if(x.status!=="loaded"){console.error(id,x.status||"missing");process.exit(1)}}' \
  && rm -f /tmp/pi /home/node/.openclaw/openclaw.json /home/node/.openclaw/openclaw.json.bak
 

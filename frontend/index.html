@@ -23,42 +23,14 @@
     <link rel="icon" type="image/png" href="/favicon.png" media="(prefers-color-scheme: light)" />
     <link rel="icon" type="image/png" href="/favicon-dark.png" media="(prefers-color-scheme: dark)" />
 
-    <!--
-      Per-environment favicon. The frontend ships a single static build that
-      serves both staging and prod (only the backend's APP_ENV differs), so the
-      env can't be baked in at build time — we pick it from the hostname at
-      runtime. Any *.clawbits.ai host (the app lives at app.clawbits.ai; the
-      apex itself serves the marketing site) keeps the default prod favicon
-      above; freeclaws.ai
-      gets the STAGING icon and everything else (localhost, *.ts.net, IPs,
-      preview hosts) gets the DEV icon. Runs inline before paint so the swap
-      lands before the bundle loads. Source art: desktop/icons-src/{dev,staging}.png.
-    -->
-    <script>
-      (function () {
-        var host = location.hostname;
-        var icon =
-          host === "clawbits.ai" || /\.clawbits\.ai$/.test(host)
-            ? null // prod — leave the default links untouched
-            : host === "freeclaws.ai" || /\.freeclaws\.ai$/.test(host)
-              ? "/favicon-staging.png"
-              : "/favicon-dev.png"; // localhost, *.ts.net, IPs, previews, etc.
-        if (!icon) return;
-        document.querySelectorAll('link[rel="icon"]').forEach(function (l) {
-          l.remove();
-        });
-        var link = document.createElement("link");
-        link.rel = "icon";
-        link.type = "image/png";
-        link.href = icon;
-        document.head.appendChild(link);
-      })();
-    </script>
+    <!-- No inline scripts: the CSP (frontend/nginx.conf, tauri.conf.json) has
+         no 'unsafe-inline' or hashes in script-src. The per-env favicon swap
+         runs from the bundle (src/lib/envFavicon.ts). -->
 
     <!-- PWA — installable as its own app so it gets its own macOS Focus /
          Notifications identity (and enables iOS home-screen web push later).
-         Icons are the prod art; the per-env favicon swap above doesn't touch
-         the manifest, so a dev/staging install shows the default Clawbits icon. -->
+         Icons are the prod art; the per-env favicon swap doesn't touch the
+         manifest, so a dev/staging install shows the default Clawbits icon. -->
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

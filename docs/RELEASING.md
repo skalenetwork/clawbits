@@ -23,14 +23,21 @@ Commits on your own branch are never inspected; squashing discards them.
 
 Scope the title to steer which component bumps, e.g. `fix(plugin): drop stale tool count`.
 
-## The release PR
+## The release PRs
 
-release-please keeps an open PR titled `chore: release …`. It accumulates every unreleased change,
-updates the version files and `CHANGELOG.md`, and does nothing else.
+release-please keeps one open PR per lane with unreleased changes, titled `chore: release 1.3.0`
+(product) or `chore: release openclaw-plugin 0.19.0`. Each accumulates its lane's unreleased
+changes, updates the version files and changelog, and does nothing else. Every push to `main`
+rebuilds each open release PR from `main`, so merging one lane's PR never leaves another
+conflicting on the shared manifest.
 
-**Merging that PR is what cuts a release.** Until then, nothing is published.
+**Merging a release PR is what cuts that lane's release.** Until then, nothing is published.
 
-## The five version lanes
+One PR per lane is deliberate: a combined PR carrying only the product release is never tagged
+(release-please mistakes it for a standalone release and matches the wrong component), and every
+later run then aborts on the untagged PR.
+
+## The four version lanes
 
 Configured in [`release-please-config.json`](../release-please-config.json); current versions live
 in [`.release-please-manifest.json`](../.release-please-manifest.json), which is the source of
@@ -41,7 +48,6 @@ truth — not the version fields in the files.
 | **Product** (backend + frontend + desktop) | `pyproject.toml`, `frontend/package.json`, `desktop/package.json`, `tauri.conf.json`, `src-tauri/Cargo.toml` | `v1.2.3` |
 | **OpenClaw plugin** | `plugin/package.json`, `plugin/openclaw.plugin.json` | `openclaw-plugin-v1.2.3` |
 | **CLI** | `cli/Cargo.toml` | `cli-v1.2.3` |
-| **Images** | `images/Cargo.toml` | `images-v1.2.3` |
 | **Mobile** | `apps/mobile/package.json`, `apps/mobile/app.json` | `mobile-v1.2.3` |
 
 Backend, frontend and desktop deliberately share one version, as the old `bump_version.py` enforced
@@ -55,13 +61,31 @@ next `uv lock` / `cargo build`. Only `uv lock --check` would object, and nothing
 
 | Artifact | Trigger |
 | --- | --- |
-| ClawHub tools + channel packages | push to `main`, when `plugin/package.json`'s version is not yet on ClawHub |
-| CLI binaries | push to `main` touching `cli/**` |
+| ClawHub tools + channel packages, tarballs on the `openclaw-plugin-v*` release | the plugin release PR merging (`Release` workflow) |
+| CLI binaries on the `cli-v*` release | the CLI release PR merging (`Release` workflow) |
 | Marketing site | push to `main` (staging) / `prod` (production) |
-| Desktop app | push to `prod`, or `workflow_dispatch` for a staging build |
-| Agent image | `workflow_dispatch` only — it is a multi-gigabyte deliberate action |
+| Desktop app | push to `prod` when its version is not released yet, or `workflow_dispatch` for a staging build |
+| Agent images | `Images publish`, `workflow_dispatch` only (multi-gigabyte, versioned by engine + plugin + commit, not by release-please) |
 
-Promote to production by merging `main` → `prod`.
+Running `Release` by hand republishes the plugin and CLI at their current versions; every step is
+idempotent.
+
+### Promote to production
+
+`prod` takes a merge commit, not a squash (the repo only offers squash in the UI):
+
+```bash
+git fetch origin && git switch --detach origin/prod && git merge --no-ff origin/main -m "promote main to prod" && git push origin HEAD:prod
+```
+
+A promotion without a product release builds no desktop app: that version is already released.
+
+### Shipping a plugin release
+
+The server's minimum plugin version is the deployed tree's `plugin/package.json` (Hermes:
+`extensions/hermes/plugin.yaml`), and the signup routes answer 426 below it. So after the plugin
+release PR merges: run `Images publish`, pin the new image in `clawbits-reef-store`'s role, and only
+then promote a server carrying the bumped version.
 
 ## The "Latest" release is a production endpoint
 
@@ -69,10 +93,10 @@ Promote to production by merging `main` → `prod`.
 ([`tauri.conf.json`](../desktop/src-tauri/tauri.conf.json)), so GitHub's "Latest" pointer must
 always resolve to a desktop release.
 
-**Every `gh release create` in this repo passes `--latest=false` except the desktop one.** The
-`Release` workflow also un-latests anything release-please creates, immediately after creation.
-If you add a workflow that cuts a release, it passes `--latest=false` or it breaks the updater for
-every installed app.
+**Every `gh release create` in this repo passes `--latest=false` except the desktop one.**
+release-please cannot opt out, so the `Release` workflow gives "Latest" back to the newest desktop
+release right after it creates anything. If you add a workflow that cuts a release, it passes
+`--latest=false` or it breaks the updater for every installed app.
 
 Changing the endpoint only affects *future* builds; installs in the wild keep polling whatever URL
 they shipped with. Treat it as approximately permanent.
@@ -88,6 +112,11 @@ Its leader files — `apps/mobile/package.json` and `desktop/src-tauri/Cargo.tom
 by release-please, so run it after a release PR merges.
 
 ## If a release goes wrong
+
+**release-please stopped opening PRs.** Its log ends in "There are untagged, merged release PRs
+outstanding". Find the merged release PR still labelled `autorelease: pending`, create the release
+it describes (`gh release create <tag> --target <merge sha> --latest=false --notes …`), then swap
+the label to `autorelease: tagged`.
 
 Code releases are additive. Delete the GitHub release and its tag, correct the version in
 `.release-please-manifest.json`, and push; release-please recomputes from there.

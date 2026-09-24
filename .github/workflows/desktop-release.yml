@@ -61,6 +61,7 @@ jobs:
       release-tag: ${{ steps.compute.outputs.release-tag }}
       is-prerelease: ${{ steps.compute.outputs.is-prerelease }}
       channel: ${{ steps.compute.outputs.channel }}
+      build: ${{ steps.fresh.outputs.build }}
     steps:
       - uses: actions/checkout@v7
 
@@ -113,7 +114,11 @@ jobs:
 
           echo "::notice::Building $CHANNEL v$VERSION against $API_URL"
 
-      - name: Refuse a duplicate release
+      # Prod's version comes from tauri.conf.json, which only a product release bumps,
+      # so a promotion without one finds that version already published: build
+      # nothing. Re-running the same commit rebuilds and replaces the assets.
+      - name: Skip a version that is already released
+        id: fresh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -121,26 +126,18 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # Prod's version comes from tauri.conf.json alone, so a second push to
-          # `prod` without a version bump collides with the existing tag. Left
-          # to the publish job that surfaces as a ~25-minute build that dies at
-          # the last step; catch it here in seconds instead.
-          #
-          # Re-running the *same* commit is legitimate (e.g. a flaky publish),
-          # so that case passes through — the publish job replaces the assets.
           EXISTING=$(gh release view "$RELEASE_TAG" --json targetCommitish -q .targetCommitish 2>/dev/null || true)
-          if [ -z "$EXISTING" ]; then
-            echo "No release exists for $RELEASE_TAG — proceeding."
-          elif [ "$EXISTING" = "$SOURCE_SHA" ]; then
-            echo "::notice::$RELEASE_TAG already exists for this commit; its assets will be replaced."
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "$SOURCE_SHA" ]; then
+            echo "::notice::$RELEASE_TAG is already released from $EXISTING; nothing to build."
+            echo "build=false" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::Release $RELEASE_TAG already exists, built from $EXISTING. Bump \"version\" in desktop/src-tauri/tauri.conf.json (or delete that release) before releasing again."
-            exit 1
+            echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
   build:
     name: build (${{ matrix.platform }})
     needs: setup
+    if: needs.setup.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:

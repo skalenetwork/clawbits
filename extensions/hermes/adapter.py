@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,17 @@ _turn_streams: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
 )
 
 
+# Ids of the ``/stop`` events ``_stop_turns`` synthesizes; post ids are numeric.
+_STOP_PREFIX = "stop-"
+
+
+@dataclass
+class _Turn:
+    source: SessionSource
+    heartbeat: asyncio.Task[None]
+    stopped: bool = False
+
+
 def _truthy_env(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -234,8 +246,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         self._automations_task: asyncio.Task[None] | None = None
         self._automations_wake = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
-        # "generating" heartbeats of the turns in flight, keyed by message id.
-        self._heartbeats: dict[str, asyncio.Task[None]] = {}
+        # Turns in flight by message id, each with its "generating" heartbeat.
+        self._turns: dict[str, _Turn] = {}
         # Insertion-ordered post-id dedupe window (dict, not set) capped at
         # _SEEN_CAP so it can't grow forever; _remember() evicts oldest-first.
         self._seen: dict[str, None] = {}
@@ -328,14 +340,14 @@ class ClawbitsAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             setattr(self, attr, None)
-        heartbeats = list(self._heartbeats.values())
-        self._heartbeats.clear()
+        heartbeats = [turn.heartbeat for turn in self._turns.values()]
+        self._turns.clear()
         for heartbeat in heartbeats:
             heartbeat.cancel()
         await asyncio.gather(*heartbeats, return_exceptions=True)
         for message_id, stream_chat in list(self._open_streams.items()):
             await self._close_stream_best_effort(
-                stream_chat, message_id, "_(reply interrupted)_"
+                stream_chat, message_id, replace="_(reply interrupted)_"
             )
         self._loop = None
 
@@ -466,6 +478,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
                 chat_id,
                 {"kind": "thinking", "label": _sanitize_activity(content[2:])},
             )
+            return SendResult(success=True)
+        if reply_key.startswith(_STOP_PREFIX):
             return SendResult(success=True)
 
         email_context = self._email_reply_contexts.get(reply_key)
@@ -607,7 +621,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
         note = "\n\n_(reply truncated)_"
         return content[: _PATCH_REPLACE_MAX_CHARS - len(note)].rstrip() + note
 
-    async def _close_stream_best_effort(self, chat_id: str, message_id: str, reason: str) -> None:
+    async def _close_stream_best_effort(self, chat_id: str, message_id: str, **patch: str) -> None:
         """Never leave a draft in `streaming`.
 
         An abandoned draft shimmers in the channel and pins the "generating"
@@ -615,7 +629,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
         """
         try:
             await asyncio.to_thread(
-                self.client.patch_message, chat_id, message_id, replace=reason, done=True
+                self.client.patch_message, chat_id, message_id, done=True, **patch
             )
         except Exception:
             logger.debug("clawbits: could not close abandoned stream", exc_info=True)
@@ -962,6 +976,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
                             await self._dispatch_realtime_post(event)
                         elif event_type == "automation.sync":
                             self._automations_wake.set()
+                        elif event_type == "turn.stop":
+                            await self._stop_turns(str(event.get("channel_id") or ""))
                         elif event_type in ("lobstertalk.consider", "mutualist.consider"):
                             await self._dispatch_attention(event)
             except asyncio.CancelledError:
@@ -1725,28 +1741,50 @@ class ClawbitsAdapter(BasePlatformAdapter):
         # a busy session arrive through this same inbound path.
         await self.handle_message(event)
 
+    async def _stop_turns(self, chat_id: str) -> None:
+        """Hard-stop this chat's running turns with Hermes's own ``/stop``: bare text, which
+        ``_maybe_dispatch`` never produces, on each turn's own source (channel sessions are
+        per sender). ``send`` swallows Hermes's answer."""
+        for message_id, turn in list(self._turns.items()):
+            if turn.source.chat_id != chat_id or turn.stopped:
+                continue
+            turn.stopped = True
+            await self.handle_message(
+                MessageEvent(
+                    text="/stop",
+                    message_type=MessageType.TEXT,
+                    source=turn.source,
+                    raw_message=None,
+                    message_id=f"{_STOP_PREFIX}{message_id}",
+                )
+            )
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         _turn_streams.set(set())
         chat_id = event.source.chat_id
-        self._heartbeats[event.message_id] = asyncio.create_task(self._generating_heartbeat(chat_id))
+        self._turns[event.message_id] = _Turn(
+            event.source, asyncio.create_task(self._generating_heartbeat(chat_id))
+        )
         await self._set_status_best_effort(chat_id, "generating")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         chat_id = event.source.chat_id
-        heartbeat = self._heartbeats.pop(event.message_id, None)
-        if heartbeat is not None:
-            heartbeat.cancel()
+        turn = self._turns.pop(event.message_id, None)
+        if turn is not None:
+            turn.heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
-        # A turn that raised, or produced no final reply, can leave its draft open.
+                await turn.heartbeat
+        stopped = turn is not None and turn.stopped
+        # A turn that raised, or produced no final reply, can leave its draft
+        # open; a stopped one keeps what it streamed.
+        close = {"append": "\n\n_(stopped)_"} if stopped else {"replace": "_(reply failed to generate)_"}
         for message_id in list(_turn_streams.get() or ()):
             if message_id in self._open_streams:
-                await self._close_stream_best_effort(
-                    self._open_streams[message_id], message_id, "_(reply failed to generate)_"
-                )
+                await self._close_stream_best_effort(self._open_streams[message_id], message_id, **close)
         # The durable read pointer advances only past a settled turn; a failed
-        # or cancelled one leaves it, so the post re-delivers on the next boot.
+        # one leaves it, so the post re-delivers on the next boot. A stopped
+        # turn is settled: the human asked for it to end.
         settled = _post_sequence(event.raw_message) if isinstance(event.raw_message, dict) else 0
-        if outcome is ProcessingOutcome.SUCCESS and settled > 0:
+        if (outcome is ProcessingOutcome.SUCCESS or stopped) and settled > 0:
             await self._ack_read(chat_id, settled)
         await self._set_status_best_effort(chat_id, "online")

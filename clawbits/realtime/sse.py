@@ -590,6 +590,14 @@ async def publish_model_selection(
     )
 
 
+async def publish_turn_stop(bus: EventBus, agent_id: str, channel_id: str) -> int | None:
+    """Tell a live agent WebSocket to abort its turn in ``channel_id``. Returns the subscriber
+    count (``None`` on failure): ``0`` means no live agent socket heard it."""
+    return await bus.publish(
+        agent_topic(agent_id), {"type": "turn.stop", "channel_id": channel_id}
+    )
+
+
 async def publish_attention_nudge(
     bus: EventBus, agent_id: str, channel_id: str, post: dict[str, Any]
 ) -> int | None:

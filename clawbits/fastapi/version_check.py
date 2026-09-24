@@ -300,3 +300,16 @@ def require_supported_plugin(
             ),
         },
     )
+
+
+# The first plugin of each kind that handles ``turn.stop``; min_plugin_version() moves with every bump.
+_TURN_STOP_MIN_VERSIONS = {
+    PLUGIN_KIND_OPENCLAW: Version("0.19.0"),
+    PLUGIN_KIND_HERMES: Version("0.10.0"),
+}
+
+
+def supports_turn_stop(agent_type: str | None, plugin_version: str | None) -> bool:
+    floor = _TURN_STOP_MIN_VERSIONS.get(agent_type or "")
+    version = _parse_header(plugin_version)
+    return floor is not None and version is not None and version >= floor

@@ -1,14 +1,15 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "//": "Versioning is derived from Conventional Commit subjects, which are trustworthy here only because the repo is squash-merge-only and the PR title (which becomes the squashed commit subject) is linted by ci.yml. Replaces scripts/bump_version.py and semantic-release. The five groups below mirror how the repo actually ships: backend+frontend+desktop move as one product version (as bump_version.py enforced by hand), everything else moves on its own cadence.",
-  "separate-pull-requests": false,
-  "pull-request-title-pattern": "chore: release ${version}",
+  "//": "Versions come from Conventional Commit subjects: squash-merge only, PR titles linted by ci.yml. One release PR per lane: a combined PR carrying only the product release is never tagged (release-please treats a single component-less release as standalone and matches it against the branch's component, which a combined branch lacks), and every later run then aborts on the untagged PR. always-update rebuilds every open release PR from main on each run: by default a PR whose notes did not change keeps its stale manifest and conflicts once a sibling lane releases.",
+  "separate-pull-requests": true,
+  "always-update": true,
+  "pull-request-title-pattern": "chore: release${component} ${version}",
   "packages": {
     ".": {
       "release-type": "python",
       "package-name": "clawbits",
-      "//": "The product version: backend, frontend and desktop share it. pyproject.toml is the anchor because clawbits/fastapi/version_check.py:server_version() reads it at runtime. uv.lock and desktop/src-tauri/Cargo.lock are deliberately NOT listed: neither can be addressed by jsonpath, `uv sync --frozen` and `cargo build` both tolerate the drift, and each self-heals on the next `uv lock` / `cargo build`.",
-      "//exclude-paths": "A root package matches EVERY file in the repo, so without this a `feat(plugin):` would bump the product version as well as the plugin's. These are the paths that version on their own (the four packages below) or do not ship a version at all (web, ironclaw-channel).",
+      "//": "The product version, shared by backend, frontend and desktop. pyproject.toml is the anchor: server_version() reads it. uv.lock and Cargo.lock are not addressable by jsonpath and self-heal on the next lock.",
+      "//exclude-paths": "The root matches every file, so paths that version on their own or ship no version are excluded.",
       "exclude-paths": [
         "plugin",
         "cli",
@@ -28,8 +29,7 @@
     "plugin": {
       "release-type": "node",
       "component": "openclaw-plugin",
-      "//": "Keeps the existing openclaw-plugin-v* tag namespace. The tools and channel packages share this one version by construction now that a single job publishes both.",
-      "//tools-manifests": "The tools pair is listed so the tree is never self-inconsistent: plugin/test/tools-entry.test.ts asserts package.tools.json and package.json agree, which on a release PR only holds if release-please writes both. One updater per path — the nested `openclaw.version` blocks are left to release.yml, which stamps every manifest at publish.",
+      "//": "Tools and channel packages share this version. The nested `openclaw.version` blocks are stamped by release.yml at publish: one updater per path.",
       "extra-files": [
         { "type": "json", "path": "openclaw.plugin.json", "jsonpath": "$.version" },
         { "type": "json", "path": "package.tools.json", "jsonpath": "$.version" },
@@ -40,14 +40,10 @@
       "release-type": "rust",
       "component": "cli"
     },
-    "images": {
-      "release-type": "rust",
-      "component": "images"
-    },
     "apps/mobile": {
       "release-type": "node",
       "component": "mobile",
-      "//": "scripts/sync_native_versions.py still mirrors this into CFBundleShortVersionString / versionCode; its leader file is the one release-please writes here.",
+      "//": "scripts/sync_native_versions.py mirrors this into the native projects.",
       "extra-files": [
         { "type": "json", "path": "app.json", "jsonpath": "$.expo.version" }
       ]
