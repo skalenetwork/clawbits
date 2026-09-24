@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Clawbits",
   "mainBinaryName": "clawbits",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "identifier": "ai.clawbits.desktop",
   "build": {
     "frontendDist": "../../frontend/dist",
@@ -48,7 +48,9 @@
         "base-uri": "'none'",
         "form-action": "'self'"
       },
-      "dangerousDisableAssetCspModification": ["style-src"]
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     },
     "macOSPrivateApi": true
   },
