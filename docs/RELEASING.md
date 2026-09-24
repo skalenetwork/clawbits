@@ -27,7 +27,9 @@ Scope the title to steer which component bumps, e.g. `fix(plugin): drop stale to
 
 release-please keeps one open PR per lane with unreleased changes, titled `chore: release 1.3.0`
 (product) or `chore: release openclaw-plugin 0.19.0`. Each accumulates its lane's unreleased
-changes, updates the version files and changelog, and does nothing else.
+changes, updates the version files and changelog, and does nothing else. Every push to `main`
+rebuilds each open release PR from `main`, so merging one lane's PR never leaves another
+conflicting on the shared manifest.
 
 **Merging a release PR is what cuts that lane's release.** Until then, nothing is published.
 
