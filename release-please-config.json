@@ -1,7 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "//": "Versions come from Conventional Commit subjects: squash-merge only, PR titles linted by ci.yml. One release PR per lane: a combined PR carrying only the product release is never tagged (release-please treats a single component-less release as standalone and matches it against the branch's component, which a combined branch lacks), and every later run then aborts on the untagged PR.",
+  "//": "Versions come from Conventional Commit subjects: squash-merge only, PR titles linted by ci.yml. One release PR per lane: a combined PR carrying only the product release is never tagged (release-please treats a single component-less release as standalone and matches it against the branch's component, which a combined branch lacks), and every later run then aborts on the untagged PR. always-update rebuilds every open release PR from main on each run: by default a PR whose notes did not change keeps its stale manifest and conflicts once a sibling lane releases.",
   "separate-pull-requests": true,
+  "always-update": true,
   "pull-request-title-pattern": "chore: release${component} ${version}",
   "packages": {
     ".": {
