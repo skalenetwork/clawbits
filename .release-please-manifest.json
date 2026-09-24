@@ -1,5 +1,4 @@
 {
-  "//": "Current version per lane; release-please reads this, not the files. ClawHub and the Tauri updater require strictly increasing versions: never lower a number here.",
   ".": "1.2.1",
   "plugin": "0.18.0",
   "cli": "0.1.2",
