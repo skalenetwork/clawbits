@@ -1,6 +1,6 @@
 [package]
 name = "clawbits"
-version = "1.3.0"
+version = "1.4.0"
 description = "Clawbits desktop app"
 authors = ["Clawbits"]
 edition = "2021"
