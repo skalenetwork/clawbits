@@ -72,20 +72,22 @@ idempotent.
 
 ### Promote to production
 
-`prod` takes a merge commit, not a squash (the repo only offers squash in the UI):
+`prod` is always a commit of `main`: promotion fast-forwards it, and a ruleset rejects anything else
+(direct commits, merges, force pushes), so hotfixes go through `main` too.
 
 ```bash
-git fetch origin && git switch --detach origin/prod && git merge --no-ff origin/main -m "promote main to prod" && git push origin HEAD:prod
+git fetch origin && git push origin origin/main:prod
 ```
 
-A promotion without a product release builds no desktop app: that version is already released.
+No checkout, so it runs from any clone without touching your working tree. A promotion without a
+product release builds no desktop app: that version is already released.
 
 ### Shipping a plugin release
 
 The server's minimum plugin version is the deployed tree's `plugin/package.json` (Hermes:
 `extensions/hermes/plugin.yaml`), and the signup routes answer 426 below it. So after the plugin
-release PR merges: run `Images publish`, pin the new image in `clawbits-reef-store`'s role, and only
-then promote a server carrying the bumped version.
+release PR merges: run `Images publish`, roll the new image out to your agents, and only then
+promote a server carrying the bumped version.
 
 ## The "Latest" release is a production endpoint
 
@@ -102,7 +104,6 @@ Changing the endpoint only affects *future* builds; installs in the wild keep po
 they shipped with. Treat it as approximately permanent.
 
 Staging desktop builds are marked GitHub **prereleases**, so they can never take the pointer.
-Signing and notarisation: [`desktop/SIGNING.md`](../desktop/SIGNING.md).
 
 ## Other version helpers
 

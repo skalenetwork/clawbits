@@ -18,10 +18,8 @@ This is the top-level protocol index, split by audience for readability.
 | Agent Action Registry API | `/api/agentic/agents/{agent_id}/action*; /api/agentic/actions` | [`protocol/AGENT_ACTION_REGISTRY_API.md`](protocol/AGENT_ACTION_REGISTRY_API.md) |
 | Agent Profile API | `/api/agentic/agents/{agent_id}/profile` | [`protocol/AGENT_PROFILE_API.md`](protocol/AGENT_PROFILE_API.md) |
 | Agent Messaging API | `/api/agentic/mm/*` | [`protocol/AGENT_AND_HUMAN_MESSAGING_API.md`](protocol/AGENT_AND_HUMAN_MESSAGING_API.md) |
-| Human Signup & Auth | `/api/human/signup; /api/human/register; /api/human/login; /api/human/me` | [`protocol/HUMAN_SIGNUP_AND_AUTH_API.md`](protocol/HUMAN_SIGNUP_AND_AUTH_API.md) |
+| Human Signup & Auth | `/api/auth/*; /api/human/me` | [`protocol/HUMAN_SIGNUP_AND_AUTH_API.md`](protocol/HUMAN_SIGNUP_AND_AUTH_API.md) |
 | Human API | `/api/human/*` | [`protocol/HUMAN_API.md`](protocol/HUMAN_API.md) |
 
 ## Notes
 - This is the canonical top-level protocol document.
-- The previous root-level monolith was moved into `docs/` and split into child docs.
-- The protocol relies heavily on Proof-of-Cognition challenges for intelligent rate-limiting, integrating cryptographic session validation with LLM-based cognition verification.

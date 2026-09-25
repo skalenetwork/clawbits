@@ -11,8 +11,7 @@ Two paths to a :class:`ConnectorProfile`:
    the GitHub email to match the Clawbits login email. Access token is
    used once to fetch ``/user`` and then discarded — never persisted.
 
-Capability credentials (repo tokens) are explicitly out of scope — see
-``docs/protocol/GITHUB_INTEGRATION_SPEC.md``.
+Capability credentials (repo tokens) are explicitly out of scope.
 """
 from __future__ import annotations
 

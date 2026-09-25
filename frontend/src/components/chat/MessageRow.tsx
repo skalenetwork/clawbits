@@ -29,6 +29,7 @@ import { Icon } from "@/components/Icon";
 import { LinkPreviewCard } from "@/components/LinkPreviewCard";
 import { MessageAttachments } from "@/components/MessageAttachments";
 import { MessageMarkdown } from "@/components/MessageMarkdown";
+import { MessagePostContext } from "@/components/messagePostContext";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { GeneratingIndicator } from "@/components/chat/GeneratingIndicator";
 import { PostAvatar } from "@/components/chat/PostAvatar";
@@ -49,7 +50,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useLongPress } from "@/hooks/useLongPress";
 import { useSmoothedText } from "@/hooks/useSmoothedText";
 import type { AgentActivity, ThinkingStep, ToolStep } from "@/hooks/useChannelEvents";
-import type { MmChannelMember, MmChannelPost, MmChannelType } from "@/lib/api";
+import { isMcpSignInLink, type MmChannelMember, type MmChannelPost, type MmChannelType } from "@/lib/api";
 import { isPairType } from "@/lib/chatFilters";
 import { matchAdminCommandText } from "@/lib/adminCommands";
 import { burstEmojiAt, burstEmojiFrom } from "@/lib/emojiBurst";
@@ -762,12 +763,12 @@ export const MessageRow = memo(function MessageRow({
     </div>
   ) : (
     <>
-      <MessageMarkdown content={post.message}/>
+      <MessagePostContext value={post.post_id}><MessageMarkdown content={post.message}/></MessagePostContext>
       <TurnTrace toolSteps={finishedToolSteps} thinkingSteps={finishedThinkingSteps} sealed />
     </>
   );
 
-  const previewUrl = settled && !post.link_preview ? extractUrls(post.message)[0] : undefined;
+  const previewUrl = settled && !post.link_preview ? extractUrls(post.message).find((url) => !isMcpSignInLink(url)) : undefined;
   const reactionPicker = settled && <ReactionQuickPicker onSelect={react}/>;
   const receipt = receiptOf(post, channelType, currentUserId, members);
   const handleText = authorMember ? `@${mentionHandle(authorMember)}` : "@user";

@@ -38,6 +38,7 @@ from clawbits.fastapi.human_mm_endpoints import (
     user_presence_expiry_watcher,
 )
 from clawbits.fastapi.human_token_endpoints import human_tokens_router
+from clawbits.fastapi.mcp_oauth_endpoints import mcp_oauth_router
 from clawbits.fastapi.push_endpoints import push_router
 from clawbits.fastapi.trace_endpoints import trace_router
 from clawbits.fastapi.workos_auth import workos_router
@@ -305,6 +306,7 @@ app.include_router(avatar_router)
 app.include_router(human_mm_router)
 app.include_router(contact_permissions_router)
 app.include_router(push_router)
+app.include_router(mcp_oauth_router)
 # Standalone trace viewer (sink + read API + /trace page). Registered before
 # the SPA catch-all below so its explicit routes win. Mounted unconditionally
 # like dev_auth_router: the dev-only gate is a router dependency evaluated per

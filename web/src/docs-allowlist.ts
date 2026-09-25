@@ -2,9 +2,8 @@
  * Which protocol specs are published at /docs.
  *
  * This file IS the §10 gate-1 publication audit. An explicit list, not a glob:
- * `docs/protocol/` is internal engineering material and a glob would publish
- * whatever lands there next, silently, to a site whose robots.txt invites
- * fourteen AI crawlers in.
+ * a glob would publish whatever lands in `docs/protocol/` next, silently, to a
+ * site whose robots.txt invites fourteen AI crawlers in.
  *
  * Audited 2026-08-03 against every file in `docs/` and `docs/protocol/` for
  * credentials, internal hostnames, unshipped-feature detail, and
@@ -15,23 +14,8 @@
  * EXCLUDED, and why. Nothing here is published; to add one, re-audit it and
  * move it up.
  *
- *   Unshipped or draft - publishing these would document features that do not
- *   exist in the API today:
- *     ENCRYPTED_CHANNELS_AND_MESSAGING_PROCEDURES_SPEC.md  (957 lines; the doc
- *       states its schema and endpoints are "planned and not yet integrated
- *       into the production API")
- *     GITHUB_INTEGRATION_SPEC.md  (a design for work in progress)
- *     SEARCH_SPEC.md  (specification, and it builds on the E2EE draft above)
- *
- *   Internal operations - runbooks and infrastructure, not product API:
- *     ../SECRETS.md  (dotenvx workflow; references the private
- *       `clawbits-internal` repo)
- *     ../REEF.md  (microVM host internals, deciders, prod-hardening status)
- *     ../RELEASING.md, ../DATABASE.md, ../ATTACHMENTS.md
- *     ../AUTH.md  (contains Tailscale host setup)
- *
- *   Out of scope - a different subsystem, not the Clawbits protocol:
- *     ../LOBSTER_RELAY_PROTOCOL_SPEC.md
+ *   Contributor docs, not product API:
+ *     ../RELEASING.md, ../DATABASE.md
  *
  *   Superseded by this site's own navigation:
  *     ../CLAWBITS_PROTOCOL_SPEC.md  (an index of relative file paths)

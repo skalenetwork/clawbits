@@ -13,12 +13,13 @@ ep="${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
 house="${OPENCLAW_WORKSPACE_DIR:-/home/node/.openclaw/workspace}/.clawbits"
 
 if [ "$(id -u)" = 0 ]; then
-  install -d -o node -g node /home/node/.openclaw/state "$house"
+  install -d -o node -g node /home/node/.openclaw /home/node/.openclaw/state "$house"
   install -o node -g node -m 0644 /usr/local/share/clawbits-soul.md "$house/SOUL.md"
 else
   mkdir -p /home/node/.openclaw/state "$house"
   cp /usr/local/share/clawbits-soul.md "$house/SOUL.md"
 fi
+[ -s "$OPENCLAW_CONFIG_PATH" ] || rm -f "$OPENCLAW_CONFIG_PATH"
 
 # The gateway token is a property of this machine, not of the fleet file: it
 # lives on the state volume, so it survives a recreate and never has to travel

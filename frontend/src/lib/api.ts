@@ -1147,6 +1147,25 @@ export async function stopAgentTurn(channelId: string, agentId: string) {
   });
 }
 
+export function isMcpSignInLink(url: string): boolean {
+  try {
+    return new URL(new URL(url).searchParams.get("redirect_uri") ?? "").pathname.startsWith("/oauth/mcp/callback/");
+  } catch {
+    return false;
+  }
+}
+
+export async function claimMcpSignIn(url: string, postId: number) {
+  return request<{ url: string }>("/api/human/mcp-oauth/claim", { ...json("POST", { url, post_id: postId }), detail: true });
+}
+
+export async function completeMcpSignIn(agentId: string, server: string, state: string, code: string) {
+  return request<{ agent_name: string; channel_id: string }>("/api/human/mcp-oauth/callback", {
+    ...json("POST", { agent_id: agentId, server, state, code }),
+    detail: true,
+  });
+}
+
 export type GlobalUserStatus = "online" | "idle" | "offline";
 
 export type AgentLivenessStatus = "setup" | "available" | "offline";

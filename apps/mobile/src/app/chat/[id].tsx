@@ -15,6 +15,7 @@ import {
   type ComponentRef,
 } from "react";
 import {
+  Alert,
   AppState,
   DynamicColorIOS,
   Linking,
@@ -31,7 +32,7 @@ import {
 } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDerivedValue, useSharedValue } from "react-native-reanimated";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, isMcpSignInLink } from "@/lib/api";
 import { historyKey, useHistory, useLiveEvents } from "@/lib/data";
 import { glyphKind, isPairChannel } from "@/lib/chatFilters";
 import {
@@ -470,7 +471,15 @@ function BubbleTail({ own }: { own: boolean }) {
   );
 }
 
-function BubbleText({ text, own }: { text: string; own: boolean }) {
+function BubbleText({ text, own, postId }: { text: string; own: boolean; postId: number }) {
+  const { session } = useSession();
+  const open = async (url: string) => {
+    if (!session || !isMcpSignInLink(url)) return Linking.openURL(url);
+    const claimed = await api.claimMcpSignIn(session.token, url, postId).catch((err: unknown) => {
+      Alert.alert("Could not start the sign-in", err instanceof Error ? err.message : undefined);
+    });
+    if (claimed) await Linking.openURL(claimed.url);
+  };
   if (!text.includes("http")) {
     return (
       <Text style={[chat.message, own ? chat.outgoingText : chat.incomingText]}>
@@ -478,7 +487,7 @@ function BubbleText({ text, own }: { text: string; own: boolean }) {
       </Text>
     );
   }
-  const parts = text.split(/(https?:\/\/[^\s]+)/g);
+  const parts = text.split(/(https?:\/\/[^\s()<>`*]*[^\s()<>`*.,;:!?'"])/g);
   return (
     <Text style={[chat.message, own ? chat.outgoingText : chat.incomingText]}>
       {parts.map((part, index) =>
@@ -487,7 +496,7 @@ function BubbleText({ text, own }: { text: string; own: boolean }) {
             key={index}
             style={chat.link}
             onPress={() => {
-              void Linking.openURL(part);
+              void open(part);
             }}
           >
             {part}
@@ -555,7 +564,7 @@ const Message = memo(function Message({
               bubbleShape(own, groupedPrev, groupedNext),
             ]}
           >
-            <BubbleText text={body} own={own} />
+            <BubbleText text={body} own={own} postId={post.post_id} />
           </View>
           {!groupedNext && <BubbleTail own={own} />}
         </View>

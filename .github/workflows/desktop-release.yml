@@ -237,8 +237,7 @@ jobs:
           # Signs the .app/.dmg with our Developer ID cert (imported from the
           # base64 .p12 in APPLE_CERTIFICATE) and notarizes via the App Store
           # Connect API key (.p8 written to a temp file by the "Write ASC API
-          # key" step above, macOS only). See desktop/SIGNING.md. Inert on
-          # non-macOS runners.
+          # key" step above, macOS only). Inert on non-macOS runners.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
