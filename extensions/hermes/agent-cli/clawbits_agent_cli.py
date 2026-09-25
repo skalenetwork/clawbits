@@ -31,7 +31,7 @@ def load_json(value: str | None) -> dict[str, Any]:
     if not value:
         return {}
     if value.startswith("@"):
-        return json.loads(Path(value[1:]).read_text())
+        return json.loads(Path(value[1:]).read_text(encoding="utf-8"))
     return json.loads(value)
 
 
@@ -64,6 +64,7 @@ class Client:
         session_token: str | None = None,
         challenge_response: str | None = None,
         content_type: str = "application/json",
+        headers: dict[str, str] | None = None,
     ) -> tuple[bytes, Any]:
         query = {k: v for k, v in (query or {}).items() if v is not None}
         url = self.base_url + path
@@ -93,6 +94,8 @@ class Client:
             req.add_header("session_token", session_token)
         if challenge_response:
             req.add_header("challenge-RESPONSE", challenge_response)
+        for name, value in (headers or {}).items():
+            req.add_header(name, value)
         try:
             with urllib.request.urlopen(req) as resp:
                 return resp.read(), resp.headers
@@ -119,7 +122,11 @@ def add_common(p: argparse.ArgumentParser) -> None:
 
 
 def add_write_auth(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--answer", help="Auto-fetch /auth/challenge and use this answer")
+    p.add_argument(
+        "--answer",
+        default=os.environ.get("CLAWBITS_CHALLENGE_ANSWER"),
+        help="Auto-fetch /auth/challenge and use this answer (default: $CLAWBITS_CHALLENGE_ANSWER)",
+    )
     p.add_argument("--session-token")
     p.add_argument("--challenge-response")
 
@@ -221,7 +228,7 @@ def run(args: argparse.Namespace) -> None:
     elif cmd == "mm-status":
         body = {"status": args.status}
         if args.activity_json:
-            body["activity"] = json.loads(args.activity_json)
+            body["activity"] = load_json(args.activity_json)
         data, h = c.request("POST", f"/api/agentic/mm/channels/{args.channel_id}/status", json_body=body, session_token=st, challenge_response=cr)
     elif cmd == "alive":
         # Liveness heartbeat — the analogue of a human's online dot. Bearer key only
@@ -263,8 +270,17 @@ def run(args: argparse.Namespace) -> None:
         data, h = c.request("GET", f"/api/agentic/agents/{args.agent_id}/email/count")
     elif cmd == "email-inbox":
         data, h = c.request("GET", f"/api/agentic/agents/{args.agent_id}/email/inbox", query={"limit": args.limit, "offset": args.offset})
+    elif cmd == "email-changes":
+        q = {"after_uid": args.after_uid, "uidvalidity": args.uidvalidity, "through_uid": args.through_uid, "limit": args.limit}
+        data, h = c.request("GET", f"/api/agentic/agents/{args.agent_id}/email/changes", query=q)
     elif cmd == "email-get":
-        data, h = c.request("GET", f"/api/agentic/agents/{args.agent_id}/email/{args.message_uid}")
+        # --peek reads without setting the Seen flag; --uidvalidity pins the mailbox epoch (409 on mismatch).
+        q = {
+            "mark_read": "false" if args.peek else None,
+            "uidvalidity": args.uidvalidity,
+            "attachment_content": "false" if args.no_attachment_content else None,
+        }
+        data, h = c.request("GET", f"/api/agentic/agents/{args.agent_id}/email/{args.message_uid}", query=q)
     elif cmd == "email-delete":
         data, h = c.request("DELETE", f"/api/agentic/agents/{args.agent_id}/email/{args.message_uid}", session_token=st, challenge_response=cr)
     elif cmd == "email-send":
@@ -273,7 +289,10 @@ def run(args: argparse.Namespace) -> None:
         body = load_json(args.json) if args.json else {"subject": args.subject, "message": args.message}
         if args.headers_json:
             body["headers"] = json.loads(args.headers_json)
-        data, h = c.request("POST", f"/api/agentic/agents/{args.agent_id}/email/send", json_body=body, session_token=st, challenge_response=cr)
+        key = {"Idempotency-Key": args.idempotency_key} if args.idempotency_key else None
+        data, h = c.request("POST", f"/api/agentic/agents/{args.agent_id}/email/send", json_body=body, session_token=st, challenge_response=cr, headers=key)
+    elif cmd == "email-delivery":
+        data, h = c.request("GET", f"/api/agentic/agents/{args.agent_id}/email/deliveries/{urllib.parse.quote(args.key, safe='')}")
 
     # Automations sync
     elif cmd == "automations-desired":
@@ -435,7 +454,7 @@ def main() -> None:
     p = sp("mm-status", True)
     p.add_argument("channel_id")
     p.add_argument("status", choices=["online", "idle", "typing", "generating", "offline"])
-    p.add_argument("--activity-json")
+    p.add_argument("--activity-json", help="Activity JSON or @file")
     p = sp("mm-file-upload", True)
     p.add_argument("channel_id")
     p.add_argument("--filename")
@@ -469,9 +488,18 @@ def main() -> None:
     p.add_argument("agent_id")
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--offset", type=int, default=0)
+    p = sp("email-changes")
+    p.add_argument("agent_id")
+    p.add_argument("--after-uid", type=int)
+    p.add_argument("--uidvalidity", type=int)
+    p.add_argument("--through-uid", type=int)
+    p.add_argument("--limit", type=int)
     p = sp("email-get")
     p.add_argument("agent_id")
     p.add_argument("message_uid", type=int)
+    p.add_argument("--peek", action="store_true", help="Read without marking the message read")
+    p.add_argument("--uidvalidity", type=int, help="Fail with 409 unless the mailbox epoch matches")
+    p.add_argument("--no-attachment-content", action="store_true", help="Omit attachment bytes (sizes kept)")
     p = sp("email-delete", True)
     p.add_argument("agent_id")
     p.add_argument("message_uid", type=int)
@@ -481,6 +509,10 @@ def main() -> None:
     p.add_argument("message", nargs="?")
     p.add_argument("--headers-json")
     p.add_argument("--json", help="Whole request body as JSON or @file (keeps it off argv)")
+    p.add_argument("--idempotency-key", help="Send at most once per key; the response is the delivery record")
+    p = sp("email-delivery")
+    p.add_argument("agent_id")
+    p.add_argument("key")
 
     sp("automations-desired")
     p = sp("automations-state")

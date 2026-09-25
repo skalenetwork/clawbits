@@ -1668,3 +1668,43 @@ class AgentModelCatalog(SQLModel, table=True):
     default_model: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
     default_thinking: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
     reported_at: datetime = Field(sa_column=SAColumn(SADateTime(timezone=True), nullable=False))
+
+
+class EmailDelivery(SQLModel, table=True):
+    """One keyed POST /email/send: the durable outbox record that turns a retried key into a lookup, not a resend.
+
+    Holds a hash of the request, never its body: a retry repeats the identical request. ``attempting``
+    is a lease; once it expires the record reads as ``unknown`` and is never sent again.
+    """
+
+    __tablename__ = "email_deliveries"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "idempotency_key", name="uq_email_deliveries_agent_key"),
+        CheckConstraint(
+            "state IN ('queued', 'attempting', 'accepted', 'retry_wait', 'failed', 'unknown')",
+            name="email_deliveries_state_check",
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    agent_id: str = Field(nullable=False, foreign_key="agents.agent_id")
+    idempotency_key: str = Field(sa_column=SAColumn(Text, nullable=False))
+    payload_hash: str = Field(sa_column=SAColumn(Text, nullable=False))
+    from_addr: str = Field(sa_column=SAColumn(Text, nullable=False))
+    to_addr: str = Field(sa_column=SAColumn(Text, nullable=False))
+    subject: str = Field(sa_column=SAColumn(Text, nullable=False))
+    message_id: str = Field(sa_column=SAColumn(Text, nullable=False))
+    state: str = Field(default="queued", sa_column=SAColumn(Text, nullable=False, server_default="queued"))
+    attempts: int = Field(default=0, sa_column=SAColumn(Integer, nullable=False, server_default="0"))
+    last_error: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
+    lease_expires_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    next_attempt_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    accepted_at: datetime | None = Field(
+        default=None, sa_column=SAColumn(SADateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime | None = Field(default=None, sa_column=_server_now_column(nullable=False))
+    updated_at: datetime | None = Field(default=None, sa_column=_server_now_column(nullable=False))

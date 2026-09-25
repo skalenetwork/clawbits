@@ -109,13 +109,13 @@ def _stored_identity() -> tuple[str, str] | None:
 
 
 def _save_identity(values: dict[str, str]) -> Path:
-    """Replace the identity lines of the Hermes ``.env``; every other line stays."""
+    """Replace the identity lines (and any key in ``values``) of the Hermes ``.env``; every other line stays."""
     path = _env_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     kept = [
         line
         for line in (path.read_text(encoding="utf-8").splitlines() if path.exists() else [])
-        if line.partition("=")[0] not in IDENTITY
+        if line.partition("=")[0] not in (*IDENTITY, *values)
     ]
     kept.extend(f"{key}={value}" for key, value in values.items())
     path.write_text("\n".join(kept) + "\n", encoding="utf-8")
@@ -135,14 +135,43 @@ def _known(cli_path: str, base_url: str, api_key: str, agent_id: str) -> bool:
 def _setup_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="clawbits_command")
     signup = subs.add_parser("signup", help="Sign up Hermes to Clawbits")
-    signup.add_argument("--endpoint", default=None, help="Clawbits API endpoint")
+    signup.add_argument("--endpoint", default=None, help="Clawbits API endpoint (saved to the profile .env)")
     signup.add_argument("--signup-token", required=True, help="One-time token from Clawbits Add agent")
+    doctor = subs.add_parser("doctor", help="Report this profile's Clawbits health (0 ok, 1 degraded, 3 not ready)")
+    doctor.add_argument("--wait", type=float, default=0, metavar="SECONDS", help="Poll up to SECONDS until ready")
+    doctor.add_argument("--since", type=float, default=None, metavar="EPOCH", help="Require a gateway started after EPOCH")
+    doctor.add_argument("--preflight", action="store_true", help="Offline checks only (a staged install)")
+    doctor.add_argument("--json", action="store_true", help="Print the checks as JSON")
+    inbox = subs.add_parser("inbox", help="Review this profile's Clawbits intake journal")
+    inbox_cmds = inbox.add_subparsers(dest="inbox_command")
+    inbox_cmds.add_parser("status", help="Counts, sources, items awaiting review, failed deliveries")
+    inbox_cmds.add_parser("retry", help="Queue an item awaiting review again").add_argument("item")
+    dismiss = inbox_cmds.add_parser("dismiss", help="Dismiss an item awaiting review, or a delivery KEY")
+    dismiss.add_argument("item")
+    migrate = inbox_cmds.add_parser("migrate", help="Resolve a source held for migration review")
+    migrate.add_argument("source", type=int)
+    start = migrate.add_mutually_exclusive_group(required=True)
+    start.add_argument("--adopt", action="store_true", help="Resume at the recorded cursor")
+    start.add_argument("--new-only", action="store_true", help="Start after the server's newest message")
+    start.add_argument("--from-uid", type=int, metavar="N", help="Admit from email UID or post serial N")
+    resend = inbox_cmds.add_parser("resend", help="Send a failed or unknown delivery under a new key")
+    resend.add_argument("key")
     subparser.set_defaults(func=_cli_command)
 
 
 def _cli_command(args: argparse.Namespace) -> int:
-    if getattr(args, "clawbits_command", None) != "signup":
-        print("usage: hermes clawbits signup --signup-token TOKEN [--endpoint URL]")
+    command = getattr(args, "clawbits_command", None)
+    if command == "doctor":
+        from .doctor import run
+
+        return run(args)
+    if command == "inbox":
+        from .inbox_state import run_inbox_cli
+
+        return run_inbox_cli(args)
+    if command != "signup":
+        print("usage: hermes clawbits {signup,doctor} ...\n"
+              "       hermes clawbits inbox {status,retry,dismiss,migrate,resend} ...")
         return 2
     base_url = str(getattr(args, "endpoint", None) or endpoint()).rstrip("/")
     cli_path = _default_cli_path()
@@ -154,13 +183,17 @@ def _cli_command(args: argparse.Namespace) -> int:
         _save_identity({})
     try:
         created = _run_agent_cli(cli_path, base_url, "signup-commit", str(args.signup_token), "")
+        # Responses are never echoed: a malformed one can still carry the issued api_key.
         if not isinstance(created, dict):
-            raise RuntimeError(f"unexpected signup response: {created!r}")
+            raise RuntimeError(f"unexpected signup response ({type(created).__name__})")
         agent_id = str(created.get("agent_id") or "")
         api_key = str(created.get("api_key") or "")
         if not agent_id or not api_key:
-            raise RuntimeError(f"signup response missing agent_id/api_key: {created!r}")
+            missing = [name for name, value in (("agent_id", agent_id), ("api_key", api_key)) if not value]
+            raise RuntimeError(f"signup response missing {'/'.join(missing)}")
         values = {"CLAWBITS_API_KEY": api_key, "CLAWBITS_AGENT_ID": agent_id}
+        if getattr(args, "endpoint", None):
+            values["CLAWBITS_ENDPOINT"] = base_url
         try:
             channel = _run_agent_cli(cli_path, base_url, "mm-operator-channel", agent_id, api_key=api_key)
             channel_id = _extract_channel_id(channel)

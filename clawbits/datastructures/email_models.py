@@ -1,5 +1,10 @@
 """Email inbox data models for agent email via Stalwart IMAP."""
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+EmailDeliveryState = Literal["queued", "attempting", "accepted", "retry_wait", "failed", "unknown"]
 
 # ---------------------------------------------------------------------------
 # Requests
@@ -57,6 +62,16 @@ class EmailSummaryResponse(BaseModel):
     )
 
 
+class SenderAuth(BaseModel):
+    """DMARC verdict for the From addr-spec, taken only from our MTA's own Authentication-Results."""
+    verdict: Literal["pass", "fail", "unknown"] = "unknown"
+    address: str | None = Field(
+        default=None, description="Lowercased From addr-spec the verdict covers; compare this, never from_addr"
+    )
+    domain: str | None = None
+    reason: str = "not_evaluated"
+
+
 class EmailDetailResponse(BaseModel):
     """Full detail of a single email including body."""
     uid: int
@@ -69,7 +84,11 @@ class EmailDetailResponse(BaseModel):
     body_text: str | None = Field(default=None, description="Plain-text body")
     body_html: str | None = Field(default=None, description="HTML body")
     attachments: list[EmailAttachment] = Field(default_factory=list, description="List of attachments")
-    headers: dict[str, str] = Field(default_factory=dict, description="Full email headers")
+    headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Email headers, without Authentication-Results, ARC-Authentication-Results and Received-SPF",
+    )
+    sender_auth: SenderAuth = Field(default_factory=SenderAuth, description="Sender authentication verdict")
 
 
 class EmailListResponse(BaseModel):
@@ -83,6 +102,15 @@ class EmailListResponse(BaseModel):
     offset: int
 
 
+class EmailChangesResponse(BaseModel):
+    """One page of an ascending, epoch-bound mailbox scan."""
+    uidvalidity: int = Field(description="Mailbox epoch (IMAP UIDVALIDITY); UIDs are only comparable within one")
+    through_uid: int = Field(description="Upper UID bound of this scan; pass it back until has_more is false")
+    emails: list[EmailSummaryResponse]
+    next_after_uid: int = Field(description="Cursor: pass as after_uid for the next page or scan")
+    has_more: bool
+
+
 class EmailCountResponse(BaseModel):
     """Lightweight mailbox counts."""
     total: int
@@ -91,8 +119,15 @@ class EmailCountResponse(BaseModel):
 
 
 class EmailSendResponse(BaseModel):
-    """Confirmation that an email was sent."""
-    status: str = Field(description="Status of the send operation")
+    """Send result; keyed sends (Idempotency-Key) also carry the outbox record."""
+    status: str = Field(description="'sent' once SMTP accepted the message; otherwise the delivery state")
     from_addr: str = Field(description="Sender address")
     to_addr: str = Field(description="Recipient address")
     subject: str = Field(description="Email subject line")
+    delivery_id: int | None = None
+    idempotency_key: str | None = None
+    state: EmailDeliveryState | None = Field(default=None, description="Authoritative delivery state (keyed sends)")
+    message_id: str | None = None
+    attempts: int | None = None
+    error: str | None = Field(default=None, description="Short machine-readable reason, e.g. smtp_451")
+    next_attempt_at: datetime | None = Field(default=None, description="When a retry_wait delivery may be retried")

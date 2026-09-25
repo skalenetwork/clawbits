@@ -2,173 +2,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
-import importlib.util
 import json
 import sys
 import types
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _isolate_hermes_home(monkeypatch, tmp_path):
-    """Point HERMES_HOME at a temp dir for EVERY test in this module.
-
-    The adapter persists durable state there (the read-cursor map, the email
-    watermark, the greeting marker), and a first-boot poll in a test would
-    otherwise write into the developer's real ``~/.hermes``."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    yield
-
-
-@dataclass
-class _FakePlatformConfig:
-    api_key: str | None = None
-    token: str | None = None
-    extra: dict[str, Any] | None = None
-
-
-class _FakePlatform(str):
-    pass
-
-
-class _FakeProcessingOutcome(Enum):
-    SUCCESS = "success"
-    FAILURE = "failure"
-    CANCELLED = "cancelled"
-
-
-class _FakeBasePlatformAdapter:
-    """``handle_message`` enqueues the turn like the gateway does: a background
-    task brackets the overridable ``turn`` with the processing hooks."""
-
-    def __init__(self, config: _FakePlatformConfig, platform: _FakePlatform) -> None:
-        self.config = config
-        self.platform = platform
-        self._running = False
-        self.events: list[Any] = []
-        self.tasks: list[asyncio.Task[None]] = []
-
-    async def handle_message(self, event: Any) -> None:
-        self.events.append(event)
-        self.tasks.append(asyncio.create_task(self._process(event)))
-
-    async def _process(self, event: Any) -> None:
-        await self.on_processing_start(event)
-        try:
-            outcome = await self.turn(event)
-        except Exception:
-            outcome = _FakeProcessingOutcome.FAILURE
-        await self.on_processing_complete(event, outcome)
-
-    async def turn(self, event: Any) -> Any:
-        return _FakeProcessingOutcome.SUCCESS
-
-    async def on_processing_start(self, event: Any) -> None:
-        pass
-
-    async def on_processing_complete(self, event: Any, outcome: Any) -> None:
-        pass
-
-
-class _FakeMessageType:
-    TEXT = "text"
-    PHOTO = "photo"
-    VIDEO = "video"
-    AUDIO = "audio"
-    DOCUMENT = "document"
-
-
-@dataclass
-class _FakeSendResult:
-    success: bool
-    message_id: str | None = None
-    raw_response: Any = None
-    error: str | None = None
-    retryable: bool = False
-
-
-@dataclass
-class _FakeMessageEvent:
-    text: str
-    message_type: Any
-    source: Any
-    raw_message: Any
-    message_id: str
-    media_urls: list[str] = field(default_factory=list)
-    media_types: list[str] = field(default_factory=list)
-
-
-@dataclass
-class _FakeSessionSource:
-    platform: Any
-    chat_id: str
-    chat_name: str | None = None
-    chat_type: str | None = None
-    user_id: str | None = None
-    user_name: str | None = None
-    message_id: str | None = None
-
-
-def _load_hermes_module():
-    sys.modules["gateway"] = types.ModuleType("gateway")
-    config = types.ModuleType("gateway.config")
-    config.Platform = _FakePlatform
-    config.PlatformConfig = _FakePlatformConfig
-    sys.modules["gateway.config"] = config
-
-    platforms = types.ModuleType("gateway.platforms")
-    sys.modules["gateway.platforms"] = platforms
-    base = types.ModuleType("gateway.platforms.base")
-    base.BasePlatformAdapter = _FakeBasePlatformAdapter
-    base.MessageEvent = _FakeMessageEvent
-    base.MessageType = _FakeMessageType
-    base.SendResult = _FakeSendResult
-    base.ProcessingOutcome = _FakeProcessingOutcome
-    sys.modules["gateway.platforms.base"] = base
-
-    session = types.ModuleType("gateway.session")
-    session.SessionSource = _FakeSessionSource
-    sys.modules["gateway.session"] = session
-
-    # Load the plugin the way the Hermes loader does (hermes_cli/plugins.py):
-    # as a real PACKAGE with submodule_search_locations, so the plugin's
-    # relative imports (.adapter, .messages, …) resolve. Purge any prior load
-    # first — stale submodule entries would otherwise be silently reused.
-    plugin_dir = Path(__file__).resolve().parents[2] / "extensions" / "hermes"
-    for name in [m for m in sys.modules if m == "hermes_clawbits_test" or m.startswith("hermes_clawbits_test.")]:
-        del sys.modules[name]
-    spec = importlib.util.spec_from_file_location(
-        "hermes_clawbits_test",
-        plugin_dir / "__init__.py",
-        submodule_search_locations=[str(plugin_dir)],
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-async def _drain(adapter) -> None:
-    """Finish the turns handle_message enqueued."""
-    await asyncio.gather(*[task for task in adapter.tasks if not task.done()])
-    adapter.tasks.clear()
-
-
-def _event(message_id: str, chat_id: str = "chan", **raw: Any) -> _FakeMessageEvent:
-    return _FakeMessageEvent(
-        text="hi",
-        message_type="text",
-        source=_FakeSessionSource(platform="clawbits", chat_id=chat_id),
-        raw_message=raw,
-        message_id=message_id,
-    )
+from tests.poc.hermes_stubs import (
+    _drain,
+    _event,
+    _FakePlatformConfig,
+    _FakeProcessingOutcome,
+    _load_hermes_module,
+)
 
 
 def test_post_id_and_cursor_handle_clawbits_shape() -> None:
@@ -187,6 +35,7 @@ def test_post_message_preserves_reply_and_trace() -> None:
     class Recorder(mod._ClawbitsCli):
         def _run(self, *args: str) -> Any:
             self.args = args
+            self.body = json.loads(Path(args[3][1:]).read_text())
             return {"post_id": 7}
 
     cli = Recorder("cli.py", "http://x", "key")
@@ -194,120 +43,18 @@ def test_post_message_preserves_reply_and_trace() -> None:
 
     assert raw == {"post_id": 7}
     assert cli.args[:3] == ("mm-post", "chan", "--json")
-    assert '"parent_post_id": 123' in cli.args[3]
-    assert '"trace_id": "tr_abc"' in cli.args[3]
-
-
-def test_poll_dispatches_same_second_post_ids_after_seed() -> None:
-    mod = _load_hermes_module()
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def list_channels(self) -> list[Any]:
-            return [mod._Channel("chan", "direct", "Chat")]
-
-        def get_posts(self, channel_id: str) -> list[dict[str, Any]]:
-            self.calls += 1
-            if self.calls == 1:
-                return [{"post_id": 1, "created_at": "2026-06-04 12:00:00", "message": "old", "human_id": 1}]
-            return [
-                {"post_id": 2, "created_at": "2026-06-04 12:00:01", "message": "a", "human_id": 1},
-                {"post_id": 3, "created_at": "2026-06-04 12:00:01", "message": "b", "human_id": 1},
-            ]
-
-        def set_status(self, channel_id: str, status: str) -> None:
-            pass
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-
-    async def poll_and_drain() -> None:
-        # Turns are spawned as background tasks (non-blocking dispatch);
-        # drain them so the events are visible to the assertions.
-        await adapter._poll_once()
-        await _drain(adapter)
-
-    asyncio.run(poll_and_drain())
-    assert adapter.events == []
-
-    asyncio.run(poll_and_drain())
-    # Each turn is fronted by the Clawbits context block (parity with the
-    # OpenClaw plugin), so assert on the trailing message text.
-    assert [event.text.rsplit("\n\n", 1)[-1] for event in adapter.events] == ["a", "b"]
-    assert all(e.text.startswith("[Clawbits context]") for e in adapter.events)
-
-
-def test_poll_keeps_receiving_while_a_turn_is_blocked() -> None:
-    """Deadlock regression: the hermes gateway resolves clarify answers via
-    the same inbound path, so the poll loop must keep dispatching while an
-    earlier turn is still running. A blocked turn used to freeze the poll
-    loop, so the answer it waited for could never arrive."""
-    mod = _load_hermes_module()
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def list_channels(self) -> list[Any]:
-            return [mod._Channel("chan", "direct", "Chat")]
-
-        def get_posts(self, channel_id: str) -> list[dict[str, Any]]:
-            self.calls += 1
-            if self.calls == 1:
-                return []  # seed pass
-            if self.calls == 2:
-                return [{"post_id": 1, "created_at": "2026-06-04 12:00:01", "message": "question", "human_id": 1}]
-            return [
-                {"post_id": 1, "created_at": "2026-06-04 12:00:01", "message": "question", "human_id": 1},
-                {"post_id": 2, "created_at": "2026-06-04 12:00:02", "message": "answer", "human_id": 1},
-            ]
-
-        def set_status(self, channel_id: str, status: str) -> None:
-            pass
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-
-    async def scenario() -> list[str]:
-        unblock = asyncio.Event()
-        handled: list[str] = []
-
-        async def blocking_turn(event: Any) -> Any:
-            # The prompt is fronted by the Clawbits context block; the
-            # message itself is the trailing paragraph.
-            message = event.text.rsplit("\n\n", 1)[-1]
-            handled.append(message)
-            if message == "question":
-                await unblock.wait()  # the "clarify" park: turn 1 waits
-            elif message == "answer":
-                unblock.set()  # the answer is what unblocks turn 1
-            return _FakeProcessingOutcome.SUCCESS
-
-        adapter.turn = blocking_turn
-        await adapter._poll_once()  # seed cursors
-        await adapter._poll_once()  # dispatches "question" (parks)
-        # The poll loop must still be able to run and deliver the answer.
-        await asyncio.wait_for(adapter._poll_once(), timeout=2)
-        await asyncio.wait_for(_drain(adapter), timeout=2)
-        return handled
-
-    handled = asyncio.run(scenario())
-    assert handled == ["question", "answer"]
+    assert cli.args[3].startswith("@"), "the body rides a private file, never argv"
+    assert cli.body["parent_post_id"] == 123
+    assert cli.body["trace_id"] == "tr_abc"
+    assert cli.body["message"] == "hello"
 
 
 def test_first_poll_greets_once_and_unblocks_liveness(monkeypatch, tmp_path) -> None:
     """The first FULL poll pass greets the operator channel (once ever, marker-
     persisted) and only then sets ``_ready`` — the gate the liveness loop waits
-    on, so the wizard's "available" implies greeted + cursor-seeded."""
+    on, so the wizard's "available" implies greeted and every channel sourced."""
     mod = _load_hermes_module()
-
-    hermes_constants = types.ModuleType("hermes_constants")
-    hermes_constants.get_hermes_home = lambda: str(tmp_path)
-    monkeypatch.setitem(sys.modules, "hermes_constants", hermes_constants)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     class FakeClient:
         def __init__(self) -> None:
@@ -316,7 +63,7 @@ def test_first_poll_greets_once_and_unblocks_liveness(monkeypatch, tmp_path) -> 
         def list_channels(self) -> list[Any]:
             return [mod._Channel("chan", "direct", "Chat")]
 
-        def get_posts(self, channel_id: str) -> list[dict[str, Any]]:
+        def get_posts(self, channel_id: str, limit: int = 50, after_post_id: int | None = None):
             return []
 
         def agent_info(self, agent_id: str) -> dict[str, Any]:
@@ -326,25 +73,28 @@ def test_first_poll_greets_once_and_unblocks_liveness(monkeypatch, tmp_path) -> 
             self.greetings.append((channel_id, content))
 
     cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent", "channel_id": "chan"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
 
-    assert not adapter._ready.is_set()
-    asyncio.run(adapter._poll_once())
-    assert adapter.client.greetings == [("chan", "Hi Mr L! Agent agent reporting in for org-1.")]
-    assert adapter._ready.is_set()
-    assert (tmp_path / ".clawbits_greeted").exists()
+    def first_passes(client: FakeClient) -> Any:
+        adapter = mod.ClawbitsAdapter(cfg)
+        adapter.client = client
+        assert not adapter._ready.is_set()
 
-    # Second pass: already ready, no re-greet.
-    asyncio.run(adapter._poll_once())
-    assert len(adapter.client.greetings) == 1
+        async def run() -> None:
+            assert await adapter._open_journal()
+            await adapter._poll_once()
+            assert adapter._ready.is_set()
+            await adapter._poll_once()
 
-    # Fresh gateway boot (new adapter, same HERMES_HOME): marker suppresses it.
-    adapter2 = mod.ClawbitsAdapter(cfg)
-    adapter2.client = FakeClient()
-    asyncio.run(adapter2._poll_once())
-    assert adapter2.client.greetings == []
-    assert adapter2._ready.is_set()
+        asyncio.run(run())
+        return adapter
+
+    first_passes(client := FakeClient())
+    assert client.greetings == [("chan", "Hi Mr L! Agent agent reporting in for org-1.")]
+    assert (tmp_path / ".clawbits_greeted").exists(), "the second pass did not re-greet"
+
+    # Fresh gateway boot (new adapter, same HERMES_HOME): the marker suppresses it.
+    first_passes(client := FakeClient())
+    assert client.greetings == []
 
 
 def test_split_message_chunks_boundaries() -> None:
@@ -365,49 +115,6 @@ def test_split_message_chunks_boundaries() -> None:
     # Pathological unbroken run: hard cut, nothing dropped.
     chunks = mod._split_message_chunks("a" * 9001, limit=4000)
     assert [len(c) for c in chunks] == [4000, 4000, 1001]
-
-
-def test_reject_private_host_blocks_internal_addresses() -> None:
-    import pytest
-
-    mod = _load_hermes_module()
-    for url in (
-        "http://127.0.0.1/x.png",
-        "http://169.254.169.254/latest/meta-data/",
-        "http://10.0.0.8/i.png",
-        "http://192.168.1.20:8188/view?filename=gen.png",
-        "http://[::1]/x.png",
-        "http://0.0.0.0/x.png",
-    ):
-        with pytest.raises(ValueError):
-            mod._reject_private_host(url)
-
-
-def test_reject_private_host_resolution_and_allowlist(monkeypatch) -> None:
-    import socket
-
-    import pytest
-
-    mod = _load_hermes_module()
-    # Public IP literal passes without touching DNS.
-    mod._reject_private_host("https://93.184.216.34/img.png")
-
-    private_info = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.5", 0))]
-    public_info = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
-
-    # A hostname resolving to a private address is blocked...
-    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, **kw: private_info)
-    with pytest.raises(ValueError):
-        mod._reject_private_host("http://imgbox.internal/i.png")
-
-    # ...unless the operator allowlisted the host explicitly.
-    monkeypatch.setenv("CLAWBITS_IMAGE_ALLOW_PRIVATE_HOSTS", "imgbox.internal")
-    mod._reject_private_host("http://imgbox.internal/i.png")
-    monkeypatch.delenv("CLAWBITS_IMAGE_ALLOW_PRIVATE_HOSTS")
-
-    # A hostname resolving publicly passes.
-    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, **kw: public_info)
-    mod._reject_private_host("http://example.com/i.png")
 
 
 def test_upload_and_post_image_splits_long_caption() -> None:
@@ -479,11 +186,8 @@ def test_generating_status_heartbeats_through_the_turn(monkeypatch) -> None:
 
     adapter.turn = slow_turn  # type: ignore[assignment,method-assign]
 
-    channel = mod._Channel("chan", "direct", "Chat")
-    post = {"post_id": 5, "created_at": "2026-06-04 12:00:01", "message": "hi", "human_id": 1}
-
     async def dispatch_and_drain() -> None:
-        await adapter._maybe_dispatch(channel, post)
+        await adapter.handle_message(_event("5"))
         await _drain(adapter)
 
     asyncio.run(dispatch_and_drain())
@@ -493,29 +197,6 @@ def test_generating_status_heartbeats_through_the_turn(monkeypatch) -> None:
     assert statuses[0] == "generating", statuses
     assert statuses.count("generating") >= 2, f"heartbeat should renew generating: {statuses}"
     assert statuses[-1] == "online", statuses
-
-
-def test_seen_dedupe_window_is_capped_and_evicts_oldest(monkeypatch) -> None:
-    """``self._seen`` is a bounded FIFO, not an unbounded set: past the cap the
-    oldest ids are evicted so a long-lived agent's memory can't grow forever.
-    Eviction is safe because the per-channel cursor still blocks old posts."""
-    mod = _load_hermes_module()
-    # Patch the ADAPTER submodule's global — that's what _remember reads; the
-    # package-level name is only a compatibility re-export.
-    monkeypatch.setattr(mod.adapter, "_SEEN_CAP", 3)
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
-    adapter = mod.ClawbitsAdapter(cfg)
-
-    for pid in ("p1", "p2", "p3", "p4"):
-        adapter._remember(pid)
-    # Cap of 3: the oldest ("p1") is evicted, insertion order preserved.
-    assert list(adapter._seen) == ["p2", "p3", "p4"]
-    assert "p1" not in adapter._seen
-    # Membership still works and re-remembering is a no-op (no growth/reorder).
-    assert "p3" in adapter._seen
-    adapter._remember("p3")
-    assert list(adapter._seen) == ["p2", "p3", "p4"]
 
 
 def test_mention_regex_respects_word_boundaries() -> None:
@@ -533,45 +214,6 @@ def test_mention_regex_respects_word_boundaries() -> None:
     assert adapter._strip_self_mentions("@agent_1 hello") == "hello"
     assert adapter._strip_self_mentions("thanks @agent_1") == "thanks"
     assert adapter._strip_self_mentions("@agent_1 @agent_1 hi") == "hi"
-
-
-def test_channel_dispatch_strips_mention_but_keeps_raw() -> None:
-    """In a shared channel, a real @mention dispatches with the token stripped
-    from the model-facing text (raw_message stays untouched); a mention of a
-    different, prefix-overlapping id does NOT dispatch."""
-    mod = _load_hermes_module()
-
-    class FakeClient:
-        def set_status(self, channel_id: str, status: str) -> None:
-            pass
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent_1"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-    channel = mod._Channel("chan", "channel", "General")  # non-direct: needs a mention
-
-    async def dispatch(post: dict[str, Any]) -> None:
-        adapter._cursors["chan"] = (0, 0, "")
-        adapter._seen.clear()
-        adapter.events.clear()
-        await adapter._maybe_dispatch(channel, post)
-        await _drain(adapter)
-
-    # A mention of @agent_12 (we are @agent_1) must not trigger us.
-    asyncio.run(dispatch({
-        "post_id": 8, "created_at": "2026-06-04 12:00:01",
-        "message": "ping @agent_12 only", "human_id": 1,
-    }))
-    assert adapter.events == []
-
-    # A real mention: dispatched, token stripped from event text, raw preserved.
-    asyncio.run(dispatch({
-        "post_id": 9, "created_at": "2026-06-04 12:00:02",
-        "message": "please help @agent_1 with this", "human_id": 1,
-    }))
-    assert len(adapter.events) == 1
-    assert adapter.events[0].text.rsplit("\n\n", 1)[-1] == "please help with this"
-    assert adapter.events[0].raw_message["message"] == "please help @agent_1 with this"
 
 
 def test_send_retryable_only_when_request_never_issued() -> None:
@@ -653,31 +295,6 @@ def test_env_enablement_seed_is_flat(monkeypatch) -> None:
     assert "extra" not in seed and "enabled" not in seed
 
 
-def test_send_email_tool_takes_the_args_dict_and_fits_the_body(monkeypatch) -> None:
-    """Hermes calls a plugin tool as ``handler(args, **kwargs)`` and wraps the schema itself."""
-    _load_hermes_module()
-    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
-    sent: list[tuple[Any, ...]] = []
-
-    class FakeCli:
-        def __init__(self, *args: Any) -> None:
-            pass
-
-        def email_send(self, *args: Any) -> dict[str, str]:
-            sent.append(args)
-            return {"status": "sent"}
-
-    monkeypatch.setattr(email_mod, "_ClawbitsCli", FakeCli)
-    monkeypatch.setenv("CLAWBITS_AGENT_ID", "agent")
-    result = email_mod._send_email_tool({"subject": "Hi", "message": "x" * 40_000})
-    assert json.loads(result) == {"status": "sent"}
-    agent_id, subject, body = sent[0]
-    assert (agent_id, subject) == ("agent", "Hi")
-    assert len(body) <= 10_000
-    assert email_mod.EMAIL_TOOL_SCHEMA["name"] == "clawbits_send_email"
-    assert "function" not in email_mod.EMAIL_TOOL_SCHEMA
-
-
 # --- signup ------------------------------------------------------------------
 
 _IDENTITY_ENV = (
@@ -689,9 +306,7 @@ _IDENTITY_ENV = (
 def _signup(monkeypatch, tmp_path, responses: dict[str, Any]) -> tuple[list[str], Path]:
     """Run ``hermes clawbits signup`` over a stored identity, against a fake
     agent CLI that answers (or raises) per command; returns the commands it saw."""
-    hermes_constants = types.ModuleType("hermes_constants")
-    hermes_constants.get_hermes_home = lambda: str(tmp_path)
-    monkeypatch.setitem(sys.modules, "hermes_constants", hermes_constants)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     env = tmp_path / ".env"
     env.write_text(_IDENTITY_ENV, encoding="utf-8")
 
@@ -749,179 +364,30 @@ def test_signup_keeps_the_identity_through_an_outage(monkeypatch, tmp_path) -> N
     assert env.read_text() == _IDENTITY_ENV
 
 
-def test_agent_body_names_the_agent_and_matches_plugin_wording() -> None:
+def test_channel_prompt_names_the_agent_and_matches_plugin_wording() -> None:
     """Parity with plugin/src/agent-body.ts: same bracketed context block, and
     the agent is named to itself. Without the name it cannot recognise
     "Scaleweld, any idea why…" as addressed to it — which is exactly what the
     server-side triage step nudges on."""
     mod = _load_hermes_module()
 
-    body = mod._build_agent_body("staging is broken", chat_id="room-9", agent_id="Scaleweld")
-    assert body.startswith("[Clawbits context]")
-    assert "You are the Clawbits agent Scaleweld" in body
-    assert "without an @mention" in body
-    assert "[end Clawbits context]" in body
-    assert body.endswith("\n\nstaging is broken"), "message text trails the prompt"
-    assert "room-9" not in body, "raw channel id never reaches the model"
+    prompt = mod._clawbits_channel_prompt("room-9", "Scaleweld")
+    assert prompt.startswith("[Clawbits context]")
+    assert "You are the Clawbits agent Scaleweld" in prompt
+    assert "without an @mention" in prompt
+    assert prompt.endswith("[end Clawbits context]")
+    assert "room-9" not in prompt, "raw channel id never reaches the model"
 
 
-def test_agent_body_session_id_matches_the_plugin_algorithm() -> None:
+def test_channel_prompt_session_id_matches_the_plugin_algorithm() -> None:
     """sha256('clawbits:session:<chat>')[:12] — identical to the plugin's
     clawbitsSessionId, so an agent reports the same id across a runtime swap."""
     mod = _load_hermes_module()
     expected = "sess_" + hashlib.sha256(b"clawbits:session:room-9").hexdigest()[:12]
 
     assert mod._clawbits_session_id("room-9") == expected
-    assert expected in mod._build_agent_body("hi", chat_id="room-9")
-
-
-def test_agent_body_attention_framing_sits_closest_to_the_ask() -> None:
-    """Context, then the reply-only-if-useful framing, then the message: the
-    instruction nearest the ask carries the most weight (plugin ordering)."""
-    mod = _load_hermes_module()
-
-    body = mod._build_agent_body(
-        "anyone?",
-        chat_id="chan",
-        agent_id="Scaleweld",
-        attention_preamble=mod._ATTENTION_PREAMBLE,
-    )
-    assert body.index("[Clawbits context]") < body.index("[Attention]") < body.index("anyone?")
-
-
-def test_agent_body_without_ids_leaves_text_shape_alone() -> None:
-    """No ids and no framing → context block only, message still trailing."""
-    mod = _load_hermes_module()
-
-    body = mod._build_agent_body("hello")
-    assert "You are the Clawbits agent" not in body
-    assert "session id for this chat" not in body
-    assert body.endswith("\n\nhello")
-
-
-def test_attention_dispatch_carries_context_and_framing() -> None:
-    """The nudge path must ship both blocks — this is the path where the agent
-    most needs to know its own name."""
-    mod = _load_hermes_module()
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "Scaleweld"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    event = {
-        "type": "mutualist.consider",
-        "channel_id": "chan",
-        "data": {"post_id": 11, "message": "staging is down, anyone?", "human_id": 1},
-    }
-
-    async def dispatch_and_drain() -> None:
-        await adapter._dispatch_attention(event)
-        await _drain(adapter)
-
-    asyncio.run(dispatch_and_drain())
-    assert len(adapter.events) == 1
-    text = adapter.events[0].text
-    assert "You are the Clawbits agent Scaleweld" in text
-    assert "[Attention]" in text
-    assert text.endswith("staging is down, anyone?")
-
-
-def test_unaddressed_post_stays_nudgeable_after_polling() -> None:
-    """The bug this guards: the poller used to mark EVERY post seen before
-    deciding whether to dispatch, so a channel post the agent isn't mentioned
-    in landed in ``_seen``. The server still runs triage on that post and
-    publishes a nudge seconds later — which was then dropped as a duplicate,
-    making LobsterTalk inert on this runtime. The poll loop always won the race
-    (~3s poll vs an LLM triage call)."""
-    mod = _load_hermes_module()
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def list_channels(self) -> list[Any]:
-            return [mod._Channel("chan", "public", "General")]
-
-        def get_posts(self, channel_id: str) -> list[dict[str, Any]]:
-            self.calls += 1
-            if self.calls == 1:
-                return []  # seed pass
-            # Not a DM, no @mention → the poller must skip it, not swallow it.
-            return [{
-                "post_id": 7, "created_at": "2026-06-04 12:00:01",
-                "message": "staging is down, anyone?", "human_id": 1,
-            }]
-
-        def set_status(self, channel_id: str, status: str) -> None:
-            pass
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "Scaleweld"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-
-    async def scenario() -> None:
-        await adapter._poll_once()          # seed
-        await adapter._poll_once()          # sees the post, must not dispatch
-        await adapter._poll_once()          # and must not remember it via cursor
-        await _drain(adapter)
-        assert adapter.events == [], "unaddressed post must not be dispatched by polling"
-        assert "7" not in adapter._seen, "skipped post must stay nudgeable"
-
-        # Now the server's nudge arrives — it must still get through.
-        await adapter._dispatch_attention({
-            "type": "mutualist.consider",
-            "channel_id": "chan",
-            "data": {"post_id": 7, "message": "staging is down, anyone?", "human_id": 1},
-        })
-        await _drain(adapter)
-
-    asyncio.run(scenario())
-    assert len(adapter.events) == 1, "attention nudge dispatched after the poller skipped it"
-    assert adapter.events[0].text.endswith("staging is down, anyone?")
-
-
-def test_dispatched_post_is_remembered_so_a_nudge_cannot_double_fire() -> None:
-    """The other half of the contract: a post the poller DID dispatch (a DM
-    here) is remembered, so a nudge for the same post is correctly deduped."""
-    mod = _load_hermes_module()
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def list_channels(self) -> list[Any]:
-            return [mod._Channel("chan", "direct", "Chat")]
-
-        def get_posts(self, channel_id: str) -> list[dict[str, Any]]:
-            self.calls += 1
-            if self.calls == 1:
-                return []
-            return [{
-                "post_id": 8, "created_at": "2026-06-04 12:00:01",
-                "message": "hello there", "human_id": 1,
-            }]
-
-        def set_status(self, channel_id: str, status: str) -> None:
-            pass
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "Scaleweld"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-
-    async def scenario() -> None:
-        await adapter._poll_once()
-        await adapter._poll_once()
-        await _drain(adapter)
-        assert len(adapter.events) == 1, "DM is dispatched by the poll loop"
-        assert "8" in adapter._seen
-
-        await adapter._dispatch_attention({
-            "type": "mutualist.consider",
-            "channel_id": "chan",
-            "data": {"post_id": 8, "message": "hello there", "human_id": 1},
-        })
-        await _drain(adapter)
-
-    asyncio.run(scenario())
-    assert len(adapter.events) == 1, "nudge for an already-dispatched post is deduped"
+    assert expected in mod._clawbits_channel_prompt("room-9", None)
+    assert "You are the Clawbits agent" not in mod._clawbits_channel_prompt("room-9", None)
 
 
 def test_streaming_reply_creates_patches_and_finalizes() -> None:
@@ -963,98 +429,6 @@ def test_streaming_reply_creates_patches_and_finalizes() -> None:
     )
 
 
-def test_attachment_only_post_reaches_hermes_media(monkeypatch) -> None:
-    mod = _load_hermes_module()
-    monkeypatch.setattr(
-        sys.modules["hermes_clawbits_test.adapter"],
-        "cache_post_attachments",
-        lambda client, post: (["/cache/report.pdf"], ["application/pdf"], ["[document saved]"]),
-    )
-
-    class FakeClient:
-        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
-            pass
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-    adapter._cursors["chan"] = (0, 0, "")
-    post = {
-        "post_id": 7,
-        "created_at": "2026-06-04 12:00:01",
-        "message": "",
-        "human_id": 1,
-        "files": [
-            {
-                "file_id": "f1",
-                "filename": "report.pdf",
-                "content_type": "application/pdf",
-                "size_bytes": 10,
-            }
-        ],
-    }
-
-    async def scenario() -> None:
-        await adapter._maybe_dispatch(mod._Channel("chan", "direct", "DM"), post)
-        await _drain(adapter)
-
-    asyncio.run(scenario())
-    assert len(adapter.events) == 1
-    assert adapter.events[0].media_urls == ["/cache/report.pdf"]
-    assert adapter.events[0].media_types == ["application/pdf"]
-    assert adapter.events[0].message_type == "document"
-
-
-def test_snooze_and_inter_agent_limit_are_enforced() -> None:
-    mod = _load_hermes_module()
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.posts: list[str] = []
-
-        def post_message(self, channel_id: str, message: str, *args: Any) -> dict[str, Any]:
-            self.posts.append(message)
-            return {"post_id": 99}
-
-        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
-            pass
-
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "me"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-    channel = mod._Channel("chan", "public", "Room")
-    adapter._cursors["chan"] = (0, 0, "")
-
-    async def scenario() -> None:
-        adapter._apply_controls({"snoozed": True})
-        await adapter._maybe_dispatch(
-            channel,
-            {"post_id": 1, "created_at": "2026-06-04 12:00:01", "message": "@me hi", "human_id": 1},
-        )
-        adapter._apply_controls(
-            {
-                "snoozed": False,
-                "inter_agent_mode_enabled": True,
-                "inter_agent_message_limit": 1,
-            }
-        )
-        await adapter._maybe_dispatch(
-            channel,
-            {"post_id": 2, "created_at": "2026-06-04 12:00:02", "message": "@me first", "agent_id": "peer"},
-        )
-        await adapter._maybe_dispatch(
-            channel,
-            {"post_id": 3, "created_at": "2026-06-04 12:00:03", "message": "@me second", "agent_id": "peer"},
-        )
-        await _drain(adapter)
-
-    asyncio.run(scenario())
-    assert len(adapter.events) == 1
-    assert adapter.events[0].message_id == "2"
-    assert adapter._reply_prefixes["2"] == "@peer"
-    assert adapter.client.posts == ["@peer Nice, but need human guidance to proceed."]
-
-
 def test_email_reply_context_preserves_threading_headers() -> None:
     mod = _load_hermes_module()
     email_mod = sys.modules["hermes_clawbits_test.email_integration"]
@@ -1062,32 +436,15 @@ def test_email_reply_context_preserves_threading_headers() -> None:
         {"uid": 42, "subject": "Question", "headers": {"Message-ID": "<abc@example>"}}
     )
 
-    class FakeClient:
-        def email_send(
-            self,
-            agent_id: str,
-            subject: str,
-            message: str,
-            headers: dict[str, str],
-        ) -> dict[str, str]:
-            self.call = (agent_id, subject, message, headers)
-            return {"status": "sent"}
-
-    client = FakeClient()
-    email_mod.send_email_reply(client, "agent", context, "answer")
-    assert client.call == (
-        "agent",
-        "Re: Question",
-        "answer",
-        {
-            # Auto-Submitted is what stops an owner-side vacation responder from
-            # bouncing this reply straight back into the agent's mailbox.
-            "Auto-Submitted": "auto-replied",
-            "In-Reply-To": "<abc@example>",
-            "References": "<abc@example>",
-        },
-    )
-    assert mod.PLUGIN_VERSION == "0.9.0"
+    assert email_mod._reply_subject(context.subject) == "Re: Question"
+    assert email_mod._reply_headers(context) == {
+        # Auto-Submitted is what stops an owner-side vacation responder from
+        # bouncing this reply straight back into the agent's mailbox.
+        "Auto-Submitted": "auto-replied",
+        "In-Reply-To": "<abc@example>",
+        "References": "<abc@example>",
+    }
+    assert mod.PLUGIN_VERSION == "0.10.0"
 
 
 def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> None:
@@ -1095,8 +452,8 @@ def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> 
     automation_mod = sys.modules["hermes_clawbits_test.automations"]
     monkeypatch.setattr(automation_mod.time, "time", lambda: 1_000.0)
     schedule = {"kind": "every", "everyMs": 60_000, "anchorMs": 900_000}
-    next_ms, anchor_ms = automation_mod._next_schedule_ms(schedule, None)
-    assert (next_ms, anchor_ms) == (1_020_000, 900_000)
+    next_ms, anchor_ms, missed = automation_mod._next_schedule_ms(schedule, None)
+    assert (next_ms, anchor_ms, missed) == (1_020_000, 900_000, None)
 
     existing = {
         "enabled": True,
@@ -1105,7 +462,7 @@ def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> 
         "clawbits_desired_schedule": schedule,
         "clawbits_anchor_ms": anchor_ms,
     }
-    assert automation_mod._next_schedule_ms(schedule, existing) == (1_080_000, 900_000)
+    assert automation_mod._next_schedule_ms(schedule, existing) == (1_080_000, 900_000, None)
 
 
 # --- automations reconciler -------------------------------------------------
@@ -1244,7 +601,10 @@ def _install_fake_cron(fake: _FakeCronJobs) -> None:
 
 def _automations_mod():
     _load_hermes_module()
-    return sys.modules["hermes_clawbits_test.automations"]
+    mod = sys.modules["hermes_clawbits_test.automations"]
+    # No Hermes here to pin a profile to; test_hermes_automations_catchup.py covers the pin.
+    mod._profile_scope = lambda home: contextlib.nullcontext()
+    return mod
 
 
 def _desired(spec: dict[str, Any], **overrides: Any) -> dict[str, Any]:
@@ -1273,7 +633,7 @@ def _spec(**overrides: Any) -> dict[str, Any]:
 
 def _run_pass(mod, fake: _FakeCronJobs, client: _FakeAutomationsClient) -> dict[str, Any]:
     _install_fake_cron(fake)
-    mod.reconcile_automations_once(client, "agent", "chan")
+    mod.reconcile_automations_once(client, "agent", "chan", hermes_home=Path("/unused"))
     return client.reports[-1]
 
 
@@ -1508,7 +868,7 @@ def test_run_report_failure_does_not_double_report(monkeypatch) -> None:
         raise RuntimeError("telemetry exploded")
 
     monkeypatch.setattr(mod, "_run_report", boom)
-    mod.reconcile_automations_once(client, "agent", "chan")
+    mod.reconcile_automations_once(client, "agent", "chan", hermes_home=Path("/unused"))
 
     entries = _managed(client.reports[-1])
     assert len(entries) == 1, "one automation must produce exactly one managed entry"
@@ -1614,7 +974,7 @@ def test_delete_after_run_deletes_only_after_successful_post(monkeypatch) -> Non
     client.state_raises = RuntimeError("network")
     _install_fake_cron(fake)
     try:
-        mod.reconcile_automations_once(client, "agent", "chan")
+        mod.reconcile_automations_once(client, "agent", "chan", hermes_home=Path("/unused"))
     except RuntimeError:
         pass
     assert fake.jobs, "a failed report must not take the job with it"
@@ -1827,14 +1187,16 @@ def test_wake_during_pass_triggers_immediate_repass(monkeypatch) -> None:
         nonlocal passes
         wake = asyncio.Event()
 
-        def fake_pass(*_args: Any) -> None:
+        def fake_pass(*_args: Any, **_kwargs: Any) -> None:
             nonlocal passes
             passes += 1
             wake.set()  # a nudge lands while the pass is running
 
         monkeypatch.setattr(mod, "reconcile_automations_once", fake_pass)
         task = asyncio.create_task(
-            mod.run_automations_reconciler(object(), "agent", "chan", wake, lambda: passes < 2)
+            mod.run_automations_reconciler(
+                object(), "agent", "chan", wake, lambda: passes < 2, hermes_home=Path("/unused")
+            )
         )
         await asyncio.wait_for(task, timeout=5)
 
@@ -1861,78 +1223,6 @@ def test_long_subject_is_capped() -> None:
     assert len(email_mod._reply_subject("s" * 400)) <= 256
 
 
-def test_email_reply_mirrors_to_chat_before_sending(monkeypatch) -> None:
-    """A send that 422s must not also cost the user the chat copy."""
-    mod = _load_hermes_module()
-    order: list[str] = []
-
-    class FakeClient:
-        def post_message(self, channel_id: str, message: str, *args: Any) -> dict[str, Any]:
-            order.append("post")
-            return {"post_id": 5}
-
-        def email_send(self, *args: Any, **kwargs: Any) -> dict[str, str]:
-            order.append("email")
-            raise RuntimeError("HTTP 422: message too long")
-
-        def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
-            pass
-
-    cfg = _FakePlatformConfig(extra={"api_key": "k", "agent_id": "agent"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
-    context = email_mod.email_reply_context({"uid": 3, "subject": "Hi", "headers": {}})
-    adapter._email_reply_contexts["9"] = context
-
-    result = asyncio.run(adapter.send("chan", "the answer", reply_to="9"))
-    assert order == ["post", "email"], "chat mirror lands first"
-    assert result.success is False and result.retryable is False
-
-
-def test_email_failure_still_finalizes_the_streaming_post() -> None:
-    """The failure is deterministic (over-long body), so retrying would loop
-    forever and could double-send if the first email actually landed."""
-    mod = _load_hermes_module()
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.patches: list[dict[str, Any]] = []
-
-        def patch_message(self, channel_id: str, post_id: str, **body: Any) -> dict[str, Any]:
-            self.patches.append(body)
-            return {"post_id": int(post_id)}
-
-        def email_send(self, *args: Any, **kwargs: Any) -> dict[str, str]:
-            raise RuntimeError("HTTP 422: message too long")
-
-    cfg = _FakePlatformConfig(extra={"api_key": "k", "agent_id": "agent"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = FakeClient()
-    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
-    adapter._stream_email_contexts["12"] = email_mod.email_reply_context(
-        {"uid": 3, "subject": "Hi", "headers": {}}
-    )
-
-    result = asyncio.run(adapter.edit_message("chan", "12", "the answer", finalize=True))
-    assert result.success is True
-    assert adapter.client.patches[-1]["done"] is True, "the draft must never be left streaming"
-    assert "could not send this as an email" in adapter.client.patches[-1]["replace"]
-    assert "12" not in adapter._stream_email_contexts
-
-
-def test_third_party_email_is_not_auto_replied() -> None:
-    mod = _load_hermes_module()
-    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
-    assert email_mod.is_from_owner({"from_addr": "Owner <boss@corp.com>"}, "boss@corp.com")
-    assert not email_mod.is_from_owner({"from_addr": "stranger@elsewhere.com"}, "boss@corp.com")
-    assert not email_mod.is_from_owner({"from_addr": "boss@corp.com"}, None)
-
-    body = email_mod._format_email_turn({"from_addr": "s@x.com"}, [], from_owner=False)
-    assert "NOT from your owner" in body
-    assert "untrusted email body" in body, "an inbound email is a prompt-injection channel"
-
-
 def test_autoresponders_are_skipped() -> None:
     _load_hermes_module()
     email_mod = sys.modules["hermes_clawbits_test.email_integration"]
@@ -1954,16 +1244,17 @@ def test_self_addressed_only_matches_the_agents_own_domain() -> None:
     ), "a stranger who happens to share the local part is not the agent"
 
 
-def test_watermark_round_trips_uidvalidity(tmp_path, monkeypatch) -> None:
+def test_legacy_watermark_is_read_with_and_without_uidvalidity(tmp_path) -> None:
+    """The mailroom adopts a pre-journal watermark only within its own UIDVALIDITY."""
     _load_hermes_module()
     email_mod = sys.modules["hermes_clawbits_test.email_integration"]
-    monkeypatch.setattr(email_mod, "_watermark_path", lambda: tmp_path / "wm.json")
-    email_mod.save_email_watermark(42, 900)
-    assert email_mod.load_email_watermark() == (42, 900)
-    # A file written by the previous format still loads.
-    (tmp_path / "wm.json").write_text('{"last_uid": 7}')
-    assert email_mod.load_email_watermark() == (7, None)
-    assert email_mod.load_email_watermark.__doc__
+    path = tmp_path / email_mod.EMAIL_WATERMARK_FILE
+    path.write_text('{"last_uid": 42, "uidvalidity": 900}')
+    assert email_mod.load_email_watermark(tmp_path) == (42, 900)
+    path.write_text('{"last_uid": 7}')
+    assert email_mod.load_email_watermark(tmp_path) == (7, None)
+    path.write_text("not json")
+    assert email_mod.load_email_watermark(tmp_path) == (None, None)
 
 
 def test_email_body_never_rides_on_argv() -> None:
@@ -2089,67 +1380,6 @@ def test_activity_sanitizer_redacts_secrets() -> None:
     assert "sk-abc123" not in mod.adapter._sanitize_activity("using api_key: sk-abc123")
 
 
-def test_unknown_channel_is_not_treated_as_a_dm() -> None:
-    """Otherwise the agent auto-replies to every post in a public room it has
-    not polled yet — which is exactly what happens while discovery is failing."""
-    mod = _load_hermes_module()
-    adapter = _stream_adapter(mod)
-
-    async def scenario() -> None:
-        await adapter._dispatch_realtime_post(
-            {
-                "channel_id": "unseen",
-                "data": {
-                    "post_id": 3,
-                    "channel_id": "unseen",
-                    "created_at": "2026-06-04 12:00:01",
-                    "message": "chatting to someone else",
-                    "human_id": 1,
-                },
-            }
-        )
-        await _drain(adapter)
-
-    asyncio.run(scenario())
-    assert adapter.events == [], "no mention, unknown channel type: not our turn"
-
-
-def test_attention_dispatches_an_attachment_only_post(monkeypatch) -> None:
-    mod = _load_hermes_module()
-    monkeypatch.setattr(
-        sys.modules["hermes_clawbits_test.adapter"],
-        "cache_post_attachments",
-        lambda client, post: (["/cache/a.pdf"], ["application/pdf"], ["[document saved]"]),
-    )
-    adapter = _stream_adapter(mod)
-
-    async def scenario() -> None:
-        await adapter._dispatch_attention(
-            {
-                "channel_id": "chan",
-                "data": {
-                    "post_id": 8,
-                    "created_at": "2026-06-04 12:00:01",
-                    "message": "",
-                    "human_id": 1,
-                    "files": [
-                        {
-                            "file_id": "f1",
-                            "filename": "a.pdf",
-                            "content_type": "application/pdf",
-                            "size_bytes": 4,
-                        }
-                    ],
-                },
-            }
-        )
-        await _drain(adapter)
-
-    asyncio.run(scenario())
-    assert len(adapter.events) == 1
-    assert adapter.events[0].media_urls == ["/cache/a.pdf"]
-
-
 def test_stream_state_is_bounded() -> None:
     mod = _load_hermes_module()
     adapter = _stream_adapter(mod)
@@ -2188,101 +1418,6 @@ def test_a_finishing_turn_does_not_close_a_sibling_turns_stream() -> None:
 
     asyncio.run(scenario())
     assert adapter._open_streams == {}, "each turn still closes its own draft"
-
-
-class _EmailPollClient:
-    def __init__(self, details: dict[int, dict[str, Any]], owner: str | None = "boss@corp.com"):
-        self.details = details
-        self.owner = owner
-        self.posts: list[tuple[Any, ...]] = []
-
-    def email_count(self, agent_id: str) -> dict[str, Any]:
-        return {"total": len(self.details), "unread": 0, "email_address": "snivy@clawbits.ai"}
-
-    def agent_info(self, agent_id: str) -> dict[str, Any]:
-        return {"agent_id": agent_id, "operator_email": self.owner}
-
-    def email_inbox(self, agent_id: str, limit: int, offset: int) -> dict[str, Any]:
-        if offset:
-            return {"emails": []}
-        return {"emails": [{"uid": uid} for uid in sorted(self.details)]}
-
-    def email_get(self, agent_id: str, uid: int) -> dict[str, Any]:
-        return self.details[uid]
-
-    def post_message(self, *args: Any) -> dict[str, Any]:
-        self.posts.append(args)
-        return {"post_id": 1}
-
-    def set_status(self, channel_id: str, status: str, activity: Any = None) -> None:
-        pass
-
-
-def _email_adapter(mod, client, tmp_path, monkeypatch, watermark: int | None = 0):
-    email_mod = sys.modules["hermes_clawbits_test.email_integration"]
-    monkeypatch.setattr(email_mod, "_watermark_path", lambda: tmp_path / "wm.json")
-    cfg = _FakePlatformConfig(extra={"api_key": "k", "agent_id": "snivy", "channel_id": "chan"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = client
-    adapter._email_watermark = watermark
-    return adapter
-
-
-def test_owner_email_is_resolved_from_agent_info(tmp_path, monkeypatch) -> None:
-    """The mailbox count response carries no operator address; without pulling
-    it from agent-info every message would look third-party and never be
-    answered by email."""
-    mod = _load_hermes_module()
-    client = _EmailPollClient(
-        {
-            1: {"uid": 1, "from_addr": "boss@corp.com", "subject": "hi", "body_text": "hello"},
-            2: {"uid": 2, "from_addr": "stranger@x.com", "subject": "spam", "body_text": "buy"},
-        }
-    )
-    adapter = _email_adapter(mod, client, tmp_path, monkeypatch)
-
-    async def scenario() -> None:
-        await adapter._poll_email_once()
-        await _drain(adapter)
-
-    asyncio.run(scenario())
-    assert adapter._email_owner == "boss@corp.com"
-    assert "email:1" in adapter._email_reply_contexts, "owner mail gets an emailed reply"
-    assert "email:2" not in adapter._email_reply_contexts, "a stranger's mail does not"
-    assert len(adapter.events) == 2, "both still reach the agent as turns"
-
-
-def test_uid_reset_reseeds_the_watermark(tmp_path, monkeypatch) -> None:
-    """A reprovisioned mailbox restarts uids; without this, intake stops dead."""
-    mod = _load_hermes_module()
-    client = _EmailPollClient({1: {"uid": 1, "from_addr": "boss@corp.com", "body_text": "x"}})
-    adapter = _email_adapter(mod, client, tmp_path, monkeypatch, watermark=9_000)
-
-    asyncio.run(adapter._poll_email_once())
-    assert adapter._email_watermark == 1, "reseeded to the mailbox's newest uid"
-
-
-def test_autoresponder_mail_is_not_dispatched(tmp_path, monkeypatch) -> None:
-    mod = _load_hermes_module()
-    client = _EmailPollClient(
-        {
-            1: {
-                "uid": 1,
-                "from_addr": "boss@corp.com",
-                "body_text": "out of office",
-                "headers": {"Auto-Submitted": "auto-replied"},
-            }
-        }
-    )
-    adapter = _email_adapter(mod, client, tmp_path, monkeypatch)
-
-    async def scenario() -> None:
-        await adapter._poll_email_once()
-        await _drain(adapter)
-
-    asyncio.run(scenario())
-    assert adapter.events == [], "answering an autoresponder is how mail loops start"
-    assert adapter._email_watermark == 1
 
 
 def _install_fake_executions(latest: Any) -> None:
@@ -2357,217 +1492,12 @@ def test_create_job_does_not_pass_a_string_origin() -> None:
     assert not isinstance(created.get("origin"), str)
 
 
-# ---------------------------------------------------------------------------
-# Restart catch-up — durable read cursors + after_post_id gap drain
-# ---------------------------------------------------------------------------
-
-
-class _CatchUpClient:
-    """Fake CLI client for the boot catch-up paths: serial-id posts, a
-    forward-cursor `get_posts`, and a recorded `mark_read`."""
-
-    def __init__(self, channels, posts) -> None:
-        self.channels = channels
-        self.posts = posts  # ascending serial order
-        self.acks: list[tuple[str, int]] = []
-        self.post_calls: list[tuple[Any, ...]] = []
-
-    def list_channels(self):
-        return self.channels
-
-    def get_posts(self, channel_id, limit=50, after_post_id=None):
-        self.post_calls.append((channel_id, limit, after_post_id))
-        if after_post_id is not None:
-            return [p for p in self.posts if p["post_id"] > after_post_id][:limit]
-        return self.posts[-limit:]
-
-    def mark_read(self, channel_id, post_id):
-        self.acks.append((channel_id, int(post_id)))
-        return {"channel_id": channel_id, "last_read_post_id": int(post_id)}
-
-    def set_status(self, channel_id, status, activity=None):
-        pass
-
-
-def _catch_up_adapter(mod, client):
-    cfg = _FakePlatformConfig(extra={"api_key": "key", "agent_id": "agent"})
-    adapter = mod.ClawbitsAdapter(cfg)
-    adapter.client = client
-    return adapter
-
-
-def _poll_and_drain(adapter):
-    async def run() -> None:
-        await adapter._poll_once()
-        await _drain(adapter)
-
-    asyncio.run(run())
-
-
-def _serial_post(serial: int, message: str, second: int) -> dict[str, Any]:
-    return {
-        "post_id": serial,
-        "created_at": f"2026-06-04 12:00:{second:02d}",
-        "message": message,
-        "human_id": 1,
-    }
-
-
-def test_read_cursor_file_round_trip() -> None:
-    mod = _load_hermes_module()
+def test_legacy_read_cursor_file_is_read_leniently(tmp_path) -> None:
+    _load_hermes_module()
     rc = sys.modules["hermes_clawbits_test.read_cursors"]
-    assert rc.load_read_cursors() == {}
-    rc.save_read_cursors({"chan": 41, "other": 7})
-    assert rc.load_read_cursors() == {"chan": 41, "other": 7}
-    # Junk values are dropped, not fatal.
-    rc.save_read_cursors({"chan": 42})
-    assert rc.load_read_cursors() == {"chan": 42}
-    del mod
-
-
-def test_first_boot_seeds_to_newest_and_acks_the_pointer() -> None:
-    # No pointer anywhere: classic seed (no dispatch), plus one ack so every
-    # LATER restart is a real resume instead of another silent seed.
-    mod = _load_hermes_module()
-    client = _CatchUpClient(
-        [mod._Channel("chan", "direct", "Chat")],
-        [_serial_post(10, "old backlog", 0), _serial_post(11, "newer backlog", 1)],
-    )
-    adapter = _catch_up_adapter(mod, client)
-    _poll_and_drain(adapter)
-
-    assert adapter.events == [], "first boot never replays history"
-    assert client.acks == [("chan", 11)], "the pointer is created at the newest serial"
-
-
-def test_restart_with_local_cursor_replays_the_gap_as_one_turn() -> None:
-    # The reported bug, fixed: messages that arrived while the process was
-    # down are drained from the durable cursor and answered — newest
-    # addressed post as the trigger, older ones as context.
-    mod = _load_hermes_module()
-    rc = sys.modules["hermes_clawbits_test.read_cursors"]
-    rc.save_read_cursors({"chan": 10})
-    client = _CatchUpClient(
-        [mod._Channel("chan", "direct", "Chat")],
-        [
-            _serial_post(10, "already answered", 0),
-            _serial_post(11, "missed one", 1),
-            _serial_post(12, "missed two", 2),
-        ],
-    )
-    adapter = _catch_up_adapter(mod, client)
-    _poll_and_drain(adapter)
-
-    assert len(adapter.events) == 1, "one turn per channel, not one per missed post"
-    event = adapter.events[0]
-    assert event.text.rsplit("\n\n", 1)[-1] == "missed two", "newest missed post triggers"
-    assert "[Missed while offline]" in event.text
-    assert "missed one" in event.text, "older missed post rides as context"
-    assert ("chan", 12) in client.acks, "the settled turn acks the trigger serial"
-    assert any(
-        call[2] == 10 for call in client.post_calls
-    ), "the drain resumes from the persisted serial"
-    # The pointer survives for the NEXT restart via the local file too.
-    assert rc.load_read_cursors()["chan"] == 12
-
-
-def test_server_pointer_wins_over_the_local_file() -> None:
-    mod = _load_hermes_module()
-    rc = sys.modules["hermes_clawbits_test.read_cursors"]
-    rc.save_read_cursors({"chan": 10})
-    client = _CatchUpClient(
-        [
-            mod._Channel(
-                "chan", "direct", "Chat", latest_post_id=12, last_read_post_id=11
-            )
-        ],
-        [
-            _serial_post(11, "covered by the server pointer", 1),
-            _serial_post(12, "actually new", 2),
-        ],
-    )
-    adapter = _catch_up_adapter(mod, client)
-    _poll_and_drain(adapter)
-
-    assert len(adapter.events) == 1
-    assert adapter.events[0].text.rsplit("\n\n", 1)[-1] == "actually new"
-    assert any(
-        call[2] == 11 for call in client.post_calls
-    ), "the drain starts at the server pointer, not the stale local file"
-
-
-def test_quiet_channel_skips_the_posts_fetch_entirely() -> None:
-    mod = _load_hermes_module()
-    client = _CatchUpClient(
-        [
-            mod._Channel(
-                "chan", "direct", "Chat", latest_post_id=12, last_read_post_id=12
-            )
-        ],
-        [_serial_post(12, "seen", 2)],
-    )
-    adapter = _catch_up_adapter(mod, client)
-    _poll_and_drain(adapter)
-
-    assert adapter.events == []
-    # One classic-seed fetch is allowed; no cursor drain must happen.
-    assert all(call[2] is None for call in client.post_calls)
-
-
-def test_unaddressed_gap_is_acked_not_replayed() -> None:
-    # Shared-room chatter with no mention: examined, skipped, acked — so the
-    # same gap is not re-drained on every restart. (Nudges are unaffected:
-    # that path keys on the seen-set, not this pointer.)
-    mod = _load_hermes_module()
-    rc = sys.modules["hermes_clawbits_test.read_cursors"]
-    rc.save_read_cursors({"chan": 10})
-    client = _CatchUpClient(
-        [mod._Channel("chan", "public", "Room")],
-        [_serial_post(11, "unrelated chatter", 1)],
-    )
-    adapter = _catch_up_adapter(mod, client)
-    _poll_and_drain(adapter)
-
-    assert adapter.events == []
-    assert client.acks == [("chan", 11)]
-
-
-def test_ws_post_on_an_unseeded_channel_defers_to_the_poll() -> None:
-    # The pre-seed race, fixed: a realtime post arriving before the boot
-    # pass classifies its channel must NOT insert a zero cursor (the next
-    # poll would then replay the whole page as live traffic).
-    mod = _load_hermes_module()
-    client = _CatchUpClient(
-        [mod._Channel("chan", "direct", "Chat")],
-        [_serial_post(11, "hello", 1)],
-    )
-    adapter = _catch_up_adapter(mod, client)
-
-    async def deliver() -> None:
-        await adapter._dispatch_realtime_post(
-            {"type": "post.created", "channel_id": "chan", "data": _serial_post(11, "hello", 1)}
-        )
-
-    asyncio.run(deliver())
-    assert adapter.events == []
-    assert "chan" not in adapter._cursors, "no cursor may be invented pre-seed"
-
-
-def test_read_pointer_acks_only_a_settled_turn() -> None:
-    # A failed turn leaves the pointer, so the post re-delivers on the next boot.
-    mod = _load_hermes_module()
-    client = _CatchUpClient([], [])
-    adapter = _catch_up_adapter(mod, client)
-
-    async def scenario(outcome: Any) -> None:
-        async def turn(_event: Any) -> Any:
-            return outcome
-
-        adapter.turn = turn
-        await adapter.handle_message(_event("7", post_id=7))
-        await _drain(adapter)
-
-    asyncio.run(scenario(_FakeProcessingOutcome.FAILURE))
-    assert client.acks == []
-    asyncio.run(scenario(_FakeProcessingOutcome.SUCCESS))
-    assert client.acks == [("chan", 7)]
+    assert rc.load_read_cursors(tmp_path) == {}
+    path = tmp_path / rc.READ_CURSOR_FILE
+    path.write_text(json.dumps({"chan": 41, "other": "7", "junk": "x"}))
+    assert rc.load_read_cursors(tmp_path) == {"chan": 41, "other": 7}, "junk values are dropped"
+    path.write_text("{truncated")
+    assert rc.load_read_cursors(tmp_path) == {}

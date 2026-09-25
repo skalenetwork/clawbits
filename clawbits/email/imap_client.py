@@ -15,6 +15,9 @@ Environment variables:
     STALWART_SVC_PASSWORD     - service account password (required)
     STALWART_EMAIL_DOMAIN     - Email domain (via clawbits.domain.EMAIL_DOMAIN)
     STALWART_IMPERSONATE_SEP  - impersonation separator char (default: %)
+    STALWART_IMAP_TIMEOUT_SECONDS - per-operation socket timeout (default: 30)
+    STALWART_AUTHSERV_ID      - authserv-id of Stalwart's own Authentication-Results
+                                (unset: every sender verdict is "unknown")
 """
 import base64
 import email
@@ -30,6 +33,7 @@ from email.message import Message
 from imapclient import IMAPClient
 
 from clawbits.domain import EMAIL_DOMAIN
+from clawbits.email.sender_auth import UNTRUSTED_AUTH_HEADERS, sender_auth_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +49,16 @@ STALWART_SVC_USER = os.getenv("STALWART_SVC_USER", "admin")
 STALWART_SVC_PASSWORD = os.getenv("STALWART_SVC_PASSWORD", "")
 STALWART_EMAIL_DOMAIN = EMAIL_DOMAIN
 STALWART_IMPERSONATE_SEP = os.getenv("STALWART_IMPERSONATE_SEP", "%")
+STALWART_IMAP_TIMEOUT = float(os.getenv("STALWART_IMAP_TIMEOUT_SECONDS", "30"))
+STALWART_AUTHSERV_ID = os.getenv("STALWART_AUTHSERV_ID", "").strip() or None
+
+
+class MailboxEpochChanged(Exception):
+    """The INBOX UIDVALIDITY differs from the caller's, so its UIDs now name different messages."""
+
+    def __init__(self, uidvalidity: int):
+        super().__init__(f"mailbox epoch changed (uidvalidity={uidvalidity})")
+        self.uidvalidity = uidvalidity
 
 
 def agent_email_address(agent_id: str) -> str:
@@ -75,7 +89,13 @@ def _imap_connection(agent_id: str) -> Generator[IMAPClient]:
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
 
-    client = IMAPClient(STALWART_IMAP_HOST, port=STALWART_IMAP_PORT, ssl=STALWART_IMAP_USE_SSL, ssl_context=ssl_context)
+    client = IMAPClient(
+        STALWART_IMAP_HOST,
+        port=STALWART_IMAP_PORT,
+        ssl=STALWART_IMAP_USE_SSL,
+        ssl_context=ssl_context,
+        timeout=STALWART_IMAP_TIMEOUT,
+    )
     try:
         # Login with lowercased agent account credentials
         client.login(account_user, account_password)
@@ -86,6 +106,14 @@ def _imap_connection(agent_id: str) -> Generator[IMAPClient]:
             client.logout()
         except Exception:
             pass
+
+
+def _select_inbox(client: IMAPClient, *, readonly: bool, uidvalidity: int | None = None) -> dict:
+    """SELECT (or EXAMINE when readonly) INBOX; raise MailboxEpochChanged on an epoch mismatch."""
+    selected = client.select_folder("INBOX", readonly=readonly)
+    if uidvalidity is not None and selected[b"UIDVALIDITY"] != uidvalidity:
+        raise MailboxEpochChanged(selected[b"UIDVALIDITY"])
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +270,94 @@ def _peek_response_bytes(data: dict) -> bytes | None:
     return None
 
 
+def _fetch_summaries(client: IMAPClient, uids: list[int]) -> list[dict]:
+    """Summary dicts for *uids* in the given order; vanished or unrequested UIDs are skipped."""
+    # Fetch envelope data for the page. PREVIEW (RFC 8970) rides along in
+    # the same round-trip when the server supports it.
+    fetch_items = ["FLAGS", "RFC822.SIZE", "ENVELOPE", "BODYSTRUCTURE"]
+    supports_preview = b"PREVIEW" in client.capabilities()
+    if supports_preview:
+        fetch_items.append("PREVIEW")
+    fetch_data = client.fetch(uids, fetch_items)
+
+    # Fallback snippets: for messages the server gave no PREVIEW for, peek
+    # the head of their first text/plain part — grouped by section so a
+    # whole page costs one extra round-trip per distinct section path.
+    peek_sections: dict[str, list[int]] = {}
+    peek_decode: dict[int, tuple[str, str]] = {}
+    if not supports_preview:
+        for uid in uids:
+            data = fetch_data.get(uid)
+            if data is None:
+                continue
+            located = _find_text_section(data.get(b"BODYSTRUCTURE"))
+            if located is None:
+                continue  # HTML-only or bodiless: honest snippet=None
+            section, encoding, charset = located
+            peek_sections.setdefault(section, []).append(uid)
+            peek_decode[uid] = (encoding, charset)
+    peeked_text: dict[int, str] = {}
+    for section, section_uids in peek_sections.items():
+        peek_data = client.fetch(section_uids, [f"BODY.PEEK[{section}]<0.{_SNIPPET_PEEK_BYTES}>"])
+        for uid in section_uids:
+            raw = _peek_response_bytes(peek_data.get(uid, {}))
+            if raw is None:
+                continue
+            encoding, charset = peek_decode[uid]
+            peeked_text[uid] = _decode_peeked_text(raw, encoding, charset)
+
+    emails = []
+    for uid in uids:
+        data = fetch_data.get(uid)
+        if data is None:
+            continue
+
+        envelope = data.get(b"ENVELOPE")
+        flags = data.get(b"FLAGS", ())
+        size = data.get(b"RFC822.SIZE", 0)
+
+        is_read = b"\\Seen" in flags
+
+        # Parse envelope fields
+        from_addr = ""
+        to_addr = ""
+        subject = ""
+        date_str = ""
+
+        if envelope:
+            subject = _decode_header(envelope.subject) if envelope.subject else ""
+            date_str = envelope.date.isoformat() if envelope.date else ""
+            if envelope.from_ and len(envelope.from_) > 0:
+                addr = envelope.from_[0]
+                from_addr = f"{addr.mailbox.decode('utf-8', errors='replace')}@{addr.host.decode('utf-8', errors='replace')}" if addr.mailbox and addr.host else str(addr)
+            if envelope.to and len(envelope.to) > 0:
+                addr = envelope.to[0]
+                to_addr = f"{addr.mailbox.decode('utf-8', errors='replace')}@{addr.host.decode('utf-8', errors='replace')}" if addr.mailbox and addr.host else str(addr)
+
+        snippet = None
+        if supports_preview:
+            preview = data.get(b"PREVIEW")
+            if isinstance(preview, bytes):
+                snippet = _collapse_snippet(preview.decode("utf-8", errors="replace"))
+            elif isinstance(preview, str):
+                snippet = _collapse_snippet(preview)
+        elif uid in peeked_text:
+            snippet = _collapse_snippet(peeked_text[uid])
+
+        emails.append({
+            "uid": uid,
+            "from_addr": from_addr,
+            "to_addr": to_addr,
+            "subject": subject,
+            "date": date_str,
+            "is_read": is_read,
+            "size": size,
+            "snippet": snippet,
+            "has_attachments": _bodystructure_has_attachments(data.get(b"BODYSTRUCTURE")),
+        })
+    return emails
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -304,89 +420,7 @@ def list_emails(agent_id: str, limit: int = 50, offset: int = 0, unread_only: bo
                 "offset": offset,
             }
 
-        # Fetch envelope data for the page. PREVIEW (RFC 8970) rides along in
-        # the same round-trip when the server supports it.
-        fetch_items = ["FLAGS", "RFC822.SIZE", "ENVELOPE", "BODYSTRUCTURE"]
-        supports_preview = b"PREVIEW" in client.capabilities()
-        if supports_preview:
-            fetch_items.append("PREVIEW")
-        fetch_data = client.fetch(page_uids, fetch_items)
-
-        # Fallback snippets: for messages the server gave no PREVIEW for, peek
-        # the head of their first text/plain part — grouped by section so a
-        # whole page costs one extra round-trip per distinct section path.
-        peek_sections: dict[str, list[int]] = {}
-        peek_decode: dict[int, tuple[str, str]] = {}
-        if not supports_preview:
-            for uid in page_uids:
-                data = fetch_data.get(uid)
-                if data is None:
-                    continue
-                located = _find_text_section(data.get(b"BODYSTRUCTURE"))
-                if located is None:
-                    continue  # HTML-only or bodiless: honest snippet=None
-                section, encoding, charset = located
-                peek_sections.setdefault(section, []).append(uid)
-                peek_decode[uid] = (encoding, charset)
-        peeked_text: dict[int, str] = {}
-        for section, uids in peek_sections.items():
-            peek_data = client.fetch(uids, [f"BODY.PEEK[{section}]<0.{_SNIPPET_PEEK_BYTES}>"])
-            for uid in uids:
-                raw = _peek_response_bytes(peek_data.get(uid, {}))
-                if raw is None:
-                    continue
-                encoding, charset = peek_decode[uid]
-                peeked_text[uid] = _decode_peeked_text(raw, encoding, charset)
-
-        emails = []
-        for uid in page_uids:
-            data = fetch_data.get(uid)
-            if data is None:
-                continue
-
-            envelope = data.get(b"ENVELOPE")
-            flags = data.get(b"FLAGS", ())
-            size = data.get(b"RFC822.SIZE", 0)
-
-            is_read = b"\\Seen" in flags
-
-            # Parse envelope fields
-            from_addr = ""
-            to_addr = ""
-            subject = ""
-            date_str = ""
-
-            if envelope:
-                subject = _decode_header(envelope.subject) if envelope.subject else ""
-                date_str = envelope.date.isoformat() if envelope.date else ""
-                if envelope.from_ and len(envelope.from_) > 0:
-                    addr = envelope.from_[0]
-                    from_addr = f"{addr.mailbox.decode('utf-8', errors='replace')}@{addr.host.decode('utf-8', errors='replace')}" if addr.mailbox and addr.host else str(addr)
-                if envelope.to and len(envelope.to) > 0:
-                    addr = envelope.to[0]
-                    to_addr = f"{addr.mailbox.decode('utf-8', errors='replace')}@{addr.host.decode('utf-8', errors='replace')}" if addr.mailbox and addr.host else str(addr)
-
-            snippet = None
-            if supports_preview:
-                preview = data.get(b"PREVIEW")
-                if isinstance(preview, bytes):
-                    snippet = _collapse_snippet(preview.decode("utf-8", errors="replace"))
-                elif isinstance(preview, str):
-                    snippet = _collapse_snippet(preview)
-            elif uid in peeked_text:
-                snippet = _collapse_snippet(peeked_text[uid])
-
-            emails.append({
-                "uid": uid,
-                "from_addr": from_addr,
-                "to_addr": to_addr,
-                "subject": subject,
-                "date": date_str,
-                "is_read": is_read,
-                "size": size,
-                "snippet": snippet,
-                "has_attachments": _bodystructure_has_attachments(data.get(b"BODYSTRUCTURE")),
-            })
+        emails = _fetch_summaries(client, page_uids)
 
         return {
             "emails": emails,
@@ -397,27 +431,70 @@ def list_emails(agent_id: str, limit: int = 50, offset: int = 0, unread_only: bo
         }
 
 
-def get_email(agent_id: str, message_uid: int) -> dict | None:
-    """Fetch a single email by UID with full body content.
+def list_changes(
+    agent_id: str,
+    after_uid: int = 0,
+    *,
+    uidvalidity: int | None = None,
+    through_uid: int | None = None,
+    limit: int = 50,
+) -> dict:
+    """Ascending summaries with ``after_uid < uid <= through_uid`` in one epoch; flag-neutral (EXAMINE).
 
-    Returns ``None`` if the UID does not exist.
-    Marks the message as read (\\Seen) as a side-effect.
+    ``through_uid`` is clamped to UIDNEXT-1 and defaults to it, fixing the scan's upper bound on its
+    first page. ``next_after_uid`` is the cursor for the next page (or scan).
     """
     with _imap_connection(agent_id) as client:
-        client.select_folder("INBOX")
+        selected = _select_inbox(client, readonly=True, uidvalidity=uidvalidity)
+        newest = selected[b"UIDNEXT"] - 1
+        through = newest if through_uid is None else min(through_uid, newest)
+        after = max(after_uid, 0)
+        uids: list[int] = []
+        if through > after:
+            # Explicit bounds, never "n:*": "*" is the highest existing UID, so "n:*" matches it even past n.
+            uids = sorted(u for u in client.search(["UID", f"{after + 1}:{through}"]) if after < u <= through)
+        page, has_more = uids[:limit], len(uids) > limit
+        return {
+            "uidvalidity": selected[b"UIDVALIDITY"],
+            "through_uid": through,
+            "emails": _fetch_summaries(client, page) if page else [],
+            "next_after_uid": page[-1] if has_more else max(after, through),
+            "has_more": has_more,
+        }
 
-        fetch_data = client.fetch([message_uid], ["FLAGS", "RFC822", "RFC822.SIZE"])
+
+def get_email(
+    agent_id: str,
+    message_uid: int,
+    *,
+    uidvalidity: int | None = None,
+    mark_read: bool = True,
+    attachment_content: bool = True,
+) -> dict | None:
+    """Fetch a single email by UID with full body content, or ``None`` if the UID does not exist.
+
+    By default the message is marked read (\\Seen); ``mark_read=False`` uses EXAMINE + BODY.PEEK[]
+    and reports the stored flag. ``sender_auth`` carries the MTA's DMARC verdict, and the untrusted
+    authentication headers are left out of ``headers``. ``attachment_content=False`` omits
+    ``content_b64`` but still reports each attachment's size.
+    """
+    with _imap_connection(agent_id) as client:
+        _select_inbox(client, readonly=not mark_read, uidvalidity=uidvalidity)
+
+        body_item = "RFC822" if mark_read else "BODY.PEEK[]"
+        fetch_data = client.fetch([message_uid], ["FLAGS", body_item, "RFC822.SIZE"])
         if message_uid not in fetch_data:
             return None
 
         data = fetch_data[message_uid]
-        raw = data.get(b"RFC822", b"")
+        raw = data.get(b"RFC822" if mark_read else b"BODY[]", b"")
         flags = data.get(b"FLAGS", ())
         size = data.get(b"RFC822.SIZE", 0)
 
-        # Mark as seen
-        if b"\\Seen" not in flags:
+        is_read = b"\\Seen" in flags
+        if mark_read and not is_read:
             client.add_flags([message_uid], [b"\\Seen"])
+            is_read = True
 
         msg: Message = email.message_from_bytes(raw)
 
@@ -426,7 +503,7 @@ def get_email(agent_id: str, message_uid: int) -> dict | None:
         subject = _decode_header(msg.get("Subject", ""))
         date_str = msg.get("Date", "")
 
-        headers = {k: _decode_header(v) for k, v in msg.items()}
+        headers = {k: _decode_header(v) for k, v in msg.items() if k.lower() not in UNTRUSTED_AUTH_HEADERS}
 
         body_text = None
         body_html = None
@@ -439,12 +516,14 @@ def get_email(agent_id: str, message_uid: int) -> dict | None:
 
                 if "attachment" in disposition:
                     payload = part.get_payload(decode=True) or b""
-                    attachments.append({
+                    attachment = {
                         "filename": part.get_filename() or "unnamed",
                         "content_type": content_type,
                         "size": len(payload),
-                        "content_b64": base64.b64encode(payload).decode("utf-8"),
-                    })
+                    }
+                    if attachment_content:
+                        attachment["content_b64"] = base64.b64encode(payload).decode("utf-8")
+                    attachments.append(attachment)
                 elif content_type == "text/plain" and body_text is None:
                     payload = part.get_payload(decode=True)
                     if payload:
@@ -472,19 +551,20 @@ def get_email(agent_id: str, message_uid: int) -> dict | None:
             "to_addr": to_addr,
             "subject": subject,
             "date": date_str,
-            "is_read": True,  # we just marked it
+            "is_read": is_read,
             "size": size,
             "body_text": body_text,
             "body_html": body_html,
             "attachments": attachments,
             "headers": headers,
+            "sender_auth": sender_auth_verdict(msg, STALWART_AUTHSERV_ID),
         }
 
 
-def delete_email(agent_id: str, message_uid: int) -> bool:
-    """Delete a message by UID. Returns True if deleted, False if UID not found."""
+def delete_email(agent_id: str, message_uid: int, *, uidvalidity: int | None = None) -> bool:
+    """Delete a message by UID, optionally only within the caller's epoch. False if the UID is not found."""
     with _imap_connection(agent_id) as client:
-        client.select_folder("INBOX")
+        _select_inbox(client, readonly=False, uidvalidity=uidvalidity)
 
         # Verify UID exists
         fetch_data = client.fetch([message_uid], ["FLAGS"])

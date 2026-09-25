@@ -11,7 +11,7 @@ from datetime import datetime
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from eth_utils import to_hex
-from sqlalchemy import func, literal
+from sqlalchemy import and_, func, literal, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
@@ -53,6 +53,7 @@ from clawbits.db.models import (
     Automation,
     AutomationRun,
     ChallengeSession,
+    EmailDelivery,
     HumanApiToken,
     HumanChannelState,
     HumanConnector,
@@ -1050,6 +1051,7 @@ class TableWrite:
         session.exec(delete(AgentMark).where(AgentMark.agent_id == agent_id))
         session.exec(delete(AgentDay).where(AgentDay.agent_id == agent_id))
         session.exec(delete(AgentModelCatalog).where(AgentModelCatalog.agent_id == agent_id))
+        session.exec(delete(EmailDelivery).where(EmailDelivery.agent_id == agent_id))
         # The agent's own read pointers: its restart cursor per channel, not
         # content, and a NOT NULL ``agent_id`` FK with no cascade.
         session.exec(
@@ -3885,6 +3887,110 @@ class TableWrite:
         elif peer_agent_id != DELETED_AGENT_ID:
             TableWrite._award_teamwork(session, agent_id, peer_agent_id, earned)
             TableWrite._award_teamwork(session, peer_agent_id, agent_id, None)
+
+    # ---------------- email outbox ----------------
+
+    @staticmethod
+    def create_email_delivery(
+        session: Session,
+        *,
+        agent_id: str,
+        idempotency_key: str,
+        payload_hash: str,
+        from_addr: str,
+        to_addr: str,
+        subject: str,
+        message_id: str,
+    ) -> EmailDelivery | None:
+        """Insert a queued delivery; None when ``(agent_id, idempotency_key)`` already exists.
+
+        Locks the agent row first, so a charge later in the transaction cannot deadlock against another
+        send whose foreign key check holds KEY SHARE on that row.
+        """
+        session.get(Agent, agent_id, with_for_update=True)
+        new_id = session.execute(
+            pg_insert(EmailDelivery)
+            .values(
+                agent_id=agent_id,
+                idempotency_key=idempotency_key,
+                payload_hash=payload_hash,
+                from_addr=from_addr,
+                to_addr=to_addr,
+                subject=subject,
+                message_id=message_id,
+            )
+            .on_conflict_do_nothing(index_elements=["agent_id", "idempotency_key"])
+            .returning(EmailDelivery.id)
+        ).scalar_one_or_none()
+        return None if new_id is None else session.get(EmailDelivery, new_id)
+
+    @staticmethod
+    def refresh_email_delivery(
+        session: Session, agent_id: str, idempotency_key: str
+    ) -> EmailDelivery | None:
+        """The keyed delivery, after first settling an attempt whose lease expired as ``unknown``."""
+        key = and_(
+            EmailDelivery.agent_id == agent_id,
+            EmailDelivery.idempotency_key == idempotency_key,
+        )
+        session.exec(
+            update(EmailDelivery)
+            .where(key, EmailDelivery.state == "attempting", EmailDelivery.lease_expires_at < func.now())
+            .values(state="unknown", last_error="lease_expired", lease_expires_at=None, updated_at=func.now())
+        )
+        return session.exec(
+            select(EmailDelivery).where(key).execution_options(populate_existing=True)
+        ).first()
+
+    @staticmethod
+    def claim_email_delivery(
+        session: Session, delivery_id: int, lease: _dt.timedelta
+    ) -> int | None:
+        """Move a queued or due retry_wait delivery to ``attempting`` under a lease.
+
+        Returns the new attempt number, or None when the delivery is not sendable now.
+        """
+        return session.execute(
+            update(EmailDelivery)
+            .where(
+                EmailDelivery.id == delivery_id,
+                or_(
+                    EmailDelivery.state == "queued",
+                    and_(EmailDelivery.state == "retry_wait", EmailDelivery.next_attempt_at <= func.now()),
+                ),
+            )
+            .values(
+                state="attempting",
+                attempts=EmailDelivery.attempts + 1,
+                lease_expires_at=func.now() + lease,
+                next_attempt_at=None,
+                updated_at=func.now(),
+            )
+            .returning(EmailDelivery.attempts)
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def finish_email_delivery(
+        session: Session,
+        delivery_id: int,
+        attempt: int,
+        state: str,
+        error: str | None,
+        retry_in: _dt.timedelta | None,
+    ) -> None:
+        """Record attempt ``attempt``'s outcome, also over a lease-expired ``unknown``; a stale attempt is a no-op."""
+        session.exec(
+            update(EmailDelivery)
+            .where(EmailDelivery.id == delivery_id, EmailDelivery.attempts == attempt)
+            .values(
+                state=state,
+                last_error=error,
+                lease_expires_at=None,
+                next_attempt_at=None if retry_in is None else func.now() + retry_in,
+                accepted_at=func.now() if state == "accepted" else None,
+                updated_at=func.now(),
+            )
+        )
 
     # ---------------- agent actions ----------------
 

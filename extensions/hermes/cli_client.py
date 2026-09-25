@@ -1,8 +1,9 @@
 """Subprocess wrapper around the bundled ``agent-cli/clawbits_agent_cli.py``.
 
 All Clawbits API traffic goes through the dependency-free CLI in a child
-process; this module owns spawning it (credential passed via env, never argv)
-and decoding its JSON output.
+process. This module owns spawning it with an allowlisted environment (the
+owning account's credentials ride env, never argv), passing private payloads
+as ``@file`` references, and reducing failures to body-free errors.
 """
 
 from __future__ import annotations
@@ -14,17 +15,144 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from .account import DEFAULT_ENDPOINT, ClawbitsAccount, scoped_setting
 from .manifest import PLUGIN_VERSION
 from .messages import _Channel, _extract_channel_id, _extract_channels, _extract_posts
 
-DEFAULT_ENDPOINT = "https://app.clawbits.ai"
+# Transport and locale settings only; credentials are added per owning account.
+_CHILD_ENV_ALLOW = frozenset({
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "SYSTEMROOT",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+})
+
+_STATUS_CODES = {
+    400: "bad_request", 401: "unauthorized", 402: "payment_required", 403: "forbidden",
+    404: "not_found", 409: "conflict", 413: "too_large", 422: "validation_error",
+    426: "plugin_outdated", 429: "rate_limited", 503: "unavailable",
+}
+_CODE_RE = re.compile(r"[a-z0-9_]{1,64}")
 
 
 def endpoint() -> str:
-    return os.getenv("CLAWBITS_ENDPOINT", DEFAULT_ENDPOINT).rstrip("/")
+    """Active profile's endpoint (scoped setting), default https://app.clawbits.ai."""
+    return (scoped_setting("CLAWBITS_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
+
+
+class ClawbitsCliError(RuntimeError):
+    """Agent-CLI failure as HTTP status plus stable code; str() never carries bodies, URLs or argv.
+
+    ``detail`` is the server's structured ``detail`` object when the error body
+    has one (e.g. ``{"code": "mailbox_epoch_changed", "uidvalidity": 7}``), else None.
+    """
+
+    def __init__(self, status: int | None, code: str, detail: dict[str, Any] | None = None) -> None:
+        self.status, self.code, self.detail = status, code, detail
+        super().__init__(f"HTTP {status}: {code}" if status else f"agent-cli: {code}")
+
+
+def _cli_error(returncode: int, stderr: str) -> ClawbitsCliError:
+    """Classify the CLI's stderr ('HTTP <status>: <body>' or a traceback) without keeping it."""
+    found = re.search(r"^HTTP (\d{3}): ?(.*)$", stderr, re.MULTILINE | re.DOTALL)
+    if not found:
+        if returncode == 2 and re.search(r"^usage:", stderr, re.MULTILINE):
+            return ClawbitsCliError(None, "usage_error")
+        last = (stderr.strip().splitlines() or [""])[-1]
+        kind = re.match(r"^(?:\w+\.)*(\w*(?:Error|Exception))(?::|$)", last)
+        return ClawbitsCliError(None, kind.group(1) if kind else f"exit_{returncode}")
+    status = int(found.group(1))
+    try:
+        body = json.loads(found.group(2))
+    except ValueError:
+        body = None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if isinstance(detail, str) and "not configured" in detail.lower():
+        return ClawbitsCliError(status, "not_configured")
+    detail = detail if isinstance(detail, dict) else None
+    code = detail.get("code") if detail else None
+    if not (isinstance(code, str) and _CODE_RE.fullmatch(code)):
+        code = _STATUS_CODES.get(status, "http_error")
+    return ClawbitsCliError(status, code, detail)
+
+
+def http_status(error: BaseException) -> int | None:
+    """Status of a CLI failure: ClawbitsCliError.status, else parsed from an 'HTTP NNN:' line."""
+    status = getattr(error, "status", None)
+    if isinstance(status, int):
+        return status
+    found = re.search(r"^HTTP (\d{3}):", str(error), re.MULTILINE)
+    return int(found.group(1)) if found else None
+
+
+@contextlib.contextmanager
+def private_json_file(payload: Any) -> Iterator[str]:
+    """Yield '@<path>' of a 0600 ASCII JSON temp file (random 'clawbits-*.json'); unlinked on success, error or cancellation."""
+    fd, path = tempfile.mkstemp(prefix="clawbits-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            json.dump(payload, handle)
+        yield f"@{path}"
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+def child_env(api_key: str | None, *, answer: str | None = None, user_agent: str | None = None) -> dict[str, str]:
+    """Allowlisted transport env plus only the owning account's key, challenge answer and user agent."""
+    env = {name: value for name, value in os.environ.items() if name in _CHILD_ENV_ALLOW}
+    for name, value in (
+        ("CLAWBITS_API_KEY", api_key),
+        ("CLAWBITS_CHALLENGE_ANSWER", answer),
+        ("CLAWBITS_USER_AGENT", user_agent),
+    ):
+        if value:
+            env[name] = value
+    return env
+
+
+def _exec_cli(
+    cli_path: str,
+    base_url: str,
+    args: tuple[str, ...],
+    env: dict[str, str],
+    plugin_version: str | None = None,
+    timeout: float = 60,
+) -> Any:
+    """Run one agent-CLI command under ``env``; parsed JSON stdout, raises ClawbitsCliError on failure."""
+    cmd = [sys.executable, cli_path, "--base-url", base_url, "--plugin-version", plugin_version or PLUGIN_VERSION, *args]
+    try:
+        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=False, env=env)
+    except subprocess.TimeoutExpired:
+        raise ClawbitsCliError(None, "timeout") from None
+    if proc.returncode != 0:
+        raise _cli_error(proc.returncode, proc.stderr) from None
+    out = proc.stdout.strip()
+    if not out:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return out
+
+
+def _run_agent_cli(
+    cli_path: str,
+    base_url: str,
+    *args: str,
+    api_key: str | None = None,
+    answer: str | None = None,
+    user_agent: str | None = None,
+    plugin_version: str | None = None,
+    timeout: float = 60,
+) -> Any:
+    """Account-less CLI call (signup, setup): the user agent falls back to the active scope's setting."""
+    env = child_env(api_key, answer=answer, user_agent=user_agent or scoped_setting("CLAWBITS_USER_AGENT"))
+    return _exec_cli(cli_path, base_url, args, env, plugin_version, timeout)
 
 
 class _ClawbitsCli:
@@ -37,45 +165,30 @@ class _ClawbitsCli:
         api_key: str,
         plugin_version: str | None = None,
         answer: str | None = None,
+        user_agent: str | None = None,
     ) -> None:
         self.cli_path = cli_path
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.plugin_version = plugin_version or PLUGIN_VERSION
         self.answer = answer
+        self.user_agent = user_agent
+
+    @classmethod
+    def for_account(cls, account: ClawbitsAccount, cli_path: str | None = None) -> _ClawbitsCli:
+        """Client bound to one profile's endpoint, key, answer and user agent."""
+        return cls(
+            cli_path or _default_cli_path(),
+            account.base_url,
+            account.api_key,
+            PLUGIN_VERSION,
+            account.answer,
+            account.user_agent,
+        )
 
     def _run(self, *args: str) -> Any:
-        cmd = [
-            sys.executable,
-            self.cli_path,
-            "--base-url",
-            self.base_url,
-            "--plugin-version",
-            self.plugin_version,
-            *args,
-        ]
-        # Hand the API key to the child via env, NOT on argv: argv is world-
-        # readable through `ps` / /proc/<pid>/cmdline, so a `--api-key <secret>`
-        # leaks the credential to any local process for the life of the call.
-        # The agent CLI already defaults --api-key from CLAWBITS_API_KEY
-        # (clawbits_agent_cli.py:21), so this is a transparent swap. --base-url
-        # and --plugin-version stay on argv — neither is secret.
-        env = {**os.environ, "CLAWBITS_API_KEY": self.api_key}
-        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=60, check=False, env=env)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"agent-cli exited {proc.returncode}")
-        out = proc.stdout.strip()
-        if not out:
-            return None
-        try:
-            return json.loads(out)
-        except json.JSONDecodeError:
-            return out
-
-    def _write_args(self) -> list[str]:
-        if self.answer:
-            return ["--answer", self.answer]
-        return []
+        env = child_env(self.api_key, answer=self.answer, user_agent=self.user_agent)
+        return _exec_cli(self.cli_path, self.base_url, args, env, self.plugin_version)
 
     def list_channels(self) -> list[_Channel]:
         return _extract_channels(self._run("mm-channels"))
@@ -109,18 +222,13 @@ class _ClawbitsCli:
         file_ids: list[str] | None = None,
         status: str = "published",
     ) -> Any:
-        if parent_post_id is not None or trace_id or file_ids or status != "published":
-            body: dict[str, Any] = {
-                "message": content,
-                "status": status,
-                "file_ids": file_ids or [],
-            }
-            if parent_post_id is not None:
-                body["parent_post_id"] = parent_post_id
-            if trace_id:
-                body["trace_id"] = trace_id
-            return self._run("mm-post", channel_id, "--json", json.dumps(body), *self._write_args())
-        return self._run("mm-post", channel_id, "--message", content, *self._write_args())
+        body: dict[str, Any] = {"message": content, "status": status, "file_ids": file_ids or []}
+        if parent_post_id is not None:
+            body["parent_post_id"] = parent_post_id
+        if trace_id:
+            body["trace_id"] = trace_id
+        with private_json_file(body) as ref:
+            return self._run("mm-post", channel_id, "--json", ref)
 
     def patch_message(
         self,
@@ -138,10 +246,8 @@ class _ClawbitsCli:
             body["done"] = True
         if cancel:
             body["cancel"] = True
-        return self._run(
-            "mm-post-patch", channel_id, str(post_id), "--json", json.dumps(body),
-            *self._write_args(),
-        )
+        with private_json_file(body) as ref:
+            return self._run("mm-post-patch", channel_id, str(post_id), "--json", ref)
 
     def upload_file(
         self, channel_id: str, path: str, content_type: str | None = None
@@ -155,10 +261,10 @@ class _ClawbitsCli:
         args = ["mm-file-send", channel_id, path]
         if content_type:
             args += ["--content-type", content_type]
-        result = self._run(*args, *self._write_args())
+        result = self._run(*args)
         file_id = result.get("file_id") if isinstance(result, dict) else None
         if not isinstance(file_id, str) or not file_id:
-            raise RuntimeError(f"mm-file-send returned no file_id: {result!r}")
+            raise ClawbitsCliError(None, "missing_file_id")
         return file_id
 
     def file_url(self, file_id: str) -> str | None:
@@ -172,10 +278,11 @@ class _ClawbitsCli:
         status: str,
         activity: dict[str, Any] | None = None,
     ) -> None:
-        args = ["mm-status", channel_id, status]
-        if activity:
-            args += ["--activity-json", json.dumps(activity)]
-        self._run(*args, *self._write_args())
+        if not activity:
+            self._run("mm-status", channel_id, status)
+            return
+        with private_json_file(activity) as ref:
+            self._run("mm-status", channel_id, status, "--activity-json", ref)
 
     def control_snapshot(self) -> Any:
         return self._run("mm-channels")
@@ -190,8 +297,42 @@ class _ClawbitsCli:
         )
         return result if isinstance(result, dict) else {}
 
-    def email_get(self, agent_id: str, uid: int) -> dict[str, Any]:
-        result = self._run("email-get", agent_id, str(uid))
+    def email_changes(
+        self,
+        agent_id: str,
+        after_uid: int,
+        *,
+        uidvalidity: int | None = None,
+        through_uid: int | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """One ascending, epoch-bound page of ``GET /email/changes`` (flag-neutral)."""
+        args = ["email-changes", agent_id, "--after-uid", str(after_uid), "--limit", str(limit)]
+        if uidvalidity is not None:
+            args += ["--uidvalidity", str(uidvalidity)]
+        if through_uid is not None:
+            args += ["--through-uid", str(through_uid)]
+        result = self._run(*args)
+        return result if isinstance(result, dict) else {}
+
+    def email_get(
+        self,
+        agent_id: str,
+        uid: int,
+        *,
+        uidvalidity: int | None = None,
+        mark_read: bool = True,
+        attachment_content: bool = True,
+    ) -> dict[str, Any]:
+        """One message; ``mark_read=False`` peeks, ``uidvalidity`` pins the mailbox epoch."""
+        args = ["email-get", agent_id, str(uid)]
+        if uidvalidity is not None:
+            args += ["--uidvalidity", str(uidvalidity)]
+        if not mark_read:
+            args.append("--peek")
+        if not attachment_content:
+            args.append("--no-attachment-content")
+        result = self._run(*args)
         return result if isinstance(result, dict) else {}
 
     def email_send(
@@ -200,28 +341,29 @@ class _ClawbitsCli:
         subject: str,
         message: str,
         headers: dict[str, str] | None = None,
+        *,
+        idempotency_key: str | None = None,
     ) -> Any:
-        # The body goes through a temp FILE, not argv: argv is world-readable
-        # through ps / /proc/<pid>/cmdline, and this payload is the operator's
-        # private correspondence. Same reasoning as the API key in _run.
+        """POST send with the body in a private file; with a key the response is the delivery record."""
         body: dict[str, Any] = {"subject": subject, "message": message}
         if headers:
             body["headers"] = headers
-        fd, path = tempfile.mkstemp(prefix="clawbits-email-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(body, handle)
-            return self._run("email-send", agent_id, "--json", f"@{path}", *self._write_args())
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(path)
+        key_args = ["--idempotency-key", idempotency_key] if idempotency_key else []
+        with private_json_file(body) as ref:
+            return self._run("email-send", agent_id, "--json", ref, *key_args)
+
+    def email_delivery(self, agent_id: str, key: str) -> dict[str, Any]:
+        """The keyed outbox record, ``GET /email/deliveries/{key}``."""
+        result = self._run("email-delivery", agent_id, key)
+        return result if isinstance(result, dict) else {}
 
     def automations_desired(self) -> dict[str, Any]:
         result = self._run("automations-desired")
         return result if isinstance(result, dict) else {}
 
     def automations_state(self, report: dict[str, Any]) -> dict[str, Any]:
-        result = self._run("automations-state", json.dumps(report))
+        with private_json_file(report) as ref:
+            result = self._run("automations-state", ref)
         return result if isinstance(result, dict) else {}
 
     def agent_info(self, agent_id: str) -> dict[str, Any]:
@@ -239,45 +381,3 @@ class _ClawbitsCli:
 
 def _default_cli_path() -> str:
     return str(Path(__file__).resolve().parent / "agent-cli" / "clawbits_agent_cli.py")
-
-
-def _run_agent_cli(
-    cli_path: str,
-    base_url: str,
-    *args: str,
-    api_key: str | None = None,
-    plugin_version: str | None = None,
-) -> Any:
-    cmd = [
-        sys.executable,
-        cli_path,
-        "--base-url",
-        base_url,
-        "--plugin-version",
-        plugin_version or PLUGIN_VERSION,
-        *args,
-    ]
-    # The key rides in env, never argv (visible in ``ps``); the CLI reads
-    # CLAWBITS_API_KEY. Without a key this is a pre-enrollment call and must
-    # not inherit one from the environment.
-    env = {**os.environ}
-    if api_key:
-        env["CLAWBITS_API_KEY"] = api_key
-    else:
-        env.pop("CLAWBITS_API_KEY", None)
-    proc = subprocess.run(cmd, text=True, capture_output=True, timeout=60, check=False, env=env)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"agent-cli exited {proc.returncode}")
-    out = proc.stdout.strip()
-    if not out:
-        return None
-    try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        return out
-
-
-def http_status(error: Exception) -> int | None:
-    """The status of the ``HTTP NNN:`` line the agent CLI prints on failure."""
-    found = re.search(r"^HTTP (\d{3}):", str(error), re.MULTILINE)
-    return int(found.group(1)) if found else None

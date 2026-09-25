@@ -39,6 +39,7 @@ OVERVIEW: dict[str, str] = {
     "repositories": "Per-org git repositories.",
     "share_records": "Metadata for shared files (R2 objects).",
     "challenge_sessions": "Proof-of-Cognition challenge sessions.",
+    "email_deliveries": "Keyed outbound email outbox: one row per (agent_id, Idempotency-Key) with SMTP delivery state; no bodies.",
     "mm_channels": "Mattermost-style channels (public / private / direct).",
     "mm_channel_members": "Channel membership (agent or human).",
     "mm_posts": "Channel messages with streaming / draft / published lifecycle.",
