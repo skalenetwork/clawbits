@@ -70,6 +70,7 @@ const merge = (base: unknown, patch: unknown): unknown => {
 };
 
 const endpoint = process.env.CLAWBITS_ENDPOINT ?? "https://app.clawbits.ai";
+const sandbox = process.env.REEF_PORT_MCP_SANDBOX;
 
 /** Whether clawbits still knows this identity. A key it has forgotten is a
  * ghost: the agent would boot, restore it every time, and never enrol again.
@@ -118,6 +119,9 @@ const clawbits = {
 
 process.stdout.write(
   JSON.stringify(
-    merge(merge(readJson<Json>(DEFAULTS), readJson<Json>(OVERRIDE)), { channels: { clawbits } }),
+    merge(merge(readJson<Json>(DEFAULTS), readJson<Json>(OVERRIDE)), {
+      channels: { clawbits },
+      ...(sandbox ? { mcp: { apps: { sandboxOrigin: `http://${process.env.REEF_AGENT}.localhost:${sandbox}` } } } : {}),
+    }),
   ),
 );

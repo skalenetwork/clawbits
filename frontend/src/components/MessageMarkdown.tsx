@@ -1,4 +1,4 @@
-import { Children, cloneElement, createContext, isValidElement, memo, use, type MouseEvent, type ReactNode } from "react";
+import { Children, cloneElement, isValidElement, memo, use, type MouseEvent, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -7,6 +7,7 @@ import { classifyEmojiOnly, jumboEmojiClass } from "@/lib/emoji";
 import { ChannelMentionLink } from "@/components/ChannelMentionLink";
 import { CodeBlock } from "@/components/CodeBlock";
 import { MENTION_TOKEN_RE, MentionsContext, type MessageMentions } from "@/components/mentionsContext";
+import { MessagePostContext } from "@/components/messagePostContext";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { mentionHandle } from "@/lib/messageHelpers";
 import { isHereToken } from "@/lib/mentions";
@@ -137,13 +138,14 @@ function MentionText({ children }: { children: ReactNode }) {
   return mentions ? renderWithMentions(children, mentions) : children;
 }
 
-export const MessagePostContext = createContext<number | undefined>(undefined);
-
 function openMcpSignIn(href: string, postId: number): void {
   const tab = isDesktop ? null : window.open("", "_blank");
   if (tab) tab.opener = null;
   claimMcpSignIn(href, postId).then(
-    ({ url }) => (tab ? tab.location.replace(url) : void openExternal(url)),
+    ({ url }) => {
+      if (tab) tab.location.replace(url);
+      else void openExternal(url);
+    },
     (err: unknown) => {
       tab?.close();
       toast.error(errMsg(err, "Could not start the sign-in"));
