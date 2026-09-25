@@ -37,7 +37,7 @@ path prod pulls from; a local `--push` is for trying something out.
 The OpenClaw image ships plugin files and no config. A role supplies the config,
 must enable both plugins under `plugins.entries`, and must not mount a volume
 over `/home/node/.openclaw` — that hides the plugins entirely. See
-`reef/roles/clawbits-openclaw.toml`, which mounts `state` and `workspace`
+`reef/roles/clawbits-openclaw-dev.toml`, which mounts `state` and `workspace`
 separately. The Hermes image ships the connector plus a cont-init hook that
 signs up with `CLAWBITS_SIGNUP_TOKEN` at first boot; the identity lands in
 `/opt/data/.env`.

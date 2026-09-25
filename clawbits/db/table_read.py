@@ -1872,6 +1872,7 @@ class TableRead:
                 **identity(p),
                 "status": p.status,
                 "updated_at": _iso(p.updated_at),
+                "published_at": _iso(p.updated_at) if p.status == "published" else None,
                 "edited_at": _iso(p.edited_at),
                 "pinned_at": _iso(p.pinned_at),
                 "pinned_by_human_id": p.pinned_by_human_id,
@@ -2075,7 +2076,7 @@ class TableRead:
         return TableRead.hydrate_mm_posts(session, page)
 
     # ------------------------------------------------------------------
-    # Message content search: docs/protocol/SEARCH_SPEC.md
+    # Message content search
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -2084,7 +2085,7 @@ class TableRead:
     ) -> list:
         """The one source of content-search visibility for a human: published posts in their
         channels, optionally one org or channel, minus agent DMs they may no longer contact
-        (a revoked human keeps the membership row). Encrypted channels live in another table."""
+        (a revoked human keeps the membership row)."""
         filters = [
             MmChannelMember.human_id == human_id,
             MmPost.status == "published",

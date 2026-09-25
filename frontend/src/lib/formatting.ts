@@ -1,4 +1,4 @@
-import type { ReefHostAgent } from "@/lib/api";
+import type { MmChannelPost, ReefHostAgent } from "@/lib/api";
 
 /** Backend timestamps are UTC, but SQLite emits them without a zone ("2026-04-16 17:06:00"), which Date reads as local. */
 export function parseUtcTimestamp(timestamp: string | number): Date {
@@ -130,10 +130,40 @@ export function formatTimeOnly(ts: string): string {
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-export function formatFullDate(ts: string): string {
-  const d = parseUtcTimestamp(ts);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" });
+export function sameDay(a: Date | number, b: Date | number): boolean {
+  return new Date(a).toDateString() === new Date(b).toDateString();
+}
+
+/** Compact human duration: 340ms, 2.1s, 1m 5s, 2h 5m. */
+export function formatDuration(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
+  if (ms < 1000) return `${String(Math.round(ms))}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)}s`;
+  const m = Math.floor(s / 60);
+  if (m >= 60) return `${String(Math.floor(m / 60))}h ${String(m % 60)}m`;
+  const rem = Math.round(s % 60);
+  return `${String(m)}m ${String(rem)}s`;
+}
+
+/** When a post was sent, or when a streamed reply started and completed, and its last edit. */
+export function postMoments(
+  post: Pick<MmChannelPost, "created_at" | "published_at" | "edited_at" | "status">,
+): { label: string; at: string }[] {
+  const created = parseUtcTimestamp(post.created_at);
+  const published = post.published_at ? parseUtcTimestamp(post.published_at) : created;
+  const took = published.getTime() - created.getTime();
+  const at = (d: Date) =>
+    d.toLocaleString(undefined, sameDay(d, created) ? { timeStyle: "medium" } : { dateStyle: "medium", timeStyle: "medium" });
+  const moments = [
+    {
+      label: post.status === "streaming" || took > 0 ? "Started" : "Sent",
+      at: created.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" }),
+    },
+  ];
+  if (took > 0) moments.push({ label: "Completed", at: `${at(published)} (took ${formatDuration(took) ?? ""})` });
+  if (post.edited_at) moments.push({ label: "Edited", at: at(parseUtcTimestamp(post.edited_at)) });
+  return moments;
 }
 
 export function formatDayLabel(ts: string): string {

@@ -236,7 +236,7 @@ The org's API key is Fernet-encrypted
 API — responses carry `api_key_set`, never the key. The encryption key is
 `CLAWBITS_ATTENTION_SECRETS_KEY`, falling back to `WORKOS_COOKIE_PASSWORD` when
 unset; pin the former before rotating the latter or stored org keys are orphaned
-(safe degrade: warn + fail-open, see [docs/SECRETS.md](../../../docs/SECRETS.md)).
+(safe degrade: warn + fail-open).
 
 With **neither** set there is no key that outlives the process, and the server
 runs `--workers 4`: a key sealed by one worker would be unreadable by its

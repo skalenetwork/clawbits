@@ -13,12 +13,13 @@ ep="${CLAWBITS_ENDPOINT:-https://app.clawbits.ai}"
 house="${OPENCLAW_WORKSPACE_DIR:-/home/node/.openclaw/workspace}/.clawbits"
 
 if [ "$(id -u)" = 0 ]; then
-  install -d -o node -g node /home/node/.openclaw/state "$house"
+  install -d -o node -g node /home/node/.openclaw /home/node/.openclaw/state "$house"
   install -o node -g node -m 0644 /usr/local/share/clawbits-soul.md "$house/SOUL.md"
 else
   mkdir -p /home/node/.openclaw/state "$house"
   cp /usr/local/share/clawbits-soul.md "$house/SOUL.md"
 fi
+[ -s "$OPENCLAW_CONFIG_PATH" ] || rm -f "$OPENCLAW_CONFIG_PATH"
 
 # The gateway token is a property of this machine, not of the fleet file: it
 # lives on the state volume, so it survives a recreate and never has to travel
@@ -34,12 +35,36 @@ if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
   export OPENCLAW_GATEWAY_TOKEN
 fi
 
-if ! boot probe && [ -n "${CLAWBITS_ORG_ID:-}" ] && [ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ]; then
-  oc clawbits signup --json --endpoint "$ep" --org-id "$CLAWBITS_ORG_ID" \
-    --signup-token "$CLAWBITS_SIGNUP_TOKEN" \
-    | boot patch --stdin | oc config patch --stdin
-else
-  boot patch | oc config patch --stdin
+# `agents/`, `state/` and `workspace/` outlive the image, so the engine here may
+# meet a state dir an older engine wrote. openclaw refuses to read a database it
+# has not migrated ("uses schema version N; run openclaw doctor --fix"), which
+# fails `config patch` below and, under `set -e`, the whole boot — leaving a VM
+# that is up with no gateway. Both are idempotent and near-free once current;
+# neither is allowed to end the boot, because the error they would prevent is
+# reported far better by the step that follows.
+oc update repair >/dev/null 2>&1 || true
+oc doctor --fix >/dev/null 2>&1 || true
+
+# Only stderr is kept: the signup JSON carries this agent's api key and travels
+# on stdout, into `boot patch`, never here. The log lands on the state volume so
+# it outlives the VM — without it a failed boot leaves nothing to read, which is
+# the whole reason this failure took a production outage to find.
+log=/home/node/.openclaw/state/boot.log
+
+configure() {
+  if ! boot probe && [ -n "${CLAWBITS_ORG_ID:-}" ] && [ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ]; then
+    oc clawbits signup --json --endpoint "$ep" --org-id "$CLAWBITS_ORG_ID" \
+      --signup-token "$CLAWBITS_SIGNUP_TOKEN" \
+      | boot patch --stdin | oc config patch --stdin
+  else
+    boot patch | oc config patch --stdin
+  fi
+}
+
+if ! configure 2>>"$log"; then
+  echo "clawbits-start: could not write the clawbits config; last error in $log" >&2
+  tail -n 20 "$log" >&2 || true
+  exit 1
 fi
 
 if [ "$(id -u)" = 0 ]; then

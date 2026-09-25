@@ -6,11 +6,10 @@ import { StatusDot } from "@/components/settings/Settings";
 import { Skeleton } from "@/components/ui/skeleton";
 import { listAutomationRuns, type Automation, type AutomationRun } from "@/lib/api";
 import { automationsRefetchInterval } from "@/lib/automationsPolling";
-import { formatRelativeAgo, parseUtcTimestamp } from "@/lib/formatting";
+import { formatDuration, formatRelativeAgo, parseUtcTimestamp } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatInstant } from "@/lib/schedule";
 import { TONE_FILL, type StatusTone } from "@/lib/status";
-import { formatDuration } from "@/lib/toolPresentation";
 import { cn } from "@/lib/utils";
 
 type RunKind = "did-not-run" | "failed" | "not-delivered" | "ok" | "unknown";

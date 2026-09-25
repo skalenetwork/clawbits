@@ -1288,6 +1288,10 @@ class _StreamClient:
     def __init__(self) -> None:
         self.posts: list[tuple[Any, ...]] = []
         self.patches: list[tuple[str, str, dict[str, Any]]] = []
+        self.acks: list[tuple[str, int]] = []
+
+    def mark_read(self, channel_id: str, post_id: int) -> None:
+        self.acks.append((channel_id, int(post_id)))
 
     def post_message(self, *args: Any) -> dict[str, Any]:
         self.posts.append(args)
@@ -1418,6 +1422,49 @@ def test_a_finishing_turn_does_not_close_a_sibling_turns_stream() -> None:
 
     asyncio.run(scenario())
     assert adapter._open_streams == {}, "each turn still closes its own draft"
+
+
+def test_turn_stop_hard_stops_the_turn_and_keeps_its_partial_reply() -> None:
+    """``turn.stop`` reaches Hermes as a bare ``/stop`` on the running turn's own
+    source; its "Stopped" answer stays out of the chat, and the draft keeps what
+    streamed. The cancelled turn then settles like any other (test_chat_intake.py
+    ::test_control_bypass_while_busy_is_settled_as_control)."""
+    mod = _load_hermes_module()
+    adapter = _stream_adapter(mod)
+    stops: list[Any] = []
+
+    async def scenario() -> None:
+        opened = asyncio.Event()
+        stopped = asyncio.Event()
+        enqueue = adapter.handle_message
+
+        async def handle_message(event: Any) -> None:
+            if event.text != "/stop":
+                return await enqueue(event)
+            stops.append(event)
+            await adapter.send("chan", "⚡ Stopped.", reply_to=event.message_id)
+            stopped.set()
+
+        async def turn(_event: Any) -> Any:
+            await adapter.send("chan", "partial", metadata={"expect_edits": True})
+            opened.set()
+            await stopped.wait()
+            return _FakeProcessingOutcome.CANCELLED
+
+        adapter.turn = turn  # type: ignore[method-assign]
+        adapter.handle_message = handle_message  # type: ignore[method-assign]
+        await adapter.handle_message(_event("7", post_id=7))
+        await opened.wait()
+        await adapter._stop_turns("other")
+        await adapter._stop_turns("chan")
+        await adapter._stop_turns("chan")
+        await _drain(adapter)
+
+    asyncio.run(scenario())
+    assert [(e.text, e.message_id, e.source.chat_id) for e in stops] == [("/stop", "stop-7", "chan")]
+    assert len(adapter.client.posts) == 1, "only the draft is posted, never the stop answer"
+    assert adapter.client.patches[-1][2] == {"append": "\n\n_(stopped)_", "done": True}
+    assert adapter._turns == {}
 
 
 def _install_fake_executions(latest: Any) -> None:

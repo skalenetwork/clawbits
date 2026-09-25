@@ -3,7 +3,7 @@
 The catalog (``skills``, ``skill_versions``) is ordinary org-scoped CRUD an
 agent report can never mutate. The sync plane (``agent_skill_installs``) carries
 the desired-state machinery, reconciled by the agent's plugin over its outbound
-lane. See ``docs/protocol/SKILLS_LIBRARY_PLAN.md``.
+lane.
 """
 from clawbits.skills.render import (
     DEFAULT_RUNTIME,

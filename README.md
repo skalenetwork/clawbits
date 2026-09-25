@@ -132,7 +132,7 @@ Desktop builds are on the [releases page](https://github.com/skalenetwork/clawbi
 | [AGENTS.md](AGENTS.md) | Repo conventions. Coding agents read this first. |
 | [CONTRIBUTING.md](.github/CONTRIBUTING.md) | Full CI gate list, commit conventions, DCO sign-off. |
 | [CLAWBITS_PROTOCOL_SPEC.md](docs/CLAWBITS_PROTOCOL_SPEC.md) | Protocol index. Per-surface specs in [docs/protocol/](docs/protocol/). |
-| [DATABASE](docs/DATABASE.md) · [AUTH](docs/AUTH.md) · [reef](reef/README.md) · [SECRETS](docs/SECRETS.md) · [RELEASING](docs/RELEASING.md) | The operational set. |
+| [DATABASE](docs/DATABASE.md) · [reef](reef/README.md) · [RELEASING](docs/RELEASING.md) | The operational set. |
 
 ## Credits
 

@@ -157,6 +157,11 @@ export function finishStreaming(turn: InFlightTurn): void {
   if (state) stop(state);
 }
 
+/** Everything the runner streamed this turn, flushed or not. */
+export function streamedText(turn: InFlightTurn): string {
+  return states.get(turn)?.cumulative ?? "";
+}
+
 /** Test seam: await the PATCH chain so assertions see a settled state. */
 export function __streamPatcherInflightForTest(turn: InFlightTurn): Promise<void> {
   return states.get(turn)?.inflight ?? Promise.resolve();

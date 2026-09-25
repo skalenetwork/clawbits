@@ -14,6 +14,8 @@ import {
   type MattermostPost,
 } from "../src/inbound-poller.js";
 import { ChannelWatermarkStore } from "../src/channel-watermarks.js";
+import { registerMcpOAuth } from "../src/mcp-oauth.js";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { ResolvedClawBitsAccount } from "../src/types.js";
 
 function makeAccount(overrides: Partial<ResolvedClawBitsAccount> = {}): ResolvedClawBitsAccount {
@@ -62,6 +64,37 @@ function installFetchStub(
     },
     calls,
   };
+}
+
+function installMockWebSocket(events: unknown[]): { urls: string[]; restore: () => void } {
+  const original = globalThis.WebSocket;
+  const urls: string[] = [];
+  class MockWebSocket {
+    #listeners = new Map<string, Set<(event: unknown) => void>>();
+    constructor(url: string) {
+      urls.push(url);
+      queueMicrotask(() => {
+        this.emit("open", {});
+        for (const event of events) this.emit("message", { data: JSON.stringify(event) });
+      });
+    }
+    addEventListener(type: string, listener: (event: unknown) => void): void {
+      const listeners = this.#listeners.get(type) ?? new Set();
+      listeners.add(listener);
+      this.#listeners.set(type, listeners);
+    }
+    removeEventListener(type: string, listener: (event: unknown) => void): void {
+      this.#listeners.get(type)?.delete(listener);
+    }
+    close(): void {
+      this.emit("close", { code: 1000, reason: "" });
+    }
+    emit(type: string, event: unknown): void {
+      for (const listener of this.#listeners.get(type) ?? []) listener(event);
+    }
+  }
+  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  return { urls, restore: () => { globalThis.WebSocket = original; } };
 }
 
 describe("parsePostsResponse", () => {
@@ -1671,6 +1704,59 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
     );
   });
 
+  it("finishes an MCP sign-in from the agent WebSocket, reports it, then wakes the agent", async () => {
+    const argv: string[][] = [];
+    registerMcpOAuth({
+      runtime: {
+        config: { current: () => ({}) },
+        system: {
+          runCommandWithTimeout: async (command: string[]) => {
+            argv.push(command.slice(2));
+            return { code: 0, stdout: "", stderr: "" };
+          },
+        },
+      },
+      on: () => {},
+    } as unknown as OpenClawPluginApi);
+    const ws = installMockWebSocket([
+      { type: "snapshot", data: { channels: [{ channel_id: "room-1", channel_type: "public" }] } },
+      {
+        type: "mcp.oauth.code",
+        data: { server: "agentpit", code: "c1", state: "s1", channel_id: "room-1", human_id: 7 },
+      },
+    ]);
+    const reported: unknown[] = [];
+    const stub = installFetchStub((url, init) => {
+      if (url.endsWith("/api/agentic/mcp-oauth/result")) reported.push(JSON.parse(String(init?.body)));
+      return { body: { channels: [], posts: {}, order: [] } };
+    });
+    const ac = new AbortController();
+    const received: InboundMessage[] = [];
+    try {
+      await runInboundPoller({
+        client: makeClient(),
+        account: makeAccount({ config: { websocketEnabled: true } }),
+        abortSignal: ac.signal,
+        initialCursor: 150,
+        pollIntervalMs: 10_000,
+        onInboundMessage: (msg) => {
+          received.push(msg);
+          ac.abort();
+        },
+      });
+    } finally {
+      stub.restore();
+      ws.restore();
+    }
+
+    assert.deepEqual(argv, [["mcp", "login", "agentpit", "--code=c1"]]);
+    assert.deepEqual(reported, [{ state: "s1", connected: true }]);
+    assert.equal(received.length, 1);
+    assert.equal(received[0]?.channelId, "room-1");
+    assert.equal(received[0]?.senderId, "human:7");
+    assert.match(received[0]?.text ?? "", /Signed in to MCP server "agentpit"/);
+  });
+
   it("dispatches post.created over the agent WebSocket without per-channel SSE or post polling", async () => {
     const post = {
       id: "ws-1",
@@ -1679,40 +1765,7 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
       message: "hello over ws",
       channel_id: "chan-123",
     };
-    const event = { type: "post.created", channel_id: "chan-123", data: post };
-    const originalWebSocket = globalThis.WebSocket;
-    const sockets: Array<{
-      url: string;
-      emit: (type: string, event: unknown) => void;
-      close: () => void;
-    }> = [];
-    class MockWebSocket {
-      url: string;
-      #listeners = new Map<string, Set<(event: unknown) => void>>();
-      constructor(url: string) {
-        this.url = url;
-        sockets.push(this);
-        queueMicrotask(() => {
-          this.emit("open", {});
-          this.emit("message", { data: JSON.stringify(event) });
-        });
-      }
-      addEventListener(type: string, listener: (event: unknown) => void): void {
-        const listeners = this.#listeners.get(type) ?? new Set();
-        listeners.add(listener);
-        this.#listeners.set(type, listeners);
-      }
-      removeEventListener(type: string, listener: (event: unknown) => void): void {
-        this.#listeners.get(type)?.delete(listener);
-      }
-      close(): void {
-        this.emit("close", { code: 1000, reason: "" });
-      }
-      emit(type: string, event: unknown): void {
-        for (const listener of this.#listeners.get(type) ?? []) listener(event);
-      }
-    }
-    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    const ws = installMockWebSocket([{ type: "post.created", channel_id: "chan-123", data: post }]);
 
     const stub = installFetchStub((url) => {
       if (url.endsWith("/api/agentic/mm/channels")) {
@@ -1742,12 +1795,12 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
       });
     } finally {
       stub.restore();
-      globalThis.WebSocket = originalWebSocket;
+      ws.restore();
     }
 
     assert.deepEqual(received.map((m) => m.postId), ["ws-1"]);
-    assert.equal(sockets.length, 1);
-    assert.ok(sockets[0]!.url.startsWith("ws://fc.example/base/api/agentic/mm/events/ws"));
+    assert.equal(ws.urls.length, 1);
+    assert.ok(ws.urls[0]!.startsWith("ws://fc.example/base/api/agentic/mm/events/ws"));
     assert.equal(
       stub.calls.some((url) => url.includes("/api/agentic/mm/channels/chan-123/events")),
       false,

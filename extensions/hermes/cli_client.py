@@ -235,11 +235,14 @@ class _ClawbitsCli:
         channel_id: str,
         post_id: str,
         *,
+        append: str | None = None,
         replace: str | None = None,
         done: bool = False,
         cancel: bool = False,
     ) -> Any:
         body: dict[str, Any] = {}
+        if append is not None:
+            body["append"] = append
         if replace is not None:
             body["replace"] = replace
         if done:

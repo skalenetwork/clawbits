@@ -809,6 +809,7 @@ export interface MmChannelPost {
   created_at: string;
   status: MmPostStatus;
   updated_at?: string | null;
+  published_at?: string | null;
   edited_at?: string | null;
   pinned_at?: string | null;
   pinned_by_human_id?: number | null;
@@ -1139,6 +1140,32 @@ export async function sendMmTypingHeartbeat(channelId: string) {
   await fetch(channelUrl(channelId, "/typing"), { credentials: "include", method: "POST" });
 }
 
+export async function stopAgentTurn(channelId: string, agentId: string) {
+  await send(channelUrl(channelId, `/agents/${encodeURIComponent(agentId)}/stop`), {
+    method: "POST",
+    detail: true,
+  });
+}
+
+export function isMcpSignInLink(url: string): boolean {
+  try {
+    return new URL(new URL(url).searchParams.get("redirect_uri") ?? "").pathname.startsWith("/oauth/mcp/callback/");
+  } catch {
+    return false;
+  }
+}
+
+export async function claimMcpSignIn(url: string, postId: number) {
+  return request<{ url: string }>("/api/human/mcp-oauth/claim", { ...json("POST", { url, post_id: postId }), detail: true });
+}
+
+export async function completeMcpSignIn(agentId: string, server: string, state: string, code: string) {
+  return request<{ agent_name: string; channel_id: string }>("/api/human/mcp-oauth/callback", {
+    ...json("POST", { agent_id: agentId, server, state, code }),
+    detail: true,
+  });
+}
+
 export type GlobalUserStatus = "online" | "idle" | "offline";
 
 export type AgentLivenessStatus = "setup" | "available" | "offline";
@@ -1170,6 +1197,7 @@ export interface MmChannelMember {
   last_alive_at?: string | null;
   /** Null means allowed. */
   can_tag?: boolean | null;
+  can_stop?: boolean;
   is_operator?: boolean;
   model_choice?: ModelChoice | null;
 }

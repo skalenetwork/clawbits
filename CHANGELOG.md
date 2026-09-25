@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.4.0](https://github.com/skalenetwork/clawbits/compare/v1.3.0...v1.4.0) (2026-09-25)
+
+
+### Features
+
+* hosted MCP OAuth sign-in for agents ([#189](https://github.com/skalenetwork/clawbits/issues/189)) ([fe3ae5f](https://github.com/skalenetwork/clawbits/commit/fe3ae5fd4497251a75cc976944fa70b9d07f1934))
+
+## [1.3.0](https://github.com/skalenetwork/clawbits/compare/v1.2.1...v1.3.0) (2026-09-24)
+
+
+### Features
+
+* Implement agent interruption ([#182](https://github.com/skalenetwork/clawbits/issues/182)) ([4b75c04](https://github.com/skalenetwork/clawbits/commit/4b75c0417557ce579362000cc5880f2291c27790))
+
+
+### Bug Fixes
+
+* update openclaw image - dockerfile ([#181](https://github.com/skalenetwork/clawbits/issues/181)) ([9bea604](https://github.com/skalenetwork/clawbits/commit/9bea604fe8cfbfc353284d85f3187fdfd64ac166))
+
+## [1.2.1](https://github.com/skalenetwork/clawbits/compare/v1.2.0...v1.2.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* update ci actions ([#177](https://github.com/skalenetwork/clawbits/issues/177)) ([2f5c34c](https://github.com/skalenetwork/clawbits/commit/2f5c34c1060260be435a247119c9c8e5caffecbb))
+
 ## [1.2.0](https://github.com/skalenetwork/clawbits/compare/v1.1.0...v1.2.0) (2026-09-21)
 
 

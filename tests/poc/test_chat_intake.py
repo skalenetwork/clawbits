@@ -910,11 +910,11 @@ def test_journal_error_at_settle_still_ends_the_turn(mod) -> None:
         await _started(adapter, gateway)
         fake.post("hi")
         await pump(adapter, gateway, 1)
-        [heartbeat] = adapter._heartbeats.values()
+        [turn] = adapter._turns.values()
         adapter._journal.finish = locked
         await gateway.complete()
         del adapter._journal.finish
-        assert heartbeat.cancelled() and adapter._heartbeats == {}
+        assert turn.heartbeat.cancelled() and adapter._turns == {}
         assert fake.statuses[-1] == ("dm", "online")
         assert adapter._lanes["dm"].inflight is None and adapter._dispatches == {}
         await pump(adapter, gateway, 1)

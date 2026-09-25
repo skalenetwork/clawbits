@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAgentVersion, parseAgentImage } from "./formatting";
+import { formatAgentVersion, formatDuration, parseAgentImage, postMoments } from "./formatting";
 
 describe("parseAgentImage", () => {
   it("reads the runtime, engine and plugin off a scheme tag", () => {
@@ -69,5 +69,52 @@ describe("formatAgentVersion", () => {
     expect(formatAgentVersion(parseAgentImage("ghcr.io/openclaw/openclaw@sha256:6d5fecea52bd"))).toBe(
       "openclaw@6d5fece",
     );
+  });
+});
+
+describe("formatDuration", () => {
+  it("formats sub-second durations as milliseconds", () => {
+    expect(formatDuration(340)).toBe("340ms");
+  });
+
+  it("formats single-digit seconds with one decimal", () => {
+    expect(formatDuration(2140)).toBe("2.1s");
+  });
+
+  it("formats double-digit seconds without a decimal", () => {
+    expect(formatDuration(23000)).toBe("23s");
+  });
+
+  it("formats minutes and seconds", () => {
+    expect(formatDuration(65000)).toBe("1m 5s");
+  });
+
+  it("formats hours and minutes", () => {
+    expect(formatDuration(2 * 3_600_000 + 5 * 60_000 + 9000)).toBe("2h 5m");
+  });
+
+  it("returns null for missing or invalid input", () => {
+    expect(formatDuration(null)).toBeNull();
+    expect(formatDuration(undefined)).toBeNull();
+    expect(formatDuration(-5)).toBeNull();
+  });
+});
+
+describe("postMoments", () => {
+  const at = "2026-09-23 12:00:00";
+
+  it.each([
+    [{ created_at: at, published_at: at, status: "published" }, ["Sent"]],
+    [{ created_at: at, status: "published" }, ["Sent"]],
+    [{ created_at: at, published_at: null, status: "streaming" }, ["Started"]],
+    [{ created_at: at, published_at: at, edited_at: "2026-09-24 09:00:00", status: "published" }, ["Sent", "Edited"]],
+  ] as const)("labels %o", (post, labels) => {
+    expect(postMoments(post).map((m) => m.label)).toEqual(labels);
+  });
+
+  it("shows a streamed reply's start and completion with how long it took", () => {
+    const moments = postMoments({ created_at: at, published_at: "2026-09-23 12:21:28", status: "published" });
+    expect(moments.map((m) => m.label)).toEqual(["Started", "Completed"]);
+    expect(moments[1]?.at).toMatch(/\(took 21m 28s\)$/);
   });
 });

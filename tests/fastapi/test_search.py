@@ -1,5 +1,5 @@
 """Tests for message-content search — GET /api/human/mm/search — and the
-deep-link "posts around" read path. See docs/protocol/SEARCH_SPEC.md.
+deep-link "posts around" read path.
 
 Coverage:
 - a query finds matching published posts, with a highlighted snippet and

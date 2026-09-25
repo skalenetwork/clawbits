@@ -5,7 +5,7 @@ type Json = Record<string, unknown>;
 type Config = { channels?: { clawbits?: { accounts?: Record<string, Partial<Identity>> } } };
 type SignupEvent = { org_id?: string; agent_id?: string; api_key?: string; channel_id?: string };
 
-const STATE = process.env.OPENCLAW_STATE_DIR ?? "/home/node/.openclaw";
+const CONFIG = process.env.OPENCLAW_CONFIG_PATH ?? "/home/node/.openclaw/openclaw.json";
 const MIRROR = "/home/node/.openclaw/state/clawbits-identity";
 const DEFAULTS = "/usr/local/share/clawbits-defaults.json";
 const OVERRIDE = "/etc/openclaw/defaults.json";
@@ -33,7 +33,7 @@ const identity = (from: Partial<Identity>): Identity | null =>
     : null;
 
 const configured = (): Identity | null =>
-  identity(readJson<Config>(`${STATE}/openclaw.json`).channels?.clawbits?.accounts?.[ACCOUNT] ?? {});
+  identity(readJson<Config>(CONFIG).channels?.clawbits?.accounts?.[ACCOUNT] ?? {});
 
 const mirrored = (): Identity | null => {
   const [orgId, agentId, apiKey, channelId] = readText(MIRROR).split(/\r?\n/);
@@ -70,6 +70,7 @@ const merge = (base: unknown, patch: unknown): unknown => {
 };
 
 const endpoint = process.env.CLAWBITS_ENDPOINT ?? "https://app.clawbits.ai";
+const sandbox = process.env.REEF_PORT_MCP_SANDBOX;
 
 /** Whether clawbits still knows this identity. A key it has forgotten is a
  * ghost: the agent would boot, restore it every time, and never enrol again.
@@ -118,6 +119,9 @@ const clawbits = {
 
 process.stdout.write(
   JSON.stringify(
-    merge(merge(readJson<Json>(DEFAULTS), readJson<Json>(OVERRIDE)), { channels: { clawbits } }),
+    merge(merge(readJson<Json>(DEFAULTS), readJson<Json>(OVERRIDE)), {
+      channels: { clawbits },
+      ...(sandbox ? { mcp: { apps: { sandboxOrigin: `http://${process.env.REEF_AGENT}.localhost:${sandbox}` } } } : {}),
+    }),
   ),
 );

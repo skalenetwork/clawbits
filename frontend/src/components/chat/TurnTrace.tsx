@@ -3,7 +3,7 @@ import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 
 import { Icon } from "@/components/Icon";
 import type { ThinkingStep, ToolStep } from "@/hooks/useChannelEvents";
-import { formatDuration } from "@/lib/toolPresentation";
+import { formatDuration } from "@/lib/formatting";
 import { roomOf, splitCommand } from "@/lib/traceRooms";
 import { cn } from "@/lib/utils";
 

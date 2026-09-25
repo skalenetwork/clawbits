@@ -4,11 +4,8 @@
 // language, to "update your Clawbits plugin"; this prints the exact command
 // to run.
 //
-// Why print instead of execute: OpenClaw's install-time security scan
-// rejects plugins that spawn shell/subprocess APIs, so the runtime cannot
-// run the upgrade itself. This mirrors the `signup` command, which prints
-// ready-to-run `openclaw config set` lines rather than mutating config
-// in-process. The agent runs the printed command from its shell.
+// Why print instead of execute: the install restarts the gateway this plugin
+// runs in, so the agent runs the printed command from its own shell.
 //
 // Provisioning model: agents are installed as a REMOTE ClawHub package. The
 // canonical self-update re-fetches the newest compatible build:

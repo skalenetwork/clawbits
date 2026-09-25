@@ -13,7 +13,7 @@ Native projects are generated from `app.json`. Do not edit generated iOS files. 
 
 Expo is pinned to `58.0.0-preview.1` for development. Its generated scene lifecycle supports Xcode 27; Expo 57.0.22 cannot launch when built with the iOS 27 SDK. Use the installed SDK's dependency versions until the stable release is validated.
 
-Verified on iOS 27 simulator with Xcode 27: Release build and sign-in screen launch. Keep simulator signing enabled for Keychain access. Local Release builds have no EAS update channel; update checks return HTTP 400 while the embedded app runs.
+Keep simulator signing enabled for Keychain access. Local Release builds have no EAS update channel; update checks return HTTP 400 while the embedded app runs.
 
 ```sh
 bun run typecheck
@@ -30,12 +30,6 @@ Text conversations, streamed agent replies, unread state, native organization se
 
 The cache keeps up to four history pages per opened conversation for 24 hours. Failed sends preserve text. Ambiguous delivery is labeled explicitly and never retried automatically; the server does not provide durable send idempotency.
 
-## Backend requirement
+## Session rotation
 
-Deploy the `session_cookie.py` change with this client: bearer-authenticated responses return `X-Clawbits-Session` when the session rotates. Both REST and SSE persist this header before continuing. Cookie-only clients retain existing behavior.
-
-```sh
-uv run pytest tests/fastapi/test_session_cookie.py -q
-```
-
-Run the backend command from the repository root. Real-account, APNs, offline relaunch, and keyboard/scroll performance checks require a signed device build before release. No performance targets are claimed from static checks.
+Bearer-authenticated responses return `X-Clawbits-Session` when the session rotates; REST and SSE persist it before continuing.

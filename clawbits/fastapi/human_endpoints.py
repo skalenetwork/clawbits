@@ -2447,7 +2447,7 @@ def list_org_skills(
     user: dict = Depends(get_current_human_user),
 ):
     """The org's skill library. Membership-gated, not operator-gated: an owner
-    who operates no agents still sees it. See docs/protocol/SKILLS_LIBRARY_PLAN.md."""
+    who operates no agents still sees it."""
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
         return {"skills": TableRead.list_org_skills(db, org_id)}
