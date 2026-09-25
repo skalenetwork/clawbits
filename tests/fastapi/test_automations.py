@@ -221,6 +221,57 @@ def test_run_now_flow(test_client: TestClient, _test_engine):
     assert r.status_code == 404, r.text
 
 
+def test_external_automation_runs_resolve_by_gateway_job_id(
+    test_client: TestClient, _test_engine
+):
+    """External mirrored jobs can ingest runs even when the plugin reports a
+    synthetic automation id, as long as the gateway job id matches."""
+    agent_id, api_key, token, org_id = _setup(test_client, "ext-runs@clawbits.ai")
+    base = f"/api/human/orgs/{org_id}/agents/{agent_id}/automations"
+    agent_h = {"Authorization": f"Bearer {api_key}"}
+
+    mirror = {
+        "external": [
+            {
+                "gateway_job_id": "cron_external",
+                "name": "External nightly",
+                "reported_spec": {"name": "External nightly"},
+                "reported_state": {"lastRunStatus": "ok", "lastRunAtMs": 2000},
+            }
+        ],
+        "runs": [
+            {
+                "automation_id": "external:cron_external",
+                "gateway_job_id": "cron_external",
+                "gateway_run_id": "run:2000",
+                "status": "ok",
+                "started_at_ms": 2000,
+                "finished_at_ms": 2125,
+                "summary": {"mirrored_external": True, "delivered": True},
+            }
+        ],
+    }
+    r = test_client.post(
+        "/api/agentic/automations/state", headers=agent_h, json=mirror
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["runs_ingested"] == 1
+
+    listed = test_client.get(base, headers=auth_headers(token)).json()["automations"]
+    assert len(listed) == 1
+    external = listed[0]
+    assert external["managed_by"] == "external"
+    assert external["gateway_job_id"] == "cron_external"
+
+    runs = test_client.get(
+        f"{base}/{external['automation_id']}/runs", headers=auth_headers(token)
+    ).json()
+    assert len(runs["runs"]) == 1
+    assert runs["runs"][0]["gateway_run_id"] == "run:2000"
+    assert runs["runs"][0]["summary"]["mirrored_external"] is True
+
+
+
 def test_delivery_target_channel(test_client: TestClient, _test_engine):
     """Operator can target a channel the agent is in; a non-member channel is
     rejected; webhook delivery is neutralized to announce."""
