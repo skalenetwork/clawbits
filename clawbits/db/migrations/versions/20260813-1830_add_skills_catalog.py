@@ -4,7 +4,6 @@ Adds the catalog half of the skills library: an org authors versioned skills
 that can later be installed onto its agents. This migration is deliberately
 catalog-only — there is no agent, plugin, or sync involvement yet, so it can
 ship and be used (author / version / fork / render) before any client exists.
-See ``docs/protocol/SKILLS_LIBRARY_PLAN.md`` §8 (M1).
 
 ``skills`` — the mutable pointer: identity, visibility, fork lineage, and which
 version is current. ``org_id`` is NOT NULL and is *the* tenancy boundary; a

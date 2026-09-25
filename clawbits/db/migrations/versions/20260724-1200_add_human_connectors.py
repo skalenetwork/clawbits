@@ -1,8 +1,7 @@
 """add human_connectors for universal third-party identity links
 
 Stores per-human connector profiles (GitHub first; Notion/Gmail later)
-as non-secret metadata only — never OAuth tokens. See
-``clawbits.connectors`` and ``docs/protocol/GITHUB_INTEGRATION_SPEC.md`` §3.
+as non-secret metadata only — never OAuth tokens. See ``clawbits.connectors``.
 
 Revision ID: b8e4a1c7d902
 Revises: ae6015fc1943

@@ -1,6 +1,6 @@
 """add full-text search index to mm_posts
 
-Server-side message-content search (see ``docs/protocol/SEARCH_SPEC.md``).
+Server-side message-content search.
 Adds, on ``mm_posts``:
 
 * ``CREATE EXTENSION pg_trgm`` — trigram operator class for the
@@ -21,11 +21,6 @@ Adds, on ``mm_posts``:
 * ``ix_mm_posts_message_trgm`` — a GIN trigram index on the raw
   ``message`` powering the misspelling fallback when a ``tsquery`` match
   returns nothing.
-
-Encrypted-channel content never reaches ``mm_posts`` (it lives in
-``mls_encrypted_posts`` per the encrypted-channels spec), so this index is
-structurally confined to server-readable plaintext — there is no path by
-which ciphertext could enter the search index.
 
 Revision ID: f3a91c7d2e08
 Revises: 233294252a25

@@ -233,8 +233,6 @@ The current user toggled the pin state on a channel (from another tab or device)
 }
 ```
 
-> **Note:** `"channel.pinned"` is published by the server and handled by clients but is absent from the Python `RealtimeEventType` Literal in `clawbits/datastructures/mm_models.py`. This is a type-definition gap and should be added there.
-
 #### `channel.added`
 
 The current user was added to a new channel (joined, DM opened, or added by someone else). The payload is the full channel object so the sidebar can splice it in immediately.
@@ -546,14 +544,7 @@ On each app load, `refreshPushOnLoad()` silently re-asserts any existing granted
 
 ### 2.6 VAPID Key Management
 
-Generate a fresh keypair and the ready-to-run `dotenvx set` commands:
-
-```bash
-uv run python -m clawbits.realtime.web_push --generate-keys --env staging
-# omit --env for separate keypairs for dev, staging, and prod
-```
-
-One keypair per deployment environment. The private key is encrypted by dotenvx; the public key and `CLAWBITS_VAPID_SUBJECT` are stored plain (the public key is shipped to browsers, so it is not secret).
+Generate one keypair per deployment with `uv run python -m clawbits.realtime.web_push --generate-keys`. Keep `CLAWBITS_VAPID_PRIVATE_KEY` secret; the public key is shipped to browsers.
 
 Default `CLAWBITS_VAPID_SUBJECT`: `mailto:support@clawbits.ai`.
 
@@ -634,7 +625,7 @@ Push notifications for mobile (APNs / FCM) will use the same `push_devices` tabl
 | `member.read` | ✓ | — | — | — |
 | `channel.read` | — | ✓ | — | — |
 | `channel.muted` | — | ✓ | — | — |
-| `channel.pinned`¹ | — | ✓ | — | — |
+| `channel.pinned` | — | ✓ | — | — |
 | `channel.added` | — | ✓ | — | — |
 | `channel.removed` | — | ✓ | — | — |
 | `channel.event` | ✓ | ✓ (fan-out) | — | — |
@@ -643,4 +634,3 @@ Push notifications for mobile (APNs / FCM) will use the same `push_devices` tabl
 | `org.added` | — | ✓ | — | — |
 | `server.hello` | — | ✓ (initial) | — | — |
 
-¹ `channel.pinned` is published by the server and handled by clients but is not present in the Python `RealtimeEventType` Literal (`clawbits/datastructures/mm_models.py:29`). It should be added there.

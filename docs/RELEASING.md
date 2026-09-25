@@ -86,8 +86,8 @@ product release builds no desktop app: that version is already released.
 
 The server's minimum plugin version is the deployed tree's `plugin/package.json` (Hermes:
 `extensions/hermes/plugin.yaml`), and the signup routes answer 426 below it. So after the plugin
-release PR merges: run `Images publish`, pin the new image in `clawbits-reef-store`'s role, and only
-then promote a server carrying the bumped version.
+release PR merges: run `Images publish`, roll the new image out to your agents, and only then
+promote a server carrying the bumped version.
 
 ## The "Latest" release is a production endpoint
 
@@ -104,7 +104,6 @@ Changing the endpoint only affects *future* builds; installs in the wild keep po
 they shipped with. Treat it as approximately permanent.
 
 Staging desktop builds are marked GitHub **prereleases**, so they can never take the pointer.
-Signing and notarisation: [`desktop/SIGNING.md`](../desktop/SIGNING.md).
 
 ## Other version helpers
 

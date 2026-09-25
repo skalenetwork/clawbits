@@ -1,13 +1,9 @@
 # web
 
-Marketing site for the apex domains. The app lives on `app.<domain>` - see the
-landing site plan, which lives in the private `clawbits-internal` repo at
-`docs/plans/LANDING_SITE_PLAN.md`.
+Marketing site for the apex domain. The app lives on `app.<domain>`.
 
-- `clawbits.ai` - production, after the Phase 6 apex cutover
-- `freeclaws.ai` - staging, after the Phase 6 apex cutover
-- `preview.clawbits.ai` - production target **today** (`prod` branch)
-- `preview.freeclaws.ai` - staging target **today** (`main` branch)
+- `clawbits.ai` - production (`prod` branch)
+- `preview.freeclaws.ai` - staging (`main` branch)
 
 Astro 7.1, Tailwind 4, fully static. **Ships 0 bytes of JavaScript.**
 
@@ -31,7 +27,7 @@ Automatic, via [`.github/workflows/web.yaml`](../.github/workflows/web.yaml):
 | Branch | Worker | URL |
 | --- | --- | --- |
 | `main` | `clawbits-web-staging` | `preview.freeclaws.ai` |
-| `prod` | `clawbits-web` | `preview.clawbits.ai` |
+| `prod` | `clawbits-web` | `clawbits.ai` |
 
 `prod` advances by manual merge from `main`. Pull requests build and verify but
 never deploy.
@@ -55,19 +51,11 @@ cd web && SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://app.freec
 `--env` is **mandatory**. Without it wrangler deploys the unnamed top-level
 config as a third Worker.
 
-`wrangler.jsonc` still declares **no routes**. The two `preview.*` custom
-domains are attached by hand in the Cloudflare dashboard - that keeps the apex
-cutover a deliberate Phase 6 step rather than a side effect of a deploy, and
-lets the CI token stay scoped to `Workers Scripts: Edit` with no zone-level DNS
-write. CI needs exactly two repo secrets: `CLOUDFLARE_API_TOKEN` and
-`CLOUDFLARE_ACCOUNT_ID`.
-
 ## Layout
 
 ```
 src/
-  config.ts              every outbound URL and brand string - the Phase 6
-                         app.* migration is a one-line change here
+  config.ts              every outbound URL and brand string
   content/home.ts        ALL homepage copy; the page and both llms.txt
                          endpoints render from it so they cannot drift
   docs-allowlist.ts      which docs/protocol specs are published at /docs
@@ -148,31 +136,27 @@ file can never disagree with what a person reads. Do not inline new prose in
 without inferring it. Every line must be checkable against the repository - no
 aspirational entries.
 
-**Links to routes that don't exist yet point off-site.** `/docs` arrives in
-Phase 4 and `/changelog` + `/blog` in Phase 5; until then `config.ts` sends
-those to GitHub. `bun run verify:links` fails the build on any internal href
-with no matching page - it was added after the nav, hero, footer and generated
-index all linked to `/docs` for three phases.
+`bun run verify:links` fails the build on any internal href with no matching
+page.
 
 Not shipped, deliberately: `/.well-known/mcp.json` (there is no public MCP
 endpoint - a stub would advertise a capability that doesn't exist) and
-per-route OG images (see the plan, deferred to Phase 5 with the blog).
+per-route OG images.
 
 ## Docs
 
-`/docs` renders 17 protocol specs read **directly from the repo's `docs/` tree**
+`/docs` renders the allowlisted protocol specs **directly from the repo's `docs/` tree**
 - not copied into `web/`, so there is no second source of truth to go stale.
 
 **`src/docs-allowlist.ts` is the publication decision.** It is an explicit list,
-not a glob: `docs/protocol/` is internal engineering material, and a glob would
-publish whatever lands there next to a site whose robots.txt invites fourteen AI
-crawlers in. The file records what was audited and why each excluded spec is
+not a glob, so nothing new reaches a site whose robots.txt invites fourteen AI
+crawlers in without a decision. The file records what was audited and why each excluded spec is
 excluded. To publish another one, re-audit it and move it up.
 
 Each page also serves raw Markdown at `/docs/<slug>.md`, linked from the page
 footer and from llms.txt.
 
-**Not Starlight**, though the plan called for it: it brings its own layout, type
+**Not Starlight**: it brings its own layout, type
 scale and colour system, so using it means fighting its theme back to the design
 already in `global.css`, and its search ships client JS - ending the site's 0 KB
 JS property for a 17-page reference. The trade is no built-in search.
@@ -214,7 +198,7 @@ fine and emits nothing.
 
 **No Cloudflare adapter, on purpose.** With `output: "static"` it emits an empty
 `dist/server`, moves the build to `dist/client`, and injects a `SESSION` KV
-binding you then have to provision. Everything through Phase 5 is static. To add
+binding you then have to provision. The site is fully static. To add
 it back when a genuinely on-demand route exists, see the note in
 `astro.config.mjs`. `worker/index.ts` is *not* that - it is a hand-written
 Worker in front of the same flat `dist/`, with no SSR anywhere.

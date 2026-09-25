@@ -55,11 +55,7 @@ cd clawbits-ironclaw-<version>
 ./clawbits-ironclaw install --endpoint https://app.clawbits.ai --api-key ck_…
 ```
 
-There is no publish pipeline. The workflow that built and uploaded this tarball
-was removed after running three times and failing all three: it published to the
-sibling `skalenetwork/clawbits-openclaw-plugin` repo through a
-`PLUGIN_MIRROR_TOKEN` secret that was never created, so no release was ever cut.
-Build and upload by hand if this channel is revived.
+There are no prebuilt releases; build and install it from source as above.
 
 `clawbits.capabilities.json` is still read as a version floor by
 `clawbits/fastapi/version_check.py`, which is why this crate stays in the tree.
