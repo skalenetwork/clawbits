@@ -72,13 +72,15 @@ idempotent.
 
 ### Promote to production
 
-`prod` takes a merge commit, not a squash (the repo only offers squash in the UI):
+`prod` is always a commit of `main`: promotion fast-forwards it, and a ruleset rejects anything else
+(direct commits, merges, force pushes), so hotfixes go through `main` too.
 
 ```bash
-git fetch origin && git switch --detach origin/prod && git merge --no-ff origin/main -m "promote main to prod" && git push origin HEAD:prod
+git fetch origin && git push origin origin/main:prod
 ```
 
-A promotion without a product release builds no desktop app: that version is already released.
+No checkout, so it runs from any clone without touching your working tree. A promotion without a
+product release builds no desktop app: that version is already released.
 
 ### Shipping a plugin release
 

@@ -1,4 +1,4 @@
-import { Children, cloneElement, isValidElement, memo, use, type ReactNode } from "react";
+import { Children, cloneElement, createContext, isValidElement, memo, use, type MouseEvent, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -10,6 +10,9 @@ import { MENTION_TOKEN_RE, MentionsContext, type MessageMentions } from "@/compo
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { mentionHandle } from "@/lib/messageHelpers";
 import { isHereToken } from "@/lib/mentions";
+import { claimMcpSignIn, isMcpSignInLink } from "@/lib/api";
+import { errMsg, toast } from "@/lib/toast";
+import { isDesktop, openExternal } from "@/lib/desktop";
 
 // A zero-width-space line is non-blank to CommonMark, so remark-breaks keeps it as an empty line.
 const ZWSP = "​";
@@ -134,18 +137,45 @@ function MentionText({ children }: { children: ReactNode }) {
   return mentions ? renderWithMentions(children, mentions) : children;
 }
 
-const COMPONENTS: Components = {
-  p: ({ children }) => <p className="my-1 first:mt-0 last:mb-0"><MentionText>{children}</MentionText></p>,
-  a: ({ children, href }) => (
+export const MessagePostContext = createContext<number | undefined>(undefined);
+
+function openMcpSignIn(href: string, postId: number): void {
+  const tab = isDesktop ? null : window.open("", "_blank");
+  if (tab) tab.opener = null;
+  claimMcpSignIn(href, postId).then(
+    ({ url }) => (tab ? tab.location.replace(url) : void openExternal(url)),
+    (err: unknown) => {
+      tab?.close();
+      toast.error(errMsg(err, "Could not start the sign-in"));
+    },
+  );
+}
+
+function MessageLink({ href, children }: { href?: string; children?: ReactNode }) {
+  const postId = use(MessagePostContext);
+  const signIn =
+    href && postId !== undefined && isMcpSignInLink(href)
+      ? (e: MouseEvent<HTMLAnchorElement>) => {
+          e.preventDefault();
+          openMcpSignIn(href, postId);
+        }
+      : undefined;
+  return (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer nofollow"
+      onClick={signIn}
       className="text-[#007AFF] underline-offset-2 hover:underline break-words dark:text-[#0A84FF]"
     >
       {children}
     </a>
-  ),
+  );
+}
+
+const COMPONENTS: Components = {
+  p: ({ children }) => <p className="my-1 first:mt-0 last:mb-0"><MentionText>{children}</MentionText></p>,
+  a: ({ children, href }) => <MessageLink href={href}>{children}</MessageLink>,
   code: Code,
   pre: Pre,
   ul: ({ children }) => <ul className="my-1.5 list-disc space-y-1 pl-5">{children}</ul>,

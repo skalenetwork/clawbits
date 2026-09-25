@@ -469,7 +469,6 @@ describe("dispatchInboundMessage", () => {
       senderId: "owner-user-id",
       text: "hello bot",
       createAt: 12345,
-      raw: { id: "post-42", create_at: 12345 },
     };
     await dispatchInboundMessage(ctx, msg);
     assert.equal(calls.length, 1);
@@ -522,7 +521,6 @@ describe("dispatchInboundMessage", () => {
       text: "/usage",
       createAt: 1,
       channelType: "direct",
-      raw: { id: "u1", create_at: 1 },
     });
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
     // Both are required: without CommandSource:"text" the host treats it as a
@@ -555,7 +553,6 @@ describe("dispatchInboundMessage", () => {
       text: "/usage tokens",
       createAt: 1,
       channelType: "direct",
-      raw: { id: "u1b", create_at: 1 },
     });
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
     assert.equal(dispatched.ctx.CommandAuthorized, true);
@@ -583,7 +580,6 @@ describe("dispatchInboundMessage", () => {
       text: "just chatting",
       createAt: 1,
       channelType: "direct",
-      raw: { id: "u2", create_at: 1 },
     });
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
     assert.equal(dispatched.ctx.CommandAuthorized, false);
@@ -611,7 +607,6 @@ describe("dispatchInboundMessage", () => {
       text: "/usage",
       createAt: 1,
       channelType: "direct",
-      raw: { id: "u3", create_at: 1 },
     });
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
     assert.equal(dispatched.ctx.CommandAuthorized, false);
@@ -643,7 +638,6 @@ describe("dispatchInboundMessage", () => {
         { postId: "u1", senderId: "human:2", text: "untagged one", createAt: 100, isSelf: false },
         { postId: "a1", senderId: "agent:bot", text: "prior bot reply", createAt: 200, isSelf: true },
       ],
-      raw: { id: "tagged", create_at: 300 },
     });
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
     const body = String(dispatched.ctx.BodyForAgent);
@@ -681,7 +675,6 @@ describe("dispatchInboundMessage", () => {
       text: "hi",
       createAt: 1,
       channelType: "direct",
-      raw: { id: "p-dm", create_at: 1 },
     };
     await dispatchInboundMessage(ctx, msg);
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
@@ -711,7 +704,6 @@ describe("dispatchInboundMessage", () => {
       text: "/new",
       createAt: 1,
       channelType: "direct",
-      raw: { id: "p-operator-dm-new", create_at: 1 },
     });
     await dispatchInboundMessage(ctx, {
       accountId: "default",
@@ -721,7 +713,6 @@ describe("dispatchInboundMessage", () => {
       text: "/new",
       createAt: 2,
       channelType: "direct",
-      raw: { id: "p-other-dm-new", create_at: 2 },
     });
     await dispatchInboundMessage(ctx, {
       accountId: "default",
@@ -731,7 +722,6 @@ describe("dispatchInboundMessage", () => {
       text: "/new",
       createAt: 3,
       channelType: "private",
-      raw: { id: "p-private-new", create_at: 3 },
     });
 
     const operatorDm = calls[0]! as { ctx: Record<string, unknown> };
@@ -772,7 +762,6 @@ describe("dispatchInboundMessage", () => {
         text,
         createAt: 1,
         channelType: "direct",
-        raw: { id: postId, create_at: 1 },
       });
     }
 
@@ -798,7 +787,6 @@ describe("dispatchInboundMessage", () => {
       text: "/clear",
       createAt: 2,
       channelType: "direct",
-      raw: { id: "p-other-clear", create_at: 2 },
     });
     const other = calls[0]! as { ctx: Record<string, unknown> };
     assert.equal(other.ctx.CommandAuthorized, false);
@@ -850,7 +838,6 @@ describe("dispatchInboundMessage", () => {
       text: "/help",
       createAt: 1,
       channelType: "direct",
-      raw: { id: "p-help", create_at: 1 },
     }, { client, answers: { "test-question": "test-answer" } });
 
     assert.equal(calls.length, 0);
@@ -906,7 +893,6 @@ describe("dispatchInboundMessage", () => {
         text,
         createAt: 1,
         channelType: "direct",
-        raw: { id: `p-${text}`, create_at: 1 },
       }, {
         client,
         answers: { "test-question": "test-answer" },
@@ -944,7 +930,6 @@ describe("dispatchInboundMessage", () => {
       text: "/help",
       createAt: 2,
       channelType: "direct",
-      raw: { id: "p-other-dm-help", create_at: 2 },
     });
     await dispatchInboundMessage(ctx, {
       accountId: "default",
@@ -954,7 +939,6 @@ describe("dispatchInboundMessage", () => {
       text: "/help",
       createAt: 3,
       channelType: "private",
-      raw: { id: "p-private-help", create_at: 3 },
     });
 
     const otherDm = calls[0]! as { ctx: Record<string, unknown> };
@@ -986,7 +970,6 @@ describe("dispatchInboundMessage", () => {
       text: "hi room",
       createAt: 1,
       channelType: "public",
-      raw: { id: "p-room", create_at: 1 },
     };
     await dispatchInboundMessage(ctx, msg);
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
@@ -1018,7 +1001,6 @@ describe("dispatchInboundMessage", () => {
       text: "x",
       createAt: 1,
       channelType: "private",
-      raw: { id: "a", create_at: 1 },
     });
     await dispatchInboundMessage(ctx, {
       accountId: "default",
@@ -1028,7 +1010,6 @@ describe("dispatchInboundMessage", () => {
       text: "y",
       createAt: 2,
       channelType: "private",
-      raw: { id: "b", create_at: 2 },
     });
     const peerA = (calls[0]! as { ctx: Record<string, unknown> }).ctx.Peer;
     const peerB = (calls[1]! as { ctx: Record<string, unknown> }).ctx.Peer;
@@ -1058,7 +1039,6 @@ describe("dispatchInboundMessage", () => {
       text: "hi",
       createAt: 1,
       channelType: "agent_chat",
-      raw: { id: "p-chat", create_at: 1 },
     });
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
     assert.deepEqual(dispatched.ctx.Peer, { kind: "channel", id: "chat-1" });
@@ -1110,7 +1090,6 @@ describe("dispatchInboundMessage", () => {
         text: "look",
         createAt: 12345,
         files: [makeFile()],
-        raw: { id: "post-with-file", create_at: 12345 },
       };
       await dispatchInboundMessage(ctx, msg);
       assert.equal(saved.length, 1);
@@ -1155,7 +1134,6 @@ describe("dispatchInboundMessage", () => {
       senderId: "",
       text: "anon",
       createAt: 1,
-      raw: { id: "p1", create_at: 1 },
     };
     await dispatchInboundMessage(ctx, msg);
     const dispatched = calls[0]! as { ctx: Record<string, unknown> };
@@ -1175,7 +1153,6 @@ describe("dispatchInboundMessage", () => {
       senderId: "u1",
       text: "oops",
       createAt: 1,
-      raw: { id: "dropped", create_at: 1 },
     };
     await dispatchInboundMessage(ctx, msg);
     assert.ok(warns.some((l) => l.includes("dropped") && l.includes("channel runtime incomplete")));

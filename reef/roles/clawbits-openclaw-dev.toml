@@ -12,7 +12,7 @@
 version = 1
 
 name  = "clawbits-openclaw-dev"
-image = "ghcr.io/skalenetwork/clawbits-openclaw:oc2026.9.5-pl0.18.0-g9bea604"
+image = "ghcr.io/skalenetwork/clawbits-openclaw:oc2026.9.6-pl0.19.0-g6bc8f3e"
 init  = ["/usr/bin/tini", "-s", "--", "/etc/openclaw/start"]
 
 [resources]
@@ -42,8 +42,9 @@ fi
 # with the one below — so the agent never recovers on its own, boot after boot,
 # while the VM still reports healthy. The image ships without a config, so
 # removing a zero-byte one is exactly the state a first boot expects.
-cfg=/home/node/.openclaw/openclaw.json
+cfg="${OPENCLAW_CONFIG_PATH:-/home/node/.openclaw/openclaw.json}"
 [ ! -e "$cfg" ] || [ -s "$cfg" ] || rm -f "$cfg"
+oc doctor --fix >/dev/null 2>&1 || true
 oc config set mcp.apps.sandboxOrigin \
   "http://$REEF_AGENT.localhost:$REEF_PORT_MCP_SANDBOX"
 exec /usr/local/bin/clawbits-start

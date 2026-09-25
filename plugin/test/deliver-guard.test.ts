@@ -107,7 +107,6 @@ const MSG: InboundMessage = {
   text: "hi",
   createAt: 1,
   channelType: "direct",
-  raw: { id: "post-1", create_at: 1 },
 };
 
 /** Dispatches MSG through a stub runtime and returns what reached the server. */

@@ -5,7 +5,7 @@ type Json = Record<string, unknown>;
 type Config = { channels?: { clawbits?: { accounts?: Record<string, Partial<Identity>> } } };
 type SignupEvent = { org_id?: string; agent_id?: string; api_key?: string; channel_id?: string };
 
-const STATE = process.env.OPENCLAW_STATE_DIR ?? "/home/node/.openclaw";
+const CONFIG = process.env.OPENCLAW_CONFIG_PATH ?? "/home/node/.openclaw/openclaw.json";
 const MIRROR = "/home/node/.openclaw/state/clawbits-identity";
 const DEFAULTS = "/usr/local/share/clawbits-defaults.json";
 const OVERRIDE = "/etc/openclaw/defaults.json";
@@ -33,7 +33,7 @@ const identity = (from: Partial<Identity>): Identity | null =>
     : null;
 
 const configured = (): Identity | null =>
-  identity(readJson<Config>(`${STATE}/openclaw.json`).channels?.clawbits?.accounts?.[ACCOUNT] ?? {});
+  identity(readJson<Config>(CONFIG).channels?.clawbits?.accounts?.[ACCOUNT] ?? {});
 
 const mirrored = (): Identity | null => {
   const [orgId, agentId, apiKey, channelId] = readText(MIRROR).split(/\r?\n/);

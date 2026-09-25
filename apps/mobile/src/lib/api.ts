@@ -65,8 +65,18 @@ export async function request<T>(
     : (response.json() as Promise<T>);
 }
 
+export function isMcpSignInLink(url: string): boolean {
+  try {
+    return new URL(new URL(url).searchParams.get("redirect_uri") ?? "").pathname.startsWith("/oauth/mcp/callback/");
+  } catch {
+    return false;
+  }
+}
+
 export const api = {
   me: (token: string) => request<User>("/api/auth/me", token),
+  claimMcpSignIn: (token: string, url: string, postId: number) =>
+    request<{ url: string }>("/api/human/mcp-oauth/claim", token, { url, post_id: postId }),
   organizations: (token: string, signal?: AbortSignal) =>
     request<{ organizations: Organization[] }>(
       "/api/human/orgs",

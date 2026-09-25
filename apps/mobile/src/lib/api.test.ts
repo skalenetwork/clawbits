@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { ApiError, auth, receiveSession, request } from "./api";
+import { ApiError, auth, isMcpSignInLink, receiveSession, request } from "./api";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -58,4 +58,12 @@ test("network failures stay distinct from invalid credentials", async () => {
     expect(error).toBeInstanceOf(TypeError);
     expect(error).not.toBeInstanceOf(ApiError);
   }
+});
+
+test("MCP sign-in links are the ones returning to the Clawbits callback", () => {
+  const link = (redirect: string) =>
+    `https://auth.example.com/authorize?state=s1&redirect_uri=${encodeURIComponent(redirect)}&resource=x`;
+  expect(isMcpSignInLink(link("https://app.clawbits.ai/oauth/mcp/callback/agent_1/agentpit"))).toBe(true);
+  expect(isMcpSignInLink(link("http://127.0.0.1:8989/oauth/callback"))).toBe(false);
+  expect(isMcpSignInLink("https://example.com/page")).toBe(false);
 });

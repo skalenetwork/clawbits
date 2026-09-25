@@ -21,6 +21,7 @@ import {
   logWarn,
   writeTraceSpan,
 } from "./file-logger.js";
+import { finishMcpSignIn, isMcpSignIn, type McpSignIn, setMcpOAuthCallback } from "./mcp-oauth.js";
 import { choiceOf, INHERIT, type ModelSelection } from "./model-choice.js";
 import * as mmTools from "./tools/mattermost.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
@@ -102,7 +103,6 @@ export interface InboundMessage {
    *  Flips the history block off its "do not reply to these" framing — without
    *  it the model is told to ignore exactly what we recovered. */
   catchUp?: boolean;
-  raw: MattermostPost;
 }
 
 /** Subset of the Mattermost post shape the poller actually reads. */
@@ -1212,6 +1212,29 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     }
   };
 
+  const wakeAfterMcpSignIn = ({ state, channel_id, human_id }: McpSignIn, text: string): void => {
+    const channelId = channelTypes.has(channel_id) ? channel_id : account.channelId;
+    if (!channelId) return;
+    const postId = `mcp-oauth-${state}`;
+    const createAt = now();
+    void inboundQueue.enqueue({
+      id: postId,
+      enqueuedAt: createAt,
+      expiresAt: createAt + inboundQueueTtlMs,
+      run: async () => {
+        await dispatchMessage({
+          accountId: account.accountId,
+          channelId,
+          postId,
+          senderId: `human:${human_id}`,
+          text,
+          channelType: channelTypes.get(channelId) ?? null,
+          createAt,
+        });
+      },
+    });
+  };
+
   async function processPost(
     channelId: string,
     channelType: string | null,
@@ -1429,7 +1452,6 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       ...(forceAttention ? { attention: true } : {}),
       ...(contextOverride ? { catchUp: true } : {}),
       createAt: postCreateAt,
-      raw: post,
     };
     // Claim in memory before the turn; persist + ack only once it SETTLES.
     // A dispatch failure leaves both durable pointers behind the post, so
@@ -1539,6 +1561,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       onEvent: (event) => {
         if (event.type === "snapshot") {
           applyControlPayload(event.data);
+          setMcpOAuthCallback(account.accountId, event.data, client);
           forceReconcilePoll = true;
           scheduleNextWebSocketControlRefresh();
           return;
@@ -1579,6 +1602,11 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         }
         if (event.type === "turn.stop") {
           if (event.channel_id) void stopTurn(account.accountId, event.channel_id);
+          return;
+        }
+        if (event.type === "mcp.oauth.code") {
+          const signIn = event.data;
+          if (isMcpSignIn(signIn)) void finishMcpSignIn(signIn, client).then((note) => wakeAfterMcpSignIn(signIn, note));
           return;
         }
         // `mutualist.consider` is the pre-rename name for the same event; kept
