@@ -51,6 +51,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
       plugin: ${{ steps.filter.outputs.plugin }}
+      hermes: ${{ steps.filter.outputs.hermes }}
       locks: ${{ steps.filter.outputs.locks }}
       rust: ${{ steps.rust.outputs.matrix }}
     steps:
@@ -79,6 +80,7 @@ jobs:
             backend:
               - '.github/workflows/ci.yml'
               - 'clawbits/**'
+              - 'extensions/hermes/**'
               - 'tests/**'
               - 'alembic/**'
               - 'alembic.ini'
@@ -93,6 +95,13 @@ jobs:
             plugin:
               - '.github/workflows/ci.yml'
               - 'plugin/**'
+            hermes:
+              - '.github/workflows/ci.yml'
+              - 'extensions/hermes/**'
+              - 'images/hermes/**'
+              - 'tests/hermes_runtime/**'
+              - 'tests/poc/**'
+              - 'scripts/hermes_runtime_tests.sh'
             cli:
               - '.github/workflows/ci.yml'
               - 'cli/**'
@@ -252,6 +261,35 @@ jobs:
       - name: Test
         run: bun run test
 
+  # The Hermes plugin under Hermes's real loader and GatewayRunner at each pinned
+  # revision (tests/hermes_runtime/HERMES_REVS), in the Reef image layout (bundled)
+  # and the self-hosted one (user). The script builds each revision's own venv.
+  hermes-runtime:
+    name: Hermes runtime (${{ matrix.hermes }}, ${{ matrix.layout }})
+    needs: changes
+    if: needs.changes.outputs.hermes == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        hermes: [min, current]
+        layout: [bundled, user]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: tests/hermes_runtime/HERMES_REVS
+
+      - name: Real Hermes runtime suite
+        env:
+          HERMES_RUNTIME_LAYOUT: ${{ matrix.layout }}
+        run: scripts/hermes_runtime_tests.sh ${{ matrix.hermes }}
+
   rust:
     name: Rust (${{ matrix.crate }})
     needs: changes
@@ -379,7 +417,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, pr-title, backend, frontend, plugin, rust, locks]
+    needs: [changes, pr-title, backend, frontend, plugin, hermes-runtime, rust, locks]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

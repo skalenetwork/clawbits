@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import (
     Depends,
     FastAPI,
+    Header,
     HTTPException,
     Request,
     Response,
@@ -46,6 +47,7 @@ from clawbits.datastructures.challenge_response_request import ChallengeResponse
 from clawbits.datastructures.create_agent_request import CreateAgentRequest
 from clawbits.datastructures.create_agent_response import CreateAgentResponse
 from clawbits.datastructures.email_models import (
+    EmailChangesResponse,
     EmailCountResponse,
     EmailDetailResponse,
     EmailListResponse,
@@ -188,6 +190,9 @@ class ClawBitsServer(FastAPI):
         # exactly the failure the pointer exists to prevent.
         ("POST", re.compile(r"^/api/agentic/mm/channels/[^/]+/read$")),
     )
+    # A send carrying an Idempotency-Key bills inside the endpoint, once per new outbox record,
+    # so a retried key is never charged twice.
+    AGENTIC_WRITE_KEYED_BILLING = re.compile(r"^/api/agentic/agents/[^/]+/email/send$")
     # Per-report cap on managed/external item counts, so a chatty or misbehaving
     # plugin can't flood the self-report endpoint. Runs are capped separately in
     # ``ingest_automation_runs``.
@@ -289,6 +294,10 @@ class ClawBitsServer(FastAPI):
                 and not any(
                     request.method == method and pattern.match(request.url.path)
                     for method, pattern in self.AGENTIC_WRITE_BILLING_EXEMPT_ROUTES
+                )
+                and not (
+                    "idempotency-key" in request.headers
+                    and self.AGENTIC_WRITE_KEYED_BILLING.match(request.url.path)
                 )
             ):
                 billing_error = self._charge_agentic_write_if_applicable(request)
@@ -1024,6 +1033,26 @@ class ClawBitsServer(FastAPI):
             summary="List inbox emails",
             description="List emails in the agent's inbox, newest first. Supports limit/offset pagination. Requires API key.",
         )
+        # Registered before /email/{message_uid}, which would otherwise capture "changes".
+        self.add_api_route(
+            "/api/agentic/agents/{agent_id}/email/changes",
+            self.email_changes,
+            methods=["GET"],
+            response_model=EmailChangesResponse,
+            tags=["Email"],
+            summary="List mailbox changes",
+            description="Ascending, epoch-bound (UIDVALIDITY) scan of messages after a UID cursor. Never marks mail read. Requires API key.",
+        )
+        self.add_api_route(
+            "/api/agentic/agents/{agent_id}/email/deliveries/{idempotency_key}",
+            self.email_delivery,
+            methods=["GET"],
+            response_model=EmailSendResponse,
+            response_model_exclude_none=True,
+            tags=["Email"],
+            summary="Get a keyed email delivery",
+            description="The outbox record of a send made with this Idempotency-Key. Requires API key.",
+        )
         self.add_api_route(
             "/api/agentic/agents/{agent_id}/email/{message_uid}",
             self.email_detail,
@@ -1031,7 +1060,7 @@ class ClawBitsServer(FastAPI):
             response_model=EmailDetailResponse,
             tags=["Email"],
             summary="Read an email",
-            description="Fetch a single email by UID with full body content. Marks as read. Requires API key.",
+            description="Fetch a single email by UID with full body content. Marks as read unless mark_read=false. Requires API key.",
         )
         self.add_api_route(
             "/api/agentic/agents/{agent_id}/email/{message_uid}",
@@ -1046,9 +1075,10 @@ class ClawBitsServer(FastAPI):
             self.email_send,
             methods=["POST"],
             response_model=EmailSendResponse,
+            response_model_exclude_none=True,
             tags=["Email"],
             summary="Send email to owner",
-            description=f"Send an email from the agent (agentid@{EMAIL_DOMAIN}) to its primary owner. Requires API key + challenge-response.",
+            description=f"Send an email from the agent (agentid@{EMAIL_DOMAIN}) to its primary owner. An Idempotency-Key header makes the send durable and retry-safe. Requires API key + challenge-response.",
         )
 
         # ------------------------------------------------------------------
@@ -1444,6 +1474,15 @@ class ClawBitsServer(FastAPI):
             db.commit()
 
         return None
+
+    def _charge_write(self, db: Session, agent_id: AgentId) -> None:
+        """Debit one agentic write inside the caller's transaction; HTTP 402 when the balance is short."""
+        try:
+            TableWrite.charge_cb_tokens(db, agent_id, self.AGENTIC_WRITE_CB_TOKENS_COST)
+        except ValueError as exc:
+            if "Insufficient CB_TOKENS" not in str(exc):
+                raise
+            raise HTTPException(status_code=402, detail=str(exc))
 
     def get_challenge_question(
         self,
@@ -3584,14 +3623,7 @@ class ClawBitsServer(FastAPI):
             self._require_mm_member(db, channel_id, agent_id)
             # The middleware exempts PATCH, so finalize bills here, in the flip's transaction.
             if body.done:
-                try:
-                    TableWrite.charge_cb_tokens(
-                        db, agent.agent_id, self.AGENTIC_WRITE_CB_TOKENS_COST
-                    )
-                except ValueError as exc:
-                    if "Insufficient CB_TOKENS" not in str(exc):
-                        raise
-                    raise HTTPException(status_code=402, detail=str(exc))
+                self._charge_write(db, agent.agent_id)
             try:
                 row = TableWrite.patch_mm_post(
                     db,
@@ -3682,10 +3714,32 @@ class ClawBitsServer(FastAPI):
         return EmailEndpoints.email_inbox(self, agent_id, api_key, limit, offset)
 
     @cost(1)
+    def email_changes(
+        self,
+        agent_id: str,
+        api_key: str = Security(api_key_header),
+        after_uid: int = 0,
+        uidvalidity: int | None = None,
+        through_uid: int | None = None,
+        limit: int = 50,
+    ) -> EmailChangesResponse:
+        return EmailEndpoints.email_changes(
+            self, agent_id, api_key, after_uid, uidvalidity, through_uid, limit
+        )
+
+    @cost(1)
     def email_detail(
-        self, agent_id: str, message_uid: int, api_key: str = Security(api_key_header)
+        self,
+        agent_id: str,
+        message_uid: int,
+        api_key: str = Security(api_key_header),
+        uidvalidity: int | None = None,
+        mark_read: bool = True,
+        attachment_content: bool = True,
     ) -> EmailDetailResponse:
-        return EmailEndpoints.email_detail(self, agent_id, message_uid, api_key)
+        return EmailEndpoints.email_detail(
+            self, agent_id, message_uid, api_key, uidvalidity, mark_read, attachment_content
+        )
 
     @cost(1)
     def email_delete(
@@ -3693,8 +3747,9 @@ class ClawBitsServer(FastAPI):
         agent_id: str,
         message_uid: int,
         api_key: str = Security(api_key_header),
+        uidvalidity: int | None = None,
     ) -> dict:
-        return EmailEndpoints.email_delete(self, agent_id, message_uid, api_key)
+        return EmailEndpoints.email_delete(self, agent_id, message_uid, api_key, uidvalidity)
 
     @cost(1)
     def email_send(
@@ -3702,8 +3757,18 @@ class ClawBitsServer(FastAPI):
         agent_id: str,
         body: EmailSendRequest,
         api_key: str = Security(api_key_header),
+        idempotency_key: str | None = Header(default=None),
     ) -> EmailSendResponse:
-        return EmailEndpoints.email_send(self, agent_id, body, api_key)
+        return EmailEndpoints.email_send(self, agent_id, body, api_key, idempotency_key)
+
+    @cost(1)
+    def email_delivery(
+        self,
+        agent_id: str,
+        idempotency_key: str,
+        api_key: str = Security(api_key_header),
+    ) -> EmailSendResponse:
+        return EmailEndpoints.email_delivery(self, agent_id, idempotency_key, api_key)
 
     # -----------------------------------------------------------------------
     # Git repository methods

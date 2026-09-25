@@ -109,6 +109,8 @@ _ALL_TABLES_FK_ORDER = (
     "agent_skill_installs",
     "skill_versions",
     "skills",
+    # FK to agents.agent_id — wipe before agents.
+    "email_deliveries",
     "agents",
     "org_members",
     "organizations",
