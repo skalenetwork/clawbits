@@ -4,7 +4,8 @@ FROM ${BASE}
 COPY --chmod=a+rX,go-w .plugin/ /opt/hermes/plugins/platforms/clawbits/
 COPY --chmod=0755 clawbits /etc/cont-init.d/019-clawbits
 COPY --chmod=0644 config.yaml /etc/hermes/config.yaml
-RUN hermes clawbits signup --help | grep -q -- --signup-token
+RUN hermes clawbits signup --help | grep -q -- --signup-token \
+ && hermes clawbits doctor --preflight
 
 ARG ENGINE_VERSION
 ARG PLUGIN_VERSION

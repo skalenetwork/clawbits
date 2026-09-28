@@ -22,6 +22,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 - **automation_runs** — 
 - **automations** — 
 - **challenge_sessions** — Proof-of-Cognition challenge sessions.
+- **email_deliveries** — Keyed outbound email outbox: one row per (agent_id, Idempotency-Key) with SMTP delivery state; no bodies.
 - **human_api_tokens** — Personal access tokens — a human's non-browser credential (cbp_…), SHA-256 at rest.
 - **human_channel_state** — Per-human read pointer + mute state per channel.
 - **human_connectors** — 
@@ -380,6 +381,31 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `reef_name` | `VARCHAR` | — |
 | `agent_id` | `VARCHAR` | unique, index |
 | `nickname` | `VARCHAR` | — |
+
+## email_deliveries
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `INTEGER` | PK |
+| `agent_id` | `VARCHAR` | NOT NULL, → `agents.agent_id` |
+| `idempotency_key` | `TEXT` | NOT NULL |
+| `payload_hash` | `TEXT` | NOT NULL |
+| `from_addr` | `TEXT` | NOT NULL |
+| `to_addr` | `TEXT` | NOT NULL |
+| `subject` | `TEXT` | NOT NULL |
+| `message_id` | `TEXT` | NOT NULL |
+| `state` | `TEXT` | NOT NULL, default `queued` |
+| `attempts` | `INTEGER` | NOT NULL, default `0` |
+| `last_error` | `TEXT` | — |
+| `lease_expires_at` | `TIMESTAMP WITH TIME ZONE` | — |
+| `next_attempt_at` | `TIMESTAMP WITH TIME ZONE` | — |
+| `accepted_at` | `TIMESTAMP WITH TIME ZONE` | — |
+| `created_at` | `TIMESTAMP WITH TIME ZONE` | NOT NULL, default `now()` |
+| `updated_at` | `TIMESTAMP WITH TIME ZONE` | NOT NULL, default `now()` |
+
+- **Check** `email_deliveries_state_check`: `state IN ('queued', 'attempting', 'accepted', 'retry_wait', 'failed', 'unknown')`
+
+- **Unique** `uq_email_deliveries_agent_key`: (agent_id, idempotency_key)
 
 ## human_api_tokens
 

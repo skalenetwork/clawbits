@@ -22,12 +22,16 @@ this module depends on:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import math
+import os
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -42,6 +46,9 @@ AUTOMATIONS_RECONCILE_INTERVAL_SECONDS = 60.0
 AUTOMATIONS_MIN_REPASS_SECONDS = 2.0
 
 _MANAGED_KEY = "clawbits_automation_id"
+# The agent a managed job was armed for: a job stamped for another one belongs to a
+# forgotten enrollment (a --reset, or a re-enrolled Reef agent) and is retired.
+_OWNER_KEY = "clawbits_agent"
 _GENERATION_KEY = "clawbits_desired_generation"
 _SCHEDULE_KEY = "clawbits_desired_schedule"
 _HASH_KEY = "clawbits_spec_hash"
@@ -50,11 +57,34 @@ _RUN_OBSERVED_KEY = "clawbits_run_observed_generation"
 _STREAK_KEY = "clawbits_consecutive_errors"
 _RUN_SEEN_KEY = "clawbits_last_run_seen_ms"
 _RUNNING_KEY = "clawbits_running_at_ms"
+# {"slot_ms", "decision": "catch_up" | "skipped", "at_ms"}: the recorded fate of an
+# occurrence that was not run on time, written in the same store write as the re-arm.
+_MISSED_KEY = "clawbits_missed"
+_HOLD_REASON = "Clawbits: missed run held for a catch-up decision"
+# Hermes's own terminal shape for a finished one-shot (cron.jobs._complete_job_record);
+# ``state`` alone leaves an enabled terminal record that update_job then refuses to touch.
+_DISARM = {
+    "state": "completed",
+    "enabled": False,
+    "next_run_at": None,
+    "repeat": {"times": 1, "completed": 1},
+}
 
 # Tolerance when deciding whether a one-shot's stored fire time has passed, and
 # when matching ``last_run_at`` against it. The scheduler's own tick granularity
 # plus clock skew live in here.
 _ONE_SHOT_SKEW_MS = 120_000
+# A slot later than this is missed and gets an explicit catch-up/skip decision. It is
+# inside Hermes's 120 s one-shot grace, so a slot kept as merely late is still one
+# that update_job/rearm_oneshot accept and the ticker runs.
+_MISSED_AFTER_MS = 90_000
+# Hermes's late-run grace bounds (cron.jobs._compute_grace_seconds): half the period,
+# clamped. Within it a late slot still runs when cron.catch_up_missed is false.
+_MIN_GRACE_MS = 120_000
+_MAX_GRACE_MS = 7_200_000
+# Hermes's one-shot run-claim TTL floor (ONESHOT_RUN_CLAIM_TTL_SECONDS). A live run
+# re-stamps its fire and run claims every 60 s, so a younger claim is a run in flight.
+_CLAIM_LIVE_MS = 1_800_000
 
 # Server-side caps (``ClawBitsServer.AUTOMATION_REPORT_MAX_ITEMS`` and
 # ``ingest_automation_runs``). Mirrored here because the report is serialised
@@ -70,6 +100,12 @@ _ERROR_RUN_STATUSES = frozenset(
     {"error", "failed", "failure", "timeout", "timed_out", "exception", "crashed"}
 )
 _SKIPPED_RUN_STATUSES = frozenset({"skipped", "cancelled", "canceled", "aborted"})
+# Ledger failures written by Hermes's claim/shutdown machinery rather than by the job
+# (cron/scheduler.py): whether the job's side effects happened is unknown.
+_UNCERTAIN_ERROR_PREFIXES = ("Interrupted by", "Fire claim")
+# First line of the output file Hermes writes when it retires a one-shot unrun
+# (cron.jobs._write_missed_oneshot_diagnostic).
+_RETIRED_UNRUN_HEADING = "# Cron job removed before firing"
 
 # Why a manual run did not happen. Keys mirror the OpenClaw plugin's
 # RUN_NOW_MISS_MESSAGES (plugin/src/automations/reconcile.ts) so both runtimes
@@ -153,19 +189,24 @@ def _run_status(raw: Any, has_error: bool) -> str | None:
     return "error" if has_error else None
 
 
-def _reject_unsupported(spec: dict[str, Any]) -> None:
+def _reject_unsupported(spec: dict[str, Any], agent_id: str) -> None:
     """Refuse a spec Hermes cannot honour, rather than silently doing something else.
 
     Fields deliberately ignored (each degrades safely, so rejecting would only
     block valid work): ``wakeMode`` — Hermes cron fires the agent directly, there
     is no heartbeat to wait for; ``failureAlert`` — the Clawbits-side equivalent
     is ``consecutiveErrors`` (see :func:`_fold_streak`); ``description`` — Hermes
-    has no such field and the spec is echoed back verbatim anyway; ``agentId`` /
-    ``sessionKey`` — Hermes is single-account.
+    has no such field and the spec is echoed back verbatim anyway. A job always
+    runs in the profile that reconciles it, so ``agentId`` may only name this
+    agent and ``sessionKey`` is refused.
     """
     session_target = spec.get("sessionTarget")
     if session_target is not None and session_target != "isolated":
         raise ValueError(f"Hermes runs automations in an isolated session, not {session_target!r}")
+    if spec.get("agentId") not in (None, "", agent_id):
+        raise ValueError("Hermes runs automations for this agent only, not another agentId")
+    if spec.get("sessionKey") not in (None, ""):
+        raise ValueError("Hermes runs automations in an isolated session, not a sessionKey")
     delivery = spec.get("delivery")
     if isinstance(delivery, dict):
         mode = delivery.get("mode")
@@ -173,61 +214,144 @@ def _reject_unsupported(spec: dict[str, Any]) -> None:
             raise ValueError(f"Hermes supports announce delivery only, not {mode!r}")
 
 
+def _catch_up_missed() -> bool:
+    """Hermes's own ``cron.catch_up_missed`` for the active profile (default: run once)."""
+    try:
+        from hermes_cli.config import load_config
+
+        return ((load_config() or {}).get("cron") or {}).get("catch_up_missed", True) is not False
+    except Exception:
+        return True
+
+
+def _slot_after(schedule: dict[str, Any], after_ms: int, anchor_ms: int | None) -> int:
+    """First occurrence strictly after ``after_ms``: the ``every`` anchor grid, or cron in its tz."""
+    if schedule.get("kind") == "every":
+        every_ms = _as_int(schedule.get("everyMs"))
+        anchor = after_ms if anchor_ms is None else anchor_ms
+        return anchor + max(1, math.floor((after_ms - anchor) / every_ms) + 1) * every_ms
+    expression = str(schedule.get("expr") or "").strip()
+    if not expression:
+        raise ValueError("cron automation has no expression")
+    timezone_name = str(schedule.get("tz") or "UTC")
+    try:
+        zone = ZoneInfo(timezone_name)
+    except Exception as exc:
+        raise ValueError(f"invalid automation timezone: {timezone_name}") from exc
+    from croniter import croniter
+
+    stagger = max(0, _as_int(schedule.get("staggerMs")))
+    base = after_ms - stagger
+    # As Hermes's compute_next_run: croniter on the zone's naive wall clock, then the
+    # earliest fold strictly after the base (croniter on an aware time lands an hour
+    # late the day after a fall-back).
+    wall = croniter(expression, datetime.fromtimestamp(base / 1000, zone).replace(tzinfo=None))
+    for _ in range(3):
+        candidate = wall.get_next(datetime)
+        for fold in (0, 1):
+            at = int(candidate.replace(tzinfo=zone, fold=fold).timestamp() * 1000)
+            if at > base:
+                return at + stagger
+    raise ValueError(f"cron expression {expression!r} has no next occurrence")
+
+
+def _owed_slot_ms(
+    job: dict[str, Any] | None, schedule: dict[str, Any], anchor: int | None
+) -> int | None:
+    """The occurrence a job still owes under an unchanged schedule, or None."""
+    if not job or _canonical(job.get(_SCHEDULE_KEY)) != _canonical(schedule):
+        return None
+    if job.get("state") != "completed":
+        return _iso_ms(job.get("next_run_at"))
+    armed_schedule = job.get("schedule")
+    armed = _iso_ms(armed_schedule.get("run_at")) if isinstance(armed_schedule, dict) else None
+    if armed is None or schedule.get("kind") == "at":
+        return None
+    last_run = _iso_ms(job.get("last_run_at"))
+    if last_run is not None and last_run >= armed - _ONE_SHOT_SKEW_MS:
+        return _slot_after(schedule, armed, anchor)  # it ran its slot: the next one is owed
+    return armed  # a manual run completed it early; the armed slot is still owed
+
+
+def _claims(job: dict[str, Any], now_ms: int) -> str | None:
+    """Hermes's run claims on the job: "live" while a run owns its slot, "dead" if its runner died."""
+    claims = [job.get(key) for key in ("fire_claim", "run_claim") if isinstance(job.get(key), dict)]
+    if not claims:
+        return None
+    # A held job's claims belong to the gateway that went down.
+    if job.get("paused_reason") != _HOLD_REASON and any(
+        (_iso_ms(claim.get("at")) or 0) > now_ms - _CLAIM_LIVE_MS for claim in claims
+    ):
+        return "live"
+    return "dead"
+
+
+def _grace_ms(schedule: dict[str, Any], slot_ms: int, anchor: int | None) -> int:
+    """How late ``slot_ms`` may run under Hermes's own late-run grace."""
+    period = _slot_after(schedule, slot_ms, anchor) - slot_ms
+    return max(_MIN_GRACE_MS, min(period // 2, _MAX_GRACE_MS))
+
+
 def _next_schedule_ms(
     schedule: dict[str, Any],
     existing: dict[str, Any] | None,
-) -> tuple[int, int | None]:
-    """Return the next fire and optional interval anchor in epoch milliseconds."""
+    *,
+    enabled: bool = True,
+    catch_up: bool = True,
+) -> tuple[int, int | None, dict[str, Any] | None]:
+    """Return ``(fire ms, interval anchor, missed decision)``; an owed slot is never dropped.
+
+    A slot more than :data:`_MISSED_AFTER_MS` late is kept while the automation is
+    paused or a live run owns it; a run that died mid-turn used it, as Hermes's recurring
+    jobs run at most once. Otherwise it gets an explicit decision under Hermes's
+    ``cron.catch_up_missed``: one catch-up run now (however many slots were missed),
+    or, with catch-up off, a run within Hermes's late grace and a recorded skip beyond
+    it. One-time automations are never caught up, like Hermes one-shots. A schedule
+    edit supersedes the owed slot, as in ``update_job``.
+    """
     now_ms = int(time.time() * 1000)
     kind = schedule.get("kind")
-    current_schedule = existing.get(_SCHEDULE_KEY) if existing else None
-    current_next = _iso_ms(existing.get("next_run_at")) if existing else None
-    if (
-        existing
-        and existing.get("enabled", True)
-        and existing.get("state") != "completed"
-        and current_next is not None
-        and current_next > now_ms
-        and _canonical(current_schedule) == _canonical(schedule)
-    ):
-        return current_next, existing.get(_ANCHOR_KEY)
-
-    if kind == "at":
-        at = _as_int(schedule.get("at"))
-        if at <= now_ms - _ONE_SHOT_SKEW_MS:
-            raise ValueError("one-shot automation time is in the past")
-        return at, None
-
+    anchor: int | None = None
     if kind == "every":
-        every_ms = _as_int(schedule.get("everyMs"))
-        if every_ms < 60_000:
+        if _as_int(schedule.get("everyMs")) < 60_000:
             raise ValueError("Hermes automations require intervals of at least one minute")
-        anchor = schedule.get("anchorMs")
-        if not isinstance(anchor, (int, float)):
-            anchor = existing.get(_ANCHOR_KEY) if existing else None
-        if not isinstance(anchor, (int, float)):
-            anchor = now_ms
-        anchor = int(anchor)
-        steps = max(1, math.floor((now_ms - anchor) / every_ms) + 1)
-        return anchor + steps * every_ms, anchor
+        raw_anchor = schedule.get("anchorMs")
+        if not isinstance(raw_anchor, (int, float)):
+            raw_anchor = existing.get(_ANCHOR_KEY) if existing else None
+        anchor = int(raw_anchor) if isinstance(raw_anchor, (int, float)) else now_ms
+    elif kind not in ("at", "cron"):
+        raise ValueError(f"unsupported automation schedule kind: {kind!r}")
 
-    if kind == "cron":
-        expression = str(schedule.get("expr") or "").strip()
-        if not expression:
-            raise ValueError("cron automation has no expression")
-        timezone_name = str(schedule.get("tz") or "UTC")
-        try:
-            zone = ZoneInfo(timezone_name)
-        except Exception as exc:
-            raise ValueError(f"invalid automation timezone: {timezone_name}") from exc
-        from croniter import croniter
+    owed = _owed_slot_ms(existing, schedule, anchor)
+    claims = _claims(existing, now_ms) if existing and owed is not None else None
+    if (
+        claims == "dead"
+        and isinstance(existing.get("fire_claim"), dict)
+        and kind != "at"
+        and not _native_interval(schedule)
+    ):
+        # At most once, as Hermes's recurring jobs: a computed slot whose run died mid-turn
+        # is used (a native interval's fire claim has already advanced next_run_at).
+        owed = _slot_after(schedule, owed, anchor)
+    if owed is not None and (owed > now_ms - _MISSED_AFTER_MS or not enabled or claims == "live"):
+        return owed, anchor, None
+    if owed is None:
+        if kind == "at":
+            at = _as_int(schedule.get("at"))
+            if at <= now_ms - _ONE_SHOT_SKEW_MS:
+                raise ValueError("one-shot automation time is in the past")
+            return at, None, None
+        return _slot_after(schedule, now_ms, anchor), anchor, None
 
-        now = datetime.now(zone)
-        next_at = croniter(expression, now).get_next(datetime)
-        stagger_ms = _as_int(schedule.get("staggerMs"))
-        return int(next_at.timestamp() * 1000) + max(0, stagger_ms), None
-
-    raise ValueError(f"unsupported automation schedule kind: {kind!r}")
+    record = (existing or {}).get(_MISSED_KEY) or {}
+    # Our own catch-up arm that never ran (a restart) still stands for the original
+    # slot; the ISO round trip through next_run_at drops sub-second precision.
+    ours = abs(_as_int(record.get("at_ms")) - owed) < 1000
+    slot = _as_int(record.get("slot_ms"), owed) if ours else owed
+    if kind != "at" and (catch_up or now_ms - slot <= _grace_ms(schedule, slot, anchor)):
+        return now_ms, anchor, {"slot_ms": slot, "decision": "catch_up", "at_ms": now_ms}
+    decision = {"slot_ms": slot, "decision": "skipped", "at_ms": now_ms}
+    return (owed if kind == "at" else _slot_after(schedule, now_ms, anchor)), anchor, decision
 
 
 def _hermes_schedule(schedule: dict[str, Any], target_ms: int) -> tuple[str, bool]:
@@ -242,11 +366,15 @@ def _hermes_schedule(schedule: dict[str, Any], target_ms: int) -> tuple[str, boo
     per-automation timezone and Hermes's native cron has only a profile-wide
     one, so the next fire has to be computed here.
     """
-    if schedule.get("kind") == "every":
-        every_ms = _as_int(schedule.get("everyMs"))
-        if every_ms >= 60_000 and every_ms % 60_000 == 0:
-            return f"every {every_ms // 60_000}m", True
+    if _native_interval(schedule):
+        return f"every {_as_int(schedule.get('everyMs')) // 60_000}m", True
     return _iso_at(target_ms), False
+
+
+def _native_interval(schedule: dict[str, Any]) -> bool:
+    """Can Hermes's own interval scheduler carry this schedule (whole minutes)?"""
+    every_ms = _as_int(schedule.get("everyMs"))
+    return schedule.get("kind") == "every" and every_ms >= 60_000 and every_ms % 60_000 == 0
 
 
 def _one_shot_fired(schedule: dict[str, Any], job: dict[str, Any] | None) -> bool:
@@ -398,35 +526,92 @@ def _external_spec(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _execution_run_report(automation_id: str, job: dict[str, Any]) -> dict[str, Any] | None:
-    """The latest run row from Hermes's execution log, when it has one.
-
-    Preferred over :func:`_job_run_report` because it carries a real execution
-    id, both endpoints, and the recorded error. ``cron.executions`` is absent on
-    older Hermes builds, hence the fallback.
-    """
-    job_id = _job_id(job)
-    if job_id is None:
-        return None
+def _latest_execution(job_id: str) -> dict[str, Any] | None:
+    """Hermes's newest execution-ledger row for ``job_id`` (the job may already be gone)."""
     try:
         from cron.executions import latest_execution
 
         execution = latest_execution(job_id)
     except Exception:
         return None
-    if not isinstance(execution, dict) or not execution.get("id"):
+    return execution if isinstance(execution, dict) and execution.get("id") else None
+
+
+def _retired_unrun_ms(job_id: str) -> int | None:
+    """When Hermes retired this one-shot without firing it, from the diagnostic it leaves behind."""
+    if not job_id.isalnum():
+        return None
+    try:
+        from cron.jobs import get_cron_output_dir
+
+        for path in (get_cron_output_dir() / job_id).glob("*.md"):
+            if path.read_text(encoding="utf-8").startswith(_RETIRED_UNRUN_HEADING):
+                return int(path.stat().st_mtime * 1000)
+    except Exception:
+        return None
+    return None
+
+
+def _missed_run(automation_id: str, job_id: str | None, missed: dict[str, Any]) -> dict[str, Any]:
+    """The visible "didn't run" row for a skipped occurrence; keyed by slot so re-reports upsert."""
+    slot = _as_int(missed.get("slot_ms"))
+    at = _as_int(missed.get("at_ms"))
+    return {
+        "automation_id": automation_id,
+        "gateway_job_id": job_id,
+        "gateway_run_id": f"missed:{slot or job_id}",
+        "status": "skipped",
+        "started_at_ms": slot or at,
+        "finished_at_ms": at or None,
+        "summary": {
+            "did_not_run": True,
+            "reason": "missed",
+            "error": str(
+                missed.get("message")
+                or "The scheduled time passed while the automation was paused or the agent "
+                "was offline; this run was skipped."
+            ),
+        },
+    }
+
+
+def _execution_run_report(automation_id: str, job: dict[str, Any]) -> dict[str, Any] | None:
+    """The latest run row from Hermes's execution log, when it has one.
+
+    Preferred over :func:`_job_run_report` because it carries a real execution
+    id, both endpoints, the recorded error and the delivery outcome.
+    ``cron.executions`` is absent on older Hermes builds, hence the fallback.
+    """
+    job_id = _job_id(job)
+    if job_id is None:
+        return None
+    execution = _latest_execution(job_id)
+    if execution is None:
         return None
     started = execution.get("started_at") or execution.get("claimed_at")
     started_ms = _iso_ms(started)
     if started_ms is None:
         return None
-    error = execution.get("error") or job.get("last_error")
+    error = execution.get("error")
     summary: dict[str, Any] = {}
     if error:
         summary["error"] = str(error)
-    if job.get("last_delivery_error"):
-        summary["delivery_error"] = str(job["last_delivery_error"])
+    # Delivery is this execution's own outcome, never the job's last run, which is a
+    # different attempt while this one is still in flight.
+    delivery = execution.get("delivery_outcome")
+    if delivery == "failed":
         summary["delivered"] = False
+        summary["delivery_error"] = str(job.get("last_delivery_error") or "delivery failed")
+    elif delivery == "delivered":
+        summary["delivered"] = True
+    elif delivery:
+        summary["delivery_status"] = str(delivery)  # queued, suppressed, not_configured, ...
+    missed = job.get(_MISSED_KEY) or {}
+    if (
+        missed.get("decision") == "catch_up"
+        and abs(started_ms - _as_int(missed.get("at_ms"))) <= _ONE_SHOT_SKEW_MS
+    ):
+        summary["catch_up_for_ms"] = _as_int(missed.get("slot_ms"))
     report: dict[str, Any] = {
         "automation_id": automation_id,
         "gateway_job_id": job_id,
@@ -436,7 +621,15 @@ def _execution_run_report(automation_id: str, job: dict[str, Any]) -> dict[str, 
     }
     # A claimed/running attempt has no terminal status yet — omit rather than
     # calling it ok, and omit finished_at so the UI shows it as still going.
-    status = _run_status(execution.get("status"), bool(error))
+    # ``unknown`` (the owner died mid-run) and claim/shutdown interruptions are
+    # uncertainty, not failures.
+    raw_status = execution.get("status")
+    uncertain = raw_status == "unknown" or (
+        raw_status == "failed" and str(error or "").startswith(_UNCERTAIN_ERROR_PREFIXES)
+    )
+    if uncertain:
+        summary["outcome_unknown"] = True
+    status = None if uncertain else _run_status(raw_status, bool(error))
     if status is not None:
         report["status"] = status
     finished_ms = _iso_ms(execution.get("finished_at"))
@@ -488,6 +681,7 @@ def _run_report(automation_id: str, job: dict[str, Any]) -> dict[str, Any] | Non
 
 def _managed_updates(
     automation_id: str,
+    agent_id: str,
     generation: int,
     spec: dict[str, Any],
     spec_hash: str,
@@ -497,6 +691,7 @@ def _managed_updates(
 ) -> dict[str, Any]:
     updates: dict[str, Any] = {
         _MANAGED_KEY: automation_id,
+        _OWNER_KEY: agent_id,
         _GENERATION_KEY: generation,
         "clawbits_desired_spec": spec,
         _SCHEDULE_KEY: schedule,
@@ -508,8 +703,71 @@ def _managed_updates(
     return updates
 
 
-def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: str) -> None:
-    """One synchronous reconcile pass. Called off the event loop."""
+def _active_home() -> Path:
+    """The active profile's Hermes home, with ``~`` and ``$VAR`` expanded."""
+    from hermes_constants import get_hermes_home
+
+    return Path(os.path.expandvars(str(get_hermes_home()))).expanduser()
+
+
+@contextlib.contextmanager
+def _profile_scope(hermes_home: Path) -> Iterator[None]:
+    """Pin this thread's Hermes home and cron store to one profile, as Hermes's own ticker does."""
+    from cron.jobs import use_cron_store
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(hermes_home))
+    try:
+        with use_cron_store(hermes_home):
+            yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+def hold_missed_slots(hermes_home: Path) -> int:
+    """Pause managed one-shots whose slot passed while down, so the first tick cannot retire them.
+
+    Meant for ``connect()``: the gateway starts its cron ticker only after adapters
+    connect, so the next reconcile records the catch-up/skip decision with the
+    desired spec in hand. Native intervals follow Hermes's own missed-run policy.
+    A run in flight in this process already owns its slot and keeps it: ``connect()``
+    also runs on a reconnect, with the ticker live.
+    """
+    from cron.jobs import list_jobs, pause_job
+    from cron.scheduler import get_running_job_ids
+
+    held = 0
+    running = get_running_job_ids()
+    with _profile_scope(hermes_home):
+        cutoff = int(time.time() * 1000) - _MISSED_AFTER_MS
+        for job in list_jobs(include_disabled=False):
+            schedule = job.get("schedule")
+            due = _iso_ms(job.get("next_run_at"))
+            if (
+                job.get(_MANAGED_KEY)
+                and isinstance(schedule, dict)
+                and schedule.get("kind") == "once"
+                and job.get("state") != "completed"
+                and due is not None
+                and due <= cutoff
+                and str(job["id"]) not in running
+            ):
+                held += bool(pause_job(str(job["id"]), _HOLD_REASON))
+    return held
+
+
+def reconcile_automations_once(
+    client: Any, agent_id: str, fallback_channel_id: str, *, hermes_home: Path | None = None
+) -> None:
+    """One synchronous reconcile pass, called off the event loop.
+
+    It is pinned to ``hermes_home``, or to the active profile's home when omitted.
+    """
+    with _profile_scope(hermes_home or _active_home()):
+        _reconcile_pass(client, agent_id, fallback_channel_id)
+
+
+def _reconcile_pass(client: Any, agent_id: str, fallback_channel_id: str) -> None:
     from cron.jobs import (
         create_job,
         list_jobs,
@@ -520,6 +778,7 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
         update_job,
     )
 
+    catch_up = _catch_up_missed()
     desired = client.automations_desired()
     items = desired.get("automations")
     if not isinstance(items, list):
@@ -555,7 +814,7 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
         spec = raw.get("desired_spec")
         if not isinstance(spec, dict):
             raise ValueError("desired_spec is missing")
-        _reject_unsupported(spec)
+        _reject_unsupported(spec, agent_id)
         payload = spec.get("payload")
         if not isinstance(payload, dict) or payload.get("kind") != "agentTurn":
             raise ValueError("Hermes supports agentTurn automations only")
@@ -583,45 +842,67 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
         delete_after_run = spec.get("deleteAfterRun") is True
         name = str(spec.get("name") or "Automation")
 
-        # A one-shot we already ran and deleted (deleteAfterRun). The server
-        # keeps emitting it as `present` until the operator removes it, so
-        # without this branch every pass would recreate — and re-run — it.
-        if existing is None and schedule.get("kind") == "at":
-            at = _as_int(schedule.get("at"))
-            if at <= int(time.time() * 1000) - _ONE_SHOT_SKEW_MS:
-                prior_job_id = str(raw.get("gateway_job_id") or "")
-                if not prior_job_id:
-                    # Never applied at all — a genuinely un-schedulable past
-                    # time, which is the one case where "failed" is honest.
-                    raise ValueError("one-shot automation time is in the past")
-                return (
+        now_ms = int(time.time() * 1000)
+        prior_job_id = str(raw.get("gateway_job_id") or "")
+        vanished_runs: list[dict[str, Any]] = []
+        # A one-shot that is gone: deleted by deleteAfterRun, pruned by Hermes's
+        # completed-job retention, or retired unrun. The server keeps emitting it as
+        # `present`, so without this branch every pass would recreate and re-run it.
+        # Its outcome comes from the execution ledger or Hermes's retire trace, never assumed.
+        if (
+            existing is None
+            and schedule.get("kind") == "at"
+            and _as_int(schedule.get("at")) <= now_ms - _ONE_SHOT_SKEW_MS
+        ):
+            if not prior_job_id:
+                # Never applied at all — a genuinely un-schedulable past
+                # time, which is the one case where "failed" is honest.
+                raise ValueError("one-shot automation time is in the past")
+            state: dict[str, Any] = {"state": "completed", "enabled": enabled}
+            run = _execution_run_report(automation_id, {"id": prior_job_id})
+            if run is not None:
+                state["lastRunAtMs"] = run["started_at_ms"]
+                if run.get("status"):
+                    state["lastRunStatus"] = run["status"]
+            elif (retired_ms := _retired_unrun_ms(prior_job_id)) is not None:
+                missed = {"slot_ms": schedule.get("at"), "at_ms": retired_ms}
+                run = _missed_run(automation_id, prior_job_id, missed)
+            entry = {
+                "automation_id": automation_id,
+                "gateway_job_id": prior_job_id,
+                "observed_generation": generation,
+                "run_observed_generation": run_observed,
+                "status": "applied",
+                "reported_spec": spec,
+                "reported_state": state,
+            }
+            return entry, [run] if run else [], None
+        if existing is None and prior_job_id and schedule.get("kind") in ("cron", "every"):
+            # Our recurring job vanished (retired unrun by a tick that beat the hold, or
+            # removed by hand): whatever it owed was not run.
+            vanished_runs.append(
+                _missed_run(
+                    automation_id,
+                    prior_job_id,
                     {
-                        "automation_id": automation_id,
-                        "gateway_job_id": prior_job_id,
-                        "observed_generation": generation,
-                        "run_observed_generation": run_observed,
-                        "status": "applied",
-                        "reported_spec": spec,
-                        # Reconstructed: the fire time is accurate to the
-                        # scheduler's granularity, and the status is safe
-                        # because a failed run is never deleted (below).
-                        "reported_state": {
-                            "state": "completed",
-                            "enabled": enabled,
-                            "lastRunAtMs": at,
-                            "lastRunStatus": "ok",
-                        },
+                        "at_ms": now_ms,
+                        "message": "The scheduled job disappeared before its run was recorded "
+                        "(retired while the agent was offline, or removed by hand); it was "
+                        "recreated and the missed run was skipped.",
                     },
-                    [],
-                    None,
                 )
+            )
 
         # Gated on the hash so an *edited* one-shot (new time, or a pause/resume,
-        # both of which change the spec) still re-arms.
+        # both of which change the spec) still re-arms, unless its time has passed:
+        # a completed one-shot is never re-run by an edit.
         terminal = (
             existing is not None
             and _one_shot_fired(schedule, existing)
-            and existing.get(_HASH_KEY) == desired_hash
+            and (
+                existing.get(_HASH_KEY) == desired_hash
+                or _as_int(schedule.get("at")) <= now_ms - _ONE_SHOT_SKEW_MS
+            )
         )
 
         if terminal:
@@ -629,20 +910,27 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
             if existing.get("state") != "completed":
                 # Self-heal after a run-now left it armed: a past next_run_at on
                 # an armed job is a second unintended fire waiting to happen.
-                existing = (
-                    update_job(job_id, {"state": "completed", "repeat": {"times": 1, "completed": 1}})
-                    or existing
-                )
+                existing = update_job(job_id, dict(_DISARM)) or existing
             if existing.get(_GENERATION_KEY) != generation:
                 existing = update_job(job_id, {_GENERATION_KEY: generation}) or existing
         else:
-            target_ms, anchor_ms = _next_schedule_ms(schedule, existing)
+            target_ms, anchor_ms, missed = _next_schedule_ms(
+                schedule, existing, enabled=enabled, catch_up=catch_up
+            )
             schedule_str, native_interval = _hermes_schedule(schedule, target_ms)
             sentinels = _managed_updates(
-                automation_id, generation, spec, desired_hash, schedule, anchor_ms, run_observed
+                automation_id, agent_id, generation, spec, desired_hash, schedule, anchor_ms,
+                run_observed,
             )
+            if missed is not None:
+                sentinels[_MISSED_KEY] = missed
 
-            if existing is None:
+            if existing is not None and missed is not None and schedule.get("kind") == "at":
+                # A one-time slot missed while paused or offline is never caught up
+                # (Hermes one-shot contract): retire it with the skip in the same write.
+                existing = update_job(_job_id(existing), {**_DISARM, **sentinels}) or existing
+                terminal = True
+            elif existing is None:
                 job = create_job(
                     prompt=prompt,
                     schedule=schedule_str,
@@ -663,16 +951,26 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
             else:
                 job_id = _job_id(existing)
                 schedule_changed = _canonical(existing.get(_SCHEDULE_KEY)) != _canonical(schedule)
+                completed = existing.get("state") == "completed"
+                # A completed job whose owed slot is already missed stays terminal while
+                # paused (rearm_oneshot refuses a past time); resuming re-derives the slot.
+                keep_terminal = (
+                    completed and not enabled and target_ms <= now_ms - _MISSED_AFTER_MS
+                )
+                # A completed job must be re-armed to run again. Otherwise a computed
+                # one-shot is re-armed only when its fire time moves; rewriting an owed
+                # slot that is already past would be refused by update_job.
+                rearm = not keep_terminal and (
+                    completed
+                    or (not native_interval and target_ms != _iso_ms(existing.get("next_run_at")))
+                )
                 drift = (
                     existing.get(_HASH_KEY) != desired_hash
                     or existing.get("prompt") != prompt
                     or existing.get("deliver") != deliver
                     or bool(existing.get("enabled", True)) != enabled
-                    or (
-                        existing.get("state") == "completed"
-                        and schedule.get("kind") != "at"
-                        and not native_interval
-                    )
+                    or rearm
+                    or missed is not None
                 )
                 if drift:
                     updates: dict[str, Any] = {
@@ -683,11 +981,18 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
                         "enabled": enabled,
                         **sentinels,
                     }
-                    if not native_interval and existing.get("state") == "completed":
-                        # The only call that may reactivate a completed job; it
-                        # also sets the schedule. A disabled automation is then
+                    reactivate = completed and rearm
+                    if reactivate:
+                        # rearm_oneshot is the only call that may reactivate a completed
+                        # job; a native interval then gets its own schedule below. The
+                        # decision is persisted first, so a restart in between re-derives
+                        # the same slot instead of losing it.
+                        if missed is not None:
+                            update_job(job_id, {_MISSED_KEY: missed})
+                        existing = rearm_oneshot(job_id, _iso_at(target_ms)) or existing
+                    if reactivate and not native_interval:
+                        # rearm_oneshot also set the schedule. A disabled automation is
                         # paused again below, marker included.
-                        existing = rearm_oneshot(job_id, schedule_str) or existing
                         updates.pop("enabled")
                     else:
                         if enabled:
@@ -697,16 +1002,28 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
                         # update_job recomputes next_run_at whenever `schedule` is
                         # present, so sending it on an unrelated edit would restart a
                         # native interval's grid and starve the job.
-                        if schedule_changed or not native_interval:
+                        if schedule_changed or rearm:
                             updates["schedule"] = schedule_str
                             if not native_interval:
                                 updates["repeat"] = {"times": 1, "completed": 0}
+                            if _claims(existing, now_ms) == "dead":
+                                # Hermes would skip the new slot over a dead runner's claims.
+                                updates.update({"run_claim": None, "fire_claim": None})
+                        elif native_interval and missed and missed["decision"] == "skipped":
+                            # Hermes would run the overdue slot on resume; the recorded
+                            # skip moves it to the next slot in the same write.
+                            updates["next_run_at"] = _iso_at(target_ms)
                     existing = update_job(job_id, updates) or existing
                 elif existing.get(_GENERATION_KEY) != generation:
                     existing = update_job(job_id, {_GENERATION_KEY: generation}) or existing
 
         job_id = _job_id(existing)
-        if not enabled and existing.get("enabled", True):
+        # update_job has already cleared `enabled`; the pause marker is what Hermes
+        # (and `hermes cron list`) reads as paused.
+        if not enabled and (
+            existing.get("state") not in ("paused", "completed")
+            or existing.get("paused_reason") == _HOLD_REASON
+        ):
             existing = pause_job(job_id, "Paused in Clawbits") or existing
 
         # --- run now -------------------------------------------------------
@@ -718,7 +1035,6 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
                 item_runs.append(_run_now_miss(automation_id, job_id, requested, "stopped"))
             else:
                 if terminal or existing.get("state") == "completed":
-                    now_ms = int(time.time() * 1000)
                     existing = rearm_oneshot(job_id, _iso_at(now_ms)) or existing
                 try:
                     started, reason = _interpret_trigger(trigger_job(job_id))
@@ -732,13 +1048,7 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
                         # Re-disarm: a declined run must not leave a past
                         # next_run_at armed. A run that DID start re-disarms on
                         # the next pass, once _one_shot_fired sees its last_run_at.
-                        existing = (
-                            update_job(
-                                job_id,
-                                {"state": "completed", "repeat": {"times": 1, "completed": 1}},
-                            )
-                            or existing
-                        )
+                        existing = update_job(job_id, dict(_DISARM)) or existing
             run_observed = requested
             existing = update_job(job_id, {_RUN_OBSERVED_KEY: run_observed}) or existing
 
@@ -759,6 +1069,9 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
             latest = _run_report(automation_id, existing)
             if latest:
                 item_runs.append(latest)
+            recorded = existing.get(_MISSED_KEY) or {}
+            if recorded.get("decision") == "skipped":
+                item_runs.append(_missed_run(automation_id, job_id, recorded))
         except Exception:
             logger.warning(
                 "clawbits: run telemetry for automation %s failed", automation_id, exc_info=True
@@ -789,7 +1102,7 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
                 running_at_ms=running_at,
             ),
         }
-        return entry, item_runs, delete_job_id
+        return entry, vanished_runs + item_runs, delete_job_id
 
     for raw in items:
         if not isinstance(raw, dict):
@@ -850,6 +1163,12 @@ def reconcile_automations_once(client: Any, agent_id: str, fallback_channel_id: 
         job_id = _job_id(job)
         if job_id is None:
             continue
+        owner = job.get(_OWNER_KEY)
+        if sentinel and isinstance(owner, str) and owner and owner != agent_id:
+            # Armed for an agent this profile has forgotten: its deliver target is that
+            # agent's channel, so retire it rather than let it keep firing. Claiming the
+            # stamp makes this a one-time write.
+            job = update_job(job_id, {**_DISARM, _OWNER_KEY: agent_id}) or job
         # A job whose sentinel points at an automation the server no longer
         # lists is an orphan: it still fires, but Clawbits has no row for it.
         # Mirroring it as external is what makes it visible at all.
@@ -887,7 +1206,17 @@ async def run_automations_reconciler(
     fallback_channel_id: str,
     wake: asyncio.Event,
     running: Any,
+    *,
+    hermes_home: Path | None = None,
+    health: Any | None = None,
 ) -> None:
+    """Reconcile loop; every pass runs in a worker thread pinned to one profile home.
+
+    Without ``hermes_home`` the home active when the loop starts is used, which is the
+    owning profile's when the task is created in the adapter's own scope. Each pass reports
+    the ``automations`` subsystem to ``health``.
+    """
+    home = hermes_home or _active_home()
     loop = asyncio.get_running_loop()
     while running():
         started = loop.time()
@@ -901,11 +1230,17 @@ async def run_automations_reconciler(
                 client,
                 agent_id,
                 fallback_channel_id,
+                hermes_home=home,
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            if health is not None:
+                health.fail("automations", exc, interval_s=AUTOMATIONS_RECONCILE_INTERVAL_SECONDS)
             logger.warning("clawbits: automations reconcile failed", exc_info=True)
+        else:
+            if health is not None:
+                health.ok("automations", interval_s=AUTOMATIONS_RECONCILE_INTERVAL_SECONDS)
         if wake.is_set():
             gap = AUTOMATIONS_MIN_REPASS_SECONDS - (loop.time() - started)
             if gap > 0:

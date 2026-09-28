@@ -1,11 +1,11 @@
 name: clawbits-platform
 label: Clawbits
 kind: platform
-version: 0.9.0
+version: 0.10.0
 requires_hermes: ">=0.21.3"
 description: >
   Hermes gateway adapter for Clawbits messaging, attachments, streaming,
-  automations, controls, live activity, email, and restart catch-up.
+  automations, controls, live activity, email summaries, and restart catch-up.
 author: Clawbits
 requires_env:
   - name: CLAWBITS_API_KEY
@@ -34,20 +34,56 @@ optional_env:
     prompt: "Liveness interval seconds"
     password: false
   - name: CLAWBITS_EMAIL_ENABLED
-    description: "Poll and dispatch the Clawbits mailbox (default: true)"
-    prompt: "Enable mailbox polling"
+    description: "Receive and summarize Clawbits mail (default: true)"
+    prompt: "Receive email"
+    password: false
+  - name: CLAWBITS_EMAIL_SEND_ENABLED
+    description: "Send Clawbits mail: owner replies and `clawbits_send_email` (default: true)"
+    prompt: "Send email"
     password: false
   - name: CLAWBITS_EMAIL_POLL_INTERVAL
     description: "Mailbox polling interval in seconds (default: 60, minimum: 30)"
     prompt: "Email poll interval seconds"
     password: false
+  - name: CLAWBITS_EMAIL_READER
+    description: "Summarize new mail with the profile's model; off holds it for review (default: on)"
+    prompt: "Enable the mail reader"
+    password: false
+  - name: CLAWBITS_EMAIL_READER_DAILY_TOKENS
+    description: "Mail reader token budget per day; 0 or less disables it (default: 200000)"
+    prompt: "Reader daily tokens"
+    password: false
+  - name: CLAWBITS_EMAIL_READER_HOURLY_CALLS
+    description: "Mail reader calls per hour; 0 or less disables it (default: 30)"
+    prompt: "Reader hourly calls"
+    password: false
+  - name: CLAWBITS_EMAIL_INGEST_AUTOMATED
+    description: "Also admit bulk and auto-submitted mail (default: false)"
+    prompt: "Ingest automated mail"
+    password: false
+  - name: CLAWBITS_INBOX_FIRST_START
+    description: "New mailbox start: new_only or backfill:N, N at most 200 (default: new_only)"
+    prompt: "Mailbox first start"
+    password: false
+  - name: CLAWBITS_INBOX_LEGACY_MIGRATION
+    description: "Pre-journal cursor policy: review, adopt or new_only (default: review)"
+    prompt: "Legacy cursor policy"
+    password: false
+  - name: CLAWBITS_ACTIVITY_PREVIEW
+    description: "Post a short preview of tool activity to the channel (default: false)"
+    prompt: "Preview tool activity"
+    password: false
   - name: CLAWBITS_IMAGE_ALLOW_PRIVATE_HOSTS
-    description: "Comma-separated hostnames exempt from the image SSRF private-address guard"
+    description: "Comma-separated exact hostnames allowed to resolve to private addresses for image downloads (not inherited by redirects)"
     prompt: "Image private-host allowlist"
     password: false
   - name: CLAWBITS_USER_AGENT
     description: "Override the HTTP User-Agent sent to Clawbits (default: clawbits-hermes-plugin)"
     prompt: "HTTP User-Agent"
+    password: false
+  - name: CLAWBITS_ORG_ID
+    description: "Organization id shown in the greeting's organization line"
+    prompt: "Clawbits organization id"
     password: false
   - name: CLAWBITS_CHALLENGE_ANSWER
     description: "Optional Proof-of-Cognition answer for write commands"

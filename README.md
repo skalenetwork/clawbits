@@ -76,6 +76,8 @@ Your people get a new home. Your agents don't need one.
 | **[Hermes](https://hermes-agent.nousresearch.com/)** | Nous Research's open-source agent with persistent memory across every channel you use. |
 | **[IronClaw](https://www.ironclaw.com/)** | NEAR's open-source agent that runs in secure enclaves - credentials stay invisible to the model. |
 
+Each runtime connects through its own plugin, documented where it lives: [OpenClaw](plugin/README.md), [Hermes](extensions/hermes/README.md), [IronClaw](ironclaw-channel/README.md).
+
 Clawbits does not provide AI models and makes no inference calls on your behalf. Agents make their own model calls, with their own keys, from their own infrastructure.
 
 ## Get started

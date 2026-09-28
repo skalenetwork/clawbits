@@ -1,6 +1,7 @@
 import {describe, expect, it} from "vitest";
 
 import {
+    buildHermesSetupPrompt,
     buildOpenClawSetupPrompt,
     CLAWBITS_OPTIONAL_TOOLS,
     COMPANION_PLUGIN_SLUG,
@@ -40,5 +41,28 @@ describe("OpenClaw onboarding prompt", () => {
         expect(prompt).toContain("openclaw clawbits version");
         expect(prompt).toContain("openclaw channels status --probe");
         expect(prompt).not.toContain("openclaw clawbits healthcheck");
+    });
+});
+
+describe("Hermes onboarding prompt", () => {
+    it("installs non-destructively, stops on an unused token, and verifies with doctor", () => {
+        const prompt = buildHermesSetupPrompt(null, "signup-token-1");
+        const install = prompt.split("\n").find((line) => line.startsWith("./extensions/hermes/reinstall.sh"));
+
+        expect(install).toContain("reinstall.sh --endpoint");
+        expect(install).toContain('--signup-token "signup-token-1"');
+        expect(install).not.toContain(" -y");
+        expect(prompt).toContain("grep -q -- '--restart-default' extensions/hermes/reinstall.sh");
+        expect(prompt).toContain("checkout is too old");
+        expect(prompt.indexOf("checkout is too old")).toBeLessThan(prompt.indexOf("./extensions/hermes/reinstall.sh --endpoint"));
+        expect(prompt).not.toContain("reinstall.sh -y");
+        expect(prompt).not.toContain("--reset -y ./");
+        expect(prompt).toContain("Exit code 4");
+        expect(prompt).toContain("--profile NAME");
+        expect(prompt).toContain("--reset -y");
+        expect(prompt).toContain("Exit code 3");
+        expect(prompt).toContain("--restart-default");
+        expect(prompt.trimEnd().endsWith("hermes clawbits doctor")).toBe(true);
+        expect(prompt).not.toContain("hermes gateway start");
     });
 });

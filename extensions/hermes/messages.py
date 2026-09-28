@@ -1,17 +1,22 @@
 """Pure parsing/shaping helpers for Clawbits posts and channels.
 
-Everything here is stdlib-only and side-effect-free: response-shape
+Everything here is side-effect-free and needs only the stdlib and the equally
+self-contained ``email_reader`` text helpers: response-shape
 normalization (the server has returned several list/dict shapes over time),
-cursor keys for the poll loop, and the 4000-char message splitter. No gateway
-or network imports — this module is safely importable anywhere.
+post serials and ordering keys, catch-up context lines, and the 4000-char
+message splitter. No gateway or network imports — this module is safely
+importable anywhere.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
+
+from .email_reader import clean
 
 # The server rejects post bodies over 4000 chars (MmPostRequest
 # max_length), and neither the gateway nor the agent CLI splits for us.
@@ -53,10 +58,9 @@ class _Channel:
     channel_type: str | None = None
     name: str | None = None
     # Server-side read state (both None on servers that predate it).
-    # ``latest_post_id`` is the newest published post's serial;
-    # ``last_read_post_id`` is this agent's acked pointer — together they
-    # tell a booting adapter which channels moved while it was down and
-    # exactly where to resume (``posts?after_post_id=``).
+    # ``latest_post_id`` is the newest published post's serial (a new_only
+    # start begins there); ``last_read_post_id`` is this agent's acked pointer,
+    # adopted as the cursor when a channel gets its first journal source.
     latest_post_id: int | None = None
     last_read_post_id: int | None = None
 
@@ -248,6 +252,40 @@ def _is_user_post(post: dict[str, Any]) -> bool:
     return post_type in {"", "custom_agent_message", "agentic_user_message", "user"}
 
 
+_MAX_SENDER_CHARS = 64
+# Every reference form Hermes expands: ``@diff``/``@staged`` and any ``@<word>:<value>``
+# (agent/context_references.py REFERENCE_PATTERN and its plugin fallback).
+_REFERENCE_TOKEN = re.compile(r"(?<![\w/])@(?=(?:diff|staged)\b|[A-Za-z][A-Za-z0-9_-]*:)")
+
+
+def _inert(text: str) -> str:
+    """Quoted third-party text with its ``@`` references defused; plain mentions stay readable."""
+    return _REFERENCE_TOKEN.sub("@\N{ZERO WIDTH SPACE}", text)
+
+
+def _context_line(post: dict[str, Any] | None, limit: int) -> str | None:
+    """``- sender: text`` (one line, sender and text capped, @-references defused) for a
+    catch-up context block; None for a missing, non-user or empty post.
+
+    Only the trigger's own text keeps live ``@file:``/``@url:``/``@diff`` references: a line
+    here is someone else's post, quoted, and must not read files on the agent's behalf.
+    """
+    if not post or not _is_user_post(post):
+        return None
+    text = " ".join(str(post.get("message") or "").split())
+    text = text or ("(attachment)" if _extract_files(post) else "")
+    if not text:
+        return None
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    sender = clean(
+        post.get("poster_display_name") or post.get("agent_id") or post.get("user_id")
+        or post.get("human_id") or "unknown",
+        _MAX_SENDER_CHARS, one_line=True,
+    ) or "unknown"
+    return f"- {_inert(sender)}: {_inert(text)}"
+
+
 def _message_id_from_response(raw: Any) -> str | None:
     if isinstance(raw, dict):
         value = raw.get("id") or raw.get("post_id") or raw.get("message_id")
@@ -258,10 +296,11 @@ def _message_id_from_response(raw: Any) -> str | None:
 # --- agent-facing prompt assembly -------------------------------------------
 #
 # Parity with the OpenClaw plugin (plugin/src/agent-body.ts). Both runtimes
-# front the inbound text with the same bracketed context block, so an agent
-# behaves the same whichever runtime it happens to be on. Wording is kept
-# byte-identical to the plugin's CLAWBITS_CONTEXT_LINES apart from the runtime
-# name — divergence here means two agents answering "what are you?" differently.
+# give the model the same bracketed context block; here it rides
+# ``MessageEvent.channel_prompt`` (Hermes's ephemeral per-chat system prompt),
+# so the user text stays the raw trigger. Wording is kept byte-identical to the
+# plugin's CLAWBITS_CONTEXT_LINES apart from the runtime name — divergence here
+# means two agents answering "what are you?" differently.
 
 _CLAWBITS_CONTEXT_LINES = (
     "You are a Hermes agent reachable through Clawbits, a cloud collaboration",
@@ -290,7 +329,7 @@ def _clawbits_session_id(chat_id: str) -> str:
 
 
 def _build_clawbits_context(session_id: str | None = None, agent_id: str | None = None) -> str:
-    """The bracketed context block prepended to every inbound turn.
+    """The bracketed context block given to the model on every inbound turn.
 
     ``agent_id`` names the agent to itself. Without it the agent cannot
     recognise "Scaleweld, any idea why…" as addressed to it — which is exactly
@@ -318,28 +357,11 @@ def _build_clawbits_context(session_id: str | None = None, agent_id: str | None 
     return "\n".join(lines)
 
 
-def _build_agent_body(
-    text: str,
-    *,
-    chat_id: str | None = None,
-    agent_id: str | None = None,
-    attention_preamble: str | None = None,
-    prior_block: str | None = None,
-) -> str:
-    """Assemble what the model actually reads: context, then (on the attention
-    path) the reply-only-if-useful framing, then (on a boot catch-up turn) the
-    missed-while-offline block, then the message itself.
+def _clawbits_channel_prompt(chat_id: str, agent_id: str | None) -> str:
+    """Trusted static Clawbits context for ``MessageEvent.channel_prompt`` (stable per chat)."""
+    return _build_clawbits_context(_clawbits_session_id(chat_id), agent_id or None)
 
-    Ordering mirrors the plugin: the framing closest to the ask carries the
-    most weight. ``text`` is returned untouched when there is no context to add
-    (both ids absent and no other framing), keeping the pre-feature prompt
-    shape for callers that pass neither.
-    """
-    session_id = _clawbits_session_id(chat_id) if chat_id else None
-    blocks = [_build_clawbits_context(session_id, agent_id)]
-    if attention_preamble:
-        blocks.append(attention_preamble)
-    if prior_block:
-        blocks.append(prior_block)
-    blocks.append(text)
-    return "\n\n".join(b for b in blocks if b)
+
+def _is_server_handled_command(text: str) -> bool:
+    """Bare ``/cb-usage``, answered server-side in DMs (OpenClaw ``isServerHandledCommand``)."""
+    return text.strip().lower() == "/cb-usage"
