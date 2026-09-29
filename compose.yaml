@@ -142,6 +142,10 @@ services:
   stalwart:
     image: stalwartlabs/stalwart:v0.16.10
     restart: unless-stopped
+    # Announced in EHLO and stamped as the authserv-id in Authentication-Results,
+    # which the backend's STALWART_AUTHSERV_ID must match. Unset, Stalwart falls
+    # back to the container id, so prod pins the real MX name in .env.production.
+    hostname: ${STALWART_HOSTNAME:-stalwart}
     environment:
       # v0.16 deterministic admin: with a config.json present the server boots
       # straight into operational mode (no setup wizard) and this env var pins

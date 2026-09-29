@@ -52,9 +52,10 @@ old one. The engine's registry tag is checked first: not every OpenClaw release
 publishes a `-browser` variant.
 
 Each build asserts its plugin loads (OpenClaw: both plugins report `loaded`;
-Hermes: `hermes clawbits signup --help` prints the signup flag), which catches a
-plugin whose files copied but whose runtime dependencies did not. It does not
-prove the gateway will load them: that is the role's config.
+Hermes: `hermes clawbits signup --help` prints the signup flag and
+`hermes clawbits doctor --preflight` runs the plugin's agent CLI under the image's
+Python), which catches a plugin whose files copied but whose runtime dependencies
+did not. It does not prove the gateway will load them: that is the role's config.
 
 ## Adding an image
 

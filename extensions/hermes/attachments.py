@@ -1,8 +1,7 @@
-"""Inbound Clawbits chat/email attachment caching."""
+"""Inbound Clawbits chat attachment caching."""
 
 from __future__ import annotations
 
-import base64
 import logging
 from typing import Any
 
@@ -68,35 +67,4 @@ def cache_post_attachments(client: Any, post: dict[str, Any]) -> tuple[list[str]
                 exc_info=True,
             )
             notes.append(f"[attachment '{file.filename}' could not be downloaded]")
-    return paths, types, notes
-
-
-def cache_email_attachments(detail: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
-    paths: list[str] = []
-    types: list[str] = []
-    notes: list[str] = []
-    attachments = detail.get("attachments")
-    if not isinstance(attachments, list):
-        return paths, types, notes
-    for index, raw in enumerate(attachments, start=1):
-        if not isinstance(raw, dict):
-            continue
-        filename = str(raw.get("filename") or f"attachment-{index}")
-        content_type = str(raw.get("content_type") or "application/octet-stream")
-        try:
-            data = base64.b64decode(str(raw.get("content_b64") or ""), validate=True)
-            if not data:
-                raise ValueError("empty attachment")
-            if len(data) > _ATTACHMENT_DOWNLOAD_MAX_BYTES:
-                raise ValueError(f"attachment exceeds {_ATTACHMENT_DOWNLOAD_MAX_BYTES} bytes")
-            cached = _cache_bytes(data, filename, content_type)
-            if cached is None:
-                raise ValueError("Hermes rejected attachment bytes")
-            path, media_type, note = cached
-            paths.append(path)
-            types.append(media_type)
-            notes.append(note)
-        except Exception:
-            logger.warning("clawbits: failed to cache email attachment %s", filename, exc_info=True)
-            notes.append(f"[email attachment '{filename}' could not be decoded]")
     return paths, types, notes

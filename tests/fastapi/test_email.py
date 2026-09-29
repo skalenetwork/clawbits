@@ -28,6 +28,7 @@ from starlette.testclient import TestClient
 
 from clawbits.datastructures.known_answers import get_answer_for_question
 from clawbits.domain import EMAIL_DOMAIN
+from clawbits.email.stalwart_provision import deprovision_mailbox, provision_mailbox
 from tests.fastapi._auth_helpers import login_human, personal_org_id
 
 
@@ -39,6 +40,7 @@ def _send_real_email(
     subject: str = "Test Subject",
     body: str = "Hello",
     attachments: list[dict] | None = None,
+    extra_headers: tuple[tuple[str, str], ...] = (),
 ):
     """Helper to inject an email into the real Stalwart server for testing.
     Uses IMAP APPEND with the agent's own credentials.
@@ -65,6 +67,8 @@ def _send_real_email(
     else:
         msg = MIMEText(body, "plain", "utf-8")
 
+    for name, value in extra_headers:
+        msg[name] = value
     msg["From"] = "sender@example.com"
     msg["To"] = to_addr
     msg["Subject"] = subject
@@ -235,6 +239,16 @@ def test_email_detail_with_attachments(test_client):
     assert data["attachments"][0]["content_b64"] == att_b64
     assert "From" in data["headers"]
     assert "To" in data["headers"]
+
+    r = test_client.get(
+        f"/api/agentic/agents/{agent['agent_id']}/email/{uid}",
+        params={"attachment_content": "false"},
+        headers=_auth(agent["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    slim = r.json()["attachments"][0]
+    assert slim["content_b64"] is None
+    assert slim["size"] == len(att_content)
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +430,148 @@ def test_email_send_with_headers(test_client):
     )
     assert r.status_code == 200
     assert r.json()["status"] == "sent"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Incremental scan, flag-neutral detail, epochs and keyed send
+# ---------------------------------------------------------------------------
+def _email_base(agent: dict) -> str:
+    return f"/api/agentic/agents/{agent['agent_id']}/email"
+
+
+def _changes(tc: TestClient, agent: dict, **params) -> dict:
+    r = tc.get(f"{_email_base(agent)}/changes", params=params, headers=_auth(agent["api_key"]))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _unread_flags(tc: TestClient, agent: dict) -> dict[int, bool]:
+    r = tc.get(f"{_email_base(agent)}/inbox", headers=_auth(agent["api_key"]))
+    assert r.status_code == 200, r.text
+    return {e["uid"]: not e["is_read"] for e in r.json()["emails"]}
+
+
+def _agent_with_empty_mailbox(tc: TestClient) -> dict:
+    """A new agent with a recreated mailbox: agent ids recur, and mailboxes outlive the per-test DB wipe."""
+    agent = _create_agent(tc)
+    assert deprovision_mailbox(agent["agent_id"]) and provision_mailbox(agent["agent_id"])
+    return agent
+
+
+def test_email_changes_pages_ascending_flag_neutral(test_client):
+    agent = _agent_with_empty_mailbox(test_client)
+    for i in range(5):
+        _send_real_email(f"{agent['agent_id']}@{EMAIL_DOMAIN}", f"Scan {i}", f"body {i}")
+
+    page = _changes(test_client, agent, limit=2)
+    seen, more = [e["uid"] for e in page["emails"]], [page["has_more"]]
+    while page["has_more"]:
+        page = _changes(
+            test_client,
+            agent,
+            after_uid=page["next_after_uid"],
+            uidvalidity=page["uidvalidity"],
+            through_uid=page["through_uid"],
+            limit=2,
+        )
+        seen += [e["uid"] for e in page["emails"]]
+        more.append(page["has_more"])
+    assert more == [True, True, False]
+    assert len(seen) == 5 and seen == sorted(seen)
+    assert page["next_after_uid"] == page["through_uid"] == seen[-1]
+
+    r = test_client.get(
+        f"{_email_base(agent)}/{seen[0]}",
+        params={"mark_read": "false", "uidvalidity": page["uidvalidity"]},
+        headers=_auth(agent["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    assert _unread_flags(test_client, agent) == dict.fromkeys(seen, True)
+
+
+def test_email_changes_empty_mailbox(test_client):
+    page = _changes(test_client, _agent_with_empty_mailbox(test_client))
+    assert (page["emails"], page["through_uid"], page["next_after_uid"], page["has_more"]) == ([], 0, 0, False)
+    assert isinstance(page["uidvalidity"], int)
+
+
+def test_email_detail_peek_keeps_unread_and_default_still_marks_read(test_client):
+    agent = _agent_with_empty_mailbox(test_client)
+    _send_real_email(
+        f"{agent['agent_id']}@{EMAIL_DOMAIN}",
+        "Peek",
+        "Peek body",
+        extra_headers=(("Authentication-Results", "mx.example; dmarc=pass header.from=example.com"),),
+    )
+    uid = _changes(test_client, agent)["emails"][0]["uid"]
+
+    r = test_client.get(f"{_email_base(agent)}/{uid}?mark_read=false", headers=_auth(agent["api_key"]))
+    assert r.status_code == 200, r.text
+    peeked = r.json()
+    assert "Peek body" in peeked["body_text"] and peeked["is_read"] is False
+    assert peeked["sender_auth"]["verdict"] == "unknown"
+    assert "Authentication-Results" not in peeked["headers"]
+    assert _unread_flags(test_client, agent) == {uid: True}
+
+    r = test_client.get(f"{_email_base(agent)}/{uid}", headers=_auth(agent["api_key"]))
+    assert r.status_code == 200 and r.json()["is_read"] is True
+    assert _unread_flags(test_client, agent) == {uid: False}
+
+
+def test_email_mailbox_reset_detected_on_list_and_fetch(test_client):
+    agent = _create_agent(test_client)
+    addr = f"{agent['agent_id']}@{EMAIL_DOMAIN}"
+    _send_real_email(addr, "Before reset", "old")
+    old = _changes(test_client, agent)["uidvalidity"]
+    assert deprovision_mailbox(agent["agent_id"]) and provision_mailbox(agent["agent_id"])
+    _send_real_email(addr, "After reset", "new")
+
+    stale = [
+        test_client.get(f"{_email_base(agent)}/changes?uidvalidity={old}", headers=_auth(agent["api_key"])),
+        test_client.get(f"{_email_base(agent)}/1?uidvalidity={old}", headers=_auth(agent["api_key"])),
+    ]
+    current = _changes(test_client, agent)["uidvalidity"]
+    assert current != old
+    for r in stale:
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == {"code": "mailbox_epoch_changed", "uidvalidity": current}
+
+
+def test_email_detail_vanished_uid_same_epoch_404(test_client):
+    agent = _create_agent(test_client)
+    _send_real_email(f"{agent['agent_id']}@{EMAIL_DOMAIN}", "Vanishing", "bye")
+    page = _changes(test_client, agent)
+    url = f"{_email_base(agent)}/{page['emails'][0]['uid']}?uidvalidity={page['uidvalidity']}"
+    assert test_client.delete(url, headers=_auth(agent["api_key"])).status_code == 200
+    assert test_client.get(f"{url}&mark_read=false", headers=_auth(agent["api_key"])).status_code == 404
+
+
+def test_email_send_keyed_real_stalwart(test_client, _test_engine):
+    from sqlmodel import Session
+
+    from clawbits.db.models import Agent
+    from clawbits.fastapi.clawbits_server import ClawBitsServer
+
+    agent = _create_agent(test_client)
+
+    def tokens() -> int:
+        with Session(_test_engine) as db:
+            return db.get(Agent, agent["agent_id"]).cb_tokens
+
+    before = tokens()
+    key = f"it-{agent['agent_id']}"
+    headers = {**_auth(agent["api_key"]), "Idempotency-Key": key}
+    body = {"subject": "Keyed", "message": "Sent once"}
+    first = test_client.post(f"{_email_base(agent)}/send", json=body, headers=headers)
+    assert first.status_code == 200, first.text
+    record = first.json()
+    assert (record["state"], record["status"], record["to_addr"]) == ("accepted", "sent", "stan@clawbits.ai")
+    assert record["message_id"].endswith(f"@{EMAIL_DOMAIN}>")
+
+    again = test_client.post(f"{_email_base(agent)}/send", json=body, headers=headers)
+    assert again.status_code == 200 and again.json()["delivery_id"] == record["delivery_id"]
+    assert tokens() == before - ClawBitsServer.AGENTIC_WRITE_CB_TOKENS_COST
+    assert test_client.get(f"{_email_base(agent)}/deliveries/{key}", headers=_auth(agent["api_key"])).json() == record
 
 
 # ---------------------------------------------------------------------------
