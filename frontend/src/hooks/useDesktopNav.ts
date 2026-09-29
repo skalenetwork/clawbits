@@ -1,59 +1,35 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  isDesktop,
-  listenForNotificationActivation,
-  listenForOpenChannel,
-} from "@/lib/desktop";
+import { useAuth } from "@/context/AuthContext";
+import { useDesktopEvent } from "@/hooks/useDesktopEvent";
+import { createMmChannelPost } from "@/lib/api";
+import { draftStore } from "@/lib/messageDrafts";
+import { errMsg, toast } from "@/lib/toast";
 
 /**
- * Wires the native View menu (Back / Forward / Reload) and Cmd+[/]
- * shortcuts to React Router navigation. The keyboard shortcuts also fire
- * in the browser build — harmless extra affordance.
- *
- * Also subscribes to `desktop://open-channel` so Window → Recent menu
- * clicks navigate to the right route via react-router (rather than a
- * full window.location swap that would drop component state), and to
- * `clawbits://notification-activated` so clicking a native notification lands
- * on the channel it came from.
+ * Routes the native menus, tray and notification clicks through react-router,
+ * and posts replies typed into a notification banner; a reply that fails to
+ * send becomes the channel's draft, so it is never lost. Cmd+[ and Cmd+] also
+ * work in the browser build.
  */
 export function useDesktopNav() {
   const navigate = useNavigate();
+  const userId = useAuth().user?.id;
 
-  useEffect(() => {
-    if (!isDesktop) return;
-    let dispose: (() => void) | undefined;
-    void (async () => {
-      const { listen } = await import("@tauri-apps/api/event");
-      const unlisten = await listen<string>("desktop://nav", (event) => {
-        if (event.payload === "back") void navigate(-1);
-        else if (event.payload === "forward") void navigate(1);
-        else if (event.payload === "reload") window.location.reload();
-      });
-      dispose = unlisten;
-    })();
-    return () => { dispose?.(); };
-  }, [navigate]);
+  useDesktopEvent("desktop://navigate", (to) => {
+    if (to === "back") void navigate(-1);
+    else if (to === "forward") void navigate(1);
+    else if (to.startsWith("/")) void navigate(to);
+  });
 
-  useEffect(() => {
-    if (!isDesktop) return;
-    let dispose: (() => void) | undefined;
-    void (async () => {
-      dispose = await listenForOpenChannel((path) => { void navigate(path); });
-    })();
-    return () => { dispose?.(); };
-  }, [navigate]);
-
-  useEffect(() => {
-    if (!isDesktop) return;
-    let dispose: (() => void) | undefined;
-    void (async () => {
-      dispose = await listenForNotificationActivation((path) => {
-        void navigate(path);
-      });
-    })();
-    return () => { dispose?.(); };
-  }, [navigate]);
+  useDesktopEvent("desktop://reply", ({ channelId, text }) => {
+    if (userId == null || !text.trim()) return;
+    createMmChannelPost(channelId, text).catch((e: unknown) => {
+      const draft = draftStore.get(userId, channelId);
+      draftStore.set(userId, channelId, { reply: null, targetAgentId: null, ...draft, text: draft?.text ? `${draft.text}\n${text}` : text });
+      toast.error(errMsg(e, "Couldn't send your reply"), { description: "It's saved as a draft in that chat." });
+    });
+  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

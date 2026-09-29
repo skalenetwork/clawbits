@@ -81,7 +81,6 @@ export function sanitizeUrl(raw: string): string {
   }
 
   url.pathname = url.pathname
-    .replace(/^\/oauth\/mcp\/callback\/.*/, "/oauth/mcp/callback")
     .split("/")
     .map((seg) => (OPAQUE_SEGMENT.test(seg) ? ":id" : seg))
     .join("/");

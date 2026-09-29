@@ -26,6 +26,9 @@ from clawbits.datastructures.mm_models import (
     AGENT_CHAT,
     NEW_CHAT_TITLE,
     PAIR_CHANNEL_TYPES,
+    McpApp,
+    MmTurnStep,
+    MmTurnStepUpload,
     ModelStateReportRequest,
     SetAgentModelRequest,
     agent_default_channel_name,
@@ -58,6 +61,7 @@ from clawbits.db.models import (
     HumanChannelState,
     HumanConnector,
     HumanUser,
+    McpAppResource,
     MmChannel,
     MmChannelEvent,
     MmChannelMember,
@@ -3483,6 +3487,20 @@ class TableWrite:
         return post
 
     @staticmethod
+    def keep_turn_step(session: Session, step: MmTurnStepUpload) -> dict:
+        """A reported step as its post keeps it: an App view's document is stored once and referenced by hash."""
+        app = step.app
+        kept = None
+        if app is not None:
+            kept = McpApp(**app.model_dump(include={"server", "host", "input", "result"}), resource=app.resource)
+            session.execute(
+                pg_insert(McpAppResource)
+                .values(resource=kept.resource, html=app.html, csp=app.csp.model_dump())
+                .on_conflict_do_nothing()
+            )
+        return MmTurnStep(**step.model_dump(exclude={"app"}), app=kept).model_dump(exclude_none=True)
+
+    @staticmethod
     def patch_mm_post(
         session: Session,
         post_id: int,
@@ -3493,6 +3511,7 @@ class TableWrite:
         replace: str | None = None,
         finalise: bool = False,
         cancel: bool = False,
+        steps: list[dict] | None = None,
     ) -> MmPost | None:
         """Patch a streaming post in place (agent-streamed reply).
 
@@ -3535,6 +3554,7 @@ class TableWrite:
             # outbound — a user opted in to receiving the reply by
             # tagging the agent in the first place.
             post.status = "published"
+            post.steps = steps
         post.updated_at = datetime.now(UTC)
         session.add(post)
         session.flush()

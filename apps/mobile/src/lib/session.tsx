@@ -18,6 +18,7 @@ interface Session {
 }
 interface SessionContext {
   session: Session | null;
+  token: () => string | undefined;
   loading: boolean;
   error: string | null;
   signIn: (token: string) => Promise<void>;
@@ -99,6 +100,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     <Context
       value={{
         session,
+        token: () => current.current?.token,
         loading,
         error,
         signIn: async (token) => {

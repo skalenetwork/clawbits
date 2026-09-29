@@ -1,11 +1,23 @@
 """Mattermost-style messaging data models."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+    model_validator,
+)
+from pydantic.alias_generators import to_camel
 
 from clawbits.datastructures.avatar_models import AvatarRef
 
@@ -395,6 +407,114 @@ class MmPostLinkPreviewEmbedded(BaseModel):
     skipped: int = 0
 
 
+# Above the plugin's own 1000-char cap (1068 on the wire), or the server re-truncates it.
+ACTIVITY_LABEL_MAX_CHARS = 1200
+ACTIVITY_TOOL_MAX_CHARS = 64
+ACTIVITY_ID_MAX_CHARS = 200
+TURN_STEPS_MAX = 200
+
+
+class _ActivityFields(BaseModel):
+    """One moment of an agent's turn as its plugin reports it, sanitized in the agent's VM. Lengths are
+    clamped, never rejected, and unknown fields from newer plugins are ignored."""
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    id: str | None = None
+    label: str = ""
+    tool: str | None = None
+    ok: bool | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _clamp_id(cls, v: object) -> str | None:
+        return (v[:ACTIVITY_ID_MAX_CHARS] or None) if isinstance(v, str) else None
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _clamp_label(cls, v: object) -> str:
+        return v[:ACTIVITY_LABEL_MAX_CHARS] if isinstance(v, str) else ""
+
+    @field_validator("tool", mode="before")
+    @classmethod
+    def _clamp_tool(cls, v: object) -> str | None:
+        return (v[:ACTIVITY_TOOL_MAX_CHARS] or None) if isinstance(v, str) else None
+
+
+MCP_APP_HTML_MAX_CHARS = 2 * 1024 * 1024
+MCP_APP_CALL_MAX_CHARS = 256 * 1024
+
+McpAppOrigin = Annotated[
+    str, StringConstraints(max_length=2048, pattern=r"^(?:https?|wss?)://(?:\*\.)?[A-Za-z0-9.-]+(?::\d{1,5})?$")
+]
+McpAppHost = Annotated[str, StringConstraints(max_length=253, pattern=r"^[A-Za-z0-9.-]+(?::\d{1,5})?$")]
+
+
+class McpAppCsp(BaseModel):
+    """The origins an MCP App's ``ui://`` document may reach, as its server declared them (``_meta.ui.csp``)."""
+    model_config = ConfigDict(
+        extra="ignore", frozen=True, alias_generator=to_camel, validate_by_name=True, serialize_by_alias=True
+    )
+    connect_domains: tuple[McpAppOrigin, ...] = ()
+    resource_domains: tuple[McpAppOrigin, ...] = ()
+    frame_domains: tuple[McpAppOrigin, ...] = ()
+    base_uri_domains: tuple[McpAppOrigin, ...] = ()
+
+
+class _McpAppCall(BaseModel):
+    """What an MCP App view shows: the configured server it came from and the tool call it renders."""
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    server: str = Field(min_length=1, max_length=256)
+    host: McpAppHost | None = None
+    input: dict[str, Any]
+    result: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _bounded(self) -> _McpAppCall:
+        if len(json.dumps([self.input, self.result])) > MCP_APP_CALL_MAX_CHARS:
+            raise ValueError("MCP App call exceeds its size limit")
+        return self
+
+
+class McpAppUpload(_McpAppCall):
+    """An App view as the agent's plugin reports it, its document inline."""
+    html: str = Field(max_length=MCP_APP_HTML_MAX_CHARS)
+    csp: McpAppCsp = McpAppCsp()
+
+    @property
+    def resource(self) -> str:
+        return hashlib.sha256(json.dumps([self.html, self.csp.model_dump()]).encode()).hexdigest()
+
+
+class McpApp(_McpAppCall):
+    """An App view as a post keeps it: the call, and the stored document it renders in, by content hash."""
+    resource: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class _TurnStepFields(_ActivityFields):
+    kind: Literal["tool", "note"]
+    id: str
+
+
+class MmTurnStep(_TurnStepFields):
+    """One step of a finished turn, kept on its post: a tool call keyed by the engine's tool call id, or
+    the agent's narration (its ``label``). The same payload the channel saw live, plus the MCP App view a
+    tool call rendered; thinking is never kept."""
+    app: McpApp | None = None
+
+
+class MmTurnStepUpload(_TurnStepFields):
+    """A step as the plugin reports it. An App view that fails validation is dropped, never the step."""
+    app: McpAppUpload | None = None
+
+    @field_validator("app", mode="wrap")
+    @classmethod
+    def _drop_invalid_app(cls, v: object, handler: ValidatorFunctionWrapHandler) -> McpAppUpload | None:
+        try:
+            return handler(v)
+        except ValidationError:
+            return None
+
+
 class MmPostResponse(BaseModel):
     post_id: int
     channel_id: str
@@ -418,6 +538,7 @@ class MmPostResponse(BaseModel):
     # Only on the create response and its post.created event; never on reads.
     client_msg_uuid: str | None = None
     trace_id: str | None = None
+    steps: list[MmTurnStep] | None = None
 
 
 class MmChannelEventResponse(BaseModel):
@@ -498,9 +619,12 @@ class MmPostPatchRequest(BaseModel):
     replace: str | None = Field(default=None, max_length=40000)
     done: bool = False
     cancel: bool = False
+    steps: list[MmTurnStepUpload] | None = Field(default=None, max_length=TURN_STEPS_MAX)
 
     @model_validator(mode="after")
     def _require_exactly_one_op(self) -> MmPostPatchRequest:
+        if self.steps is not None and not self.done:
+            raise ValueError("steps are kept only when finishing (done)")
         if self.cancel:
             if self.append is not None or self.replace is not None or self.done:
                 raise ValueError(
@@ -514,30 +638,10 @@ class MmPostPatchRequest(BaseModel):
         return self
 
 
-# Above the plugin's own 1000-char cap (1068 on the wire), or the server re-truncates it.
-ACTIVITY_LABEL_MAX_CHARS = 1200
-ACTIVITY_TOOL_MAX_CHARS = 64
-
-
-class MmAgentActivity(BaseModel):
-    """Transient, never-persisted description of what an agent is doing mid-turn. Lengths
-    are clamped, never rejected, and unknown fields from newer plugins are ignored."""
-    model_config = ConfigDict(extra="ignore", frozen=True)
-    kind: Literal["generating", "thinking", "tool", "tool_done"]
-    label: str = ""
-    tool: str | None = None
-    ok: bool | None = None
-    duration_ms: int | None = Field(default=None, ge=0)
-
-    @field_validator("label", mode="before")
-    @classmethod
-    def _clamp_label(cls, v: object) -> str:
-        return v[:ACTIVITY_LABEL_MAX_CHARS] if isinstance(v, str) else ""
-
-    @field_validator("tool", mode="before")
-    @classmethod
-    def _clamp_tool(cls, v: object) -> str | None:
-        return (v[:ACTIVITY_TOOL_MAX_CHARS] or None) if isinstance(v, str) else None
+class MmAgentActivity(_ActivityFields):
+    """Transient description of what an agent is doing mid-turn. ``id`` is the engine's tool call
+    id (or the narration's item id), so a step's start, updates and end land on one row."""
+    kind: Literal["generating", "thinking", "tool", "tool_done", "note"]
 
 
 class MmAgentStatusRequest(BaseModel):

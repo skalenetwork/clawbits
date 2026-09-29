@@ -8,6 +8,10 @@
 #
 # Do not apply on a production host. Prod clawbits ignores this role: its
 # CLAWBITS_ENDPOINT is not https://app.clawbits.ai.
+#
+# MCP sign-in returns to CLAWBITS_FRONTEND_URL. WorkOS (AgentPit) rejects
+# http://localhost there and accepts http://127.0.0.1, so test those servers
+# with CLAWBITS_FRONTEND_URL=http://127.0.0.1:5173 and the app at that origin.
 
 version = 1
 
@@ -30,7 +34,7 @@ CLAWBITS_ENDPOINT = "http://host.microsandbox.internal:8000"
 [files]
 "/etc/openclaw/defaults.json" = '''
 {
-  "agents": { "defaults": { "model": { "primary": "openrouter/auto" } } },
+  "agents": { "defaults": { "model": { "primary": "openrouter/auto" }, "thinkingDefault": "low" } },
   "browser": { "extraArgs": ["--ignore-certificate-errors"] },
   "gateway": {
     "controlUi": {

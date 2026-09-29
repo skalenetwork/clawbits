@@ -21,7 +21,7 @@ import {
   logWarn,
   writeTraceSpan,
 } from "./file-logger.js";
-import { finishMcpSignIn, isMcpSignIn, type McpSignIn, setMcpOAuthCallback } from "./mcp-oauth.js";
+import { finishMcpSignIn, isMcpSignIn, type McpSignIn } from "./mcp-oauth.js";
 import { choiceOf, INHERIT, type ModelSelection } from "./model-choice.js";
 import * as mmTools from "./tools/mattermost.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
@@ -1561,7 +1561,6 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       onEvent: (event) => {
         if (event.type === "snapshot") {
           applyControlPayload(event.data);
-          setMcpOAuthCallback(account.accountId, event.data, client);
           forceReconcilePoll = true;
           scheduleNextWebSocketControlRefresh();
           return;
@@ -1606,7 +1605,13 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         }
         if (event.type === "mcp.oauth.code") {
           const signIn = event.data;
-          if (isMcpSignIn(signIn)) void finishMcpSignIn(signIn, client).then((note) => wakeAfterMcpSignIn(signIn, note));
+          if (isMcpSignIn(signIn)) {
+            void finishMcpSignIn(signIn, client)
+              .then((note) => wakeAfterMcpSignIn(signIn, note))
+              .catch((err: unknown) =>
+                logWarn(log, `[clawbits/${account.accountId}] MCP sign-in for ${signIn.server} failed: ${String((err as Error)?.message ?? err)}`),
+              );
+          }
           return;
         }
         // `mutualist.consider` is the pre-rename name for the same event; kept

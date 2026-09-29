@@ -265,6 +265,14 @@ html[data-tauri-platform="macos"][data-translucent] body {
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior-y: none;
   }
+  /* Desktop chrome is not text, as in a native app; content stays selectable. */
+  html[data-tauri-platform] :is([data-slot="sidebar"], button, [role="button"], [role="menuitem"], [role="tab"]) {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  html[data-tauri-platform] [data-slot="sidebar"] :is(a, img) {
+    -webkit-user-drag: none;
+  }
 
   /* Background only: the composer textarea is text-transparent over its mention overlay, so a color would double glyphs. */
   ::selection {
@@ -551,14 +559,23 @@ html[data-media-viewer] [data-vt-contextual] {
   animation: typing-row-in 180ms ease-out;
 }
 
+/* Dictation's auto-send pause; DictationButton sets its delay and duration. */
+@keyframes dictation-countdown {
+  from { transform: scaleX(0); }
+}
+.animate-dictation-countdown {
+  animation: dictation-countdown linear both;
+}
+
+/* The live turn's one shimmer, on the trace tiers: a T2 base with a T1 peak. */
 .t-shimmer {
   background-image: linear-gradient(
     90deg,
-    var(--muted-foreground) 0%,
-    var(--muted-foreground) 35%,
+    var(--trace-quiet) 0%,
+    var(--trace-quiet) 35%,
     var(--foreground) 50%,
-    var(--muted-foreground) 65%,
-    var(--muted-foreground) 100%
+    var(--trace-quiet) 65%,
+    var(--trace-quiet) 100%
   );
   background-size: 200% 100%;
   /* Must tile: the gradient alone paints the text, so no-repeat slides letters away as it travels. */
@@ -574,20 +591,19 @@ html[data-media-viewer] [data-vt-contextual] {
   100% { background-position: -100% 0; }
 }
 
-/* On a wrapper so the fade composes with the inner .t-shimmer; 600ms matches GeneratingIndicator's unmount timer. */
-.thinking-word-in {
-  animation: thinking-word-in 600ms ease-out;
+/* On a wrapper so the fade composes with the inner .t-shimmer; 200ms matches TurnTrace's FADE_MS.
+   Opacity only: blur stays on streaming reply words. */
+.headline-in {
+  animation: headline-in 200ms ease-out;
 }
-.thinking-word-out {
-  animation: thinking-word-out 600ms ease-out forwards;
+.headline-out {
+  animation: headline-out 200ms ease-out forwards;
 }
-@keyframes thinking-word-in {
-  from { opacity: 0; filter: blur(3px); }
-  to   { opacity: 1; filter: blur(0); }
+@keyframes headline-in {
+  from { opacity: 0; }
 }
-@keyframes thinking-word-out {
-  from { opacity: 1; filter: blur(0); }
-  to   { opacity: 0; filter: blur(3px); }
+@keyframes headline-out {
+  to { opacity: 0; }
 }
 
 @keyframes stream-word-in {
@@ -599,20 +615,35 @@ html[data-media-viewer] [data-vt-contextual] {
   animation: stream-word-in 180ms ease-out backwards;
 }
 
+/* The streaming reply's cursor: a slim bar at the end of its last line of text, from descender to above the caps,
+   fading rather than blinking. .stream-tail puts it after whichever block of rendered markdown is last. */
+@keyframes stream-caret {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+.stream-caret,
+.stream-tail:is(p)::after,
+.stream-tail > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+.stream-tail > blockquote:last-child > p:last-child::after,
+.stream-tail > :is(ul, ol):last-child > li:last-child:not(:has(> :is(p, ul, ol)))::after,
+.stream-tail > :is(ul, ol):last-child > li:last-child > p:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: -0.2em;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: var(--stream-caret-animation, stream-caret 1s ease-in-out infinite);
+}
+
 @keyframes working-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
 .working-dot {
   animation: working-dot 1.6s ease-in-out infinite;
-}
-
-@keyframes activity-in {
-  from { opacity: 0; transform: translateY(3px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0)   scale(1); }
-}
-.animate-activity-in {
-  animation: activity-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes settle-fade {
@@ -1337,8 +1368,10 @@ html[data-media-viewer] [data-vt-contextual] {
   ::view-transition-new(mm-media) {
     animation: none;
   }
+  :root {
+    --stream-caret-animation: none;
+  }
   .stream-word-in,
-  .animate-activity-in,
   .animate-settle-fade,
   .working-dot,
   .home-composer,
@@ -1346,18 +1379,18 @@ html[data-media-viewer] [data-vt-contextual] {
   .access {
     animation: none;
   }
-  /* With the sweep gone, the transparent text needs an explicit fill. */
+  /* With the sweep gone, the transparent text needs an explicit fill: T1, so a running label still reads apart from a
+     finished one in T2. */
   .t-shimmer {
     animation: none;
-    -webkit-text-fill-color: var(--muted-foreground);
-    color: var(--muted-foreground);
+    -webkit-text-fill-color: var(--foreground);
+    color: var(--foreground);
   }
-  /* The stacked gerunds still need resolving, or they read as doubled. */
-  .thinking-word-in {
+  /* The stacked labels still need resolving, or they read as doubled. */
+  .headline-in {
     animation: none;
-    opacity: 1;
   }
-  .thinking-word-out {
+  .headline-out {
     animation: none;
     opacity: 0;
   }

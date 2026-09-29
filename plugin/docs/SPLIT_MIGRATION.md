@@ -40,18 +40,9 @@ run the next command. The sequence is safe:
 3. The final channel upgrade removes legacy services and publishes the marker;
    the companion then becomes their sole owner.
 
-Optional tools also require explicit entries in `tools.alsoAllow`:
-
-- `clawbits_channels_list`
-- `clawbits_channel_members`
-- `clawbits_email_inbox`
-- `clawbits_email_get`
-- `clawbits_agent_info`
-- `clawbits_email_send`
-- `clawbits_agent_description_update`
-- `clawbits_react`
-- `clawbits_search`
-- `clawbits_channel_posts`
+The companion's tools are optional: a gateway on a tool profile other than
+`full` needs each one in `tools.alsoAllow`. They are listed in
+`README.tools.md`.
 
 ## New installation
 

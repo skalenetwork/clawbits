@@ -19,6 +19,7 @@ let deepLinkHandler: ((event: { payload: string }) => void) | null = null;
 /** Stands in for `window.location.replace`, which jsdom leaves unimplemented
  *  and which the handler calls on a successful hand-off. */
 const locationReplace = vi.fn();
+const locationAssign = vi.fn();
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (_name: string, handler: (event: { payload: string }) => void) => {
@@ -45,9 +46,10 @@ describe("desktop deep-link OAuth callback", () => {
   beforeEach(() => {
     window.localStorage.clear();
     locationReplace.mockClear();
+    locationAssign.mockClear();
     Object.defineProperty(window, "location", {
       configurable: true,
-      value: { href: "http://localhost/", replace: locationReplace },
+      value: { href: "http://localhost/", replace: locationReplace, assign: locationAssign },
     });
   });
 
@@ -68,6 +70,15 @@ describe("desktop deep-link OAuth callback", () => {
 
     expect(storedToken()).toBe("good-token");
     expect(locationReplace).toHaveBeenCalledWith("/home");
+  });
+
+  it("finishes an MCP sign-in the browser handed back, without touching the session", async () => {
+    await loadDesktopModule();
+
+    deliver("clawbits-dev://mcp-callback?state=clawbits-dev.s1&code=c1");
+
+    expect(locationAssign).toHaveBeenCalledWith("/oauth/mcp/callback?state=clawbits-dev.s1&code=c1");
+    expect(storedToken()).toBeNull();
   });
 
   it("ignores a token with no state at all", async () => {
@@ -198,5 +209,15 @@ describe("desktop session rotation", () => {
     await pending;
 
     expect(window.localStorage.getItem(AUTH_TOKEN_KEY)).toBeNull();
+  });
+});
+
+describe("native MCP sign-in state", () => {
+  it("names the app scheme only when the state starts with one", async () => {
+    const { nativeScheme } = await import("@/lib/desktop");
+    expect(nativeScheme("clawbits-dev.s1")).toBe("clawbits-dev");
+    expect(nativeScheme("clawbits.s1")).toBe("clawbits");
+    expect(nativeScheme("evil.s1")).toBeUndefined();
+    expect(nativeScheme("webstate")).toBeUndefined();
   });
 });

@@ -27,7 +27,7 @@ import {
 } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { channelListTitle } from "@/lib/formatting";
-import { isPairChannel } from "@/lib/chatFilters";
+import { channelLabel, isPairChannel } from "@/lib/chatFilters";
 import { draftStore } from "@/lib/messageDrafts";
 import { trackRecentChannel } from "@/lib/desktop";
 import { errMsg, toast } from "@/lib/toast";
@@ -283,11 +283,8 @@ function ChannelView({ channelId }: { channelId: string }) {
 
   const {
     presence,
-    activity,
-    toolTimelines,
-    thinkingTimelines,
-    finishedToolTraces,
-    finishedThinkingTraces,
+    turns,
+    finishedTurns,
     optimisticAgents,
     markAgentGenerating,
   } = useChannelEvents(channelId);
@@ -296,8 +293,8 @@ function ChannelView({ channelId }: { channelId: string }) {
   const channelTitle = channel ? channelListTitle(channel) : "Channel";
 
   useEffect(() => {
-    if (channel) trackRecentChannel({ id: channelId, name: channelTitle, path: `/channels/${channelId}` });
-  }, [channelId, channel, channelTitle]);
+    if (channel) trackRecentChannel({ id: channelId, name: channelLabel(channel), path: `/channels/${channelId}` });
+  }, [channelId, channel]);
 
   const latestPostId = useMemo(
     () => Math.max(0, ...latestPosts.filter((p) => p.status === "published").map((p) => p.post_id)),
@@ -831,9 +828,7 @@ function ChannelView({ channelId }: { channelId: string }) {
                   <GeneratingRow
                     agentId={row.agentId}
                     member={row.member}
-                    activity={activity[key]}
-                    toolSteps={toolTimelines[key]}
-                    thinkingSteps={thinkingTimelines[key]}
+                    turn={turns[key]}
                     optimistic={optimisticAgents.has(key)}
                   />
                 );
@@ -874,11 +869,9 @@ function ChannelView({ channelId }: { channelId: string }) {
                     currentUserId={user?.id ?? null}
                     isChannelCreator={isChannelCreator}
                     isGroupStart={row.isGroupStart}
-                    activity={agentKey ? activity[agentKey] : undefined}
-                    toolSteps={agentKey ? toolTimelines[agentKey] : undefined}
-                    thinkingSteps={agentKey ? thinkingTimelines[agentKey] : undefined}
-                    finishedToolSteps={finishedToolTraces[post.post_id]}
-                    finishedThinkingSteps={finishedThinkingTraces[post.post_id]}
+                    turn={agentKey ? turns[agentKey] : undefined}
+                    optimistic={agentKey !== null && optimisticAgents.has(agentKey)}
+                    finishedTurn={finishedTurns[post.post_id]}
                     members={members}
                     channelType={channel?.channel_type}
                     onReply={startReply}

@@ -31,6 +31,9 @@ signup, inbound polling, and posting replies back.
 - You can answer a post with an emoji instead of a message when a reaction says
   everything a reply would: `clawbits_react`, targeted with the post id your
   `[Clawbits context]` block names.
+- To use an OAuth MCP server (Linear, Notion, AgentPit and the like), call
+  `clawbits_mcp_connect` with its server name and url.
+  It posts a Connect card; once the user signs in, a message tells you so.
 - Every request carries the plugin version header, so the server can flag an
   outdated plugin. To check/update, use the **clawbits-maintenance** skill.
 

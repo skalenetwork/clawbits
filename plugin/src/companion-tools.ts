@@ -1,7 +1,8 @@
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import {
+  CHANNEL_ID,
   listClawBitsAccountIds,
   resolveClawBitsAccount,
   resolveDefaultClawBitsAccountId,
@@ -11,6 +12,7 @@ import { buildClientForAccount } from "./client-factory.js";
 import type { ClawBitsClient } from "./client.js";
 import { frameEmailForDm } from "./email-dm-frame.js";
 import { logWarn } from "./file-logger.js";
+import { connectMcpServer } from "./mcp-oauth.js";
 import { getAgentInfo, updateAgentDescription } from "./tools/agents.js";
 import {
   emailGet,
@@ -46,6 +48,7 @@ export const CLAWBITS_TOOL_NAMES = [
   "clawbits_react",
   "clawbits_search",
   "clawbits_channel_posts",
+  "clawbits_mcp_connect",
 ] as const;
 
 const TOOL_REQUEST_TIMEOUT_MS = 30_000;
@@ -121,6 +124,12 @@ const accountIdParameter = Type.Optional(
     minLength: 1,
   }),
 );
+
+const MCP_CONNECT_PARAMS = Type.Object({
+  server: Type.String({ description: "MCP server name, such as linear.", pattern: "^\\w[\\w.-]{0,99}$" }),
+  url: Type.String({ description: "The server's MCP endpoint, such as https://mcp.linear.app/mcp.", format: "uri" }),
+  scope: Type.Optional(Type.String({ description: "OAuth scope, when the server asks for one.", minLength: 1 })),
+});
 
 const attachmentParameter = Type.Object({
   filename: Type.String({ minLength: 1 }),
@@ -368,6 +377,7 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
     {
       name: CLAWBITS_TOOL_NAMES[7],
       label: "React to a Clawbits Post",
+      catalogMode: "direct-only",
       description:
         "Toggle this agent's emoji reaction on a Clawbits post. Use a reaction where it " +
         "says what a message would not be worth sending for: acknowledging a request you " +
@@ -527,5 +537,37 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       },
     },
     { optional: true },
+  );
+
+  api.registerTool(
+    (ctx) => ({
+      name: CLAWBITS_TOOL_NAMES[10],
+      label: "Connect MCP Server",
+      catalogMode: "direct-only",
+      description:
+        "Sign in to an OAuth MCP server (Linear, Notion, AgentPit and the like) so its tools " +
+        "become yours. Posts a Connect card in this Clawbits chat; the user signs in from it " +
+        "and you get a message when the sign-in finishes. Use it instead of openclaw mcp " +
+        "login, whose localhost callback cannot reach you here. Returns card_posted, or " +
+        "signed_in when the server needs no sign-in.",
+      parameters: MCP_CONNECT_PARAMS,
+      async execute(_toolCallId: string, params: Static<typeof MCP_CONNECT_PARAMS>, signal?: AbortSignal) {
+        signal?.throwIfAborted();
+        const channelId = ctx.messageChannel === CHANNEL_ID ? ctx.nativeChannelId : undefined;
+        if (!channelId) throw new Error("clawbits_mcp_connect works only while answering in a Clawbits chat.");
+        const { client, account } = clientForConfig(api.config, ctx.agentAccountId);
+        const link = await connectMcpServer(api.runtime, client, channelId, params);
+        if (!link) return jsonResult({ status: "signed_in" });
+        const requestSignal = toolRequestSignal(signal, TOOL_REQUEST_TIMEOUT_MS);
+        await withChallenge(
+          client,
+          resolveKnownAnswers(account.knownAnswers),
+          (answer) => postToChannel(client, channelId, { message: link }, answer, requestSignal),
+          { signal: requestSignal },
+        );
+        return jsonResult({ status: "card_posted" });
+      },
+    }),
+    { name: CLAWBITS_TOOL_NAMES[10], optional: true },
   );
 }

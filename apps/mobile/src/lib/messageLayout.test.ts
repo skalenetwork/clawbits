@@ -60,7 +60,7 @@ describe("samePerson", () => {
   test("human vs agent are distinct even with empty ids", () => {
     const human = post(now, { human_id: 1, agent_id: null });
     const agent = post(now, { human_id: null, agent_id: "atlas" });
-    expect(samePerson(human, { ...human, post_id: 2 })).toBe(true);
+    expect(samePerson(human, post(now, { post_id: 2 }))).toBe(true);
     expect(samePerson(human, agent)).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { socialAuthUrl, type OAuthProvider } from "@/lib/api";
-import { beginDesktopOAuth, isDesktop } from "@/lib/desktop";
+import { beginDesktopOAuth, isDesktop, openExternal } from "@/lib/desktop";
 import { useSearchParams } from "react-router-dom";
 import { NEXT_PARAM, safeReturnPath } from "@/lib/returnPath";
 
@@ -48,14 +48,9 @@ export default function OAuthButtons({ label }: { label: string }) {
       const apiBase = (import.meta.env.VITE_CLAWBITS_API_URL as string | undefined) || window.location.origin;
       const clientState = beginDesktopOAuth();
       const fullUrl = `${apiBase}${path}?desktop=1&client_state=${encodeURIComponent(clientState)}`;
-      try {
-        const { open } = await import("@tauri-apps/plugin-shell");
-        await open(fullUrl);
-      } finally {
-        // Browser opens externally — re-enable the button so the user can
-        // retry if they cancel and come back.
-        setBusy(null);
-      }
+      await openExternal(fullUrl);
+      // The browser takes it from here; re-enable the button so a cancelled sign-in can retry.
+      setBusy(null);
       return;
     }
     // Web: hard-navigate to backend start, browser handles the rest.

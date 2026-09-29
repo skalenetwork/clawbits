@@ -1,5 +1,6 @@
 {
   "gateway": { "mode": "local" },
+  "mcp": { "apps": { "enabled": true } },
   "tools": {
     "web": { "search": { "enabled": false } },
     "alsoAllow": [
@@ -13,7 +14,8 @@
       "clawbits_agent_description_update",
       "clawbits_react",
       "clawbits_search",
-      "clawbits_channel_posts"
+      "clawbits_channel_posts",
+      "clawbits_mcp_connect"
     ]
   },
   "plugins": {

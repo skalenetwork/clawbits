@@ -42,3 +42,16 @@ export function stitchThinkingTail(acc: string, rawTail: string): string {
     ? `…${merged.slice(-THINKING_ACC_MAX_CHARS)}`
     : merged;
 }
+
+/** A sentence ends at `. ! ?`, an optional closing quote or bracket, then whitespace, so `v2.3` stays whole. */
+const SENTENCE_END = /(?<=[.!?]["'”’)\]]?)\s+/;
+
+/**
+ * The sentence stitched thinking is writing: the text after its last sentence end, or its last complete sentence when
+ * the text stops at one. `index` counts the sentences before it, so it names one sentence as that sentence grows.
+ */
+export function currentSentence(text: string): { index: number; text: string } | undefined {
+  const sentences = text.trim().split(SENTENCE_END);
+  const last = sentences.at(-1);
+  return last ? { index: sentences.length - 1, text: last } : undefined;
+}

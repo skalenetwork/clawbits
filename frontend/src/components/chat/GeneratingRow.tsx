@@ -1,24 +1,20 @@
 import { useState } from "react";
 
 import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
-import { GeneratingIndicator } from "@/components/chat/GeneratingIndicator";
+import { TurnTrace } from "@/components/chat/TurnTrace";
 import { formatTimeOnly } from "@/lib/formatting";
-import type { AgentActivity, ThinkingStep, ToolStep } from "@/hooks/useChannelEvents";
 import type { MmChannelMember } from "@/lib/api";
+import type { LiveTurn } from "@/lib/turnSteps";
 
 export function GeneratingRow({
   agentId,
   member,
-  activity,
-  toolSteps,
-  thinkingSteps,
+  turn,
   optimistic,
 }: {
   agentId: string;
   member: MmChannelMember | null;
-  activity?: AgentActivity;
-  toolSteps?: ToolStep[];
-  thinkingSteps?: ThinkingStep[];
+  turn?: LiveTurn;
   optimistic: boolean;
 }) {
   const name = member?.display_name ?? agentId;
@@ -31,15 +27,7 @@ export function GeneratingRow({
         <span className="truncate font-medium text-muted-foreground">{name}</span>
         <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{time}</span>
       </div>
-      <div className="text-message text-muted-foreground">
-        <GeneratingIndicator
-          activity={activity}
-          toolSteps={toolSteps}
-          thinkingSteps={thinkingSteps}
-          agentId={agentId}
-          optimistic={optimistic}
-        />
-      </div>
+      <TurnTrace live={{ turn, agentId, optimistic }} />
     </div>
   );
 }

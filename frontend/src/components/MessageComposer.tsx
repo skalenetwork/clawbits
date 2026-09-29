@@ -33,6 +33,8 @@ import { extractShortcodeQuery } from "@/lib/emoji";
 import { modGlyph } from "@/lib/shortcuts/platform";
 import { HERE_TOKEN, escapeRegExp, isHereToken } from "@/lib/mentions";
 import { draftStore } from "@/lib/messageDrafts";
+import { DictationButton } from "@/components/composer/DictationButton";
+import { dictationSupported, useDictation } from "@/hooks/useDictation";
 import {
   extractChannelQuery,
   extractMentionQuery,
@@ -266,6 +268,13 @@ export function MessageComposer({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [wrapped, setWrapped] = useState(false);
   const [emojiSearch, setEmojiSearch] = useState<typeof import("node-emoji").search | null>(null);
+  const dictation = useDictation({
+    inputRef,
+    draft,
+    onDraft: (text, caret) => { setDraftAt(text, caret); },
+    onSilence: () => { submit(); },
+  });
+  const tentative = dictation.tentative ?? { start: draft.length, end: draft.length };
 
   const adminMatch = agentDm ? extractAdminCommandQuery(draft, caretPos) : null;
   const mentionMatch = extractMentionQuery(draft, caretPos);
@@ -294,14 +303,17 @@ export function MessageComposer({
 
   const caretNow = () => inputRef.current?.selectionStart ?? caretPos;
 
-  const replaceRange = (start: number, end: number, text: string) => {
-    const caret = start + text.length;
-    setDraft(draft.slice(0, start) + text + draft.slice(end));
+  const setDraftAt = (text: string, caret: number) => {
+    setDraft(text);
     setCaretPos(caret);
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.setSelectionRange(caret, caret);
     });
+  };
+
+  const replaceRange = (start: number, end: number, text: string) => {
+    setDraftAt(draft.slice(0, start) + text + draft.slice(end), start + text.length);
   };
 
   const complete = (index: number) => {
@@ -357,6 +369,7 @@ export function MessageComposer({
     const text = draft;
     setDraft("");
     setCaretPos(0);
+    dictation.sent();
     inputRef.current?.focus();
     onSubmit(text).catch(() => {
       setDraft((current) => current || text);
@@ -367,6 +380,11 @@ export function MessageComposer({
     const mod = e.metaKey || e.ctrlKey;
     const key = e.key.toLowerCase();
     const composing = e.nativeEvent.isComposing;
+    if (dictation.status !== "idle" && e.key === "Escape") {
+      e.preventDefault();
+      dictation.discard();
+      return;
+    }
     if (popover) {
       const count = popover.texts.length;
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -591,13 +609,16 @@ export function MessageComposer({
               data-composer-sizer=""
               className="pointer-events-none [grid-area:1/1] min-h-5 max-h-[40vh] overflow-hidden whitespace-pre-wrap break-words text-[14px] leading-5 text-foreground"
             >
-              <ComposerHighlightedText text={draft} mentions={mentions}/>{" "}
+              <ComposerHighlightedText text={draft.slice(0, tentative.start)} mentions={mentions}/>
+              <span className="text-muted-foreground">{draft.slice(tentative.start, tentative.end)}</span>
+              <ComposerHighlightedText text={draft.slice(tentative.end)} mentions={mentions}/>{" "}
             </div>
             <textarea
               ref={inputRef}
               rows={1}
               value={draft}
               onChange={(e) => {
+                dictation.abort();
                 setDraft(e.target.value);
                 setCaretPos(e.target.selectionStart);
                 if (e.target.value) onTyping();
@@ -673,6 +694,9 @@ export function MessageComposer({
               anchor={wrapperRef}
               agentShortcuts={agentPicker}
             />
+            {dictationSupported && (
+              <DictationButton status={dictation.status} countdown={dictation.countdown} onToggle={dictation.toggle}/>
+            )}
             <button
               type={stop ? "button" : "submit"}
               onClick={stop}

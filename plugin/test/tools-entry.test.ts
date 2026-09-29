@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type { AnyAgentTool, OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import type { AnyAgentTool, OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
 import toolsEntry, { CLAWBITS_TOOL_NAMES } from "../src/tools-entry.js";
 import { summarizeChannels, summarizePosts } from "../src/tool-views.js";
 import { resolveCompanionServiceActivation } from "../src/companion-services.js";
@@ -73,9 +73,13 @@ function asPluginApi(api: StubPluginApi): OpenClawPluginApi {
   return api as OpenClawPluginApi;
 }
 
-function agentTool(tool: Parameters<OpenClawPluginApi["registerTool"]>[0]): AnyAgentTool {
-  assert.ok(typeof tool !== "function", "clawbits registers tool objects, not factories");
-  return tool;
+function agentTool(
+  tool: Parameters<OpenClawPluginApi["registerTool"]>[0],
+  ctx: OpenClawPluginToolContext = {},
+): AnyAgentTool {
+  const resolved = typeof tool === "function" ? tool(ctx) : tool;
+  assert.ok(resolved && "name" in resolved, "clawbits registers one tool per registration");
+  return resolved;
 }
 
 function runtimeWithHandoff(version?: string): StubRuntime {
@@ -136,19 +140,19 @@ function configuredApi(): ReturnType<typeof pluginApi> {
   return pluginApi({ accounts: { default: { ...DEFAULT_ACCOUNT } } });
 }
 
-function registeredTools(api = configuredApi().api): RegisteredTool[] {
+function registeredTools(api = configuredApi().api, ctx?: OpenClawPluginToolContext): RegisteredTool[] {
   const collected: RegisteredTool[] = [];
   const original = api.registerTool.bind(api);
   api.registerTool = (tool, opts) => {
-    collected.push({ tool: agentTool(tool), optional: opts?.optional === true });
+    collected.push({ tool: agentTool(tool, ctx), optional: opts?.optional === true });
     original(tool, opts);
   };
   toolsEntry.register(asPluginApi(api));
   return collected;
 }
 
-function findTool(name: (typeof CLAWBITS_TOOL_NAMES)[number]): AnyAgentTool {
-  const tool = registeredTools().find((candidate) => candidate.tool.name === name)?.tool;
+function findTool(name: (typeof CLAWBITS_TOOL_NAMES)[number], ctx?: OpenClawPluginToolContext): AnyAgentTool {
+  const tool = registeredTools(configuredApi().api, ctx).find((candidate) => candidate.tool.name === name)?.tool;
   assert.ok(tool, `tool ${name}`);
   return tool;
 }
@@ -217,6 +221,15 @@ describe("clawbits companion plugin", () => {
     assert.ok(Object.values(manifest.toolMetadata ?? {}).every((tool) => tool.optional === true));
   });
 
+  it("keeps the chat tools out of tool search, so their schemas are in view", () => {
+    assert.deepEqual(
+      registeredTools()
+        .filter(({ tool }) => tool.catalogMode === "direct-only")
+        .map(({ tool }) => tool.name),
+      ["clawbits_react", "clawbits_mcp_connect"],
+    );
+  });
+
   it("keeps every companion tool in the agent image's optional-tool allowlist", () => {
     // OpenClaw does not auto-allow optional plugin tools: one missing from
     // tools.alsoAllow ships invisible to the agent, which is how a working
@@ -281,6 +294,7 @@ describe("clawbits companion plugin", () => {
     assert.ok(full.hooks.includes("gateway_start"));
     assert.ok(full.hooks.includes("gateway_stop"));
     assert.ok(full.hooks.includes("cron_changed"));
+    assert.ok(full.hooks.includes("before_tool_call"));
   });
 
   it("starts and stops the owner-gated lifecycle idempotently", async () => {
@@ -625,6 +639,42 @@ describe("clawbits companion plugin", () => {
     );
     assert.deepEqual(body, { description: "Research helper" });
     assert.deepEqual(result, { agent_id: "agent-1" });
+  });
+
+  it("connects MCP servers only while answering in a Clawbits chat", async () => {
+    const telegram = findTool("clawbits_mcp_connect", { messageChannel: "telegram", nativeChannelId: "chat-1" });
+    await assert.rejects(executeTool(telegram, { server: "linear" }), /only while answering in a Clawbits chat/);
+  });
+
+  it("posts the Connect link to the chat the agent is answering in", async () => {
+    const { api } = configuredApi();
+    Object.assign(api.runtime, {
+      config: {
+        mutateConfigFile: async ({ mutate }: { mutate: (draft: Record<string, unknown>) => void }) => {
+          mutate({});
+        },
+      },
+      system: {
+        runCommandWithTimeout: async (argv: string[]) => ({
+          code: 0,
+          stderr: "",
+          stdout: argv.includes("login") ? 'Open this URL to authorize "linear":\nhttps://auth.example.com/a\n' : "",
+        }),
+      },
+    });
+    const connect = registeredTools(api, { messageChannel: "clawbits", nativeChannelId: "room-7" })
+      .find(({ tool }) => tool.name === "clawbits_mcp_connect")?.tool;
+    assert.ok(connect);
+    const posted: unknown[] = [];
+    await callWithMockedFetch(connect, { server: "linear", url: "https://mcp.linear.app/mcp" }, (input, init) => {
+      const target = String(input);
+      if (target.endsWith("/api/agentic/auth/challenge")) return challengeResponse();
+      if (target.endsWith("/mcp-oauth/redirect")) return jsonResponse({ url: "https://app.clawbits.test/oauth/mcp/callback" });
+      if (target.endsWith("/mcp-oauth/links")) return jsonResponse({ url: "https://app.clawbits.test/connect/abc" });
+      posted.push([new URL(target).pathname, (JSON.parse(String(init?.body)) as { message?: string }).message]);
+      return jsonResponse({ post_id: 1 });
+    });
+    assert.deepEqual(posted, [["/api/agentic/mm/channels/room-7/posts", "https://app.clawbits.test/connect/abc"]]);
   });
 
   it("reacts to a post through the companion tool", async () => {

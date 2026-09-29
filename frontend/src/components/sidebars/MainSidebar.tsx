@@ -77,6 +77,8 @@ export function MainSidebar() {
         ? groups.some((g) => g.inbox?.channel_id === open?.channel_id || g.chats.some((c) => c.channel_id === open?.channel_id))
         : list.some((c) => c.channel_id === open?.channel_id);
     const lingering = open && !inList ? open : null;
+    const shown = new Set(recent.map((c) => c.channel_id));
+    const elsewhere = hiddenSignal(all.filter((c) => c !== open && !shown.has(c.channel_id)));
 
     return (
         <>
@@ -124,7 +126,7 @@ export function MainSidebar() {
             </div>
 
             <div className={SIDEBAR_SCROLL}>
-                <ScopeMenu tab={tab} onChange={setTab}/>
+                <ScopeMenu tab={tab} onChange={setTab} elsewhere={elsewhere}/>
                 <SidebarMenu>
                     {lingering && <ChatRow channel={lingering} active actions={actions}/>}
                     {grouped && groups.length > 0 ? (
@@ -180,7 +182,7 @@ export function MainSidebar() {
 
 /** Named, not a funnel: the scope is a view to switch between — the per-agent
  *  one is a different shape of list — and a bare icon never said which was on. */
-function ScopeMenu({tab, onChange}: {tab: ChatTab; onChange: (tab: ChatTab) => void}) {
+function ScopeMenu({tab, onChange, elsewhere}: {tab: ChatTab; onChange: (tab: ChatTab) => void; elsewhere: Signal | null}) {
     const current = CHAT_TABS.find((t) => t.id === tab);
     const label = current ? (current.long ?? current.label) : "All chats";
     return (
@@ -193,6 +195,7 @@ function ScopeMenu({tab, onChange}: {tab: ChatTab; onChange: (tab: ChatTab) => v
                 render={<SidebarMenuButton className="pr-1.5 text-muted-foreground"/>}
             >
                 <span className="flex-1 truncate">{label}</span>
+                {elsewhere && <RowSignal signal={elsewhere}/>}
                 <span className="grid w-5 place-items-center">
                     <ListFilter className="size-3.5"/>
                 </span>
@@ -357,6 +360,19 @@ function signalOf(channel: MmChannel, active: boolean, activityLead = false): Si
     if (channel.working && !activityLead) return {kind: "working"};
     if (channel.pinned) return {kind: "pinned"};
     return {kind: "time", at: channel.last_message_at ?? channel.created_at};
+}
+
+/** The unread a scope hides, summed on the rows' ladder: mentions pierce mute, counts don't. */
+function hiddenSignal(channels: MmChannel[]): Signal | null {
+    let mentions = 0;
+    let unread = 0;
+    for (const c of channels) {
+        mentions += c.unread_mention_count ?? 0;
+        if (!c.muted) unread += c.unread_count ?? 0;
+    }
+    if (mentions > 0) return {kind: "mention", n: mentions};
+    if (unread > 0) return {kind: "count", n: unread};
+    return null;
 }
 
 function WorkingDot() {

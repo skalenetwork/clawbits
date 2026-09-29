@@ -36,7 +36,6 @@ import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
-const SUBHEAD = "px-3 pb-2 text-[13px] font-medium text-muted-foreground";
 const EVENTS_PREVIEW = 5;
 const EVENT_ROW =
   "relative flex min-h-13 items-center gap-3 px-4 py-3 text-[13px] not-first:before:absolute not-first:before:inset-x-4 not-first:before:top-0 not-first:before:h-px not-first:before:bg-foreground/8";
@@ -144,7 +143,6 @@ export default function SettingsReefPage() {
   ];
   const mine = tiles.filter((t) => t.agent?.is_operator);
   const others = tiles.filter((t) => !t.agent?.is_operator);
-  const split = mine.length > 0 && others.some((t) => t.agent != null);
 
   const agentMenu = (host: string, name: string) => (
     <DropdownMenu>
@@ -182,12 +180,14 @@ export default function SettingsReefPage() {
 
   const repoMark = <SetupMark src="/github.webp" size={32} />;
 
-  const agentGrid = (items: ReefAgentTileProps[]) => (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {items.map((t) => (
-        <ReefAgentTile key={fleetKey(t.host, t.name)} {...t} menu={isOwner ? agentMenu(t.host, t.name) : undefined} />
-      ))}
-    </div>
+  const agentSection = (label: string, items: ReefAgentTileProps[]) => (
+    <SettingsSection label={label} stack>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {items.map((t) => (
+          <ReefAgentTile key={fleetKey(t.host, t.name)} {...t} menu={isOwner ? agentMenu(t.host, t.name) : undefined} />
+        ))}
+      </div>
+    </SettingsSection>
   );
 
   return (
@@ -242,7 +242,7 @@ export default function SettingsReefPage() {
                   hosts.map((h) => (
                     <SettingsRow
                       key={h.host}
-                      leading={<SetupMark src="/computer.webp" size={32} />}
+                      leading={<SetupMark src="/computer.webp" size={40} />}
                       title={h.host}
                       description={[
                         `${h.agents.length} agent${h.agents.length === 1 ? "" : "s"}`,
@@ -263,17 +263,10 @@ export default function SettingsReefPage() {
                   <SettingsRow title={muted("No agents yet")} />
                 </SettingsSection>
               ) : (
-                <section>
-                  <h2 className={SUBHEAD}>Agents</h2>
-                  {split ? (
-                    <div className="space-y-6">
-                      {agentGrid(mine)}
-                      {agentGrid(others)}
-                    </div>
-                  ) : (
-                    agentGrid(tiles)
-                  )}
-                </section>
+                <>
+                  {mine.length > 0 && agentSection("Your agents", mine)}
+                  {others.length > 0 && agentSection("Agents in the org", others)}
+                </>
               )}
 
               <SettingsSection label="Activity">

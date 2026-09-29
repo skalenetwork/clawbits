@@ -188,19 +188,20 @@ export const outboundAdapter: ChannelOutboundAdapter = {
     // side until the turn settles and cancels the draft. ``claimOpenDraft``
     // empties the shared ref synchronously, so the gateway's turn-end
     // cleanup won't also cancel/tombstone it.
-    const draftPostId = claimOpenDraft(account.accountId, channelId);
-    if (draftPostId !== undefined) {
+    const draft = claimOpenDraft(account.accountId, channelId);
+    if (draft) {
       try {
-        await realtimeTools.patchDraftPost(client, channelId, draftPostId, {
+        await realtimeTools.patchDraftPost(client, channelId, draft.id, {
           replace: ctx.text ?? "",
           done: true,
+          ...(await draft.finish),
         });
         pluginDebug(
-          `outbound.sendText finalized open draft postId=${String(draftPostId)} channel=${channelId} in place (no separate post minted)`,
+          `outbound.sendText finalized open draft postId=${String(draft.id)} channel=${channelId} in place (no separate post minted)`,
         );
         const result: ClawBitsDeliveryResult = {
           channel: CHANNEL_ID,
-          messageId: String(draftPostId),
+          messageId: String(draft.id),
           channelId,
         };
         recentSends.set(dedupeKey, { result, ts: Date.now() });
@@ -211,7 +212,7 @@ export const outboundAdapter: ChannelOutboundAdapter = {
         // lands. Losing the in-place morph is cosmetic; losing the reply
         // is not.
         consoleErrorWithFile(
-          `[clawbits/${account.accountId}] outbound.sendText draft-finalize failed for postId=${String(draftPostId)} channel=${channelId}: ${err instanceof Error ? err.message : String(err)} — falling back to a fresh post`,
+          `[clawbits/${account.accountId}] outbound.sendText draft-finalize failed for postId=${String(draft.id)} channel=${channelId}: ${err instanceof Error ? err.message : String(err)} — falling back to a fresh post`,
         );
       }
     }
@@ -300,18 +301,18 @@ export const outboundAdapter: ChannelOutboundAdapter = {
     // "Generating…" shimmer AND the image post side by side until the turn
     // settles. ``claimOpenDraft`` empties the shared ref synchronously, so
     // the gateway's turn-end cleanup won't also cancel/tombstone it.
-    const draftPostId = claimOpenDraft(account.accountId, channelId);
-    if (draftPostId !== undefined) {
+    const draft = claimOpenDraft(account.accountId, channelId);
+    if (draft) {
       try {
-        await realtimeTools.patchDraftPost(client, channelId, draftPostId, { cancel: true });
+        await realtimeTools.patchDraftPost(client, channelId, draft.id, { cancel: true });
         pluginDebug(
-          `outbound.sendMedia cancelled open draft postId=${String(draftPostId)} channel=${channelId}; media post replaces the shimmer`,
+          `outbound.sendMedia cancelled open draft postId=${String(draft.id)} channel=${channelId}; media post replaces the shimmer`,
         );
       } catch (err) {
         // Draft vanished (turn already cleaned it up, server restarted, …)
         // — cosmetic; the media post below still lands.
         consoleErrorWithFile(
-          `[clawbits/${account.accountId}] outbound.sendMedia draft-cancel failed for postId=${String(draftPostId)} channel=${channelId}: ${err instanceof Error ? err.message : String(err)} — continuing with a fresh post`,
+          `[clawbits/${account.accountId}] outbound.sendMedia draft-cancel failed for postId=${String(draft.id)} channel=${channelId}: ${err instanceof Error ? err.message : String(err)} — continuing with a fresh post`,
         );
       }
     }

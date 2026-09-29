@@ -1,34 +1,62 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 OAUTH_STATE = r"[A-Za-z0-9._~-]{16,256}"
 MCP_SERVER = r"\w[\w.-]{0,99}"
 
+McpSignInStatus = Literal["open", "connecting", "connected"]
 
-class McpSignInLink(BaseModel):
-    """An authorization URL: one an agent's MCP login printed, or the one a click should open."""
+
+class McpSignInUrl(BaseModel):
+    """The OAuth callback, a connect link, or the provider page a click opens."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     url: str = Field(max_length=8192)
+
+
+class McpSignInLinkRequest(BaseModel):
+    """An authorization URL the agent's MCP login printed, and the chat to confirm in."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    server: str = Field(pattern=rf"^{MCP_SERVER}$")
+    url: str = Field(max_length=8192)
+    channel_id: str = Field(min_length=1, max_length=64)
+
+
+class McpSignInLink(McpSignInLinkRequest):
+    """A registered sign-in, keyed by its connect link id."""
+
+    agent_id: str
+    connected: bool = False
+
+
+class McpSignInLinkView(BaseModel):
+    """What a connect card shows."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    agent_name: str
+    server: str
+    host: str
+    status: McpSignInStatus
 
 
 class McpSignInClaimRequest(BaseModel):
-    """A human clicked an MCP sign-in link in one of the agent's own messages."""
+    """Which client clicked Connect, so the callback can hand the code back to it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    url: str = Field(max_length=8192)
-    post_id: int
+    client: Literal["web", "desktop", "mobile"]
 
 
 class McpSignInClaim(BaseModel):
-    """Who started a sign-in, for which server, and where the agent should confirm it."""
-
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     human_id: int
-    server: str
-    channel_id: str
+    link_id: str
 
 
 class McpSignInRequest(BaseModel):
@@ -36,18 +64,15 @@ class McpSignInRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    agent_id: str = Field(max_length=200)
-    server: str = Field(pattern=rf"^{MCP_SERVER}$")
     state: str = Field(pattern=rf"^{OAUTH_STATE}$")
     code: str = Field(min_length=1, max_length=2048)
 
 
 class McpSignInResponse(BaseModel):
-    """The agent confirmed the sign-in: its MCP server's tools are usable now."""
+    """The code is on its way to the agent; the chat to return to."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    agent_name: str
     channel_id: str
 
 

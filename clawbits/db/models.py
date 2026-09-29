@@ -788,6 +788,10 @@ class MmPost(SQLModel, table=True):
         default=None,
         sa_column=SAColumn(JSONB, nullable=True),
     )
+    steps: list[dict] | None = Field(
+        default=None,
+        sa_column=SAColumn(JSONB, nullable=True),
+    )
     trace_id: str | None = Field(
         default=None,
         sa_column=SAColumn(Text, nullable=True),
@@ -1709,3 +1713,16 @@ class EmailDelivery(SQLModel, table=True):
     )
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column(nullable=False))
     updated_at: datetime | None = Field(default=None, sa_column=_server_now_column(nullable=False))
+
+
+class McpAppResource(SQLModel, table=True):
+    """An MCP App's ``ui://`` document and the origins it may reach, stored once and keyed by their content hash.
+
+    Posts keep the hash on the step whose tool call rendered it, never the document: one App serves many calls.
+    """
+
+    __tablename__ = "mcp_app_resources"
+
+    resource: str = Field(sa_column=SAColumn(Text, primary_key=True))
+    html: str = Field(sa_column=SAColumn(Text, nullable=False))
+    csp: dict[str, Any] = Field(sa_column=SAColumn(JSONB, nullable=False))

@@ -14,7 +14,7 @@ import {
   type MattermostPost,
 } from "../src/inbound-poller.js";
 import { ChannelWatermarkStore } from "../src/channel-watermarks.js";
-import { registerMcpOAuth } from "../src/mcp-oauth.js";
+import { setMcpOAuthRuntime } from "../src/mcp-oauth.js";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { ResolvedClawBitsAccount } from "../src/types.js";
 
@@ -1705,19 +1705,9 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
   });
 
   it("finishes an MCP sign-in from the agent WebSocket, reports it, then wakes the agent", async () => {
-    const argv: string[][] = [];
-    registerMcpOAuth({
-      runtime: {
-        config: { current: () => ({}) },
-        system: {
-          runCommandWithTimeout: async (command: string[]) => {
-            argv.push(command.slice(2));
-            return { code: 0, stdout: "", stderr: "" };
-          },
-        },
-      },
-      on: () => {},
-    } as unknown as OpenClawPluginApi);
+    setMcpOAuthRuntime({
+      system: { runCommandWithTimeout: async () => ({ code: 0, stdout: "", stderr: "" }) },
+    } as unknown as OpenClawPluginApi["runtime"]);
     const ws = installMockWebSocket([
       { type: "snapshot", data: { channels: [{ channel_id: "room-1", channel_type: "public" }] } },
       {
@@ -1749,7 +1739,6 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
       ws.restore();
     }
 
-    assert.deepEqual(argv, [["mcp", "login", "agentpit", "--code=c1"]]);
     assert.deepEqual(reported, [{ state: "s1", connected: true }]);
     assert.equal(received.length, 1);
     assert.equal(received[0]?.channelId, "room-1");

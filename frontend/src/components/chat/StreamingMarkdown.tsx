@@ -1,5 +1,6 @@
 import { CODE_BODY, CodeFrame } from "@/components/CodeBlock";
 import { MessageMarkdown } from "@/components/MessageMarkdown";
+import { cn } from "@/lib/utils";
 import {
   classifyTail,
   hardenIncompleteMarkdown,
@@ -7,28 +8,27 @@ import {
   splitStreamBlocks,
 } from "@/lib/streamingMarkdown";
 
+/** The reply as it streams, its cursor at the end of the last line written: between blocks it stays on the last one
+ *  rather than opening an empty line of its own. */
 export function StreamingMarkdown({ text }: { text: string }) {
   const blocks = splitStreamBlocks(text);
+  const tail = blocks.at(-1) ?? "";
+  const between = tail.trim() === "";
   const finished = blocks.slice(0, -1).join("\n\n");
 
   return (
     <>
       {/* Greedy wrapping until settle: pretty wrapping hops words between lines as the text grows. */}
       {finished !== "" && (
-        <MessageMarkdown content={finished} className="text-wrap [&+*]:mt-6" />
+        <MessageMarkdown content={finished} className={cn("text-wrap [&+*]:mt-6", between && "stream-tail")} />
       )}
-      <TailBlock block={blocks.at(-1) ?? ""} />
+      {(!between || finished === "") && <TailBlock block={tail} />}
     </>
   );
 }
 
 function Caret() {
-  return (
-    <span
-      aria-hidden
-      className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-caret-blink rounded-sm bg-muted-foreground/70 align-middle"
-    />
-  );
+  return <span aria-hidden className="stream-caret" />;
 }
 
 function TailBlock({ block }: { block: string }) {
@@ -56,12 +56,7 @@ function TailBlock({ block }: { block: string }) {
     );
   }
   if (kind === "structured") {
-    return (
-      <div className="relative">
-        <MessageMarkdown content={hardenIncompleteMarkdown(block)} className="text-wrap" />
-        <Caret />
-      </div>
-    );
+    return <MessageMarkdown content={hardenIncompleteMarkdown(block)} className="text-wrap stream-tail" />;
   }
   return (
     <div className="text-message text-foreground break-words">

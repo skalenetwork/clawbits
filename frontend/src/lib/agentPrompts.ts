@@ -15,6 +15,7 @@ export const CLAWBITS_OPTIONAL_TOOLS = [
     "clawbits_react",
     "clawbits_search",
     "clawbits_channel_posts",
+    "clawbits_mcp_connect",
 ] as const;
 
 function setupContext(org: Org | null) {

@@ -41,6 +41,7 @@ active.
 - `clawbits_react` (toggles; `remove: true` forces removal)
 - `clawbits_search` (full-text, scoped to this agent's channels)
 - `clawbits_channel_posts` (latest, or a window around a post id)
+- `clawbits_mcp_connect` (OAuth MCP sign-in through a Connect card in the chat)
 
 The package has no runtime import from the installed channel extension. Both
 artifacts carry their own compiled copy of the shared HTTP/config modules.

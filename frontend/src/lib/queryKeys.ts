@@ -55,6 +55,7 @@ export const queryKeys = {
   agentContactPermissions: (agentId: string) =>
     ["agentContactPermissions", agentId] as const,
   orgSignupRequests: (orgId: string) => ["org", orgId, "signup-requests"] as const,
+  mcpConnectLink: (linkId: string) => ["mcp-connect-link", linkId] as const,
   /** The org's LobsterTalk attention config (toggle + mode + LLM connection). */
   orgLobstertalk: (orgId: string) => ["org", orgId, "lobstertalk"] as const,
   /** The org's reef repository, plus the hosts reporting into it. */

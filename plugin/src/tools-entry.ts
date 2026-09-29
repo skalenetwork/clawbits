@@ -2,6 +2,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk/core";
 import { registerCompanionServices } from "./companion-services.js";
 import { registerClawbitsTools } from "./companion-tools.js";
+import { registerMcpLoginGuard } from "./mcp-oauth.js";
 
 export { CLAWBITS_TOOL_NAMES } from "./companion-tools.js";
 
@@ -14,6 +15,7 @@ export default definePluginEntry({
     registerClawbitsTools(api);
     if (api.registrationMode === "full" || api.registrationMode === undefined) {
       registerCompanionServices(api);
+      registerMcpLoginGuard(api);
     }
   },
 });

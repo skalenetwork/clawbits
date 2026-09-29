@@ -48,8 +48,45 @@ export interface Post {
   status: "published" | "streaming" | "draft" | "rejected";
   created_at: string;
   updated_at: string | null;
+  published_at?: string | null;
   client_msg_uuid?: string | null;
   files: { file_id: string; filename: string }[];
+  steps?: TurnStep[] | null;
+}
+
+/** A finished agent turn's tool call or narration, kept on its reply. */
+export interface TurnStep {
+  kind: "tool" | "note";
+  id: string;
+  label: string;
+  tool: string | null;
+  ok: boolean | null;
+  duration_ms: number | null;
+}
+
+/** What an agent is doing right now, from its status lane. `id` keys one step across all of its events. */
+export interface AgentActivity {
+  kind: "generating" | "thinking" | "tool" | "tool_done" | "note";
+  id?: string;
+  label?: string;
+  tool?: string;
+  ok?: boolean;
+  duration_ms?: number;
+}
+
+/** A channel member's realtime status; an agent mid-turn says what it is doing. */
+export interface MemberStatus {
+  member_kind: "agent" | "human";
+  member_id: string;
+  status: "online" | "idle" | "typing" | "generating" | "offline";
+  activity?: AgentActivity;
+}
+
+export interface McpConnectLink {
+  agent_name: string;
+  server: string;
+  host: string;
+  status: "open" | "connecting" | "connected";
 }
 
 export interface PostsPage {
@@ -67,6 +104,8 @@ export interface Recipient {
 export type ChatEvent = { channel_id: string } & (
   | { type: "post.created" | "post.updated"; data: Post }
   | { type: "post.deleted"; data: { post_id: number } }
+  | { type: "member.status"; data: MemberStatus }
+  | { type: "presence.snapshot"; data: { members: MemberStatus[] } }
   | { type: `channel.${"added" | "removed" | "read" | "muted"}` }
 );
 

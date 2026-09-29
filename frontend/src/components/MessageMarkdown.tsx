@@ -1,4 +1,4 @@
-import { Children, cloneElement, isValidElement, memo, use, type MouseEvent, type ReactNode } from "react";
+import { Children, cloneElement, isValidElement, memo, use, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -7,13 +7,11 @@ import { classifyEmojiOnly, jumboEmojiClass } from "@/lib/emoji";
 import { ChannelMentionLink } from "@/components/ChannelMentionLink";
 import { CodeBlock } from "@/components/CodeBlock";
 import { MENTION_TOKEN_RE, MentionsContext, type MessageMentions } from "@/components/mentionsContext";
-import { MessagePostContext } from "@/components/messagePostContext";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { mentionHandle } from "@/lib/messageHelpers";
 import { isHereToken } from "@/lib/mentions";
-import { claimMcpSignIn, isMcpSignInLink } from "@/lib/api";
-import { errMsg, toast } from "@/lib/toast";
-import { isDesktop, openExternal } from "@/lib/desktop";
+import { McpConnectCard } from "@/components/McpConnectCard";
+import { mcpConnectLinkId } from "@/lib/api";
 
 // A zero-width-space line is non-blank to CommonMark, so remark-breaks keeps it as an empty line.
 const ZWSP = "​";
@@ -138,36 +136,15 @@ function MentionText({ children }: { children: ReactNode }) {
   return mentions ? renderWithMentions(children, mentions) : children;
 }
 
-function openMcpSignIn(href: string, postId: number): void {
-  const tab = isDesktop ? null : window.open("", "_blank");
-  if (tab) tab.opener = null;
-  claimMcpSignIn(href, postId).then(
-    ({ url }) => {
-      if (tab) tab.location.replace(url);
-      else void openExternal(url);
-    },
-    (err: unknown) => {
-      tab?.close();
-      toast.error(errMsg(err, "Could not start the sign-in"));
-    },
-  );
-}
-
 function MessageLink({ href, children }: { href?: string; children?: ReactNode }) {
-  const postId = use(MessagePostContext);
-  const signIn =
-    href && postId !== undefined && isMcpSignInLink(href)
-      ? (e: MouseEvent<HTMLAnchorElement>) => {
-          e.preventDefault();
-          openMcpSignIn(href, postId);
-        }
-      : undefined;
-  return (
+  const linkId = href && mcpConnectLinkId(href);
+  return linkId ? (
+    <McpConnectCard linkId={linkId} />
+  ) : (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer nofollow"
-      onClick={signIn}
       className="text-[#007AFF] underline-offset-2 hover:underline break-words dark:text-[#0A84FF]"
     >
       {children}

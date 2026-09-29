@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { stitchThinkingTail, THINKING_ACC_MAX_CHARS } from "./thinkingStitch";
+import { currentSentence, stitchThinkingTail, THINKING_ACC_MAX_CHARS } from "./thinkingStitch";
 
 /** Fold a sequence of tails the way useChannelEvents does for one burst. */
 function reconstruct(tails: string[]): string {
@@ -69,5 +69,23 @@ describe("stitchThinkingTail", () => {
     expect(out.length).toBeLessThanOrEqual(THINKING_ACC_MAX_CHARS + 1); // +1 for the leading …
     expect(out.startsWith("…")).toBe(true);
     expect(out.endsWith("fresh conclusion here")).toBe(true);
+  });
+});
+
+describe("currentSentence", () => {
+  it("is the sentence being written, keeping dotted names and versions whole", () => {
+    expect(currentSentence("Reading SKILL.md for the v2.3 rules. Then e.g")).toEqual({ index: 1, text: "Then e.g" });
+    expect(currentSentence('I ran it (see the log.) It said "done." Next')).toEqual({ index: 2, text: "Next" });
+    expect(currentSentence("Looking at SKILL.md")).toEqual({ index: 0, text: "Looking at SKILL.md" });
+  });
+
+  it("is the last complete sentence when the text stops at one, under the index it was written at", () => {
+    expect(currentSentence("First. Second")).toEqual({ index: 1, text: "Second" });
+    expect(currentSentence("First. Second! ")).toEqual({ index: 1, text: "Second!" });
+    expect(currentSentence("Is it; maybe: yes?")).toEqual({ index: 0, text: "Is it; maybe: yes?" });
+  });
+
+  it("is nothing before any text", () => {
+    expect(currentSentence("  ")).toBeUndefined();
   });
 });

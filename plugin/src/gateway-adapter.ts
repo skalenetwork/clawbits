@@ -10,7 +10,7 @@ import {
   unregisterOpenDraft,
   type OpenDraftRef,
 } from "./draft-registry.js";
-import { finishReporting } from "./activity/reporter.js";
+import { finishReporting, lastActivity, turnSteps } from "./activity/reporter.js";
 import { finishStreaming, streamedText } from "./activity/stream-patcher.js";
 import {
   registerInFlightTurn,
@@ -48,6 +48,7 @@ import {
 } from "./inbound-dispatch-guard.js";
 import * as mmTools from "./tools/mattermost.js";
 import * as realtimeTools from "./tools/realtime.js";
+import type { DraftPatch } from "./tools/realtime.js";
 import * as versionTools from "./tools/version.js";
 import type { VersionCheckResponse } from "./tools/version.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
@@ -292,6 +293,7 @@ export async function dispatchInboundMessage(
   } | undefined;
 
   const conversationId = msg.channelId;
+  const realPostId = /^\d+$/.test(msg.postId) ? msg.postId : undefined;
   // The human who authored this post (defensive fall back to the chat id when
   // the server omitted a sender). Drives `From`/attribution — it is NOT the
   // routing/session peer for non-DM chats (see routePeer below).
@@ -460,10 +462,7 @@ export async function dispatchInboundMessage(
   // LobsterTalk attention replies thread under the post that triggered them —
   // nobody tagged the agent, so without the quoted parent the reply reads as
   // a non-sequitur in a busy channel. Ordinary mention/DM replies stay flat.
-  const attentionParentId =
-    msg.attention && Number.isFinite(Number(msg.postId))
-      ? Number(msg.postId)
-      : undefined;
+  const attentionParentId = msg.attention && realPostId !== undefined ? Number(realPostId) : undefined;
   if (client && usePreOpenShimmer) {
     const [statusResult, draftResult] = await Promise.allSettled([
       realtimeTools.setAgentStatus(client, conversationId, "generating"),
@@ -480,7 +479,8 @@ export async function dispatchInboundMessage(
     // Keep the pill lit: the initial set above expires after the server TTL,
     // so re-assert it on an interval until clearGenerating() flips to online.
     generatingHeartbeat = setInterval(() => {
-      void realtimeTools.setAgentStatus(client, conversationId, "generating").catch(() => {});
+      const activity = activityTurn && lastActivity(activityTurn);
+      void realtimeTools.setAgentStatus(client, conversationId, "generating", activity).catch(() => {});
     }, GENERATING_HEARTBEAT_MS);
     generatingHeartbeat.unref?.();
     if (draftResult.status === "fulfilled") {
@@ -515,6 +515,11 @@ export async function dispatchInboundMessage(
           liveActivity: accountLiveActivity,
         })
       : undefined;
+  const finish = async (): Promise<Pick<DraftPatch, "steps">> => {
+    const steps = activityTurn && (await turnSteps(activityTurn));
+    return steps ? { steps } : {};
+  };
+  draftRef.finish = finish;
 
   const clearGenerating = async (): Promise<void> => {
     if (generatingHeartbeat !== undefined) {
@@ -616,6 +621,7 @@ export async function dispatchInboundMessage(
         await realtimeTools.patchDraftPost(client, conversationId, draftPostId, {
           replace: body,
           done: true,
+          ...(await finish()),
         });
       } catch (err) {
         logWarn(
@@ -699,6 +705,7 @@ export async function dispatchInboundMessage(
   };
   const routeContext = {
     ConversationId: conversationId,
+    NativeChannelId: conversationId,
     SenderId: msg.senderId,
     // Override the default ``"direct"`` ChatType for non-DM inbound so
     // the runner doesn't address the reply to the operator's DM peer
@@ -787,7 +794,7 @@ export async function dispatchInboundMessage(
           sessionId: clawbitsSessionId(conversationId),
           // The only way the agent learns the id of the message it is answering,
           // and so the only way it can react to it (clawbits_react takes one).
-          postId: msg.postId,
+          postId: realPostId,
           // Render the catch-up history directly into the agent's body. The
           // structured `InboundHistory` context field is capped at 20 entries and
           // framed as "untrusted, for context", so the agent treats it as
@@ -925,9 +932,9 @@ export async function dispatchInboundMessage(
           conversationId,
           leftoverDraftId,
           partial
-            ? { replace: tagReplyBody(`${partial}\n\n_(stopped)_`, msg.senderTag), done: true }
+            ? { replace: tagReplyBody(`${partial}\n\n_(stopped)_`, msg.senderTag), done: true, ...(await finish()) }
             : failed && !stopRequested
-              ? { replace: "_(reply failed to generate)_", done: true }
+              ? { replace: "_(reply failed to generate)_", done: true, ...(await finish()) }
               : { cancel: true },
         );
       } catch (cleanupErr) {

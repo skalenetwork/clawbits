@@ -4,6 +4,7 @@ import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persi
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import {
   focusManager,
+  notifyManager,
   onlineManager,
   QueryClient,
   useInfiniteQuery,
@@ -14,6 +15,7 @@ import {
 import { useEffect, useEffectEvent, useState, type ReactNode } from "react";
 import { AppState } from "react-native";
 import { api, apiUrl, ApiError, channelPath } from "./api";
+import { endChannelTurns, memberStatus, presenceSnapshot, replyPublished } from "./liveTurn";
 import {
   historyPosts,
   mergePost,
@@ -214,30 +216,70 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
       if (channel)
         void client.invalidateQueries({ queryKey: ["channel", channel] });
     };
+    const streamed = (post: Post) =>
+      (
+        updates.get(post.post_id) ??
+        historyPosts(
+          client.getQueryData<History>(historyKey(post.channel_id)),
+        ).find((known) => known.post_id === post.post_id)
+      )?.status === "streaming";
+    /** Writes the pending posts to the cache, and ends the turn a reply finished in the same notify batch, so the
+     *  published post and the turn's end reach React in one render. */
+    const commit = (reply?: Post) => {
+      clearTimeout(flush);
+      flush = undefined;
+      const posts = [...updates.values()];
+      updates.clear();
+      notifyManager.batch(() => {
+        for (const post of posts)
+          client.setQueryData<History>(
+            historyKey(post.channel_id),
+            (old) => (old || channel ? mergePost(old, post) : old),
+          );
+        if (reply)
+          notifyManager.schedule(() => {
+            replyPublished(reply);
+          });
+      });
+      if (!channel || posts.some((post) => post.status === "published"))
+        void client.invalidateQueries({ queryKey: ["channels"] });
+    };
+    /** Folds a live-lane event behind what the cache has queued, so the agent's status that follows its reply cannot
+     *  end the turn before the reply does. */
+    const inOrder = (fold: () => void) => {
+      notifyManager.schedule(() => {
+        if (!disposed) fold();
+      });
+    };
     const event = (incoming: ChatEvent) => {
       if (
         incoming.type === "post.created" ||
         incoming.type === "post.updated"
       ) {
-        updates.set(incoming.data.post_id, incoming.data);
-        if (!flush)
-          flush = setTimeout(() => {
-            const posts = [...updates.values()];
-            updates.clear();
-            flush = undefined;
-            for (const post of posts)
-              client.setQueryData<History>(
-                historyKey(post.channel_id),
-                (old) => (old || channel ? mergePost(old, post) : old),
-              );
-            if (!channel || posts.some((post) => post.status === "published"))
-              void client.invalidateQueries({ queryKey: ["channels"] });
-          }, 50);
+        const post = incoming.data;
+        const reply =
+          !!channel &&
+          !!post.agent_id &&
+          post.status === "published" &&
+          streamed(post);
+        updates.set(post.post_id, post);
+        if (reply) commit(post);
+        else flush ??= setTimeout(commit, 50);
       } else if (incoming.type === "post.deleted") {
         updates.delete(incoming.data.post_id);
         client.setQueryData<History>(historyKey(incoming.channel_id), (old) =>
           old ? removePost(old, incoming.data.post_id) : old,
         );
+      } else if (channel && incoming.type === "member.status") {
+        const status = incoming.data;
+        inOrder(() => {
+          memberStatus(channel, status);
+        });
+      } else if (channel && incoming.type === "presence.snapshot") {
+        const { members } = incoming.data;
+        inOrder(() => {
+          presenceSnapshot(channel, members);
+        });
       } else if (incoming.type === "channel.removed") {
         client.removeQueries({ queryKey: historyKey(incoming.channel_id) });
         void client.invalidateQueries({
@@ -317,5 +359,12 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
       network();
     };
   }, [channel, client, enabled, restoring, token]);
+
+  useEffect(() => {
+    if (!channel) return;
+    return () => {
+      endChannelTurns(channel);
+    };
+  }, [channel]);
   return connected;
 }

@@ -23,11 +23,42 @@ export type AgentStatus =
  *  truncated in-VM before this ever leaves the machine — see
  *  ``activity/sanitize.ts``. */
 export interface AgentActivity {
-  kind: "generating" | "thinking" | "tool" | "tool_done";
+  kind: "generating" | "thinking" | "tool" | "tool_done" | "note";
+  /** The engine's tool call id, or the narration's item id: one step, however many events. */
+  id?: string;
   label?: string;
   tool?: string;
   ok?: boolean;
   duration_ms?: number;
+}
+
+/** The origins an MCP App's view may reach, as its server declared them. */
+export interface McpAppCsp {
+  connectDomains?: string[];
+  resourceDomains?: string[];
+  frameDomains?: string[];
+  baseUriDomains?: string[];
+}
+
+/** The MCP App view a tool call rendered: its server, the `ui://` document, and the call it shows. */
+export interface McpApp {
+  server: string;
+  host?: string;
+  html: string;
+  csp?: McpAppCsp;
+  input: Record<string, unknown>;
+  result: Record<string, unknown>;
+}
+
+/** One step of a finished turn, kept on the reply post: the tool and narration activity the channel saw live. */
+export interface TurnStep {
+  kind: "tool" | "note";
+  id: string;
+  label: string;
+  tool?: string;
+  ok?: boolean;
+  duration_ms?: number;
+  app?: McpApp;
 }
 
 export type MmPostStatus = "streaming" | "draft" | "published" | "rejected";
@@ -105,6 +136,8 @@ export interface DraftPatch {
    * append / replace / done; server returns 204 on success.
    */
   cancel?: boolean;
+  /** The finished turn's steps, kept on the post; only with ``done``. */
+  steps?: TurnStep[];
 }
 
 export async function patchDraftPost(

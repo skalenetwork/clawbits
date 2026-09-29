@@ -33,6 +33,7 @@ const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
 const ReefSetupPage = lazy(() => import("./pages/ReefSetupPage"));
 const AgentSetupPage = lazy(() => import("./pages/AgentSetupPage"));
 const McpSignInPage = lazy(() => import("./pages/McpSignInPage"));
+const McpConnectPage = lazy(() => import("./pages/McpConnectPage"));
 const OrgSetupPage = lazy(() => import("./pages/OrgSetupPage"));
 const TermsPage = lazy(() => import("./pages/TermsPage"));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
@@ -87,11 +88,12 @@ function AppShell() {
           </Route>
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/oauth/mcp/callback" element={<McpSignInPage />} />
           <Route element={<RequireAuth />}>
             <Route path="/setup/reef" element={<ReefSetupPage />} />
             <Route path="/setup/agent" element={<AgentSetupPage />} />
             <Route path="/setup/org" element={<OrgSetupPage />} />
-            <Route path="/oauth/mcp/callback/:agentId/:server" element={<McpSignInPage />} />
+            <Route path="/connect/:linkId" element={<McpConnectPage />} />
           </Route>
           <Route element={<AppLayout />}>
             <Route path="/home" element={<AgentHomePage />} />

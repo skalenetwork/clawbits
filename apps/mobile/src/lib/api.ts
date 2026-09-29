@@ -1,5 +1,6 @@
 import type {
   Channel,
+  McpConnectLink,
   Organization,
   Post,
   PostsPage,
@@ -65,18 +66,26 @@ export async function request<T>(
     : (response.json() as Promise<T>);
 }
 
-export function isMcpSignInLink(url: string): boolean {
+export function mcpConnectLinkId(url: string): string | undefined {
   try {
-    return new URL(new URL(url).searchParams.get("redirect_uri") ?? "").pathname.startsWith("/oauth/mcp/callback/");
+    return /^\/connect\/([0-9a-f]{32})$/.exec(new URL(url).pathname)?.[1];
   } catch {
-    return false;
+    return undefined;
   }
 }
 
 export const api = {
   me: (token: string) => request<User>("/api/auth/me", token),
-  claimMcpSignIn: (token: string, url: string, postId: number) =>
-    request<{ url: string }>("/api/human/mcp-oauth/claim", token, { url, post_id: postId }),
+  /** The link's card, or null once the link is gone. */
+  mcpConnectLink: (token: string, linkId: string) =>
+    request<McpConnectLink>(`/api/human/mcp-oauth/links/${linkId}`, token).catch((err: unknown) => {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }),
+  claimMcpConnect: (token: string, linkId: string) =>
+    request<{ url: string }>(`/api/human/mcp-oauth/links/${linkId}/claim`, token, { client: "mobile" }),
+  completeMcpSignIn: (token: string, state: string, code: string) =>
+    request<{ channel_id: string }>("/api/human/mcp-oauth/callback", token, { state, code }),
   organizations: (token: string, signal?: AbortSignal) =>
     request<{ organizations: Organization[] }>(
       "/api/human/orgs",

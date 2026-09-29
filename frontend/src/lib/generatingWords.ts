@@ -76,8 +76,8 @@ export const SPINNER_POOL: readonly BrailleSpinnerName[] = [
 ];
 
 // Pick a spinner *deterministically* from the agent id. The presence-derived
-// GeneratingRow and the streaming DraftBody render two separate indicator
-// instances for the same agent; a random per-mount pick would swap the glyph at
+// GeneratingRow and the streaming draft render two separate turn lines
+// for the same agent; a random per-mount pick would swap the glyph at
 // the handoff. Hashing the id keeps both instances on the same animation, so the
 // swap is invisible.
 export function spinnerForAgent(agentId: string): BrailleSpinnerName {

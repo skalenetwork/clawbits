@@ -16,7 +16,7 @@ describe("draft-registry", () => {
   it("claim returns the registered draft id and empties the shared ref", () => {
     const ref: OpenDraftRef = { id: 101 };
     registerOpenDraft("default", "chan-1", ref);
-    assert.equal(claimOpenDraft("default", "chan-1"), 101);
+    assert.equal(claimOpenDraft("default", "chan-1")?.id, 101);
     // The gateway's cleanup paths key off the ref, not the registry — the
     // claim must have emptied it so the turn-end cancel is skipped.
     assert.equal(ref.id, undefined);
@@ -39,7 +39,7 @@ describe("draft-registry", () => {
     const turn2: OpenDraftRef = { id: 2 };
     registerOpenDraft("default", "chan-1", turn1);
     registerOpenDraft("default", "chan-1", turn2);
-    assert.equal(claimOpenDraft("default", "chan-1"), 2);
+    assert.equal(claimOpenDraft("default", "chan-1")?.id, 2);
     // Turn 1's draft is untouched — its own finally-block still cancels it.
     assert.equal(turn1.id, 1);
   });
@@ -51,7 +51,7 @@ describe("draft-registry", () => {
     registerOpenDraft("default", "chan-1", turn2);
     // Turn 1 finishing late must not evict turn 2's live registration.
     unregisterOpenDraft("default", "chan-1", turn1);
-    assert.equal(claimOpenDraft("default", "chan-1"), 2);
+    assert.equal(claimOpenDraft("default", "chan-1")?.id, 2);
     unregisterOpenDraft("default", "chan-1", turn2);
     assert.equal(claimOpenDraft("default", "chan-1"), undefined);
   });

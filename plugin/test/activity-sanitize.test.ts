@@ -21,6 +21,12 @@ describe("sanitizeToolSummary", () => {
     );
   });
 
+  it("names a written file by its path and never by its contents", () => {
+    const path = "/home/node/.openclaw/workspace/STRATEGY.md";
+    assert.equal(sanitizeToolSummary("write", { path, content: "# Strategy - buy on momentum" }), `write: '${path}'`);
+    assert.equal(sanitizeToolSummary("write", { target: "EXAMPLEFAKECREDENTIALFORTESTS0000", content: "# Strategy" }), "write");
+  });
+
   it("CANARY: secrets under secret-shaped keys never appear in the summary", () => {
     const canary = "sk-canary-8f3kq09zj4x7p2m5v1c6b8n0";
     const out = sanitizeToolSummary("http_request", {
@@ -131,13 +137,21 @@ describe("sanitizeThinkingTail", () => {
       sanitizeThinkingTail("I should *check* the `config` first"),
       "I should check the config first",
     );
+    assert.equal(sanitizeThinkingTail("Run __read_file__ on _this_"), "Run read_file on this");
   });
 
   it("drops fenced code blocks wholesale (they can carry file contents)", () => {
     const secret = "SECRET_CONTENTS_OF_ENV_FILE";
     const out = sanitizeThinkingTail(`Let me look\n\`\`\`\n${secret}\n\`\`\`\nDone reading`);
     assert.ok(!out.includes(secret));
-    assert.equal(out, "Let me look Done reading");
+    assert.equal(out, "Let me look. Done reading");
+  });
+
+  it("ends a paragraph as a sentence, so a summary's title never runs into its first line", () => {
+    assert.equal(sanitizeThinkingTail("**Checking config**\n\nI'll open it"), "Checking config. I'll open it");
+    assert.equal(sanitizeThinkingTail("First,\n\nSecond"), "First, Second");
+    assert.equal(sanitizeThinkingTail('It said "done."\n\n## Next\n\nRead the log'), 'It said "done." Next. Read the log');
+    assert.equal(sanitizeThinkingTail("One line\nand the next"), "One line and the next");
   });
 
   it("tails long text to the cap starting at a word boundary", () => {

@@ -1,12 +1,12 @@
-// Activity lane of live activity (LIVE_AGENT_ACTIVITY_PLAN §3.3): turns
-// ``thinking`` / ``tool`` agent events into sanitized, rate-capped status
-// updates on the channel status lane. Ephemeral by design — the server
-// TTLs the payload with the presence entry and never persists it.
+// Activity lane of live activity (LIVE_AGENT_ACTIVITY_PLAN §3.3): turns thinking, narration, tool and
+// exec-outcome agent events into sanitized, rate-capped status updates on the channel status lane, and
+// keeps the turn's tool and narration steps (never its thinking) for the reply post to carry.
 
 import { ClawBitsError } from "../errors.js";
 import { pluginDebug } from "../file-logger.js";
 import * as realtimeTools from "../tools/realtime.js";
-import type { AgentActivity } from "../tools/realtime.js";
+import type { AgentActivity, McpApp, TurnStep } from "../tools/realtime.js";
+import { fetchMcpApp, mcpAppView } from "./mcp-apps.js";
 import {
   sanitizeThinkingTail,
   sanitizeToolDetail,
@@ -15,10 +15,25 @@ import {
 } from "./sanitize.js";
 import type { InFlightTurn } from "./turn-registry.js";
 
-/** Thinking updates are a ticker — latest-wins at ~1/s. Tool start/done are
- *  sparse discrete moments and send immediately (still on the serialized
- *  chain, so a burst can't reorder). */
-const THINKING_MIN_INTERVAL_MS = 1000;
+/** Prose (thinking tails, narration) is a ticker, latest-wins at ~1/s. Tool start/done are sparse
+ *  discrete moments and send immediately, after any pending prose, on the serialized chain. */
+const PROSE_MIN_INTERVAL_MS = 1000;
+
+/** Steps a reply keeps, as many as the server stores; later ones still stream live. */
+const TURN_STEPS_MAX = 200;
+
+/** Tool search's dispatcher: the model's call to a searched tool arrives as `tool_call` with the target's id and
+ *  arguments, then the host emits the target's own nested events (`parentToolCallId`). One step, named for the target. */
+const TOOL_CALL = "tool_call";
+const CATALOG_PREFIX = /^(?:openclaw|mcp|client):[^:]+:/;
+
+interface ToolSearchCall {
+  id?: unknown;
+  name?: unknown;
+  toolId?: unknown;
+  args?: unknown;
+  input?: unknown;
+}
 
 /** Process-wide latch: the server told us it doesn't know the ``activity``
  *  field (422 from a pre-activity Clawbits). Stop sending it anywhere —
@@ -27,10 +42,17 @@ let serverLacksActivity = false;
 
 interface ReporterState {
   disabled: boolean;
-  lastThinkingSentAt: number;
-  thinkingTimer: ReturnType<typeof setTimeout> | null;
-  pendingThinking: string | null;
-  toolStartedAt: Map<string, number>;
+  lastProseSentAt: number;
+  proseTimer: ReturnType<typeof setTimeout> | null;
+  pendingProse: AgentActivity | null;
+  /** The turn's tool and narration steps by id, in the order they began. */
+  steps: Map<string, TurnStep>;
+  startedAt: Map<string, number>;
+  /** Calls a tool search dispatched, to the step that dispatched them. */
+  parentOf: Map<string, string>;
+  /** The MCP App views steps rendered, read as their results land. */
+  apps: Map<string, Promise<McpApp | undefined>>;
+  last: AgentActivity | undefined;
   inflight: Promise<void>;
 }
 
@@ -41,10 +63,14 @@ function stateFor(turn: InFlightTurn): ReporterState {
   if (!state) {
     state = {
       disabled: false,
-      lastThinkingSentAt: 0,
-      thinkingTimer: null,
-      pendingThinking: null,
-      toolStartedAt: new Map(),
+      lastProseSentAt: 0,
+      proseTimer: null,
+      pendingProse: null,
+      steps: new Map(),
+      startedAt: new Map(),
+      parentOf: new Map(),
+      apps: new Map(),
+      last: undefined,
       inflight: Promise.resolve(),
     };
     states.set(turn, state);
@@ -52,9 +78,24 @@ function stateFor(turn: InFlightTurn): ReporterState {
   return state;
 }
 
+/** The turn's reporting state, or undefined when the lane is off for it. Steps are kept even once sending stops. */
+function reporting(turn: InFlightTurn, data: unknown): [ReporterState, Record<string, unknown>] | undefined {
+  return turn.liveActivity && data !== null && typeof data === "object"
+    ? [stateFor(turn), data as Record<string, unknown>]
+    : undefined;
+}
+
+const silenced = (state: ReporterState): boolean => state.disabled || serverLacksActivity;
+
+function keepStep(state: ReporterState, step: TurnStep): void {
+  if (state.steps.has(step.id) || state.steps.size < TURN_STEPS_MAX) state.steps.set(step.id, step);
+}
+
 function queueSend(turn: InFlightTurn, state: ReporterState, activity: AgentActivity): void {
+  if (silenced(state)) return;
+  state.last = activity;
   state.inflight = state.inflight.then(async () => {
-    if (state.disabled || serverLacksActivity) return;
+    if (silenced(state)) return;
     try {
       await realtimeTools.setAgentStatus(turn.client, turn.channelId, "generating", activity);
     } catch (err) {
@@ -75,75 +116,129 @@ function queueSend(turn: InFlightTurn, state: ReporterState, activity: AgentActi
   });
 }
 
-export function onThinkingEvent(turn: InFlightTurn, data: unknown): void {
-  if (!turn.liveActivity || serverLacksActivity) return;
-  const state = stateFor(turn);
-  if (state.disabled) return;
-  if (data === null || typeof data !== "object") return;
-  const d = data as Record<string, unknown>;
-  const label = sanitizeThinkingTail(d.text ?? d.delta);
-  if (!label) return;
-  state.pendingThinking = label;
-
-  const now = Date.now();
-  const dueIn = THINKING_MIN_INTERVAL_MS - (now - state.lastThinkingSentAt);
+function tickProse(turn: InFlightTurn, state: ReporterState, activity: AgentActivity): void {
+  if (silenced(state)) return;
+  state.pendingProse = activity;
+  const dueIn = PROSE_MIN_INTERVAL_MS - (Date.now() - state.lastProseSentAt);
   if (dueIn <= 0) {
-    flushThinking(turn, state);
+    flushProse(turn, state);
     return;
   }
-  if (!state.thinkingTimer) {
-    state.thinkingTimer = setTimeout(() => {
-      state.thinkingTimer = null;
-      flushThinking(turn, state);
-    }, dueIn);
-  }
+  state.proseTimer ??= setTimeout(() => {
+    state.proseTimer = null;
+    flushProse(turn, state);
+  }, dueIn);
 }
 
-function flushThinking(turn: InFlightTurn, state: ReporterState): void {
-  const label = state.pendingThinking;
-  if (label === null) return;
-  state.pendingThinking = null;
-  state.lastThinkingSentAt = Date.now();
-  queueSend(turn, state, { kind: "thinking", label });
+function flushProse(turn: InFlightTurn, state: ReporterState): void {
+  const activity = state.pendingProse;
+  if (activity === null) return;
+  state.pendingProse = null;
+  state.lastProseSentAt = Date.now();
+  queueSend(turn, state, activity);
+}
+
+export function onThinkingEvent(turn: InFlightTurn, data: unknown): void {
+  const live = reporting(turn, data);
+  if (!live) return;
+  const [state, d] = live;
+  const label = sanitizeThinkingTail(d.text ?? d.delta);
+  if (label) tickProse(turn, state, { kind: "thinking", label });
+}
+
+/** OpenClaw's `item` stream: the model's narration for the person watching (commentary-phase preambles). */
+export function onItemEvent(turn: InFlightTurn, data: unknown): void {
+  const live = reporting(turn, data);
+  if (!live) return;
+  const [state, d] = live;
+  const label = d.kind === "preamble" ? sanitizeThinkingTail(d.progressText) : undefined;
+  if (!label) return;
+  const id = typeof d.itemId === "string" && d.itemId ? d.itemId : "preamble";
+  keepStep(state, { kind: "note", id, label });
+  tickProse(turn, state, { kind: "note", id, label });
 }
 
 export function onToolEvent(turn: InFlightTurn, data: unknown): void {
-  if (!turn.liveActivity || serverLacksActivity) return;
-  const state = stateFor(turn);
-  if (state.disabled) return;
-  if (data === null || typeof data !== "object") return;
-  const d = data as Record<string, unknown>;
+  const live = reporting(turn, data);
+  if (!live) return;
+  const [state, d] = live;
+  const callId = typeof d.toolCallId === "string" ? d.toolCallId : "";
+  const parent = typeof d.parentToolCallId === "string" ? d.parentToolCallId : undefined;
+  const view = d.phase === "result" ? mcpAppView(d.result) : undefined;
+  if (view) state.apps.set(parent ?? callId, fetchMcpApp(view));
+  if (parent) {
+    if (callId) state.parentOf.set(callId, parent);
+    return;
+  }
+  if (d.hideFromChannelProgress === true) return;
   const phase = typeof d.phase === "string" ? d.phase : "";
   const name = typeof d.name === "string" && d.name ? d.name : "tool";
-  const callId = typeof d.toolCallId === "string" ? d.toolCallId : "";
+  const id = callId ? { id: callId } : {};
 
   if (phase === "start") {
-    if (callId) state.toolStartedAt.set(callId, Date.now());
-    queueSend(turn, state, {
-      kind: "tool",
-      tool: name,
-      label: sanitizeToolSummary(name, d.args),
-    });
+    const call = name === TOOL_CALL ? (d.args as ToolSearchCall | undefined) : undefined;
+    const target = call?.id ?? call?.name ?? call?.toolId;
+    const tool = typeof target === "string" && target ? target.replace(CATALOG_PREFIX, "") : name;
+    const label = sanitizeToolSummary(tool, call ? (call.args ?? call.input) : d.args);
+    if (callId) {
+      state.startedAt.set(callId, performance.now());
+      keepStep(state, { kind: "tool", id: callId, tool, label });
+    }
+    flushProse(turn, state);
+    queueSend(turn, state, { kind: "tool", ...id, tool, label });
     return;
   }
   if (phase === "result") {
-    const startedAt = callId ? state.toolStartedAt.get(callId) : undefined;
-    if (callId) state.toolStartedAt.delete(callId);
-    queueSend(turn, state, {
-      kind: "tool_done",
-      tool: name,
-      // Usually just the tool name — the UI keeps whatever the START label
-      // captured. The exception is a harness that only knows the interesting
-      // argument once the call finishes (Codex web_search: the query and the
-      // opened URL both land with `item/completed`). `meta` is OpenClaw's own
-      // formatted detail and covers queries; the result descriptor covers the
-      // URL of a page-open, which `meta` has no formatter for.
-      label:
-        sanitizeToolDetail(name, d.meta) ?? sanitizeToolResultDescriptor(name, d.result) ?? name,
-      ok: d.isError !== true,
-      ...(startedAt !== undefined ? { duration_ms: Date.now() - startedAt } : {}),
-    });
+    const step = state.steps.get(callId);
+    const tool = step?.tool ?? name;
+    const startedAt = state.startedAt.get(callId);
+    // Usually just the tool name — the UI keeps whatever the START label
+    // captured. The exception is a harness that only knows the interesting
+    // argument once the call finishes (Codex web_search: the query and the
+    // opened URL both land with `item/completed`). `meta` is OpenClaw's own
+    // formatted detail and covers queries; the result descriptor covers the
+    // URL of a page-open, which `meta` has no formatter for.
+    const label = sanitizeToolDetail(tool, d.meta) ?? sanitizeToolResultDescriptor(tool, d.result) ?? tool;
+    const outcome = {
+      ok: step?.ok !== false && d.isError !== true,
+      ...(startedAt !== undefined ? { duration_ms: Math.round(performance.now() - startedAt) } : {}),
+    };
+    state.startedAt.delete(callId);
+    if (step) state.steps.set(callId, { ...step, ...outcome, ...(step.label === tool ? { label } : {}) });
+    queueSend(turn, state, { kind: "tool_done", ...id, tool, label, ...outcome });
   }
+}
+
+/** OpenClaw's `command_output` stream: an exec that ran but exited nonzero, which the tool event reports as success.
+ *  An exec a tool search ran fails the step that dispatched it, and may end before that step's own result. */
+export function onCommandOutputEvent(turn: InFlightTurn, data: unknown): void {
+  const live = reporting(turn, data);
+  if (!live) return;
+  const [state, d] = live;
+  if (d.phase !== "end" || d.status !== "failed" || typeof d.toolCallId !== "string") return;
+  const step = state.steps.get(state.parentOf.get(d.toolCallId) ?? d.toolCallId);
+  if (step?.kind !== "tool" || step.ok === false) return;
+  const failed = { ...step, ok: false };
+  state.steps.set(step.id, failed);
+  queueSend(turn, state, { ...failed, kind: "tool_done" });
+}
+
+/** The turn's tool and narration steps so far, with the App views they rendered, for the reply post to keep; none when the server predates them. */
+export async function turnSteps(turn: InFlightTurn): Promise<TurnStep[] | undefined> {
+  const state = states.get(turn);
+  if (!state?.steps.size || serverLacksActivity) return undefined;
+  return Promise.all(
+    [...state.steps.values()].map(async (step) => {
+      const app = await state.apps.get(step.id);
+      return app ? { ...step, app } : step;
+    }),
+  );
+}
+
+/** The activity last reported for a turn, so a status heartbeat can repeat it instead of clearing it. */
+export function lastActivity(turn: InFlightTurn): AgentActivity | undefined {
+  const state = states.get(turn);
+  return state && !silenced(state) ? state.last : undefined;
 }
 
 /** End of run: drop pending ticks and disable the lane so a queued-but-
@@ -154,11 +249,11 @@ export function finishReporting(turn: InFlightTurn): void {
   const state = states.get(turn);
   if (!state) return;
   state.disabled = true;
-  if (state.thinkingTimer) {
-    clearTimeout(state.thinkingTimer);
-    state.thinkingTimer = null;
+  if (state.proseTimer) {
+    clearTimeout(state.proseTimer);
+    state.proseTimer = null;
   }
-  state.pendingThinking = null;
+  state.pendingProse = null;
 }
 
 /** Test seams. */

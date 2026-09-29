@@ -1,6 +1,6 @@
 # Clawbits Desktop
 
-Tauri 2 shell over the Clawbits web frontend at [`../frontend`](../frontend). macOS 11+ universal and Ubuntu 24.04+ (`webkit2gtk-4.1`).
+Tauri 2 shell over the Clawbits web frontend at [`../frontend`](../frontend). macOS 14+ universal and Ubuntu 24.04+ (`webkit2gtk-4.1`).
 
 ## Dev
 
@@ -38,7 +38,7 @@ Tauri's auto-updater can replace the running binary only when the app is itself 
 
 On **all** desktops, ⌘W, the red X and the dock's right-click "Quit" **hide** the window and the app keeps running in the background, so the SSE stream that feeds desktop notifications stays alive (this is what keeps notifications arriving after the window is closed on Ubuntu). The tray is always *attempted*: KDE, Cinnamon, MATE, XFCE, Unity **and Ubuntu's default GNOME** (which ships the AppIndicator extension) render a Show/Quit icon; a bare GNOME session with no StatusNotifierItem host simply doesn't show it, with no error.
 
-Bring the window back via the tray's Show, the **Ctrl+Shift+C** global shortcut (X11; Wayland may block it, so use the tray or Background Apps menu there), GNOME's **Background Apps** menu (24.04+), or by relaunching (single-instance focuses the running window). **Truly exit** via the tray's Quit, the app menu's Quit (⌘/Ctrl+Q), or GNOME's Background Apps → Quit: these call `app.exit()` and bypass the close-to-hide handler. The dock's right-click "Quit" sends the same `WM_DELETE_WINDOW` as the X button, so it hides rather than exits.
+Bring the window back via the tray's Show, the **Super+Shift+C** global shortcut (X11; Wayland may block it, so use the tray or Background Apps menu there), GNOME's **Background Apps** menu (24.04+), or by relaunching (single-instance focuses the running window). **Truly exit** via the tray's Quit, the app menu's Quit (⌘/Ctrl+Q), or GNOME's Background Apps → Quit: these call `app.exit()` and bypass the close-to-hide handler. The dock's right-click "Quit" sends the same `WM_DELETE_WINDOW` as the X button, so it hides rather than exits.
 
 ## Unsigned macOS install
 
@@ -66,9 +66,9 @@ Checks worth doing after install:
 - **About dialog** (app menu → About clawbits-staging): name, version, icon, comment, website, copyright all populated.
 - **Deep link**: `xdg-open clawbits-staging://oauth-callback?token=foo` (or `clawbits://...` for prod) should focus the running app and trigger the auth flow.
 - **Window chrome**: solid window background (no see-through to desktop), menu bar (Edit/View/Window) has a proper background.
-- **Close hides, app keeps running**: the red X and `Cmd-W` hide the window but the process stays up (`pgrep clawbits-staging` still lists it), so notifications keep arriving. Reopen via the tray's Show, `Ctrl+Shift+C`, GNOME's Background Apps menu, or relaunch.
-- **Clicking a notification** raises the window and lands on the channel the message came from. Needs the daemon to advertise the `actions` capability (Settings → Notifications lists what yours reports); without it the banner still shows, it just isn't clickable. Not yet wired on macOS.
-- **A busy channel doesn't stack banners**: a second message in the same channel replaces the first rather than adding to the tray. Look for `replaces_id=Some(N)` in the log.
+- **Close hides, app keeps running**: the red X and `Cmd-W` hide the window but the process stays up (`pgrep clawbits-staging` still lists it), so notifications keep arriving. Reopen via the tray's Show, `Super+Shift+C`, GNOME's Background Apps menu, or relaunch.
+- **Clicking a notification** raises the window and lands on the channel the message came from. Needs the daemon to advertise the `actions` capability (Settings → Notifications lists what yours reports); without it the banner still shows, it just isn't clickable.
+- **A busy channel doesn't stack banners**: a second message in the same channel replaces the first rather than adding to the tray. The second `notify send (message)` log line carries `id: Some(N)`.
 - **Quit fully exits**: the tray's Quit, app-menu Quit (`Ctrl+Q`), or Background Apps → Quit terminate the process (`pgrep clawbits-staging` then returns nothing).
 
 ### Diagnosing Linux notifications
@@ -87,7 +87,7 @@ Reproduction recipe, run after installing the .deb:
    ```bash
    clawbits-staging
    ```
-2. **Either** receive a real chat message **or** press **Send a test** in Settings → Notifications; both go through the same code path with full payload logging. (The same command is still reachable from DevTools, `View → Toggle DevTools` / `Cmd+Alt+I`, as `await window.__TAURI_INTERNALS__.invoke('notify_debug_ping')`.)
+2. **Either** receive a real chat message **or** press **Send a test** in Settings → Notifications; both go through the same code path with full payload logging.
 3. **Grab the log** and share it back:
    ```bash
    cat ~/.local/share/ai.clawbits.staging/logs/clawbits.log
@@ -95,11 +95,10 @@ Reproduction recipe, run after installing the .deb:
 
 What to look for in the log:
 
-- A `--- notification environment ---` block at the top of each run. It dumps `XDG_CURRENT_DESKTOP`, the resolved executable path, every checked `.desktop` file location, whether `notify-send` is installed, and the notification daemon's identity + capabilities.
-- `.desktop check: ... -> FOUND` for at least one path with basename matching `desktop_entry_name`. **If every path says `missing`**, GNOME Shell silently drops our notifications: the install didn't register a `.desktop` file the Shell can match against. The `.deb` registers one system-wide; **AppImage** runs self-register one to `~/.local/share/applications/<slug>.desktop` on first launch; look for `appimage integration: wrote ...` (or `... already current`) in the log. If that line is missing on an AppImage run, `APPIMAGE`/`HOME` weren't set.
-- `notify server: name=... vendor=...` confirms D-Bus reached a daemon. Missing this line means D-Bus itself is failing (sandbox, no daemon).
-- Per delivery: `notify send (message): ...` lists the exact summary, body, and every hint (icon, category, urgency, sound, timeout), plus the `replaces_id` being reused for that channel. `notify result (...): OK id=N` or `ERR err=...` follows.
-- **The first thing to check, before anything above.** If a message produced no banner and there is *no* `notify send (message):` line for it at all, the shell never tried: the failure is in the frontend gate, not in D-Bus, and nothing else in this section applies. (`isAppInForeground()` in `frontend/src/lib/desktop.ts` suppresses notifications while you are looking at the app, and it must not mistake a window hidden to the tray for a focused one.)
+- **First**: a message with no banner *and* no `notify send (message):` line was never sent by the shell. The frontend gate stopped it and nothing below applies (`isAppInForeground()` in `frontend/src/lib/desktop.ts` suppresses notifications while you look at the app, and must not mistake a window hidden to the tray for a focused one).
+- `env ...` lines and `notify diagnostics: Diagnostics { ... }` at the start of each run: the desktop session, the executable, the daemon and the installed `.desktop` file. **`desktop_file: None`** means GNOME Shell silently drops our notifications, having nothing to match them against. The `.deb` registers one system-wide; **AppImage** runs write `~/.local/share/applications/<slug>.desktop` themselves (`appimage integration: wrote ...` when they had to).
+- `notify server: Ok(ServerInformation { name: ... })` confirms D-Bus reached a daemon; an `Err(...)` there means D-Bus itself fails (sandbox, no daemon).
+- Per delivery: `notify send (message): Notification { ... }` shows the exact summary, body, hints and the `id` reused for the channel; `notify message failed: ...` follows only on error.
 
 Cross-checks that quickly localize the failure:
 

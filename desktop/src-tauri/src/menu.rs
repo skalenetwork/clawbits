@@ -1,94 +1,58 @@
-use std::sync::Mutex;
-
-use serde::{Deserialize, Serialize};
-use tauri::{
-    image::Image,
-    menu::{
-        AboutMetadataBuilder, CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItem,
-        MenuItemBuilder, SubmenuBuilder,
-    },
-    AppHandle, Emitter, Manager, Runtime,
+use serde::Deserialize;
+use tauri::menu::{
+    AboutMetadataBuilder, CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuEvent,
+    MenuItem, MenuItemBuilder, Submenu, SubmenuBuilder,
 };
+use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_opener::OpenerExt;
 
-// Embedded at compile time. `scripts/build-icons.mjs` runs in the
-// beforeDev/beforeBuild step and regenerates this from the channel's
-// source, so the embedded icon always matches the rest of the bundle.
-const ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
-
-/// How many slots the "Recent" submenu reserves. Items beyond the Nth
-/// most-recent are dropped. Match this to the frontend's tracker cap.
-pub const RECENT_SLOTS: usize = 10;
-
-/// Per-channel record held by the menu state so we know what path to
-/// emit when the user clicks a Recent slot.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct RecentChannel {
-    pub id: String,
-    pub name: String,
-    pub path: String,
+/// A menu entry that opens a route: Window > Recent and the tray's unread list.
+#[derive(Deserialize)]
+pub struct ChannelLink {
+    name: String,
+    path: String,
 }
 
-/// Shared state: the current list of recent channels and the menu-item
-/// handles whose labels we mutate as the list changes.
-pub struct RecentState<R: Runtime> {
-    pub items: Mutex<Vec<RecentChannel>>,
-    pub slots: Mutex<Vec<MenuItem<R>>>,
+/// Ids with this prefix carry the route they open.
+const OPEN: &str = "open:";
+
+pub fn link(app: &AppHandle, link: &ChannelLink) -> tauri::Result<MenuItem<Wry>> {
+    MenuItemBuilder::with_id(format!("{OPEN}{}", link.path), &link.name).build(app)
 }
 
-/// Handle to the "Launch at Login" toggle so the autostart plugin's
-/// state and the menu's checkmark stay in sync.
-pub struct AutostartMenuItem<R: Runtime>(pub Mutex<Option<CheckMenuItem<R>>>);
-
-fn load_app_icon() -> Image<'static> {
-    let decoded = image::load_from_memory(ICON_BYTES)
-        .expect("embedded icon.png must be a valid PNG")
-        .to_rgba8();
-    let (w, h) = (decoded.width(), decoded.height());
-    Image::new_owned(decoded.into_raw(), w, h)
-}
-
-/// Build the full app menu and return it along with the references the
-/// caller needs to keep in `State` for runtime updates (Recent slots,
-/// Launch-at-Login checkbox).
-pub fn build<R: Runtime>(
-    app: &AppHandle<R>,
-) -> tauri::Result<(Menu<R>, Vec<MenuItem<R>>, CheckMenuItem<R>)> {
-    // Channel-aware label for the macOS app menu / About dialog. After
-    // unifying the naming convention to the slug form across all
-    // channels, productName, mainBinaryName, the Linux .desktop
-    // basename, and the macOS .app bundle name all coincide — so we
-    // can use productName directly without going through a separate
-    // display-name mapping.
-    let product = app
-        .config()
-        .product_name
-        .clone()
-        .unwrap_or_else(|| "clawbits".to_string());
-
+pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let item = |id: &str, label: &str, accelerator: &str| {
+        MenuItemBuilder::with_id(id, label).accelerator(accelerator).build(app)
+    };
+    let bundle = &app.config().bundle;
+    let product = app.config().product_name.clone().unwrap_or_default();
     let about = AboutMetadataBuilder::new()
-        .name(Some(product.clone()))
-        .version(Some(env!("CARGO_PKG_VERSION")))
-        .icon(Some(load_app_icon()))
-        .comments(Some("Cloud sharing hub for AI agents."))
-        .copyright(Some("© 2026 Clawbits"))
-        .website(Some("https://clawbits.ai"))
+        .name(Some(&product))
+        .version(Some(app.package_info().version.to_string()))
+        .comments(bundle.short_description.clone())
+        .copyright(bundle.copyright.clone())
+        .website(bundle.homepage.clone())
         .website_label(Some("clawbits.ai"))
-        .authors(Some(vec!["Clawbits".to_string()]))
-        .license(Some("Proprietary"))
-        .build();
-
-    let check_updates =
-        MenuItemBuilder::with_id("app-check-updates", "Check for Updates…").build(app)?;
+        .authors(bundle.publisher.clone().map(|publisher| vec![publisher]))
+        .license(Some("Proprietary"));
+    // macOS shows the bundle's own icon when none is given; GTK needs one.
+    #[cfg(target_os = "linux")]
+    let about = about.icon(Some(tauri::include_image!("icons/128x128.png")));
 
     let launch_at_login = CheckMenuItemBuilder::with_id("app-autostart", "Launch at Login")
-        .checked(false)
+        .checked(app.autolaunch().is_enabled().unwrap_or(false))
         .build(app)?;
+    let recent = SubmenuBuilder::new(app, "Recent").enabled(false).build()?;
+    app.manage(launch_at_login.clone());
+    app.manage(recent.clone());
 
     let app_menu = SubmenuBuilder::new(app, &product)
-        .about(Some(about))
+        .about(Some(about.build()))
         .separator()
-        .item(&check_updates)
+        .text("app-check-updates", "Check for Updates…")
         .separator()
+        .item(&item("app-settings", "Settings…", "CmdOrCtrl+,")?)
         .item(&launch_at_login)
         .separator()
         .services()
@@ -99,7 +63,12 @@ pub fn build<R: Runtime>(
         .separator()
         .quit()
         .build()?;
-
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .item(&item("file-new-agent", "New Agent", "CmdOrCtrl+N")?)
+        .separator()
+        // Custom, not predefined: muda has no Close Window on Linux.
+        .item(&item("win-close", "Close Window", "CmdOrCtrl+W")?)
+        .build()?;
     let edit_menu = SubmenuBuilder::new(app, "Edit")
         .undo()
         .redo()
@@ -109,188 +78,106 @@ pub fn build<R: Runtime>(
         .paste()
         .select_all()
         .build()?;
-
-    let back = MenuItemBuilder::with_id("nav-back", "Back")
-        .accelerator("CmdOrCtrl+[")
-        .build(app)?;
-    let forward = MenuItemBuilder::with_id("nav-forward", "Forward")
-        .accelerator("CmdOrCtrl+]")
-        .build(app)?;
-    let reload = MenuItemBuilder::with_id("nav-reload", "Reload")
-        .accelerator("CmdOrCtrl+R")
-        .build(app)?;
-    let hard_reload = MenuItemBuilder::with_id("nav-hard-reload", "Hard Reload")
-        .accelerator("CmdOrCtrl+Shift+R")
-        .build(app)?;
-    let zoom_in = MenuItemBuilder::with_id("view-zoom-in", "Zoom In")
-        .accelerator("CmdOrCtrl+=")
-        .build(app)?;
-    let zoom_out = MenuItemBuilder::with_id("view-zoom-out", "Zoom Out")
-        .accelerator("CmdOrCtrl+-")
-        .build(app)?;
-    let zoom_reset = MenuItemBuilder::with_id("view-zoom-reset", "Actual Size")
-        .accelerator("CmdOrCtrl+0")
-        .build(app)?;
-
-    let view_builder = SubmenuBuilder::new(app, "View")
-        .item(&back)
-        .item(&forward)
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&item("nav-back", "Back", "CmdOrCtrl+[")?)
+        .item(&item("nav-forward", "Forward", "CmdOrCtrl+]")?)
         .separator()
-        .item(&reload)
-        .item(&hard_reload)
+        .item(&item("nav-reload", "Reload", "CmdOrCtrl+R")?)
         .separator()
-        .item(&zoom_in)
-        .item(&zoom_out)
-        .item(&zoom_reset);
-
-    // DevTools is always exposed. The `devtools` Tauri feature is on
-    // in Cargo.toml, so this works in release/staging builds too —
-    // needed for on-machine diagnostics (notification debug pings,
-    // network inspection) where reproducing under `bun run dev` isn't
-    // an option.
-    let view_builder = {
-        let devtools = MenuItemBuilder::with_id("nav-devtools", "Toggle DevTools")
-            .accelerator("CmdOrCtrl+Alt+I")
-            .build(app)?;
-        view_builder.separator().item(&devtools)
-    };
-
-    let view_menu = view_builder.build()?;
-
-    // Pre-built slots; labels and enabled state are mutated from
-    // set_recent_channels as the frontend pushes updates.
-    let recent_slots: Vec<MenuItem<R>> = (0..RECENT_SLOTS)
-        .map(|i| {
-            MenuItemBuilder::with_id(format!("recent-{i}"), "—")
-                .enabled(false)
-                .build(app)
-        })
-        .collect::<Result<_, _>>()?;
-
-    // SubmenuBuilder::items wants `&dyn IsMenuItem`. Collect references
-    // separately so the temporary trait-object slice lives long enough.
-    let recent_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = recent_slots
-        .iter()
-        .map(|i| i as &dyn tauri::menu::IsMenuItem<R>)
-        .collect();
-    let recent_submenu = SubmenuBuilder::new(app, "Recent")
-        .items(&recent_refs)
+        .item(&item("view-zoom-in", "Zoom In", "CmdOrCtrl+=")?)
+        .item(&item("view-zoom-out", "Zoom Out", "CmdOrCtrl+-")?)
+        .item(&item("view-zoom-reset", "Actual Size", "CmdOrCtrl+0")?)
+        .separator()
+        .fullscreen()
+        .separator()
+        // In release builds too, for on-machine diagnostics.
+        .item(&item("nav-devtools", "Toggle DevTools", "CmdOrCtrl+Alt+I")?)
         .build()?;
-
-    let close_window = MenuItemBuilder::with_id("win-close", "Close Window")
-        .accelerator("CmdOrCtrl+W")
-        .build(app)?;
-    let bring_all_to_front = MenuItemBuilder::with_id("win-front", "Bring All to Front")
-        .build(app)?;
-
     let window_menu = SubmenuBuilder::new(app, "Window")
         .minimize()
         .maximize()
         .separator()
-        .item(&close_window)
+        .bring_all_to_front()
         .separator()
-        .fullscreen()
-        .separator()
-        .item(&bring_all_to_front)
-        .separator()
-        .item(&recent_submenu)
+        .item(&recent)
         .build()?;
-
-    let menu = MenuBuilder::new(app)
-        .items(&[&app_menu, &edit_menu, &view_menu, &window_menu])
+    // AppKit then adds the window list and the tiling items.
+    #[cfg(target_os = "macos")]
+    window_menu.set_as_windows_menu_for_nsapp()?;
+    let help_menu = SubmenuBuilder::new(app, "Help")
+        .text("help-docs", "Documentation")
+        .text("help-changelog", "What's New")
         .build()?;
-
-    Ok((menu, recent_slots, launch_at_login))
+    MenuBuilder::new(app)
+        .items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &help_menu])
+        .build()
 }
 
-pub fn handle_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
-    match id {
-        "nav-back" => {
-            let _ = app.emit("desktop://nav", "back");
+#[tauri::command]
+pub fn set_recent_channels(app: AppHandle, channels: Vec<ChannelLink>) -> tauri::Result<()> {
+    let recent = app.state::<Submenu<Wry>>();
+    while recent.remove_at(0)?.is_some() {}
+    for channel in &channels {
+        recent.append(&link(&app, channel)?)?;
+    }
+    recent.set_enabled(!channels.is_empty())
+}
+
+/// Every menu click, app menu and tray alike.
+pub fn handle_event(app: &AppHandle, event: MenuEvent) {
+    let emit = |event: &str, payload: &str| {
+        let _ = app.emit(event, payload);
+    };
+    let open_url = |url: &str| {
+        if let Err(err) = app.opener().open_url(url, None::<&str>) {
+            log::warn!("menu: could not open {url}: {err}");
         }
-        "nav-forward" => {
-            let _ = app.emit("desktop://nav", "forward");
-        }
+    };
+    let window = app.get_webview_window("main");
+    match event.id().as_ref() {
+        "app-settings" => crate::navigate(app, "/settings"),
+        "file-new-agent" => crate::navigate(app, "/setup/agent"),
+        "nav-back" => crate::navigate(app, "back"),
+        "nav-forward" => crate::navigate(app, "forward"),
+        "view-zoom-in" => emit("desktop://zoom", "in"),
+        "view-zoom-out" => emit("desktop://zoom", "out"),
+        "view-zoom-reset" => emit("desktop://zoom", "reset"),
+        // The frontend runs the check and shows the banner or a "you're up to date" toast.
+        "app-check-updates" => emit("desktop://check-update", ""),
+        "help-docs" => open_url("https://clawbits.ai/docs"),
+        "help-changelog" => open_url("https://clawbits.ai/changelog"),
+        "tray-show" => crate::focus_main(app),
+        "tray-quit" => app.exit(0),
         "nav-reload" => {
-            // JS-side reload preserves React Router unwinds cleanly.
-            let _ = app.emit("desktop://nav", "reload");
+            let _ = window.map(|window| window.reload());
         }
-        "nav-hard-reload" => {
-            // Cache-clearing reload — has to be native since JS can't
-            // reach the WebKit data store.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.clear_all_browsing_data();
-                let _ = window.reload();
-            }
-        }
-        "view-zoom-in" => {
-            let _ = app.emit("desktop://zoom", "in");
-        }
-        "view-zoom-out" => {
-            let _ = app.emit("desktop://zoom", "out");
-        }
-        "view-zoom-reset" => {
-            let _ = app.emit("desktop://zoom", "reset");
-        }
+        // A regular close request, which lib.rs turns into hide.
         "win-close" => {
-            // Emit a regular close request. The window-event handler
-            // installed in `lib.rs` decides whether that means
-            // hide-to-tray (tray present) or actually-exit (GNOME and
-            // other tray-less sessions).
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.close();
-            }
-        }
-        "win-front" => crate::focus_main(app),
-        "app-check-updates" => {
-            // The frontend (UpdateContext) runs the check and surfaces the
-            // banner, or a "you're up to date" toast when there's nothing new.
-            let _ = app.emit("desktop://check-update", ());
-        }
-        "app-autostart" => {
-            use tauri_plugin_autostart::ManagerExt;
-            let manager = app.autolaunch();
-            let next = !manager.is_enabled().unwrap_or(false);
-            let _ = if next {
-                manager.enable()
-            } else {
-                manager.disable()
-            };
-            // Re-sync the checkbox from the plugin's view of the world
-            // — that's the source of truth (it may have rejected the
-            // change, e.g. permissions on macOS).
-            if let Some(state) = app.try_state::<AutostartMenuItem<R>>() {
-                if let Ok(slot) = state.0.lock() {
-                    if let Some(item) = slot.as_ref() {
-                        let _ = item.set_checked(manager.is_enabled().unwrap_or(false));
-                    }
-                }
-            }
+            let _ = window.map(|window| window.close());
         }
         "nav-devtools" => {
-            if let Some(webview) = app.get_webview_window("main") {
-                if webview.is_devtools_open() {
-                    webview.close_devtools();
+            if let Some(window) = window {
+                if window.is_devtools_open() {
+                    window.close_devtools();
                 } else {
-                    webview.open_devtools();
+                    window.open_devtools();
                 }
             }
         }
-        other if other.starts_with("recent-") => {
-            let Ok(idx) = other.trim_start_matches("recent-").parse::<usize>() else {
-                return;
+        "app-autostart" => {
+            let autolaunch = app.autolaunch();
+            let _ = if autolaunch.is_enabled().unwrap_or(false) {
+                autolaunch.disable()
+            } else {
+                autolaunch.enable()
             };
-            let Some(state) = app.try_state::<RecentState<R>>() else {
-                return;
-            };
-            let Ok(items) = state.items.lock() else {
-                return;
-            };
-            if let Some(channel) = items.get(idx) {
-                let _ = app.emit("desktop://open-channel", channel.path.clone());
-                crate::focus_main(app);
+            // The plugin is the source of truth: macOS may have refused.
+            let _ = app.state::<CheckMenuItem<Wry>>().set_checked(autolaunch.is_enabled().unwrap_or(false));
+        }
+        id => {
+            if let Some(path) = id.strip_prefix(OPEN) {
+                crate::navigate(app, path);
             }
         }
-        _ => {}
     }
 }

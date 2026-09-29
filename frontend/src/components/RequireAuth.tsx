@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { captureReturnPath, withNext } from "@/lib/returnPath";
@@ -7,7 +8,7 @@ import { captureReturnPath, withNext } from "@/lib/returnPath";
  * but none of its chrome. ``AppShell`` couples the gate to the rail, the
  * sidebar and the header, so a full-screen setup flow has nowhere to sit.
  */
-export default function RequireAuth() {
+export default function RequireAuth({ children = <Outlet /> }: { children?: ReactNode }) {
   const { user, loading } = useAuth();
   const location = useLocation();
 
@@ -20,5 +21,5 @@ export default function RequireAuth() {
 
   if (!user) return <Navigate to={withNext("/login", captureReturnPath(location))} replace />;
 
-  return <Outlet />;
+  return children;
 }

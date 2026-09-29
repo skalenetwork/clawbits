@@ -196,6 +196,74 @@ def test_published_at_marks_the_finalize_not_the_draft(test_client: TestClient, 
     assert r.json()["published_at"] == r.json()["created_at"]
 
 
+def test_finalize_keeps_the_turns_steps_on_the_post(test_client: TestClient, _test_engine):
+    agent = _create_owned_agent(test_client)
+    channel_id = _make_channel(test_client, agent)
+    post_id = _make_streaming_post(test_client, agent, channel_id)
+    url = f"/api/agentic/mm/channels/{channel_id}/posts/{post_id}"
+    steps = [
+        {"kind": "note", "id": "msg_1", "label": "Checking the open issues first."},
+        {"kind": "tool", "id": "c" * 300, "tool": "exec", "label": "gh issue list", "ok": False, "duration_ms": 1200},
+    ]
+
+    r = test_client.patch(url, json={"append": "Hi", "steps": steps}, headers=_auth(agent["api_key"]))
+    assert r.status_code == 422, r.text
+
+    r = test_client.patch(url, json={"replace": "Done.", "done": True, "steps": steps}, headers=_auth(agent["api_key"]))
+    assert r.status_code == 200, r.text
+    assert r.json()["steps"] == [
+        {**steps[0], "tool": None, "ok": None, "duration_ms": None, "app": None},
+        {**steps[1], "id": "c" * 200, "app": None},
+    ]
+    listed = test_client.get(f"/api/agentic/mm/channels/{channel_id}/posts", headers=_auth(agent["api_key"])).json()["posts"]
+    assert next(p for p in listed if p["post_id"] == post_id)["steps"] == r.json()["steps"]
+
+
+def test_finalize_keeps_mcp_app_views_by_resource_and_frames_them(test_client: TestClient, _test_engine):
+    agent = _create_owned_agent(test_client)
+    channel_id = _make_channel(test_client, agent)
+    app = {
+        "server": "agentpit",
+        "host": "agentpit.dev",
+        "html": "<p>card</p>",
+        "csp": {"resourceDomains": ["https://agentpit.dev"], "mediaDomains": ["blob:"]},
+        "input": {},
+        "result": {"structuredContent": {"rank": None}},
+    }
+    steps = [
+        {"kind": "tool", "id": "a1", "tool": "portfolio", "label": "portfolio", "app": app},
+        {"kind": "tool", "id": "a2", "tool": "portfolio", "label": "portfolio", "app": {**app, "host": "agentpit.dev/x"}},
+    ]
+    kept = []
+    for _ in range(2):
+        post_id = _make_streaming_post(test_client, agent, channel_id)
+        r = test_client.patch(
+            f"/api/agentic/mm/channels/{channel_id}/posts/{post_id}",
+            json={"replace": "Done.", "done": True, "steps": steps},
+            headers=_auth(agent["api_key"]),
+        )
+        assert r.status_code == 200, r.text
+        kept.append(r.json()["steps"])
+
+    (view, dropped), (again, _) = kept
+    resource = view["app"]["resource"]
+    assert view["app"] == {"server": "agentpit", "host": "agentpit.dev", "input": {}, "result": app["result"], "resource": resource}
+    assert again["app"] == view["app"]
+    assert dropped == {**steps[1], "app": None, "ok": None, "duration_ms": None}
+
+    frame = f"/api/mcp-apps/{resource}"
+    assert test_client.get(frame).status_code == 404
+    r = test_client.get(frame, headers={"Sec-Fetch-Dest": "iframe"})
+    assert r.status_code == 200
+    assert r.text == "<p>card</p>"
+    assert r.headers["content-security-policy"] == (
+        "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' https://agentpit.dev; "
+        "style-src 'unsafe-inline' https://agentpit.dev; img-src data: blob: https://agentpit.dev; "
+        "font-src data: https://agentpit.dev; media-src data: blob: https://agentpit.dev; connect-src 'none'; "
+        "frame-src 'none'; base-uri 'none'; form-action 'none'"
+    )
+
+
 def test_finalize_402_leaves_draft_open(test_client: TestClient, _test_engine):
     agent = _create_owned_agent(test_client)
     agent_id = agent["agent_id"]
