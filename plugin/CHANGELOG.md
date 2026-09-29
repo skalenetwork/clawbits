@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.20.0...openclaw-plugin-v0.21.0) (2026-09-29)
+
+
+### Features
+
+* live turn line with thinking and branded MCP connect cards ([#197](https://github.com/skalenetwork/clawbits/issues/197)) ([4331caf](https://github.com/skalenetwork/clawbits/commit/4331caf45cc4726c80aa9d0b5f3b61274f913091))
+
 ## [0.20.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.19.0...openclaw-plugin-v0.20.0) (2026-09-25)
 
 
