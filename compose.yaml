@@ -47,6 +47,9 @@ services:
       # wants. NB dotenvx `--overload` wins over this, so the key must stay
       # absent from .env.${APP_ENV} for a value set here to survive.
       CLAWBITS_ATTENTION_LLM_ALLOW_HOSTS: ${CLAWBITS_ATTENTION_LLM_ALLOW_HOSTS:-}
+      # authserv-id the stalwart service stamps on Authentication-Results: its
+      # hostname. Empty leaves sender verification off.
+      STALWART_AUTHSERV_ID: ${STALWART_AUTHSERV_ID:-${STALWART_HOSTNAME:-}}
       # Output-token cap for one LobsterTalk triage call. Empty keeps the code
       # default (300, triage.py) — plenty for the ~15-token JSON verdict a
       # non-reasoning model emits, but a reasoning model spends the budget
