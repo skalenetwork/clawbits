@@ -3491,6 +3491,7 @@ class TableWrite:
         replace: str | None = None,
         finalise: bool = False,
         cancel: bool = False,
+        steps: list[dict] | None = None,
     ) -> MmPost | None:
         """Patch a streaming post in place (agent-streamed reply).
 
@@ -3533,6 +3534,7 @@ class TableWrite:
             # outbound — a user opted in to receiving the reply by
             # tagging the agent in the first place.
             post.status = "published"
+            post.steps = steps
         post.updated_at = datetime.now(UTC)
         session.add(post)
         session.flush()

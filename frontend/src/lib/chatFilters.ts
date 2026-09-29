@@ -7,6 +7,7 @@ import {
 import { Bot } from "lucide-react";
 import type {AppIcon} from "@/components/Icon";
 import type {MmChannel} from "@/lib/api";
+import {channelListTitle} from "@/lib/formatting";
 
 /** The scope filter shown as tabs at the top of the chat list. */
 export type ChatTab = "all" | "channels" | "dms" | "agents";
@@ -26,6 +27,12 @@ export function isPairType(t: string | undefined): boolean {
 
 export function isPairChannel(c: Pick<MmChannel, "channel_type">): boolean {
     return isPairType(c.channel_type);
+}
+
+/** A channel as notifications and native menus name it: pairs by the other party, rooms with a leading `#`. */
+export function channelLabel(c: Parameters<typeof channelListTitle>[0]): string {
+    const title = channelListTitle(c);
+    return isPairType(c.channel_type) ? title : `#${title}`;
 }
 
 /** Newest activity first; ``created_at`` if never messaged, else 0. */

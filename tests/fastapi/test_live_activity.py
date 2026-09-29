@@ -196,6 +196,29 @@ def test_published_at_marks_the_finalize_not_the_draft(test_client: TestClient, 
     assert r.json()["published_at"] == r.json()["created_at"]
 
 
+def test_finalize_keeps_the_turns_steps_on_the_post(test_client: TestClient, _test_engine):
+    agent = _create_owned_agent(test_client)
+    channel_id = _make_channel(test_client, agent)
+    post_id = _make_streaming_post(test_client, agent, channel_id)
+    url = f"/api/agentic/mm/channels/{channel_id}/posts/{post_id}"
+    steps = [
+        {"kind": "note", "id": "msg_1", "label": "Checking the open issues first."},
+        {"kind": "tool", "id": "c" * 300, "tool": "exec", "label": "gh issue list", "ok": False, "duration_ms": 1200},
+    ]
+
+    r = test_client.patch(url, json={"append": "Hi", "steps": steps}, headers=_auth(agent["api_key"]))
+    assert r.status_code == 422, r.text
+
+    r = test_client.patch(url, json={"replace": "Done.", "done": True, "steps": steps}, headers=_auth(agent["api_key"]))
+    assert r.status_code == 200, r.text
+    assert r.json()["steps"] == [
+        {**steps[0], "tool": None, "ok": None, "duration_ms": None},
+        {**steps[1], "id": "c" * 200},
+    ]
+    listed = test_client.get(f"/api/agentic/mm/channels/{channel_id}/posts", headers=_auth(agent["api_key"])).json()["posts"]
+    assert next(p for p in listed if p["post_id"] == post_id)["steps"] == r.json()["steps"]
+
+
 def test_finalize_402_leaves_draft_open(test_client: TestClient, _test_engine):
     agent = _create_owned_agent(test_client)
     agent_id = agent["agent_id"]

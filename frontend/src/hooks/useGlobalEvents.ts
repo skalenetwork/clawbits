@@ -9,8 +9,7 @@ import { updateUserPresence } from "@/hooks/useUserPresence";
 import { useLatestRef } from "@/hooks/useLatestRef";
 import type { AgentLivenessStatus, GlobalUserStatus, MmChannel, MmChannelPost, Org } from "@/lib/api";
 import { isDesktop, notifyForPost } from "@/lib/desktop";
-import { channelListTitle } from "@/lib/formatting";
-import { isPairChannel } from "@/lib/chatFilters";
+import { channelLabel, isPairChannel } from "@/lib/chatFilters";
 import { messageMentionsViewer, selfMentionTokens } from "@/lib/mentions";
 import { toast } from "@/lib/toast";
 
@@ -125,13 +124,15 @@ export function useGlobalEvents(): void {
         if (skipUnread) return;
         const channel = cachedChannels(qc).find((c) => c.channel_id === evt.channel_id);
         if (!channel || channel.muted) return;
-        const title = channelListTitle(channel);
-        void notifyForPost({
-          channelId: evt.channel_id,
-          channelName: isPairChannel(channel) ? title : `#${title}`,
-          authorName: post.poster_display_name ?? "Someone",
-          body: notificationBody(preview, attachments),
-        });
+        void notifyForPost(
+          {
+            channelId: evt.channel_id,
+            channelName: channelLabel(channel),
+            authorName: post.poster_display_name ?? "Someone",
+            body: notificationBody(preview, attachments),
+          },
+          isPairChannel(channel) || mentionsMe,
+        );
       } else if (evt.type === "post.deleted") {
         void qc.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
       } else if (evt.type === "channel.read") {

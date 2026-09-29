@@ -788,6 +788,10 @@ class MmPost(SQLModel, table=True):
         default=None,
         sa_column=SAColumn(JSONB, nullable=True),
     )
+    steps: list[dict] | None = Field(
+        default=None,
+        sa_column=SAColumn(JSONB, nullable=True),
+    )
     trace_id: str | None = Field(
         default=None,
         sa_column=SAColumn(Text, nullable=True),

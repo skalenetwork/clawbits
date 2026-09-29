@@ -48,6 +48,12 @@ const PRIMARY_ARG_KEYS = [
   "action",
 ] as const;
 
+/** Path args, whose long unbroken values are paths, not credential blobs. */
+const PATH_ARG_KEYS = new Set(["path", "file_path", "filePath"]);
+
+/** Args that carry a file's or payload's contents: never a label, even as the only string left. */
+const CONTENT_ARG_KEYS = new Set(["content", "contents", "body", "data", "patch", "diff", "old_string", "new_string", "oldText", "newText"]);
+
 function collapseWhitespace(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
@@ -62,8 +68,8 @@ function isSafeSummaryValue(key: string, value: string): boolean {
   if (SECRET_KEY_RE.test(key)) return false;
   const collapsed = collapseWhitespace(value);
   if (!collapsed) return false;
-  if (!collapsed.includes(" ") && SECRET_VALUE_RE.test(collapsed)) return false;
-  return true;
+  const path = PATH_ARG_KEYS.has(key) && collapsed.includes("/");
+  return path || collapsed.includes(" ") || !SECRET_VALUE_RE.test(collapsed);
 }
 
 /** Junk-drawer variants of a discriminated union — they name no operation.
@@ -103,7 +109,7 @@ function pickPrimaryArg(args: unknown): string | undefined {
   // Fallback: first top-level string value under a non-secret key, in the
   // object's own key order (deterministic per payload).
   for (const [key, value] of Object.entries(record)) {
-    if (typeof value === "string" && isSummaryCandidate(key, value)) return value;
+    if (typeof value === "string" && !CONTENT_ARG_KEYS.has(key) && isSummaryCandidate(key, value)) return value;
   }
   return undefined;
 }
@@ -208,7 +214,9 @@ export function sanitizeToolResultDescriptor(
   }
 }
 
-/** Tail of the live thinking text, markdown-flattened and clamped. The tail
+/** Tail of the live thinking text, markdown-flattened and clamped. A blank
+ *  line ends a sentence, taking a period unless one closes the text before it,
+ *  so a reasoning summary's title never runs into its first line. The tail
  *  (not the head) because the newest reasoning is the interesting part of a
  *  ticker-style display. */
 export function sanitizeThinkingTail(text: unknown): string {
@@ -218,7 +226,9 @@ export function sanitizeThinkingTail(text: unknown): string {
       // Fenced code blocks can carry file contents — drop them wholesale.
       .replace(/```[\s\S]*?```/gu, " ")
       .replace(/`([^`]*)`/gu, "$1")
-      .replace(/[*_#>]+/gu, " "),
+      .replace(/[*#>]+|(?<!\p{L}|\p{N})_+|_+(?!\p{L}|\p{N})/gu, " ")
+      .replace(/(?<=[.;:!?…,\-–—]["'”’)\]]?)\s*\n\s*\n/gu, " ")
+      .replace(/(?<=\S)\s*\n\s*\n/gu, ". "),
   );
   if (flattened.length <= THINKING_TAIL_MAX_CHARS) return flattened;
   const tail = flattened.slice(-THINKING_TAIL_MAX_CHARS + 1);

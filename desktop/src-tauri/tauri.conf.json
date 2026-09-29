@@ -19,6 +19,8 @@
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
+        "dragDropEnabled": false,
+        "backgroundThrottling": "disabled",
         "transparent": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
@@ -95,7 +97,8 @@
       "icons/Assets.car"
     ],
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "14.0",
+      "entitlements": "Entitlements.plist"
     }
   }
 }

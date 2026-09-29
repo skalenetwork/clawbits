@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { notifyManager, useQueryClient } from "@tanstack/react-query";
 import { openSseStream } from "@/lib/sse";
 import { queryKeys } from "@/lib/queryKeys";
 import { channelFileListPrefix, channelLinksQueryKey } from "@/hooks/useChannelFileList";
 import { parseUtcTimestamp } from "@/lib/formatting";
-import { stitchThinkingTail } from "@/lib/thinkingStitch";
+import { type AgentActivity, applyActivity, keepTurn, type LiveTurn, type Turn } from "@/lib/turnSteps";
 import { updateAgentPresence } from "@/hooks/useAgentPresence";
+import { endChannelTurns, endLiveTurn, liveTurnKey } from "@/hooks/useTraceState";
 import { updateUserPresence } from "@/hooks/useUserPresence";
-import { useLatestRef } from "@/hooks/useLatestRef";
 import type {
   GlobalUserStatus,
   MmChannelEvent,
@@ -20,28 +20,6 @@ import type {
 type MemberStatus = "online" | "idle" | "typing" | "generating" | "offline";
 
 export type PresenceMap = Record<string, MemberStatus>;
-
-export interface AgentActivity {
-  kind: "generating" | "thinking" | "tool" | "tool_done";
-  label?: string;
-  tool?: string;
-  ok?: boolean;
-  duration_ms?: number;
-}
-
-export interface ToolStep {
-  id: number;
-  tool: string;
-  label?: string;
-  status: "running" | "done" | "error";
-  duration_ms?: number;
-}
-
-export interface ThinkingStep {
-  id: number;
-  text: string;
-  status: "running" | "done";
-}
 
 interface MemberStatusData {
   member_kind: string;
@@ -63,9 +41,6 @@ type ServerEvent =
   | { type: "member.read"; data: { human_id?: number; agent_id?: string; last_read_post_id: number } }
   | { type: "channel.event"; data: MmChannelEvent };
 
-// One counter for tool and thinking steps: TurnTrace rebuilds the turn's order by sorting on id.
-let traceSeq = 0;
-
 // Mirrors STATUS_TTL_SECONDS in clawbits/realtime/bus.py; Redis expiry never broadcasts, so clear locally.
 const PRESENCE_TTL_MS: Partial<Record<MemberStatus, number>> = {
   typing: 6_000,
@@ -81,6 +56,10 @@ export function memberKey(kind: string, id: string | number): string {
   return `${kind}:${String(id)}`;
 }
 
+function newTurn(channelId: string, key: string): LiveTurn {
+  return { key: liveTurnKey(channelId, key), steps: [], thoughts: [] };
+}
+
 function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   if (!(key in record)) return record;
   return Object.fromEntries(Object.entries(record).filter(([k]) => k !== key));
@@ -91,18 +70,26 @@ function versionOf(p: MmChannelPost): number {
   return Math.max(...[p.created_at, p.updated_at, p.edited_at].map((s) => (s ? parseUtcTimestamp(s).getTime() || 0 : 0)));
 }
 
+/** A channel's live events. A presence snapshot opens every stream and lists who generates now: a turn already
+ *  followed keeps its own steps, a mid-turn join or reconnect starts from the agent's current step, and every other
+ *  turn ends. */
 export function useChannelEvents(channelId: string) {
   const qc = useQueryClient();
   const [presence, setPresence] = useState<PresenceMap>({});
-  const [activity, setActivity] = useState<Record<string, AgentActivity>>({});
-  const [toolTimelines, setToolTimelines] = useState<Record<string, ToolStep[]>>({});
-  const [thinkingTimelines, setThinkingTimelines] = useState<Record<string, ThinkingStep[]>>({});
-  const [finishedToolTraces, setFinishedToolTraces] = useState<Record<number, ToolStep[]>>({});
-  const [finishedThinkingTraces, setFinishedThinkingTraces] = useState<Record<number, ThinkingStep[]>>({});
+  const [turns, setTurns] = useState<Record<string, LiveTurn>>({});
+  const [finishedTurns, setFinishedTurns] = useState<Record<number, Turn>>({});
   const [optimisticAgents, setOptimisticAgents] = useState<Set<string>>(() => new Set());
-  const toolTimelinesRef = useLatestRef(toolTimelines);
-  const thinkingTimelinesRef = useLatestRef(thinkingTimelines);
+  const turnsRef = useRef(turns);
   const ttlTimersRef = useRef(new Map<string, number>());
+
+  /** Live turns are read in arrival order, before React renders (a reply's finalize snapshots its turn), so the ref
+   *  leads and the state follows. */
+  const updateTurns = useCallback((update: (prev: Record<string, LiveTurn>) => Record<string, LiveTurn>) => {
+    const next = update(turnsRef.current);
+    if (next === turnsRef.current) return;
+    turnsRef.current = next;
+    setTurns(next);
+  }, []);
 
   const dropOptimistic = useCallback((key: string) => {
     setOptimisticAgents((prev) => {
@@ -112,6 +99,12 @@ export function useChannelEvents(channelId: string) {
       return next;
     });
   }, []);
+
+  /** The turn is over; an open trace follows the reply it published. */
+  const endTurn = useCallback((key: string, replyKey?: string) => {
+    updateTurns((prev) => omitKey(prev, key));
+    endLiveTurn(liveTurnKey(channelId, key), replyKey);
+  }, [channelId, updateTurns]);
 
   const clearTtl = useCallback((key: string) => {
     window.clearTimeout(ttlTimersRef.current.get(key));
@@ -125,86 +118,42 @@ export function useChannelEvents(channelId: string) {
     ttlTimersRef.current.set(key, window.setTimeout(() => {
       ttlTimersRef.current.delete(key);
       setPresence((prev) => (prev[key] === status ? omitKey(prev, key) : prev));
-      setActivity((prev) => omitKey(prev, key));
-      setToolTimelines((prev) => omitKey(prev, key));
-      setThinkingTimelines((prev) => omitKey(prev, key));
+      endTurn(key);
     }, ms));
-  }, [clearTtl]);
+  }, [clearTtl, endTurn]);
 
+  /** A turn lives only while its agent generates, so its next turn starts clean. */
   const applyStatus = useCallback((key: string, status: MemberStatus, act?: AgentActivity) => {
     setPresence((prev) => (prev[key] === status ? prev : { ...prev, [key]: status }));
-    setActivity((prev) => (act ? { ...prev, [key]: act } : omitKey(prev, key)));
-    const thought = act?.kind === "thinking" ? act.label?.trim() : undefined;
-    if (thought) {
-      setThinkingTimelines((prev) => {
-        const cur = prev[key] ?? [];
-        const last = cur.at(-1);
-        if (last?.status !== "running") {
-          return { ...prev, [key]: [...cur, { id: (traceSeq += 1), text: thought, status: "running" }] };
-        }
-        const text = stitchThinkingTail(last.text, thought);
-        return text === last.text ? prev : { ...prev, [key]: cur.with(-1, { ...last, text }) };
-      });
-    }
-    if (act?.kind === "tool" || act?.kind === "tool_done") {
-      setThinkingTimelines((prev) => {
-        const cur = prev[key];
-        const last = cur?.at(-1);
-        return cur && last?.status === "running" ? { ...prev, [key]: cur.with(-1, { ...last, status: "done" }) } : prev;
-      });
-      setToolTimelines((prev) => {
-        const cur = prev[key] ?? [];
-        if (act.kind === "tool") {
-          const tool = act.tool ?? "";
-          const last = cur.at(-1);
-          if (last?.status !== "running" || last.tool !== tool) {
-            return { ...prev, [key]: [...cur, { id: (traceSeq += 1), tool, label: act.label, status: "running" }] };
-          }
-          return !act.label || act.label === last.label
-            ? prev
-            : { ...prev, [key]: cur.with(-1, { ...last, label: act.label }) };
-        }
-        const idx = cur.findLastIndex((s) => s.status === "running");
-        const done = cur[idx];
-        if (!done) return prev;
-        // A done label is usually the bare tool name; keep the start's command unless only the done event has detail.
-        const hasDetail = (label?: string) => Boolean(label && label !== done.tool);
-        return {
-          ...prev,
-          [key]: cur.with(idx, {
-            ...done,
-            status: act.ok === false ? "error" : "done",
-            duration_ms: act.duration_ms,
-            label: hasDetail(done.label) ? done.label : hasDetail(act.label) ? act.label : (done.label ?? act.label),
-          }),
-        };
+    if (status !== "generating") endTurn(key);
+    else if (act) {
+      updateTurns((prev) => {
+        const cur = prev[key] ?? newTurn(channelId, key);
+        const next = applyActivity(cur, act);
+        return next === cur ? prev : { ...prev, [key]: next };
       });
     }
     armTtl(key, status);
-  }, [armTtl]);
+  }, [armTtl, channelId, endTurn, updateTurns]);
 
-  const clearStatus = useCallback((key: string) => {
+  const clearStatus = useCallback((key: string, replyKey: string) => {
     clearTtl(key);
     setPresence((prev) => omitKey(prev, key));
-    setActivity((prev) => omitKey(prev, key));
-    setToolTimelines((prev) => omitKey(prev, key));
-    setThinkingTimelines((prev) => omitKey(prev, key));
+    endTurn(key, replyKey);
     dropOptimistic(key);
-  }, [clearTtl, dropOptimistic]);
+  }, [clearTtl, dropOptimistic, endTurn]);
 
-  const finalizeAgentTraces = useCallback((agentId: string, postId: number) => {
-    const key = memberKey("agent", agentId);
-    const toolSteps = toolTimelinesRef.current[key];
-    const thinkingSteps = thinkingTimelinesRef.current[key];
-    if (postId > 0 && toolSteps?.length) {
-      setFinishedToolTraces((prev) => (prev[postId] ? prev : { ...prev, [postId]: toolSteps }));
+  /** The turn behind a reply this page watched stays with the post while the channel is open: its thinking, which
+   *  nothing stores, each burst anchored to the step that followed it, and its steps for a plugin that keeps none on
+   *  the post. */
+  const finalizeAgentTurn = useCallback((post: MmChannelPost) => {
+    const key = memberKey("agent", post.agent_id ?? "");
+    const live = turnsRef.current[key];
+    if (post.post_id > 0 && live && live.steps.length + live.thoughts.length > 0) {
+      setFinishedTurns((prev) => (prev[post.post_id] ? prev : { ...prev, [post.post_id]: keepTurn(live) }));
     }
-    if (postId > 0 && thinkingSteps?.length) {
-      const frozen = thinkingSteps.map((s) => (s.status === "running" ? { ...s, status: "done" as const } : s));
-      setFinishedThinkingTraces((prev) => (prev[postId] ? prev : { ...prev, [postId]: frozen }));
-    }
-    clearStatus(key);
-  }, [clearStatus, toolTimelinesRef, thinkingTimelinesRef]);
+    clearStatus(key, String(post.post_id));
+  }, [clearStatus]);
 
   const markAgentGenerating = useCallback((agentId: string) => {
     const key = memberKey("agent", agentId);
@@ -219,6 +168,7 @@ export function useChannelEvents(channelId: string) {
     let pinnedChanged = false;
     let flushTimer: number | undefined;
     let reconnected = false;
+    let disposed = false;
 
     const flushPostUpdates = () => {
       flushTimer = undefined;
@@ -259,6 +209,13 @@ export function useChannelEvents(channelId: string) {
       if (document.visibilityState === "visible") flushPostUpdates();
     };
     document.addEventListener("visibilitychange", onVisible);
+    /** Folds a live-lane event behind what the cache has queued, so the agent's status that follows its reply cannot
+     *  end the turn before the reply does. */
+    const inOrder = (fold: () => void) => {
+      notifyManager.schedule(() => {
+        if (!disposed) fold();
+      });
+    };
 
     const conn = openSseStream(`/api/human/mm/channels/${encodeURIComponent(channelId)}/events`, (raw) => {
       const evt = raw as ServerEvent;
@@ -269,6 +226,10 @@ export function useChannelEvents(channelId: string) {
           void qc.invalidateQueries({ queryKey: postsKey });
           return;
         }
+        const known =
+          pendingPostUpdates.get(post.post_id) ??
+          qc.getQueryData<MmPostListPayload>(postsKey)?.posts.find((p) => p.post_id === post.post_id);
+        const replyPublished = post.agent_id !== null && post.status === "published" && known?.status === "streaming";
         if (evt.type === "post.created") {
           qc.setQueryData<MmPostListPayload>(postsKey, (prev) => {
             if (!prev) return { posts: [post], total: 1, limit: 50, offset: 0 };
@@ -294,7 +255,13 @@ export function useChannelEvents(channelId: string) {
           if (!pending || versionOf(post) >= versionOf(pending)) pendingPostUpdates.set(post.post_id, post);
           flushTimer = flushTimer ?? window.setTimeout(flushPostUpdates, FLUSH_DELAY_MS);
         }
-        if (post.agent_id && post.status === "published") finalizeAgentTraces(post.agent_id, post.post_id);
+        if (replyPublished) {
+          window.clearTimeout(flushTimer);
+          notifyManager.batch(() => {
+            flushPostUpdates();
+            notifyManager.schedule(() => { finalizeAgentTurn(post); });
+          });
+        }
         if (URL_RE.test(post.message)) void qc.invalidateQueries({ queryKey: channelLinksQueryKey(channelId) });
       } else if (evt.type === "post.deleted") {
         qc.setQueryData<MmPostListPayload>(postsKey, (prev) => {
@@ -305,26 +272,35 @@ export function useChannelEvents(channelId: string) {
         void qc.invalidateQueries({ queryKey: channelFileListPrefix(channelId) });
         void qc.invalidateQueries({ queryKey: channelLinksQueryKey(channelId) });
       } else if (evt.type === "member.status") {
-        const key = memberKey(evt.data.member_kind, evt.data.member_id);
-        applyStatus(key, evt.data.status, evt.data.activity);
-        if (evt.data.member_kind === "agent") dropOptimistic(key);
+        inOrder(() => {
+          const key = memberKey(evt.data.member_kind, evt.data.member_id);
+          applyStatus(key, evt.data.status, evt.data.activity);
+          if (evt.data.member_kind === "agent") dropOptimistic(key);
+        });
       } else if (evt.type === "presence.snapshot") {
-        const snap: PresenceMap = {};
-        const actSnap: Record<string, AgentActivity> = {};
-        for (const timer of ttlTimersRef.current.values()) window.clearTimeout(timer);
-        ttlTimersRef.current.clear();
-        for (const m of evt.data.members) {
-          const key = memberKey(m.member_kind, m.member_id);
-          snap[key] = m.status;
-          if (m.activity) actSnap[key] = m.activity;
-          armTtl(key, m.status);
-        }
-        setPresence(snap);
-        setActivity(actSnap);
-        setOptimisticAgents((prev) => (prev.size === 0 ? prev : new Set()));
-        // The bus has no replay: every snapshot after the first marks a reconnect, so refetch what was missed.
-        if (reconnected) void qc.invalidateQueries({ queryKey: postsKey });
-        reconnected = true;
+        inOrder(() => {
+          const snap: PresenceMap = {};
+          const seeds: Record<string, LiveTurn> = {};
+          for (const timer of ttlTimersRef.current.values()) window.clearTimeout(timer);
+          ttlTimersRef.current.clear();
+          for (const m of evt.data.members) {
+            const key = memberKey(m.member_kind, m.member_id);
+            snap[key] = m.status;
+            if (m.activity) seeds[key] = applyActivity(newTurn(channelId, key), m.activity);
+            armTtl(key, m.status);
+          }
+          setPresence(snap);
+          for (const key of Object.keys(turnsRef.current)) {
+            if (snap[key] !== "generating") endLiveTurn(liveTurnKey(channelId, key));
+          }
+          updateTurns((prev) =>
+            Object.fromEntries(Object.entries({ ...seeds, ...prev }).filter(([key]) => snap[key] === "generating")),
+          );
+          setOptimisticAgents((prev) => (prev.size === 0 ? prev : new Set()));
+          // The bus has no replay: every snapshot after the first marks a reconnect, so refetch what was missed.
+          if (reconnected) void qc.invalidateQueries({ queryKey: postsKey });
+          reconnected = true;
+        });
       } else if (evt.type === "user.status") {
         updateUserPresence([{
           humanId: evt.data.human_id,
@@ -356,21 +332,20 @@ export function useChannelEvents(channelId: string) {
     });
 
     return () => {
+      disposed = true;
       conn.close();
       document.removeEventListener("visibilitychange", onVisible);
       window.clearTimeout(flushTimer);
       for (const timer of ttlTimers.values()) window.clearTimeout(timer);
       ttlTimers.clear();
+      endChannelTurns(channelId);
     };
-  }, [channelId, qc, applyStatus, finalizeAgentTraces, armTtl, dropOptimistic]);
+  }, [channelId, qc, applyStatus, finalizeAgentTurn, armTtl, dropOptimistic, updateTurns]);
 
   return {
     presence,
-    activity,
-    toolTimelines,
-    thinkingTimelines,
-    finishedToolTraces,
-    finishedThinkingTraces,
+    turns,
+    finishedTurns,
     optimisticAgents,
     markAgentGenerating,
   };

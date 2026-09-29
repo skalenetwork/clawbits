@@ -3,7 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { registerClawBitsCli } from "./cli.js";
 import { clawbitsChannelPlugin } from "./plugin.js";
 import { registerActivitySubscription } from "./activity/subscription.js";
-import { registerMcpOAuth } from "./mcp-oauth.js";
+import { setMcpOAuthRuntime } from "./mcp-oauth.js";
 import { setModelChoiceRuntime } from "./model-choice.js";
 import {
   registerSlimChannelHandoff,
@@ -21,7 +21,7 @@ export default defineChannelPluginEntry({
   registerCliMetadata: registerClawBitsCli,
   registerFull: (api) => {
     setModelChoiceRuntime(api.runtime);
-    registerMcpOAuth(api);
+    setMcpOAuthRuntime(api.runtime);
     const hostApi = api as typeof api & {
       config?: OpenClawConfig;
       logger?: { warn?: (message: string) => void };

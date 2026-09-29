@@ -13,9 +13,9 @@ import {
   useRef,
   useState,
   type ComponentRef,
+  type ReactNode,
 } from "react";
 import {
-  Alert,
   AppState,
   DynamicColorIOS,
   Linking,
@@ -32,8 +32,9 @@ import {
 } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDerivedValue, useSharedValue } from "react-native-reanimated";
-import { api, ApiError, isMcpSignInLink } from "@/lib/api";
+import { api, ApiError, mcpConnectLinkId } from "@/lib/api";
 import { historyKey, useHistory, useLiveEvents } from "@/lib/data";
+import { useLiveTurn, useLiveTurns, type LiveTurn } from "@/lib/liveTurn";
 import { glyphKind, isPairChannel } from "@/lib/chatFilters";
 import {
   backUnreadTitle,
@@ -60,6 +61,8 @@ import {
   styles,
   type GlassComposerHandle,
 } from "@/components/ui";
+import { McpConnectCard } from "@/components/mcp-connect-card";
+import { TurnTrace } from "@/components/turn-trace";
 
 type Delivery = { uuid: string; text: string; state: "sending" | "uncertain" };
 
@@ -301,7 +304,7 @@ function Conversation({ id }: { id: string }) {
           alignItemsAtEnd
           maintainScrollAtEnd={{
             animated: false,
-            on: { dataChange: true, layout: false, itemLayout: false },
+            on: { dataChange: true, footerLayout: true, layout: false, itemLayout: false },
           }}
           maintainVisibleContentPosition={{ data: true, size: true }}
           contentInsetAdjustmentBehavior="never"
@@ -338,31 +341,34 @@ function Conversation({ id }: { id: string }) {
             ) : null
           }
           ListFooterComponent={
-            pending ? (
-              <View
-                style={[chat.row, chat.ungrouped, { alignItems: "flex-end" }]}
-              >
-              <View style={chat.bubbleWrap}>
+            <>
+              {pending && (
                 <View
-                  style={[
-                    chat.bubble,
-                    chat.outgoing,
-                    bubbleShape(true, false, false),
-                  ]}
+                  style={[chat.row, chat.ungrouped, { alignItems: "flex-end" }]}
                 >
-                  <Text style={[chat.message, chat.outgoingText]}>
-                    {pending.text}
+                  <View style={chat.bubbleWrap}>
+                    <View
+                      style={[
+                        chat.bubble,
+                        chat.outgoing,
+                        bubbleShape(true, false, false),
+                      ]}
+                    >
+                      <Text style={[chat.message, chat.outgoingText]}>
+                        {pending.text}
+                      </Text>
+                    </View>
+                    <BubbleTail own />
+                  </View>
+                  <Text style={chat.author}>
+                    {pending.state === "sending"
+                      ? "Sending…"
+                      : "Delivery unconfirmed"}
                   </Text>
                 </View>
-                <BubbleTail own />
-              </View>
-                <Text style={chat.author}>
-                  {pending.state === "sending"
-                    ? "Sending…"
-                    : "Delivery unconfirmed"}
-                </Text>
-              </View>
-            ) : null
+              )}
+              <Generating channel={id} posts={posts} named={named} />
+            </>
           }
         />
       )}
@@ -401,6 +407,33 @@ function Conversation({ id }: { id: string }) {
       </KeyboardStickyView>
       <Stack.Screen options={header} />
     </>
+  );
+}
+
+/** Agents generating with no draft yet: each one's turn line alone, where its reply will land. */
+function Generating({ channel, posts, named }: { channel: string; posts: Post[]; named: boolean }) {
+  const turns = useLiveTurns(channel);
+  return Object.entries(turns).map(([agent, turn]) =>
+    posts.some((post) => post.agent_id === agent && post.status === "streaming") ? null : (
+      <Upcoming key={agent} agent={agent} turn={turn} posts={posts} named={named} />
+    ),
+  );
+}
+
+/** An agent's turn line before its draft exists, framed as the reply it stands in for, so the draft's own line takes
+ *  over at the same place. */
+function Upcoming({ agent, turn, posts, named }: { agent: string; turn: LiveTurn; posts: Post[]; named: boolean }) {
+  const [created_at] = useState(() => new Date().toISOString());
+  const name = posts.findLast((post) => post.agent_id === agent)?.poster_display_name ?? null;
+  return (
+    <Row
+      post={{ human_id: null, agent_id: agent, poster_display_name: name, created_at }}
+      previous={posts.at(-1)}
+      own={false}
+      named={named}
+    >
+      <TurnTrace turn={turn} />
+    </Row>
   );
 }
 
@@ -471,15 +504,7 @@ function BubbleTail({ own }: { own: boolean }) {
   );
 }
 
-function BubbleText({ text, own, postId }: { text: string; own: boolean; postId: number }) {
-  const { session } = useSession();
-  const open = async (url: string) => {
-    if (!session || !isMcpSignInLink(url)) return Linking.openURL(url);
-    const claimed = await api.claimMcpSignIn(session.token, url, postId).catch((err: unknown) => {
-      Alert.alert("Could not start the sign-in", err instanceof Error ? err.message : undefined);
-    });
-    if (claimed) await Linking.openURL(claimed.url);
-  };
+function BubbleText({ text, own }: { text: string; own: boolean }) {
   if (!text.includes("http")) {
     return (
       <Text style={[chat.message, own ? chat.outgoingText : chat.incomingText]}>
@@ -496,7 +521,7 @@ function BubbleText({ text, own, postId }: { text: string; own: boolean; postId:
             key={index}
             style={chat.link}
             onPress={() => {
-              void open(part);
+              void Linking.openURL(part);
             }}
           >
             {part}
@@ -506,6 +531,51 @@ function BubbleText({ text, own, postId }: { text: string; own: boolean; postId:
         ),
       )}
     </Text>
+  );
+}
+
+/** Who wrote a row and when: a post, or the stand-in for a reply whose draft does not exist yet. */
+type Author = Pick<Post, "human_id" | "agent_id" | "poster_display_name" | "created_at">;
+
+/** Whether a row continues the one before it: the same author, with no date stamp between. */
+function continues(post: Author, previous?: Author): boolean {
+  return !showStamp(post, previous) && samePerson(previous, post);
+}
+
+/** A row's frame: its date stamp, its author in named channels, and the padding that groups it with the row
+ *  before. */
+function Row({
+  post,
+  previous,
+  own,
+  named,
+  children,
+}: {
+  post: Author;
+  previous?: Post;
+  own: boolean;
+  named: boolean;
+  children: ReactNode;
+}) {
+  const grouped = continues(post, previous);
+  return (
+    <View>
+      {showStamp(post, previous) && <Text style={chat.date}>{stampLabel(post.created_at)}</Text>}
+      <View
+        style={[
+          chat.row,
+          grouped ? chat.grouped : chat.ungrouped,
+          { alignItems: own ? "flex-end" : "flex-start" },
+        ]}
+      >
+        {named && !own && !grouped && (
+          <Text style={chat.author}>
+            {post.poster_display_name || post.agent_id || "Member"}
+          </Text>
+        )}
+        {children}
+      </View>
+    </View>
   );
 }
 
@@ -522,55 +592,40 @@ const Message = memo(function Message({
   own: boolean;
   named: boolean;
 }) {
-  const stamped = showStamp(post, previous);
-  const groupedPrev = !stamped && samePerson(previous, post);
-  const groupedNext =
-    !!next && !showStamp(next, post) && samePerson(post, next);
-  const body =
-    post.message ||
-    (post.status === "streaming"
-      ? "…"
-      : post.files.length
-        ? "Attachment"
-        : "");
+  const streaming = post.status === "streaming";
+  const turn = useLiveTurn(post.channel_id, streaming ? post.agent_id : null);
+  const groupedPrev = continues(post, previous);
+  const groupedNext = !!next && continues(next, post);
+  const body = post.message || (post.files.length ? "Attachment" : "");
+  const linkId = own ? undefined : mcpConnectLinkId(body.trim());
   const caption =
-    post.status === "streaming"
-      ? "Writing…"
-      : post.status === "draft"
-        ? "Draft"
-        : post.status === "published"
-          ? null
-          : "Not published";
+    post.status === "draft"
+      ? "Draft"
+      : post.status === "rejected"
+        ? "Not published"
+        : null;
   return (
-    <View>
-      {stamped && <Text style={chat.date}>{stampLabel(post.created_at)}</Text>}
-      <View
-        style={[
-          chat.row,
-          groupedPrev ? chat.grouped : chat.ungrouped,
-          { alignItems: own ? "flex-end" : "flex-start" },
-        ]}
-      >
-        {named && !own && !groupedPrev && (
-          <Text style={chat.author}>
-            {post.poster_display_name || post.agent_id || "Member"}
-          </Text>
-        )}
-        <View style={chat.bubbleWrap}>
+    <Row post={post} previous={previous} own={own} named={named}>
+      {post.agent_id && (streaming || post.status === "published") ? (
+        <TurnTrace post={post} turn={turn} />
+      ) : null}
+      {streaming && !body ? null : (
+        <View style={linkId ? chat.cardWrap : chat.bubbleWrap}>
           <View
             style={[
               chat.bubble,
               own ? chat.outgoing : chat.incoming,
               bubbleShape(own, groupedPrev, groupedNext),
+              linkId && chat.cardBubble,
             ]}
           >
-            <BubbleText text={body} own={own} postId={post.post_id} />
+            {linkId ? <McpConnectCard linkId={linkId} /> : <BubbleText text={body} own={own} />}
           </View>
           {!groupedNext && <BubbleTail own={own} />}
         </View>
-        {caption && <Text style={chat.author}>{caption}</Text>}
-      </View>
-    </View>
+      )}
+      {caption && <Text style={chat.author}>{caption}</Text>}
+    </Row>
   );
 });
 
@@ -615,10 +670,12 @@ const chat = StyleSheet.create({
   ungrouped: { paddingTop: 6, paddingBottom: 6 },
   author: { fontSize: 11, color: color.muted, marginLeft: 16, marginBottom: 2 },
   bubbleWrap: { maxWidth: "75%" },
+  cardWrap: { width: "88%" },
   bubble: {
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
+  cardBubble: { paddingVertical: 12 },
   outgoing: { backgroundColor: bubbleOut },
   incoming: { backgroundColor: bubbleIn },
   tail: {

@@ -1881,6 +1881,7 @@ class TableRead:
                     parents.get(p.parent_post_id) if p.parent_post_id is not None else None
                 ),
                 "link_preview": p.link_preview,
+                "steps": p.steps,
                 "trace_id": p.trace_id,
                 "reactions": list(reactions.get(p.post_id, {}).values()),
                 "files": files.get(p.post_id, []),

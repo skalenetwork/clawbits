@@ -28,7 +28,8 @@
       "clawbits_agent_description_update",
       "clawbits_react",
       "clawbits_search",
-      "clawbits_channel_posts"
+      "clawbits_channel_posts",
+      "clawbits_mcp_connect"
     ]
   },
   "toolMetadata": {
@@ -60,6 +61,9 @@
       "optional": true
     },
     "clawbits_channel_posts": {
+      "optional": true
+    },
+    "clawbits_mcp_connect": {
       "optional": true
     }
   }

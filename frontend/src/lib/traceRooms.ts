@@ -1,5 +1,4 @@
 import {
-  CommandLineIcon,
   Database01Icon,
   File01Icon,
   FileEditIcon,
@@ -62,7 +61,7 @@ const RULES: { test: RegExp; room: Room; icon: IconSvgElement }[] = [
   { test: /\bgrep\b|\bglob\b|\bfind\b|list dir|\bls\b|search file/, room: "find", icon: Search01Icon },
   { test: /\bwrite\b|create file|\bsave\b|str replace|\bedit\b|editor|\bpatch\b|\bapply\b/, room: "write", icon: FileEditIcon },
   { test: /\bread\b|\bcat\b|\bview\b|get file|open file/, room: "read", icon: File01Icon },
-  { test: /\bbash\b|\bshell\b|\bexec\b|\bterminal\b|\bcommand\b|run command|\bzsh\b|\bsh\b/, room: "run", icon: CommandLineIcon },
+  { test: /\bbash\b|\bshell\b|\bexec\b|\bterminal\b|\bcommand\b|run command|\bzsh\b|\bsh\b/, room: "run", icon: SourceCodeIcon },
   { test: /\bpython\b|\bnode\b|\bcode\b|\bexecute\b|\brepl\b|jupyter|interpreter|\bcompile\b/, room: "run", icon: SourceCodeIcon },
 ];
 
@@ -85,26 +84,46 @@ export function roomOf(tool: string | null | undefined): RoomPresentation {
   return FALLBACK;
 }
 
+/** A step's label as displayed: the token that identifies the step (T1, weight 500), then what qualifies it (T2). */
+export interface StepLabel {
+  head: string;
+  tail: string;
+}
+
+/** The plugin's `name: …` prefix, which the chip already says. */
+const NAMED = /^[\w.-]+: (.*)$/;
+/** `'value'` or `action 'value'`; an older plugin's length cut can drop the closing quote. */
+const QUOTED = /^(?:([a-z][\w-]{0,31}) )?'(.*?)'?$/i;
+/** A path's directory and its basename, a trailing slash kept on the basename. */
+const PATH = /^(.*)\/([^/]+\/?)$/;
+/** The agent's home, or the OpenClaw workspace inside it, up to a `/`. */
+const HOME = /^\/home\/[^/]+(?:\/\.openclaw\/workspace)?(?=\/|$)/;
+
 /**
- * Split a command into the token that identifies it and the rest.
+ * Split a step's sanitized label into head and tail.
  *
- * HEAD = token[0], plus any following bare words (max 3 total). Anchored at
- * token zero deliberately: hunting for the "subject" in the middle of an
- * agent-authored shell string is a heuristic over an unbounded space (pipes
- * make `head` the subject, `git commit -m "…"` has no clean operand), and a
- * wrong dark word inverts the hierarchy silently. Worst case here it marks a
- * word that was going to be first anyway.
- *
- * File-ish rooms invert the emphasis at the call site: the basename is the
- * discriminating token, not the leading one.
+ * Unwraps the plugin's forms first: `name: 'value'`, `name: action 'value'`, `name: detail` and a bare `name`. A
+ * path inverts wherever it appears, keyed on the value's shape and never the room: basename first, then its directory
+ * with the home or workspace prefix elided at a `/`. A command (the run room) splits at token zero: token zero plus
+ * up to two following bare words. Hunting for the "subject" mid-command is a heuristic over an unbounded space (pipes
+ * make `head` the subject, `git commit -m "…"` has no clean operand), and a wrong dark word inverts the hierarchy
+ * silently. Anything else is all head. An action qualifier trails the tail.
  */
-export function splitCommand(label: string): { head: string; tail: string } {
-  const toks = label.split(/\s+/).filter(Boolean);
+export function stepLabel(label: string, room: Room): StepLabel {
+  const named = NAMED.exec(label);
+  const quoted = named && QUOTED.exec(named[1] ?? "");
+  const value = (quoted ? quoted[2] : (named?.[1] ?? label)) || (label.split(":")[0] ?? "");
+  const action = quoted?.[1]?.replace(/_|(?<=[a-z])(?=[A-Z])/g, " ").toLowerCase();
+  const { head, tail } = splitValue(value, room);
+  return { head, tail: action ? [tail, action].filter(Boolean).join(" ") : tail };
+}
+
+function splitValue(value: string, room: Room): StepLabel {
+  const path = /\s|:\/\//.test(value) ? null : PATH.exec(value);
+  if (path) return { head: path[2] ?? "", tail: (path[1] ?? "").replace(HOME, "…") || "/" };
+  if (room !== "run") return { head: value, tail: "" };
+  const toks = value.split(/\s+/);
   let n = 1;
-  for (;;) {
-    const next = toks[n];
-    if (n >= 3 || next === undefined || !/^[a-z][a-z0-9-]*$/.test(next)) break;
-    n += 1;
-  }
+  while (n < 3 && /^[a-z][a-z0-9-]*$/.test(toks[n] ?? "")) n += 1;
   return { head: toks.slice(0, n).join(" "), tail: toks.slice(n).join(" ") };
 }

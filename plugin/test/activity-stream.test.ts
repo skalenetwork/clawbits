@@ -16,8 +16,12 @@ import {
   __reporterInflightForTest,
   __resetActivityReporterForTest,
   finishReporting,
+  lastActivity,
+  onCommandOutputEvent,
+  onItemEvent,
   onThinkingEvent,
   onToolEvent,
+  turnSteps,
 } from "../src/activity/reporter.js";
 import { routeAgentEvent } from "../src/activity/subscription.js";
 
@@ -187,6 +191,110 @@ describe("activity reporter (status lane)", () => {
     assert.ok((doneActivity.duration_ms as number) >= 10);
   });
 
+  it("keys a tool's start and end by the engine's call id and keeps the step for the reply post", async () => {
+    const client = new FakeClient();
+    const turn = makeTurn(client);
+    onToolEvent(turn, { phase: "start", name: "exec", toolCallId: "c1", args: { command: "gh issue list" } });
+    onToolEvent(turn, { phase: "start", name: "exec", toolCallId: "c2", args: { command: "gh pr list" } });
+    onToolEvent(turn, { phase: "result", name: "exec", toolCallId: "c1", isError: false });
+    onCommandOutputEvent(turn, { phase: "end", status: "failed", toolCallId: "c1", exitCode: 1 });
+    await __reporterInflightForTest(turn);
+    const activities = client.calls.map((c) => c.json.activity as Record<string, unknown>);
+    assert.deepEqual(
+      activities.map(({ kind, id, ok }) => ({ kind, id, ok })),
+      [
+        { kind: "tool", id: "c1", ok: undefined },
+        { kind: "tool", id: "c2", ok: undefined },
+        { kind: "tool_done", id: "c1", ok: true },
+        { kind: "tool_done", id: "c1", ok: false },
+      ],
+    );
+    assert.deepEqual(
+      turnSteps(turn)?.map(({ id, ok }) => ({ id, ok })),
+      [
+        { id: "c1", ok: false },
+        { id: "c2", ok: undefined },
+      ],
+    );
+    assert.equal(lastActivity(turn)?.ok, false);
+  });
+
+  it("fails the step a tool search dispatched when its exec exits nonzero, even before the step's own result", async () => {
+    const turn = makeTurn(new FakeClient());
+    onToolEvent(turn, { phase: "start", name: "tool_call", toolCallId: "w1", args: { id: "openclaw:core:exec", args: { command: "false" } } });
+    const nested = { name: "exec", toolCallId: "tool_search_code:w1:exec:1", parentToolCallId: "w1" };
+    onToolEvent(turn, { ...nested, phase: "start" });
+    onToolEvent(turn, { ...nested, phase: "result" });
+    onCommandOutputEvent(turn, { phase: "end", status: "failed", toolCallId: nested.toolCallId, exitCode: 1 });
+    onToolEvent(turn, { phase: "result", name: "tool_call", toolCallId: "w1" });
+    await __reporterInflightForTest(turn);
+    assert.deepEqual(turnSteps(turn)?.map(({ id, tool, ok }) => ({ id, tool, ok })), [{ id: "w1", tool: "exec", ok: false }]);
+  });
+
+  it("keeps the turn's steps after a failed send stops the live lane", async () => {
+    const client = new FakeClient();
+    const turn = makeTurn(client);
+    client.failWith = new Error("502 Bad Gateway");
+    onToolEvent(turn, { phase: "start", name: "exec", toolCallId: "c1", args: { command: "ls" } });
+    await __reporterInflightForTest(turn);
+    client.failWith = null;
+    onToolEvent(turn, { phase: "result", name: "exec", toolCallId: "c1" });
+    onItemEvent(turn, { kind: "preamble", itemId: "msg_1", progressText: "Now the tests." });
+    await __reporterInflightForTest(turn);
+    assert.equal(client.calls.length, 0);
+    assert.equal(lastActivity(turn), undefined);
+    assert.deepEqual(turnSteps(turn)?.map(({ id, ok }) => ({ id, ok })), [
+      { id: "c1", ok: true },
+      { id: "msg_1", ok: undefined },
+    ]);
+  });
+
+  it("carries the agent's narration as a note, kept for the post, while thinking is never kept", async () => {
+    const client = new FakeClient();
+    const turn = makeTurn(client);
+    onThinkingEvent(turn, { text: "Let me reason about the request privately." });
+    await sleep(1_050);
+    onItemEvent(turn, { kind: "preamble", itemId: "msg_1", progressText: "Checking the open issues first." });
+    await __reporterInflightForTest(turn);
+    const activities = client.calls.map((c) => c.json.activity as Record<string, unknown>);
+    assert.deepEqual(activities.at(-1), { kind: "note", id: "msg_1", label: "Checking the open issues first." });
+    assert.deepEqual(turnSteps(turn), [{ kind: "note", id: "msg_1", label: "Checking the open issues first." }]);
+  });
+
+  it("shows a searched tool's call once, named for the tool it ran", async () => {
+    const client = new FakeClient();
+    const turn = makeTurn(client);
+    onToolEvent(turn, {
+      phase: "start",
+      name: "tool_call",
+      toolCallId: "w1",
+      args: { id: "openclaw:clawbits-tools:clawbits_mcp_connect", args: { server: "linear" } },
+    });
+    const nested = { name: "clawbits_mcp_connect", toolCallId: "tool_search_code:w1:clawbits_mcp_connect:1", parentToolCallId: "w1" };
+    onToolEvent(turn, { ...nested, phase: "start", args: { server: "linear" } });
+    onToolEvent(turn, { ...nested, phase: "result", isError: true });
+    onToolEvent(turn, { phase: "result", name: "tool_call", toolCallId: "w1", isError: true });
+    await __reporterInflightForTest(turn);
+    const activities = client.calls.map((c) => c.json.activity as Record<string, unknown>);
+    assert.deepEqual(
+      activities.map(({ kind, tool, ok }) => ({ kind, tool, ok })),
+      [
+        { kind: "tool", tool: "clawbits_mcp_connect", ok: undefined },
+        { kind: "tool_done", tool: "clawbits_mcp_connect", ok: false },
+      ],
+    );
+    assert.equal(activities[0]?.label, "clawbits_mcp_connect: 'linear'");
+  });
+
+  it("leaves out tools the host hides from channel progress", async () => {
+    const client = new FakeClient();
+    const turn = makeTurn(client);
+    onToolEvent(turn, { phase: "start", name: "message", toolCallId: "m1", hideFromChannelProgress: true });
+    onToolEvent(turn, { phase: "result", name: "message", toolCallId: "m1", hideFromChannelProgress: true });
+    await __reporterInflightForTest(turn);
+    assert.equal(client.calls.length, 0);
+  });
+
   it("carries the Codex web_search query, which only lands on completion", async () => {
     const client = new FakeClient();
     const turn = makeTurn(client);
@@ -285,6 +393,7 @@ describe("activity reporter (status lane)", () => {
     onToolEvent(turn2, { phase: "start", name: "exec", toolCallId: "t2", args: {} });
     await __reporterInflightForTest(turn2);
     assert.equal(client.calls.length, 0, "activity lane must latch off after a 422");
+    assert.equal(turnSteps(turn2), undefined, "a server without activity keeps no steps either");
   });
 });
 

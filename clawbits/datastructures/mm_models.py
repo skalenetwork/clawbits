@@ -395,6 +395,46 @@ class MmPostLinkPreviewEmbedded(BaseModel):
     skipped: int = 0
 
 
+# Above the plugin's own 1000-char cap (1068 on the wire), or the server re-truncates it.
+ACTIVITY_LABEL_MAX_CHARS = 1200
+ACTIVITY_TOOL_MAX_CHARS = 64
+ACTIVITY_ID_MAX_CHARS = 200
+TURN_STEPS_MAX = 200
+
+
+class _ActivityFields(BaseModel):
+    """One moment of an agent's turn as its plugin reports it, sanitized in the agent's VM. Lengths are
+    clamped, never rejected, and unknown fields from newer plugins are ignored."""
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    id: str | None = None
+    label: str = ""
+    tool: str | None = None
+    ok: bool | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _clamp_id(cls, v: object) -> str | None:
+        return (v[:ACTIVITY_ID_MAX_CHARS] or None) if isinstance(v, str) else None
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _clamp_label(cls, v: object) -> str:
+        return v[:ACTIVITY_LABEL_MAX_CHARS] if isinstance(v, str) else ""
+
+    @field_validator("tool", mode="before")
+    @classmethod
+    def _clamp_tool(cls, v: object) -> str | None:
+        return (v[:ACTIVITY_TOOL_MAX_CHARS] or None) if isinstance(v, str) else None
+
+
+class MmTurnStep(_ActivityFields):
+    """One step of a finished turn, kept on its post: a tool call keyed by the engine's tool call id, or
+    the agent's narration (its ``label``). The same payload the channel saw live; thinking is never kept."""
+    kind: Literal["tool", "note"]
+    id: str
+
+
 class MmPostResponse(BaseModel):
     post_id: int
     channel_id: str
@@ -418,6 +458,7 @@ class MmPostResponse(BaseModel):
     # Only on the create response and its post.created event; never on reads.
     client_msg_uuid: str | None = None
     trace_id: str | None = None
+    steps: list[MmTurnStep] | None = None
 
 
 class MmChannelEventResponse(BaseModel):
@@ -498,9 +539,12 @@ class MmPostPatchRequest(BaseModel):
     replace: str | None = Field(default=None, max_length=40000)
     done: bool = False
     cancel: bool = False
+    steps: list[MmTurnStep] | None = Field(default=None, max_length=TURN_STEPS_MAX)
 
     @model_validator(mode="after")
     def _require_exactly_one_op(self) -> MmPostPatchRequest:
+        if self.steps is not None and not self.done:
+            raise ValueError("steps are kept only when finishing (done)")
         if self.cancel:
             if self.append is not None or self.replace is not None or self.done:
                 raise ValueError(
@@ -514,30 +558,10 @@ class MmPostPatchRequest(BaseModel):
         return self
 
 
-# Above the plugin's own 1000-char cap (1068 on the wire), or the server re-truncates it.
-ACTIVITY_LABEL_MAX_CHARS = 1200
-ACTIVITY_TOOL_MAX_CHARS = 64
-
-
-class MmAgentActivity(BaseModel):
-    """Transient, never-persisted description of what an agent is doing mid-turn. Lengths
-    are clamped, never rejected, and unknown fields from newer plugins are ignored."""
-    model_config = ConfigDict(extra="ignore", frozen=True)
-    kind: Literal["generating", "thinking", "tool", "tool_done"]
-    label: str = ""
-    tool: str | None = None
-    ok: bool | None = None
-    duration_ms: int | None = Field(default=None, ge=0)
-
-    @field_validator("label", mode="before")
-    @classmethod
-    def _clamp_label(cls, v: object) -> str:
-        return v[:ACTIVITY_LABEL_MAX_CHARS] if isinstance(v, str) else ""
-
-    @field_validator("tool", mode="before")
-    @classmethod
-    def _clamp_tool(cls, v: object) -> str | None:
-        return (v[:ACTIVITY_TOOL_MAX_CHARS] or None) if isinstance(v, str) else None
+class MmAgentActivity(_ActivityFields):
+    """Transient description of what an agent is doing mid-turn. ``id`` is the engine's tool call
+    id (or the narration's item id), so a step's start, updates and end land on one row."""
+    kind: Literal["generating", "thinking", "tool", "tool_done", "note"]
 
 
 class MmAgentStatusRequest(BaseModel):

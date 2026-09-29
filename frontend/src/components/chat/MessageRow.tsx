@@ -29,9 +29,7 @@ import { Icon } from "@/components/Icon";
 import { LinkPreviewCard } from "@/components/LinkPreviewCard";
 import { MessageAttachments } from "@/components/MessageAttachments";
 import { MessageMarkdown } from "@/components/MessageMarkdown";
-import { MessagePostContext } from "@/components/messagePostContext";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
-import { GeneratingIndicator } from "@/components/chat/GeneratingIndicator";
 import { PostAvatar } from "@/components/chat/PostAvatar";
 import { TurnTrace } from "@/components/chat/TurnTrace";
 import { StreamingMarkdown } from "@/components/chat/StreamingMarkdown";
@@ -49,13 +47,13 @@ import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useLongPress } from "@/hooks/useLongPress";
 import { useSmoothedText } from "@/hooks/useSmoothedText";
-import type { AgentActivity, ThinkingStep, ToolStep } from "@/hooks/useChannelEvents";
-import { isMcpSignInLink, type MmChannelMember, type MmChannelPost, type MmChannelType } from "@/lib/api";
+import { type LiveTurn, postSteps, type Turn } from "@/lib/turnSteps";
+import { mcpConnectLinkId, type MmChannelMember, type MmChannelPost, type MmChannelType } from "@/lib/api";
 import { isPairType } from "@/lib/chatFilters";
 import { matchAdminCommandText } from "@/lib/adminCommands";
 import { burstEmojiAt, burstEmojiFrom } from "@/lib/emojiBurst";
 import { extractUrls } from "@/lib/extractUrls";
-import { formatRelativeAgo, formatTimeOnly, postMoments } from "@/lib/formatting";
+import { formatRelativeAgo, formatTimeOnly, parseUtcTimestamp, postMoments } from "@/lib/formatting";
 import { mentionHandle, messageLink, posterName, quotedBodyText } from "@/lib/messageHelpers";
 import { MENU_SURFACE } from "@/lib/menuSurface";
 import { formatReactors } from "@/lib/reactionTooltip";
@@ -583,38 +581,11 @@ function ParentQuoteBlock({
   );
 }
 
-function DraftBody({
-  text,
-  activity,
-  toolSteps,
-  thinkingSteps,
-  agentId,
-}: {
-  text: string;
-  activity?: AgentActivity;
-  toolSteps?: ToolStep[];
-  thinkingSteps?: ThinkingStep[];
-  agentId?: string;
-}) {
-  const smoothed = useSmoothedText(text, true);
-  if (!smoothed) {
-    return (
-      <div className="text-message text-muted-foreground">
-        <GeneratingIndicator
-          activity={activity}
-          toolSteps={toolSteps}
-          thinkingSteps={thinkingSteps}
-          agentId={agentId}
-        />
-      </div>
-    );
-  }
-  return (
-    <div>
-      <StreamingMarkdown text={smoothed} />
-      <TurnTrace toolSteps={toolSteps} thinkingSteps={thinkingSteps} sealed />
-    </div>
-  );
+/** How long the agent worked: from its reply draft opening at dispatch to the publish. */
+function spannedMs(post: MmChannelPost): number | undefined {
+  return post.published_at
+    ? parseUtcTimestamp(post.published_at).getTime() - parseUtcTimestamp(post.created_at).getTime()
+    : undefined;
 }
 
 interface MessageRowProps {
@@ -622,11 +593,12 @@ interface MessageRowProps {
   currentUserId: number | null;
   isChannelCreator: boolean;
   isGroupStart: boolean;
-  activity?: AgentActivity;
-  toolSteps?: ToolStep[];
-  thinkingSteps?: ThinkingStep[];
-  finishedToolSteps?: ToolStep[];
-  finishedThinkingSteps?: ThinkingStep[];
+  /** The live turn while this post streams. */
+  turn?: LiveTurn;
+  /** Sent to the agent, which has sent no real signal yet. */
+  optimistic: boolean;
+  /** The turn behind this reply as this session watched it: its thinking, and its steps when the post keeps none. */
+  finishedTurn?: Turn;
   members: MmChannelMember[];
   channelType: MmChannelType | undefined;
   onReply: (post: MmChannelPost) => void;
@@ -647,11 +619,9 @@ export const MessageRow = memo(function MessageRow({
   currentUserId,
   isChannelCreator,
   isGroupStart,
-  activity,
-  toolSteps,
-  thinkingSteps,
-  finishedToolSteps,
-  finishedThinkingSteps,
+  turn,
+  optimistic,
+  finishedTurn,
   members,
   channelType,
   onReply,
@@ -735,14 +705,10 @@ export const MessageRow = memo(function MessageRow({
   const adminCommand = isOwnHumanPost && channelType === "direct" && members.some((m) => m.agent_id != null)
     ? matchAdminCommandText(post.message)
     : null;
+  const keptSteps = useMemo(() => (post.steps?.length ? postSteps(post.steps) : undefined), [post.steps]);
+  const smoothed = useSmoothedText(post.message, isStreaming);
   const body = isStreaming ? (
-    <DraftBody
-      text={post.message}
-      agentId={post.agent_id ?? undefined}
-      activity={activity}
-      toolSteps={toolSteps}
-      thinkingSteps={thinkingSteps}
-    />
+    smoothed ? <StreamingMarkdown text={smoothed} /> : null
   ) : isEditing ? (
     <InlineMessageEditor
       initialText={post.message}
@@ -762,13 +728,10 @@ export const MessageRow = memo(function MessageRow({
       </span>
     </div>
   ) : (
-    <>
-      <MessagePostContext value={post.post_id}><MessageMarkdown content={post.message}/></MessagePostContext>
-      <TurnTrace toolSteps={finishedToolSteps} thinkingSteps={finishedThinkingSteps} sealed />
-    </>
+    <MessageMarkdown content={post.message}/>
   );
 
-  const previewUrl = settled && !post.link_preview ? extractUrls(post.message).find((url) => !isMcpSignInLink(url)) : undefined;
+  const previewUrl = settled && !post.link_preview ? extractUrls(post.message).find((url) => !mcpConnectLinkId(url)) : undefined;
   const reactionPicker = settled && <ReactionQuickPicker onSelect={react}/>;
   const receipt = receiptOf(post, channelType, currentUserId, members);
   const handleText = authorMember ? `@${mentionHandle(authorMember)}` : "@user";
@@ -827,7 +790,20 @@ export const MessageRow = memo(function MessageRow({
         <ParentQuoteBlock preview={post.parent_preview} onJump={onJumpToParent}/>
       )}
       <div className={isRejected ? "text-muted-foreground line-through" : undefined}>
-        <SettleBody isStreaming={isStreaming}>{body}</SettleBody>
+        <SettleBody
+          isStreaming={isStreaming}
+          lead={post.agent_id ? (
+            <TurnTrace
+              live={isStreaming ? { turn, agentId: post.agent_id, optimistic, replying: smoothed !== "" } : undefined}
+              steps={keptSteps ?? finishedTurn?.steps}
+              thoughts={finishedTurn?.thoughts}
+              spannedMs={spannedMs(post)}
+              traceKey={String(post.post_id)}
+            />
+          ) : undefined}
+        >
+          {body}
+        </SettleBody>
       </div>
       {queued && (
         <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground/70">

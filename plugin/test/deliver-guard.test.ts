@@ -110,11 +110,11 @@ const MSG: InboundMessage = {
 };
 
 /** Dispatches MSG through a stub runtime and returns what reached the server. */
-async function run(reply: Parameters<typeof makeCtx>[0]): Promise<RecordedCall[]> {
+async function run(reply: Parameters<typeof makeCtx>[0], msg = MSG): Promise<RecordedCall[]> {
   __resetDraftRegistryForTest();
   __resetTurnRegistryForTest();
   const client = new FakeClient();
-  await dispatchInboundMessage(makeCtx(reply), MSG, {
+  await dispatchInboundMessage(makeCtx(reply), msg, {
     client: client as unknown as ClawBitsClient,
     answers: { "2+2": "4" },
   });
@@ -148,6 +148,47 @@ describe("deliver multi-payload guard", () => {
     );
     assert.equal(messagePosts.length, 1);
     assert.equal(messagePosts[0]!.json.message, "block two");
+  });
+});
+
+describe("turn steps", () => {
+  it("keeps the turn's tool and narration steps on the finished reply", async () => {
+    const calls = await run(async ({ deliver }) => {
+      routeAgentEvent({ runId: "run-s", stream: "lifecycle", data: { phase: "start" } });
+      routeAgentEvent({ runId: "run-s", stream: "item", data: { kind: "preamble", itemId: "m1", progressText: "Listing issues." } });
+      routeAgentEvent({ runId: "run-s", stream: "tool", data: { phase: "start", name: "exec", toolCallId: "c1", args: { command: "gh issue list" } } });
+      routeAgentEvent({ runId: "run-s", stream: "tool", data: { phase: "result", name: "exec", toolCallId: "c1", isError: false } });
+      await deliver!({ text: "Here they are." });
+    });
+    const steps = lastPatch(calls)?.steps as Record<string, unknown>[];
+    assert.deepEqual(
+      steps.map(({ kind, id, label, ok }) => ({ kind, id, label, ok })),
+      [
+        { kind: "note", id: "m1", label: "Listing issues.", ok: undefined },
+        { kind: "tool", id: "c1", label: "exec: 'gh issue list'", ok: true },
+      ],
+    );
+  });
+});
+
+describe("turn context", () => {
+  it("names the Clawbits channel as the turn's native channel, which plugin tools read", async () => {
+    const turns: Record<string, unknown>[] = [];
+    await run(async ({ ctx: turn }) => {
+      turns.push(turn);
+    });
+    assert.equal(turns[0]?.NativeChannelId, MSG.channelId);
+  });
+
+  it("offers only real posts to clawbits_react, not a sign-in wake", async () => {
+    const bodies: unknown[] = [];
+    for (const postId of ["538", "mcp-oauth-s1"]) {
+      await run(async ({ ctx: turn }) => {
+        bodies.push(turn.BodyForAgent);
+      }, { ...MSG, postId });
+    }
+    assert.match(String(bodies[0]), /Clawbits post 538\./);
+    assert.doesNotMatch(String(bodies[1]), /Clawbits post/);
   });
 });
 

@@ -9,7 +9,7 @@ const RIM_ID = "cb-squircle-rim";
 
 /** A superellipse (|x|^5 + |y|^5 = 1), the continuous corner of a native icon: a `rounded-*` arc reads visibly
  *  rounder. In objectBoundingBox units, so one path fits every size. */
-const SQUIRCLE_D = `M${Array.from({length: 160}, (_, i) => {
+export const SQUIRCLE_D = `M${Array.from({length: 160}, (_, i) => {
     const t = (i / 160) * Math.PI * 2;
     const x = 0.5 + 0.5 * Math.sign(Math.cos(t)) * Math.abs(Math.cos(t)) ** 0.4;
     const y = 0.5 + 0.5 * Math.sign(Math.sin(t)) * Math.abs(Math.sin(t)) ** 0.4;

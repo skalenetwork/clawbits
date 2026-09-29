@@ -1,3 +1,5 @@
+import type { DraftPatch } from "./tools/realtime.js";
+
 // ---------------------------------------------------------------------------
 // Open reply-draft registry
 // ---------------------------------------------------------------------------
@@ -28,6 +30,8 @@
 export interface OpenDraftRef {
   id: number | string | undefined;
   stop?: () => Promise<void>;
+  /** What the post that finishes the draft keeps of the turn: its steps so far. */
+  finish?: () => Pick<DraftPatch, "steps">;
 }
 
 const openDrafts = new Map<string, OpenDraftRef>();
@@ -52,19 +56,19 @@ export function registerOpenDraft(
 }
 
 /**
- * Claim the open draft for (account, channel): returns its post id and
- * empties the shared ref so the gateway's deliver/cleanup paths skip it.
- * Returns `undefined` when there is no live draft to take over.
+ * Claim the open draft for (account, channel): returns its post id and what
+ * finishing it keeps, and empties the shared ref so the gateway's deliver/cleanup
+ * paths skip it. Returns `undefined` when there is no live draft to take over.
  */
 export function claimOpenDraft(
   accountId: string,
   channelId: string,
-): number | string | undefined {
+): { id: number | string; finish: Pick<DraftPatch, "steps"> } | undefined {
   const ref = openDrafts.get(draftKey(accountId, channelId));
   if (!ref || ref.id === undefined) return undefined;
   const id = ref.id;
   ref.id = undefined;
-  return id;
+  return { id, finish: ref.finish?.() ?? {} };
 }
 
 /**

@@ -9,7 +9,14 @@
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-set-theme",
-    "shell:allow-open",
+    "core:window:allow-set-badge-label",
+    "core:window:allow-request-user-attention",
+    "core:webview:allow-set-webview-zoom",
+    "opener:allow-default-urls",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "x-apple.systempreferences:*" }]
+    },
     "updater:default",
     "process:default"
   ]

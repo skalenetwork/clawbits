@@ -141,9 +141,9 @@ function useNotificationDiagnostics(): NotificationDiagnostics | null {
     return diagnostics;
 }
 
-// Silent on macOS: the OS owns permission state and System Settings says it better.
+// Linux only (null elsewhere): on macOS the OS owns permission state and System Settings says it better.
 function deliveryReport(diagnostics: NotificationDiagnostics | null): ReactNode {
-    if (diagnostics?.platform !== "linux") return undefined;
+    if (!diagnostics) return undefined;
 
     if (diagnostics.error) {
         return (
@@ -155,7 +155,7 @@ function deliveryReport(diagnostics: NotificationDiagnostics | null): ReactNode 
         );
     }
 
-    if (diagnostics.desktopEntry && !diagnostics.desktopFile) {
+    if (!diagnostics.desktopFile) {
         return (
             <Report tone="warn" title="This install isn't registered with your desktop">
                 Nothing on this system matches <Term>{diagnostics.desktopEntry}.desktop</Term>,
@@ -168,7 +168,7 @@ function deliveryReport(diagnostics: NotificationDiagnostics | null): ReactNode 
 
     return (
         <Report tone="ok" title={`Delivered by ${diagnostics.serverName ?? "your desktop"}`}>
-            Registered as <Term>{diagnostics.desktopEntry ?? "clawbits"}</Term>. If a test
+            Registered as <Term>{diagnostics.desktopEntry}</Term>. If a test
             doesn&apos;t appear, check that Clawbits is allowed in your desktop&apos;s own
             notification settings.
         </Report>

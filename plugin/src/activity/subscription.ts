@@ -8,7 +8,7 @@
 // may ever throw into the gateway's dispatcher.
 
 import { pluginDebug } from "../file-logger.js";
-import { finishReporting, onThinkingEvent, onToolEvent } from "./reporter.js";
+import { finishReporting, onCommandOutputEvent, onItemEvent, onThinkingEvent, onToolEvent } from "./reporter.js";
 import { finishStreaming, onAssistantEvent } from "./stream-patcher.js";
 import { claimTurnForRun, turnForRun } from "./turn-registry.js";
 
@@ -75,6 +75,16 @@ export function routeAgentEvent(event: unknown): void {
         if (turn) onToolEvent(turn, e.data);
         return;
       }
+      case "item": {
+        const turn = turnForRun(runId) ?? claimTurnForRun(runId, sessionKey);
+        if (turn) onItemEvent(turn, e.data);
+        return;
+      }
+      case "command_output": {
+        const turn = turnForRun(runId);
+        if (turn) onCommandOutputEvent(turn, e.data);
+        return;
+      }
       default:
         return;
     }
@@ -98,8 +108,8 @@ export function registerActivitySubscription(api: unknown): boolean {
     register({
       id: "clawbits-live-activity",
       description:
-        "Streams reply text, thinking snippets and tool activity to the Clawbits channel surface.",
-      streams: ["lifecycle", "assistant", "thinking", "tool"],
+        "Streams reply text, thinking, narration, tool calls and exec outcomes to the Clawbits channel surface.",
+      streams: ["lifecycle", "assistant", "thinking", "tool", "item", "command_output"],
       handle: (event) => {
         routeAgentEvent(event);
       },

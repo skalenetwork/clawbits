@@ -3,7 +3,8 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext";
 import { listMmChannels } from "@/lib/api";
-import { setDockBadge } from "@/lib/desktop";
+import { setDesktopUnread } from "@/lib/desktop";
+import { channelLabel } from "@/lib/chatFilters";
 import {
   isPushSupported,
   refreshPushOnLoad,
@@ -30,6 +31,9 @@ export interface ChannelOutletContext {
   togglePanel: (panel: ChannelPanel) => void;
 }
 
+/** The menu bar icon's menu lists at most this many unread channels. */
+const TRAY_UNREAD_LIMIT = 8;
+
 /** Auth gating, the unread title and dock badge, heartbeat and web push, then the desktop or mobile layout. */
 export default function AppShell() {
   const { user, activeOrgId, needsOrgPick, loading } = useAuth();
@@ -48,15 +52,21 @@ export default function AppShell() {
 
   useHeartbeat(Boolean(user));
 
-  const totalUnread = (channelsQuery.data?.channels ?? []).reduce(
-    (sum, c) => (c.muted ? sum : sum + (c.unread_count ?? 0)),
-    0,
-  );
+  const channels = channelsQuery.data?.channels;
   useEffect(() => {
-    document.title = totalUnread > 0 ? `(${totalUnread > 99 ? "99+" : String(totalUnread)}) Clawbits` : "Clawbits";
-    void setDockBadge(totalUnread);
-  }, [totalUnread]);
-  useEffect(() => () => { void setDockBadge(0); }, []);
+    const unread = (channels ?? []).filter((c) => !c.muted && (c.unread_count ?? 0) > 0);
+    const total = unread.reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
+    const badge = total > 99 ? "99+" : String(total);
+    document.title = total > 0 ? `(${badge}) Clawbits` : "Clawbits";
+    setDesktopUnread(
+      total > 0 ? badge : undefined,
+      unread.slice(0, TRAY_UNREAD_LIMIT).map((c) => ({
+        name: `${channelLabel(c)} (${String(c.unread_count)})`,
+        path: `/channels/${c.channel_id}`,
+      })),
+    );
+  }, [channels]);
+  useEffect(() => () => { setDesktopUnread(undefined, []); }, []);
 
   useEffect(() => {
     if (!isPushSupported()) return;

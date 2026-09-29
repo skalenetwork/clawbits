@@ -1,45 +1,12 @@
-import { useCallback, useEffect, useId, useState, useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { randomGeneratingWord } from "@/lib/generatingWords";
 
 /**
- * Returns a playful "generating" gerund that rotates while an agent drafts.
- *
- * The interval BACKS OFF over time: calm from the start, then settling toward a
- * long cadence — a word changing every few seconds reads as churn/anxiety rather
- * than delight, so changes stay deliberately infrequent. Each rotation
- * multiplies the delay by ``BACKOFF`` up to ``MAX_MS``; the t-shimmer sweep and
- * the gentle crossfade between words keep the label visibly alive between
- * changes, so motion never stops even as the rotation calms. Call once per
- * indicator so two on-screen indicators don't tick in lockstep.
+ * One rotation per agent, shared by the presence row and the streaming draft, which render separate lines for the same
+ * turn: a per-line rotation would reset the word, and its timing, when the draft lands. The interval backs off from
+ * 7s toward 30s, since a word changing every few seconds reads as churn. An entry outlives its last subscriber by a
+ * grace window, which spans the commit where one line unmounts before the next mounts.
  */
-export function useGeneratingWord(startMs = 7000): string {
-  const [word, setWord] = useState<string>(() => randomGeneratingWord());
-  useEffect(() => {
-    const MAX_MS = 30_000;
-    const BACKOFF = 1.5;
-    let handle = 0;
-    let delay = startMs;
-    const tick = () => {
-      setWord((prev) => randomGeneratingWord(prev));
-      delay = Math.min(MAX_MS, Math.round(delay * BACKOFF));
-      handle = window.setTimeout(tick, delay);
-    };
-    handle = window.setTimeout(tick, delay);
-    return () => { window.clearTimeout(handle); };
-  }, [startMs]);
-  return word;
-}
-
-// ── Per-agent shared rotation ───────────────────────────────────────────────
-// The presence-derived GeneratingRow and the streaming DraftBody render SEPARATE
-// GeneratingIndicator instances for the same agent. A per-instance rotation
-// (above) would reset the word — and its rotation timing — at the
-// presence→streaming handoff, so the label visibly jumps the moment the real
-// post lands. Keying the rotation by agent id in one module-level store makes
-// both instances read the same word driven by a single shared timer, so the
-// handoff is seamless. Entries self-clean a few seconds after their last
-// subscriber leaves, which spans the one-commit gap where the old instance
-// unmounts before the new one mounts.
 interface WordEntry {
   word: string;
   delay: number;
@@ -92,15 +59,15 @@ function subscribeAgentWord(key: string, onChange: () => void): () => void {
 }
 
 /**
- * Rotating gerund shared across every indicator for a given agent. Pass the
- * agent id so the presence row and the streaming draft stay in lockstep; when
- * no id is available a stable per-instance fallback key is used so the hook
- * still behaves like a private {@link useGeneratingWord}.
+ * Rotating gerund shared by every line showing an agent's live turn, so the
+ * presence row and the streaming draft stay in lockstep. Empty without an
+ * agent: a finished turn's line keeps no rotation running.
  */
 export function useAgentGeneratingWord(agentId: string | undefined): string {
-  const fallbackId = useId();
-  const key = agentId ?? `__fallback:${fallbackId}`;
-  const subscribe = useCallback((onChange: () => void) => subscribeAgentWord(key, onChange), [key]);
-  const getSnapshot = useCallback(() => getOrCreateWordEntry(key).word, [key]);
+  const subscribe = useCallback(
+    (onChange: () => void) => (agentId ? subscribeAgentWord(agentId, onChange) : () => undefined),
+    [agentId],
+  );
+  const getSnapshot = useCallback(() => (agentId ? getOrCreateWordEntry(agentId).word : ""), [agentId]);
   return useSyncExternalStore(subscribe, getSnapshot);
 }

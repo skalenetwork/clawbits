@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Update } from "@tauri-apps/plugin-updater";
+import { useDesktopEvent } from "@/hooks/useDesktopEvent";
 import { checkForUpdate, isDesktop, relaunchApp } from "@/lib/desktop";
 import { toast } from "@/lib/toast";
 
@@ -258,20 +259,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     };
   }, [forced, runCheck]);
 
-  // Manual trigger from the macOS app menu ("Check for Updates...").
-  useEffect(() => {
-    if (forced || !isDesktop) return;
-    let unlisten: (() => void) | undefined;
-    void (async () => {
-      const { listen } = await import("@tauri-apps/api/event");
-      unlisten = await listen("desktop://check-update", () => {
-        void runCheck(true);
-      });
-    })();
-    return () => {
-      unlisten?.();
-    };
-  }, [forced, runCheck]);
+  // Manual trigger from the app menu ("Check for Updates…").
+  useDesktopEvent("desktop://check-update", () => {
+    if (!forced) void runCheck(true);
+  });
 
   const value: UpdateState = {
     status,

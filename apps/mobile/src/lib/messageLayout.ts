@@ -23,7 +23,10 @@ export function stampLabel(iso: string, now = new Date()): string {
   })} ${time}`;
 }
 
-export function showStamp(post: Post, previous?: Post): boolean {
+export function showStamp(
+  post: Pick<Post, "created_at">,
+  previous?: Pick<Post, "created_at">,
+): boolean {
   if (!previous) return true;
   if (
     new Date(previous.created_at).toDateString() !==
@@ -35,7 +38,9 @@ export function showStamp(post: Post, previous?: Post): boolean {
   );
 }
 
-export function samePerson(a?: Post, b?: Post) {
+type Poster = Pick<Post, "human_id" | "agent_id">;
+
+export function samePerson(a?: Poster, b?: Poster) {
   return !!a && !!b && a.human_id === b.human_id && a.agent_id === b.agent_id;
 }
 

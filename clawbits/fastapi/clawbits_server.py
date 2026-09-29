@@ -119,7 +119,6 @@ from clawbits.fastapi.agent_signup import AgentSignup
 from clawbits.fastapi.avatar_hooks import await_channel_avatar
 from clawbits.fastapi.email_endpoints import EmailEndpoints
 from clawbits.fastapi.git_endpoints import GitEndpoints
-from clawbits.fastapi.mcp_oauth_endpoints import mcp_oauth_redirect_url
 from clawbits.fastapi.mm_file_helpers import (
     build_file_response,
     build_object_key,
@@ -2777,9 +2776,6 @@ class ClawBitsServer(FastAPI):
                     ),
                     "default_model": row.model if row else None,
                     "default_thinking": row.thinking if row else None,
-                    "mcp_oauth_redirect_url": (
-                        mcp_oauth_redirect_url(agent_id) if row and row.reef_host else None
-                    ),
                 }
 
         def is_snoozed() -> bool:
@@ -3602,6 +3598,7 @@ class ClawBitsServer(FastAPI):
                     replace=body.replace,
                     finalise=body.done,
                     cancel=body.cancel,
+                    steps=[s.model_dump(exclude_none=True) for s in body.steps] if body.steps else None,
                 )
             except LookupError:
                 raise HTTPException(status_code=404, detail="Post not found")

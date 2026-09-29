@@ -2,18 +2,26 @@ import { useState } from "react";
 import { PaintBrush01Icon as PaintBrush } from "@hugeicons/core-free-icons";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/PageHeader";
 import { SettingsPage, SettingsRow, SettingsSection } from "@/components/settings/Settings";
+import { DELAY_RANGE, dictationSupported, getDictationPrefs, setDictationPrefs, type DictationPrefs } from "@/hooks/useDictation";
 import { useTheme, type Theme } from "@/hooks/useTheme";
-import { isDesktop, getStoredTranslucency, setTranslucency } from "@/lib/desktop";
-import { isMac } from "@/lib/shortcuts/platform";
+import { isMacDesktop, getStoredTranslucency, setTranslucency } from "@/lib/desktop";
 
 const THEMES: Record<Theme, string> = { light: "Light", dark: "Dark", system: "System" };
+const SECONDS = new Intl.NumberFormat("en", { style: "unit", unit: "second", unitDisplay: "long" });
 
 export default function SettingsAppearancePage() {
     const { theme, setTheme } = useTheme();
     const [translucent, setTranslucent] = useState(getStoredTranslucency);
+    const [dictation, setDictation] = useState(getDictationPrefs);
+    const updateDictation = (change: Partial<DictationPrefs>) => {
+        const next = { ...dictation, ...change };
+        setDictation(next);
+        setDictationPrefs(next);
+    };
 
     return (
         <SettingsPage>
@@ -42,7 +50,7 @@ export default function SettingsAppearancePage() {
                 />
             </SettingsSection>
 
-            {isDesktop && isMac && (
+            {isMacDesktop && (
                 <SettingsSection label="Desktop window">
                     <SettingsRow
                         title="Sidebar transparency"
@@ -59,6 +67,38 @@ export default function SettingsAppearancePage() {
                             />
                         }
                     />
+                </SettingsSection>
+            )}
+
+            {dictationSupported && (
+                <SettingsSection label="Dictation">
+                    <SettingsRow
+                        title="Send when I stop talking"
+                        description="Dictated messages send themselves once you pause"
+                        htmlFor="dictation-auto-send"
+                        control={
+                            <Switch
+                                id="dictation-auto-send"
+                                checked={dictation.autoSend}
+                                onCheckedChange={(autoSend) => { updateDictation({ autoSend }); }}
+                            />
+                        }
+                    />
+                    {dictation.autoSend && (
+                        <SettingsRow
+                            title="Pause before sending"
+                            description={SECONDS.format(dictation.delayMs / 1000)}
+                            control={
+                                <Slider
+                                    {...DELAY_RANGE}
+                                    aria-label="Pause before sending"
+                                    className="w-40"
+                                    value={dictation.delayMs}
+                                    onValueChange={(delayMs) => { updateDictation({ delayMs }); }}
+                                />
+                            }
+                        />
+                    )}
                 </SettingsSection>
             )}
         </SettingsPage>

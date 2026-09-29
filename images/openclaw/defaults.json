@@ -13,7 +13,8 @@
       "clawbits_agent_description_update",
       "clawbits_react",
       "clawbits_search",
-      "clawbits_channel_posts"
+      "clawbits_channel_posts",
+      "clawbits_mcp_connect"
     ]
   },
   "plugins": {

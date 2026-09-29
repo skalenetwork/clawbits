@@ -820,6 +820,17 @@ export interface MmChannelPost {
   files?: MmFile[];
   /** Echoed only on the create response and post.created, never on reads. */
   client_msg_uuid?: string | null;
+  /** The finished turn an agent reply came from: its tool calls and narration, as the channel saw them live. */
+  steps?: MmTurnStep[] | null;
+}
+
+export interface MmTurnStep {
+  kind: "tool" | "note";
+  id: string;
+  label: string;
+  tool: string | null;
+  ok: boolean | null;
+  duration_ms: number | null;
 }
 
 export interface MmDiscoverableChannel {
@@ -1147,21 +1158,36 @@ export async function stopAgentTurn(channelId: string, agentId: string) {
   });
 }
 
-export function isMcpSignInLink(url: string): boolean {
+interface McpConnectLink {
+  agent_name: string;
+  server: string;
+  host: string;
+  status: "open" | "connecting" | "connected";
+}
+
+export function mcpConnectLinkId(url: string): string | undefined {
   try {
-    return new URL(new URL(url).searchParams.get("redirect_uri") ?? "").pathname.startsWith("/oauth/mcp/callback/");
+    return /^\/connect\/([0-9a-f]{32})$/.exec(new URL(url).pathname)?.[1];
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-export async function claimMcpSignIn(url: string, postId: number) {
-  return request<{ url: string }>("/api/human/mcp-oauth/claim", { ...json("POST", { url, post_id: postId }), detail: true });
+/** The link's card, or null once the link is gone. */
+export async function getMcpConnectLink(linkId: string): Promise<McpConnectLink | null> {
+  const res = await fetch(`/api/human/mcp-oauth/links/${linkId}`, { credentials: "include" });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await readDetail(res));
+  return res.json() as Promise<McpConnectLink>;
 }
 
-export async function completeMcpSignIn(agentId: string, server: string, state: string, code: string) {
-  return request<{ agent_name: string; channel_id: string }>("/api/human/mcp-oauth/callback", {
-    ...json("POST", { agent_id: agentId, server, state, code }),
+export async function claimMcpConnect(linkId: string, client: "web" | "desktop") {
+  return request<{ url: string }>(`/api/human/mcp-oauth/links/${linkId}/claim`, { ...json("POST", { client }), detail: true });
+}
+
+export async function completeMcpSignIn(state: string, code: string) {
+  return request<{ channel_id: string }>("/api/human/mcp-oauth/callback", {
+    ...json("POST", { state, code }),
     detail: true,
   });
 }
