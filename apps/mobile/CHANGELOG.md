@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/skalenetwork/clawbits/compare/mobile-v1.2.0...mobile-v1.3.0) (2026-09-29)
+
+
+### Features
+
+* live turn line with thinking and branded MCP connect cards ([#197](https://github.com/skalenetwork/clawbits/issues/197)) ([4331caf](https://github.com/skalenetwork/clawbits/commit/4331caf45cc4726c80aa9d0b5f3b61274f913091))
+
 ## [1.2.0](https://github.com/skalenetwork/clawbits/compare/mobile-v1.1.0...mobile-v1.2.0) (2026-09-25)
 
 
