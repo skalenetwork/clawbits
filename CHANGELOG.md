@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.0](https://github.com/skalenetwork/clawbits/compare/v1.4.0...v1.5.0) (2026-09-29)
+
+
+### Features
+
+* live turn line with thinking and branded MCP connect cards ([#197](https://github.com/skalenetwork/clawbits/issues/197)) ([4331caf](https://github.com/skalenetwork/clawbits/commit/4331caf45cc4726c80aa9d0b5f3b61274f913091))
+* trusted controls, durable intake and restricted email for Hermes agents ([#193](https://github.com/skalenetwork/clawbits/issues/193)) ([11e5fbc](https://github.com/skalenetwork/clawbits/commit/11e5fbcc771ddf4d538515b56c8bd8ac0022625d))
+
 ## [1.4.0](https://github.com/skalenetwork/clawbits/compare/v1.3.0...v1.4.0) (2026-09-25)
 
 
