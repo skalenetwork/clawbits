@@ -28,7 +28,8 @@ if (kind === "channel") {
       if (options?.optional !== true) {
         throw new Error(`${tool.name} is not optional`);
       }
-      names.push(tool.name);
+      names.push(...(options.names ?? []), ...(options.name ? [options.name] : []));
+      if (typeof tool !== "function") names.push(tool.name);
     },
     on() {},
   });
