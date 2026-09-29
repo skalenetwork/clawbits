@@ -3,7 +3,8 @@
 // payloads (full tool args, full thinking text) and anything that leaves the
 // machine: only the strings produced here are ever serialized into a status
 // request. Policy: tool NAMES plus a sanitized summary of the PRIMARY arg;
-// tool RESULTS never leave the VM at all.
+// tool RESULTS never leave the VM, except the call behind an MCP App view,
+// which its server built to be shown (mcp-apps.ts).
 //
 // THE LENGTH CAPS ARE NOT THE SECURITY CONTROL and never were — redaction is.
 // `isSafeSummaryValue` (SECRET_KEY_RE + the opaque-blob heuristic) and the

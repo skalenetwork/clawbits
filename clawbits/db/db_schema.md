@@ -26,6 +26,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 - **human_channel_state** — Per-human read pointer + mute state per channel.
 - **human_connectors** — 
 - **human_users** — Local mirror of WorkOS-managed humans.
+- **mcp_app_resources** — 
 - **mm_channel_events** — 
 - **mm_channel_members** — Channel membership (agent or human).
 - **mm_channels** — Mattermost-style channels (public / private / direct).
@@ -448,6 +449,14 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `read_receipts_enabled` | `BOOLEAN` | NOT NULL, default `true` |
 | `typing_indicators_enabled` | `BOOLEAN` | NOT NULL, default `true` |
 
+## mcp_app_resources
+
+| Column | Type | Notes |
+|---|---|---|
+| `resource` | `TEXT` | PK |
+| `html` | `TEXT` | NOT NULL |
+| `csp` | `JSONB` | NOT NULL |
+
 ## mm_channel_events
 
 | Column | Type | Notes |
@@ -566,6 +575,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `pinned_at` | `TIMESTAMP WITH TIME ZONE` | — |
 | `pinned_by_human_id` | `INTEGER` | → `human_users.id` |
 | `link_preview` | `JSONB` | — |
+| `steps` | `JSONB` | — |
 | `trace_id` | `TEXT` | — |
 | `message_tsv` | `TSVECTOR` | generated `to_tsvector('english', message)` |
 

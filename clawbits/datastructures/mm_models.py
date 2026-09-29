@@ -1,11 +1,23 @@
 """Mattermost-style messaging data models."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+    model_validator,
+)
+from pydantic.alias_generators import to_camel
 
 from clawbits.datastructures.avatar_models import AvatarRef
 
@@ -428,11 +440,79 @@ class _ActivityFields(BaseModel):
         return (v[:ACTIVITY_TOOL_MAX_CHARS] or None) if isinstance(v, str) else None
 
 
-class MmTurnStep(_ActivityFields):
-    """One step of a finished turn, kept on its post: a tool call keyed by the engine's tool call id, or
-    the agent's narration (its ``label``). The same payload the channel saw live; thinking is never kept."""
+MCP_APP_HTML_MAX_CHARS = 2 * 1024 * 1024
+MCP_APP_CALL_MAX_CHARS = 256 * 1024
+
+McpAppOrigin = Annotated[
+    str, StringConstraints(max_length=2048, pattern=r"^(?:https?|wss?)://(?:\*\.)?[A-Za-z0-9.-]+(?::\d{1,5})?$")
+]
+McpAppHost = Annotated[str, StringConstraints(max_length=253, pattern=r"^[A-Za-z0-9.-]+(?::\d{1,5})?$")]
+
+
+class McpAppCsp(BaseModel):
+    """The origins an MCP App's ``ui://`` document may reach, as its server declared them (``_meta.ui.csp``)."""
+    model_config = ConfigDict(
+        extra="ignore", frozen=True, alias_generator=to_camel, validate_by_name=True, serialize_by_alias=True
+    )
+    connect_domains: tuple[McpAppOrigin, ...] = ()
+    resource_domains: tuple[McpAppOrigin, ...] = ()
+    frame_domains: tuple[McpAppOrigin, ...] = ()
+    base_uri_domains: tuple[McpAppOrigin, ...] = ()
+
+
+class _McpAppCall(BaseModel):
+    """What an MCP App view shows: the configured server it came from and the tool call it renders."""
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    server: str = Field(min_length=1, max_length=256)
+    host: McpAppHost | None = None
+    input: dict[str, Any]
+    result: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _bounded(self) -> _McpAppCall:
+        if len(json.dumps([self.input, self.result])) > MCP_APP_CALL_MAX_CHARS:
+            raise ValueError("MCP App call exceeds its size limit")
+        return self
+
+
+class McpAppUpload(_McpAppCall):
+    """An App view as the agent's plugin reports it, its document inline."""
+    html: str = Field(max_length=MCP_APP_HTML_MAX_CHARS)
+    csp: McpAppCsp = McpAppCsp()
+
+    @property
+    def resource(self) -> str:
+        return hashlib.sha256(json.dumps([self.html, self.csp.model_dump()]).encode()).hexdigest()
+
+
+class McpApp(_McpAppCall):
+    """An App view as a post keeps it: the call, and the stored document it renders in, by content hash."""
+    resource: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class _TurnStepFields(_ActivityFields):
     kind: Literal["tool", "note"]
     id: str
+
+
+class MmTurnStep(_TurnStepFields):
+    """One step of a finished turn, kept on its post: a tool call keyed by the engine's tool call id, or
+    the agent's narration (its ``label``). The same payload the channel saw live, plus the MCP App view a
+    tool call rendered; thinking is never kept."""
+    app: McpApp | None = None
+
+
+class MmTurnStepUpload(_TurnStepFields):
+    """A step as the plugin reports it. An App view that fails validation is dropped, never the step."""
+    app: McpAppUpload | None = None
+
+    @field_validator("app", mode="wrap")
+    @classmethod
+    def _drop_invalid_app(cls, v: object, handler: ValidatorFunctionWrapHandler) -> McpAppUpload | None:
+        try:
+            return handler(v)
+        except ValidationError:
+            return None
 
 
 class MmPostResponse(BaseModel):
@@ -539,7 +619,7 @@ class MmPostPatchRequest(BaseModel):
     replace: str | None = Field(default=None, max_length=40000)
     done: bool = False
     cancel: bool = False
-    steps: list[MmTurnStep] | None = Field(default=None, max_length=TURN_STEPS_MAX)
+    steps: list[MmTurnStepUpload] | None = Field(default=None, max_length=TURN_STEPS_MAX)
 
     @model_validator(mode="after")
     def _require_exactly_one_op(self) -> MmPostPatchRequest:

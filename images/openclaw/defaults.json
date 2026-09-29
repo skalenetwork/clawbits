@@ -1,5 +1,6 @@
 {
   "gateway": { "mode": "local" },
+  "mcp": { "apps": { "enabled": true } },
   "tools": {
     "web": { "search": { "enabled": false } },
     "alsoAllow": [

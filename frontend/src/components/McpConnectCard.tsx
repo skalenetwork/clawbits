@@ -13,10 +13,10 @@ import { cn } from "@/lib/utils";
 const PILL = "inline-flex h-8 shrink-0 items-center gap-1 rounded-lg pr-3 pl-2.5 text-sm font-medium whitespace-nowrap";
 
 /** The service's mark on its squircle tile; a neutral tile, with an optional glyph, for anything else. */
-function Tile({ brand, glyph }: { brand?: McpBrand; glyph?: AppIcon }) {
+export function Tile({ brand, glyph, className }: { brand?: McpBrand; glyph?: AppIcon; className?: string }) {
   const colors = brand && brand.tile !== "ink" ? brand.tile : undefined;
   return (
-    <span className="relative grid size-10 shrink-0 place-items-center">
+    <span className={cn("relative grid size-10 shrink-0 place-items-center", className)}>
       <svg viewBox="0 0 1 1" aria-hidden className="absolute inset-0 size-full">
         <path d={SQUIRCLE_D} fill={colors?.fill} className={cn(!brand && "fill-foreground/6", brand && !colors && "fill-foreground")} />
         <path
@@ -29,11 +29,11 @@ function Tile({ brand, glyph }: { brand?: McpBrand; glyph?: AppIcon }) {
         />
       </svg>
       {brand ? (
-        <svg viewBox={brand.viewBox} aria-hidden fill={colors?.mark} className={cn("relative size-[22px]", !colors && "fill-background")}>
+        <svg viewBox={brand.viewBox} aria-hidden fill={colors?.mark} className={cn("relative size-[55%]", !colors && "fill-background")}>
           <path d={brand.d} />
         </svg>
       ) : (
-        glyph && <Icon icon={glyph} className="relative size-5 text-muted-foreground" />
+        glyph && <Icon icon={glyph} className="relative size-1/2 text-muted-foreground" />
       )}
     </span>
   );

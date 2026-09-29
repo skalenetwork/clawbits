@@ -515,8 +515,8 @@ export async function dispatchInboundMessage(
           liveActivity: accountLiveActivity,
         })
       : undefined;
-  const finish = (): Pick<DraftPatch, "steps"> => {
-    const steps = activityTurn && turnSteps(activityTurn);
+  const finish = async (): Promise<Pick<DraftPatch, "steps">> => {
+    const steps = activityTurn && (await turnSteps(activityTurn));
     return steps ? { steps } : {};
   };
   draftRef.finish = finish;
@@ -621,7 +621,7 @@ export async function dispatchInboundMessage(
         await realtimeTools.patchDraftPost(client, conversationId, draftPostId, {
           replace: body,
           done: true,
-          ...finish(),
+          ...(await finish()),
         });
       } catch (err) {
         logWarn(
@@ -932,9 +932,9 @@ export async function dispatchInboundMessage(
           conversationId,
           leftoverDraftId,
           partial
-            ? { replace: tagReplyBody(`${partial}\n\n_(stopped)_`, msg.senderTag), done: true, ...finish() }
+            ? { replace: tagReplyBody(`${partial}\n\n_(stopped)_`, msg.senderTag), done: true, ...(await finish()) }
             : failed && !stopRequested
-              ? { replace: "_(reply failed to generate)_", done: true, ...finish() }
+              ? { replace: "_(reply failed to generate)_", done: true, ...(await finish()) }
               : { cancel: true },
         );
       } catch (cleanupErr) {

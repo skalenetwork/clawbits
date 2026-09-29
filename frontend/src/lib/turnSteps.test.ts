@@ -133,8 +133,8 @@ describe("turn steps", () => {
   it("reads a finished post's steps", () => {
     expect(
       postSteps([
-        { kind: "note", id: "m1", label: "Listing issues.", tool: null, ok: null, duration_ms: null },
-        { kind: "tool", id: "c1", label: "gh issue list", tool: "exec", ok: false, duration_ms: 1200 },
+        { kind: "note", id: "m1", label: "Listing issues.", tool: null, ok: null, duration_ms: null, app: null },
+        { kind: "tool", id: "c1", label: "gh issue list", tool: "exec", ok: false, duration_ms: 1200, app: null },
       ]),
     ).toEqual([
       { kind: "note", id: "m1", text: "Listing issues." },

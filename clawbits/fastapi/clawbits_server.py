@@ -3598,7 +3598,7 @@ class ClawBitsServer(FastAPI):
                     replace=body.replace,
                     finalise=body.done,
                     cancel=body.cancel,
-                    steps=[s.model_dump(exclude_none=True) for s in body.steps] if body.steps else None,
+                    steps=[TableWrite.keep_turn_step(db, s) for s in body.steps] if body.steps else None,
                 )
             except LookupError:
                 raise HTTPException(status_code=404, detail="Post not found")

@@ -23,6 +23,7 @@ import {
   onToolEvent,
   turnSteps,
 } from "../src/activity/reporter.js";
+import { registerMcpApps } from "../src/activity/mcp-apps.js";
 import { routeAgentEvent } from "../src/activity/subscription.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -210,7 +211,7 @@ describe("activity reporter (status lane)", () => {
       ],
     );
     assert.deepEqual(
-      turnSteps(turn)?.map(({ id, ok }) => ({ id, ok })),
+      (await turnSteps(turn))?.map(({ id, ok }) => ({ id, ok })),
       [
         { id: "c1", ok: false },
         { id: "c2", ok: undefined },
@@ -228,7 +229,7 @@ describe("activity reporter (status lane)", () => {
     onCommandOutputEvent(turn, { phase: "end", status: "failed", toolCallId: nested.toolCallId, exitCode: 1 });
     onToolEvent(turn, { phase: "result", name: "tool_call", toolCallId: "w1" });
     await __reporterInflightForTest(turn);
-    assert.deepEqual(turnSteps(turn)?.map(({ id, tool, ok }) => ({ id, tool, ok })), [{ id: "w1", tool: "exec", ok: false }]);
+    assert.deepEqual((await turnSteps(turn))?.map(({ id, tool, ok }) => ({ id, tool, ok })), [{ id: "w1", tool: "exec", ok: false }]);
   });
 
   it("keeps the turn's steps after a failed send stops the live lane", async () => {
@@ -243,7 +244,7 @@ describe("activity reporter (status lane)", () => {
     await __reporterInflightForTest(turn);
     assert.equal(client.calls.length, 0);
     assert.equal(lastActivity(turn), undefined);
-    assert.deepEqual(turnSteps(turn)?.map(({ id, ok }) => ({ id, ok })), [
+    assert.deepEqual((await turnSteps(turn))?.map(({ id, ok }) => ({ id, ok })), [
       { id: "c1", ok: true },
       { id: "msg_1", ok: undefined },
     ]);
@@ -258,7 +259,7 @@ describe("activity reporter (status lane)", () => {
     await __reporterInflightForTest(turn);
     const activities = client.calls.map((c) => c.json.activity as Record<string, unknown>);
     assert.deepEqual(activities.at(-1), { kind: "note", id: "msg_1", label: "Checking the open issues first." });
-    assert.deepEqual(turnSteps(turn), [{ kind: "note", id: "msg_1", label: "Checking the open issues first." }]);
+    assert.deepEqual(await turnSteps(turn), [{ kind: "note", id: "msg_1", label: "Checking the open issues first." }]);
   });
 
   it("shows a searched tool's call once, named for the tool it ran", async () => {
@@ -378,6 +379,40 @@ describe("activity reporter (status lane)", () => {
     assert.equal(late.label, "third");
   });
 
+  it("keeps the MCP App view a tool result rendered on its step, and the bare step once the gateway drops the view", async () => {
+    const requests: unknown[] = [];
+    registerMcpApps({
+      runtime: {
+        config: { current: () => ({ mcp: { servers: { agentpit: { url: "https://agentpit.dev/mcp" } } } }) },
+        gateway: {
+          request: async (method: string, params: { viewId: string }) => {
+            requests.push([method, params]);
+            if (params.viewId === "gone") throw new Error("MCP App view expired");
+            return { html: "<p>card</p>", toolInput: {}, toolResult: { structuredContent: { cash: 1 } } };
+          },
+        },
+      },
+    } as unknown as Parameters<typeof registerMcpApps>[0]);
+    const turn = makeTurn(new FakeClient());
+    const rendered = (viewId: string) => ({
+      details: { mcpAppPreview: { mcpApp: { viewId, originSessionKey: "agent:main:clawbits", serverName: "agentpit" } } },
+    });
+    onToolEvent(turn, { phase: "start", name: "portfolio", toolCallId: "a1", args: {} });
+    onToolEvent(turn, { phase: "result", name: "portfolio", toolCallId: "a1", result: rendered("v1") });
+    onToolEvent(turn, { phase: "start", name: "portfolio", toolCallId: "a2", args: {} });
+    onToolEvent(turn, { phase: "result", name: "portfolio", toolCallId: "a2", result: rendered("gone") });
+    const [kept, dropped] = (await turnSteps(turn)) ?? [];
+    assert.deepEqual(kept?.app, {
+      server: "agentpit",
+      host: "agentpit.dev",
+      html: "<p>card</p>",
+      input: {},
+      result: { structuredContent: { cash: 1 } },
+    });
+    assert.equal(dropped?.app, undefined);
+    assert.deepEqual(requests[0], ["mcp.app.view", { sessionKey: "agent:main:clawbits", viewId: "v1" }]);
+  });
+
   it("latches off process-wide when the server rejects activity (422)", async () => {
     const client = new FakeClient();
     const turn = makeTurn(client);
@@ -393,7 +428,7 @@ describe("activity reporter (status lane)", () => {
     onToolEvent(turn2, { phase: "start", name: "exec", toolCallId: "t2", args: {} });
     await __reporterInflightForTest(turn2);
     assert.equal(client.calls.length, 0, "activity lane must latch off after a 422");
-    assert.equal(turnSteps(turn2), undefined, "a server without activity keeps no steps either");
+    assert.equal(await turnSteps(turn2), undefined, "a server without activity keeps no steps either");
   });
 });
 

@@ -824,6 +824,15 @@ export interface MmChannelPost {
   steps?: MmTurnStep[] | null;
 }
 
+/** The MCP App view a tool call rendered: its stored `ui://` document and the call it shows. */
+export interface McpApp {
+  server: string;
+  host: string | null;
+  resource: string;
+  input: Record<string, unknown>;
+  result: Record<string, unknown>;
+}
+
 export interface MmTurnStep {
   kind: "tool" | "note";
   id: string;
@@ -831,6 +840,7 @@ export interface MmTurnStep {
   tool: string | null;
   ok: boolean | null;
   duration_ms: number | null;
+  app: McpApp | null;
 }
 
 export interface MmDiscoverableChannel {

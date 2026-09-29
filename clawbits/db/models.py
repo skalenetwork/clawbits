@@ -1673,3 +1673,16 @@ class AgentModelCatalog(SQLModel, table=True):
     default_model: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
     default_thinking: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
     reported_at: datetime = Field(sa_column=SAColumn(SADateTime(timezone=True), nullable=False))
+
+
+class McpAppResource(SQLModel, table=True):
+    """An MCP App's ``ui://`` document and the origins it may reach, stored once and keyed by their content hash.
+
+    Posts keep the hash on the step whose tool call rendered it, never the document: one App serves many calls.
+    """
+
+    __tablename__ = "mcp_app_resources"
+
+    resource: str = Field(sa_column=SAColumn(Text, primary_key=True))
+    html: str = Field(sa_column=SAColumn(Text, nullable=False))
+    csp: dict[str, Any] = Field(sa_column=SAColumn(JSONB, nullable=False))

@@ -31,7 +31,7 @@ export interface OpenDraftRef {
   id: number | string | undefined;
   stop?: () => Promise<void>;
   /** What the post that finishes the draft keeps of the turn: its steps so far. */
-  finish?: () => Pick<DraftPatch, "steps">;
+  finish?: () => Promise<Pick<DraftPatch, "steps">>;
 }
 
 const openDrafts = new Map<string, OpenDraftRef>();
@@ -63,12 +63,12 @@ export function registerOpenDraft(
 export function claimOpenDraft(
   accountId: string,
   channelId: string,
-): { id: number | string; finish: Pick<DraftPatch, "steps"> } | undefined {
+): { id: number | string; finish: Promise<Pick<DraftPatch, "steps">> } | undefined {
   const ref = openDrafts.get(draftKey(accountId, channelId));
   if (!ref || ref.id === undefined) return undefined;
   const id = ref.id;
   ref.id = undefined;
-  return { id, finish: ref.finish?.() ?? {} };
+  return { id, finish: ref.finish?.() ?? Promise.resolve({}) };
 }
 
 /**

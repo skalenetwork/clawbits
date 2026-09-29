@@ -32,6 +32,24 @@ export interface AgentActivity {
   duration_ms?: number;
 }
 
+/** The origins an MCP App's view may reach, as its server declared them. */
+export interface McpAppCsp {
+  connectDomains?: string[];
+  resourceDomains?: string[];
+  frameDomains?: string[];
+  baseUriDomains?: string[];
+}
+
+/** The MCP App view a tool call rendered: its server, the `ui://` document, and the call it shows. */
+export interface McpApp {
+  server: string;
+  host?: string;
+  html: string;
+  csp?: McpAppCsp;
+  input: Record<string, unknown>;
+  result: Record<string, unknown>;
+}
+
 /** One step of a finished turn, kept on the reply post: the tool and narration activity the channel saw live. */
 export interface TurnStep {
   kind: "tool" | "note";
@@ -40,6 +58,7 @@ export interface TurnStep {
   tool?: string;
   ok?: boolean;
   duration_ms?: number;
+  app?: McpApp;
 }
 
 export type MmPostStatus = "streaming" | "draft" | "published" | "rejected";

@@ -31,6 +31,7 @@ import { MessageAttachments } from "@/components/MessageAttachments";
 import { MessageMarkdown } from "@/components/MessageMarkdown";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { PostAvatar } from "@/components/chat/PostAvatar";
+import { McpAppView } from "@/components/chat/McpAppView";
 import { TurnTrace } from "@/components/chat/TurnTrace";
 import { StreamingMarkdown } from "@/components/chat/StreamingMarkdown";
 import { SettleBody } from "@/components/chat/SettleBody";
@@ -706,6 +707,9 @@ export const MessageRow = memo(function MessageRow({
     ? matchAdminCommandText(post.message)
     : null;
   const keptSteps = useMemo(() => (post.steps?.length ? postSteps(post.steps) : undefined), [post.steps]);
+  const appViews = post.steps?.map((step) => step.app && (
+    <McpAppView key={step.id} id={`${String(post.post_id)}:${step.id}`} app={step.app} />
+  ));
   const smoothed = useSmoothedText(post.message, isStreaming);
   const body = isStreaming ? (
     smoothed ? <StreamingMarkdown text={smoothed} /> : null
@@ -802,6 +806,7 @@ export const MessageRow = memo(function MessageRow({
             />
           ) : undefined}
         >
+          {appViews}
           {body}
         </SettleBody>
       </div>

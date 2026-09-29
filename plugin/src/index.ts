@@ -2,6 +2,7 @@ import { defineChannelPluginEntry, emptyChannelConfigSchema } from "openclaw/plu
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { registerClawBitsCli } from "./cli.js";
 import { clawbitsChannelPlugin } from "./plugin.js";
+import { registerMcpApps } from "./activity/mcp-apps.js";
 import { registerActivitySubscription } from "./activity/subscription.js";
 import { setMcpOAuthRuntime } from "./mcp-oauth.js";
 import { setModelChoiceRuntime } from "./model-choice.js";
@@ -48,6 +49,7 @@ export default defineChannelPluginEntry({
     // Live activity belongs to the channel: lifecycle/assistant/thinking/tool
     // events feed the streaming reply and ephemeral channel status lanes.
     registerActivitySubscription(api);
+    registerMcpApps(api);
   },
 });
 

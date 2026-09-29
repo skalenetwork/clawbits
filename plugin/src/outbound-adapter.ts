@@ -194,7 +194,7 @@ export const outboundAdapter: ChannelOutboundAdapter = {
         await realtimeTools.patchDraftPost(client, channelId, draft.id, {
           replace: ctx.text ?? "",
           done: true,
-          ...draft.finish,
+          ...(await draft.finish),
         });
         pluginDebug(
           `outbound.sendText finalized open draft postId=${String(draft.id)} channel=${channelId} in place (no separate post minted)`,

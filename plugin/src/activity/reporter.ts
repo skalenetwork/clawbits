@@ -5,7 +5,8 @@
 import { ClawBitsError } from "../errors.js";
 import { pluginDebug } from "../file-logger.js";
 import * as realtimeTools from "../tools/realtime.js";
-import type { AgentActivity, TurnStep } from "../tools/realtime.js";
+import type { AgentActivity, McpApp, TurnStep } from "../tools/realtime.js";
+import { fetchMcpApp, mcpAppView } from "./mcp-apps.js";
 import {
   sanitizeThinkingTail,
   sanitizeToolDetail,
@@ -49,6 +50,8 @@ interface ReporterState {
   startedAt: Map<string, number>;
   /** Calls a tool search dispatched, to the step that dispatched them. */
   parentOf: Map<string, string>;
+  /** The MCP App views steps rendered, read as their results land. */
+  apps: Map<string, Promise<McpApp | undefined>>;
   last: AgentActivity | undefined;
   inflight: Promise<void>;
 }
@@ -66,6 +69,7 @@ function stateFor(turn: InFlightTurn): ReporterState {
       steps: new Map(),
       startedAt: new Map(),
       parentOf: new Map(),
+      apps: new Map(),
       last: undefined,
       inflight: Promise.resolve(),
     };
@@ -159,8 +163,11 @@ export function onToolEvent(turn: InFlightTurn, data: unknown): void {
   if (!live) return;
   const [state, d] = live;
   const callId = typeof d.toolCallId === "string" ? d.toolCallId : "";
-  if (typeof d.parentToolCallId === "string") {
-    if (callId) state.parentOf.set(callId, d.parentToolCallId);
+  const parent = typeof d.parentToolCallId === "string" ? d.parentToolCallId : undefined;
+  const view = d.phase === "result" ? mcpAppView(d.result) : undefined;
+  if (view) state.apps.set(parent ?? callId, fetchMcpApp(view));
+  if (parent) {
+    if (callId) state.parentOf.set(callId, parent);
     return;
   }
   if (d.hideFromChannelProgress === true) return;
@@ -216,10 +223,16 @@ export function onCommandOutputEvent(turn: InFlightTurn, data: unknown): void {
   queueSend(turn, state, { ...failed, kind: "tool_done" });
 }
 
-/** The turn's tool and narration steps so far, for the reply post to keep; none when the server predates them. */
-export function turnSteps(turn: InFlightTurn): TurnStep[] | undefined {
-  const steps = states.get(turn)?.steps;
-  return steps?.size && !serverLacksActivity ? [...steps.values()] : undefined;
+/** The turn's tool and narration steps so far, with the App views they rendered, for the reply post to keep; none when the server predates them. */
+export async function turnSteps(turn: InFlightTurn): Promise<TurnStep[] | undefined> {
+  const state = states.get(turn);
+  if (!state?.steps.size || serverLacksActivity) return undefined;
+  return Promise.all(
+    [...state.steps.values()].map(async (step) => {
+      const app = await state.apps.get(step.id);
+      return app ? { ...step, app } : step;
+    }),
+  );
 }
 
 /** The activity last reported for a turn, so a status heartbeat can repeat it instead of clearing it. */

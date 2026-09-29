@@ -45,7 +45,7 @@
         "img-src": "'self' data: blob: https:",
         "media-src": "blob: https://*.r2.cloudflarestorage.com",
         "connect-src": "'self' ipc: http://ipc.localhost https://app.clawbits.ai https://app.freeclaws.ai http://localhost:8000 https://*.r2.cloudflarestorage.com",
-        "frame-src": "blob:",
+        "frame-src": "blob: https://app.clawbits.ai https://app.freeclaws.ai http://localhost:8000",
         "object-src": "'none'",
         "base-uri": "'none'",
         "form-action": "'self'"
