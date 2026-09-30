@@ -460,8 +460,12 @@ def test_email_tool_check_is_never_cached_across_profiles(monkeypatch) -> None:
         def register_platform(self, **kwargs: Any) -> None:
             pass
 
+        def register_hook(self, name: str, callback: Any) -> None:
+            pass
+
     mod.register(Ctx())
     assert tools["clawbits_send_email"]["check_fn"] in uncached
+    assert tools["clawbits_mcp_connect"]["check_fn"] in uncached
 
 
 def test_spawned_tasks_keep_the_owner_context() -> None:
@@ -607,6 +611,9 @@ def test_register_hands_the_adapter_the_context_llm(monkeypatch) -> None:
 
         def register_platform(self, **kwargs: Any) -> None:
             platforms[kwargs["name"]] = kwargs
+
+        def register_hook(self, name: str, callback: Any) -> None:
+            pass
 
     mod.register(Ctx())
     adapter = platforms["clawbits"]["adapter_factory"](_FakePlatformConfig(extra={}))

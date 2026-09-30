@@ -27,6 +27,7 @@ OPERATOR_DM = "dm-op"
 OPERATOR_CHAT = "chat-op"  # a named agent_chat room the operator opened beside the DM
 OPERATOR_EMAIL = "op@example.com"
 MODEL = "stub-model"
+MCP_CALLBACK = "https://app.example.com/oauth/mcp/callback"
 # The first line of the email reader's system prompt (extensions/hermes/email_reader.py).
 READER_MARKER = "You read one email"
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9_.:~+=-]{1,128}")
@@ -113,6 +114,8 @@ class FakeClawbits:
         self.deliveries: dict[str, dict[str, Any]] = {}  # Idempotency-Key -> outbox record
         self._send_hashes: dict[str, str] = {}  # Idempotency-Key -> request payload hash
         self.send_state = "accepted"  # outcome recorded for new keyed sends
+        self.mcp_links: list[dict[str, Any]] = []  # POST /mcp-oauth/links bodies (sign-in URLs registered)
+        self.mcp_results: list[dict[str, Any]] = []  # POST /mcp-oauth/result bodies
         self.model_requests: list[dict[str, Any]] = []
         # Answer to every email-reader call; scripted replies are for agent turns only.
         self.reader_reply: Any = json.dumps({"summary": "A short note.", "reply": "Noted."})
@@ -437,6 +440,24 @@ class FakeClawbits:
         @app.post(api + "/automations/state")
         async def automations_state():
             return {"ok": True}
+
+        @app.get(api + "/mcp-oauth/redirect")
+        async def mcp_oauth_redirect():
+            return {"url": MCP_CALLBACK}
+
+        @app.post(api + "/mcp-oauth/links")
+        async def mcp_oauth_link(request: Request):
+            body = await request.json()
+            with self.lock:
+                self.mcp_links.append(body)
+                return {"url": f"https://app.example.com/connect/link-{len(self.mcp_links)}"}
+
+        @app.post(api + "/mcp-oauth/result", status_code=204)
+        async def mcp_oauth_result(request: Request):
+            body = await request.json()
+            with self.lock:
+                self.mcp_results.append(body)
+            return Response(status_code=204)
 
         @app.get(mail + "/count")
         async def email_count(aid: str):

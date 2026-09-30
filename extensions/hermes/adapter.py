@@ -54,6 +54,7 @@ from .inbox_state import (
 )
 from .mailroom import Mailroom, bind_mailroom, unbind_mailroom
 from .manifest import PLUGIN_VERSION
+from .mcp_connect import RelayedCode, redeem, relayed_code
 from .media import _download_to_tempfile
 from .messages import (
     _Channel,
@@ -1086,8 +1087,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         topic — Redis pub/sub with no replay — so the poll loop can never see
         them; without this socket the server-side attention gate is inert for
         Hermes agents (the nudge publishes to zero receivers and refunds its
-        cooldown). It also carries ``snapshot`` (agent controls), ``post.created``
-        and ``automation.sync``. ``post.created`` only wakes the channel's
+        cooldown). It also carries ``snapshot`` (agent controls), ``post.created``,
+        ``automation.sync`` and ``mcp.oauth.code`` (a Connect card's sign-in). ``post.created`` only wakes the channel's
         forward read, so posts are still admitted in order by the journal.
 
         Fail-soft: no ``websockets`` package → one warning, poll-only. Drops
@@ -1139,6 +1140,11 @@ class ClawbitsAdapter(BasePlatformAdapter):
                             self._automations_wake.set()
                         elif event_type == "turn.stop":
                             await self._stop_turns(str(event.get("channel_id") or ""))
+                        elif event_type == "mcp.oauth.code":
+                            if (relayed := relayed_code(event.get("data"))) is not None:
+                                task = self._spawn(self._redeem_mcp_sign_in(relayed))
+                                self._handoffs.add(task)
+                                task.add_done_callback(self._handoffs.discard)
                         elif event_type in ("lobstertalk.consider", "mutualist.consider"):
                             await self._dispatch_attention(event)
             except asyncio.CancelledError:
@@ -1152,6 +1158,29 @@ class ClawbitsAdapter(BasePlatformAdapter):
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)
+
+    async def _redeem_mcp_sign_in(self, relayed: RelayedCode) -> None:
+        """Finish a sign-in a Connect card relayed, then tell the agent in the chat the card came
+        from, as the human who signed in; the note is never a control."""
+        note = await redeem(self.client, relayed)
+        if not self._running:
+            return
+        channel_id = relayed.channel_id or self.fallback_channel_id
+        if not channel_id:
+            return
+        channel = self._channels.get(channel_id) or _Channel(channel_id, None, channel_id)
+        post = {"human_id": relayed.human_id, "post_id": f"mcp-oauth-{relayed.state}"}
+        await self.handle_message(
+            MessageEvent(
+                text=note,
+                message_type=MessageType.TEXT,
+                source=self._session_source(channel, post),
+                raw_message=None,
+                message_id=post["post_id"],
+                channel_prompt=_clawbits_channel_prompt(channel.id, self.agent_id),
+                allow_gateway_control=False,
+            )
+        )
 
     async def _dispatch_attention(self, event: dict[str, Any]) -> None:
         """Admit a ``lobstertalk.consider`` nudge to its channel's attention lane.

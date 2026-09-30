@@ -127,3 +127,9 @@ def active_account() -> ClawbitsAccount | None:
     """Account for the active profile (adapter-bound, else scoped settings); None when not usable."""
     account = _ACCOUNTS.get(_home_key(_active_home())) or resolve_account()
     return account if account.usable else None
+
+
+def bound_account() -> ClawbitsAccount | None:
+    """The account a running adapter bound for the active profile; None outside its gateway."""
+    account = _ACCOUNTS.get(_home_key(_active_home()))
+    return account if account is not None and account.usable else None
