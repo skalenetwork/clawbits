@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.6.0](https://github.com/skalenetwork/clawbits/compare/v1.5.0...v1.6.0) (2026-09-30)
+
+
+### Features
+
+* hermes mcp support ([#204](https://github.com/skalenetwork/clawbits/issues/204)) ([246b23f](https://github.com/skalenetwork/clawbits/commit/246b23fe3963a1b645f344aa0466ae4f34cbda6d))
+
+
+### Bug Fixes
+
+* **desktop:** pass deep-link URL to the app on Linux deb installs ([#202](https://github.com/skalenetwork/clawbits/issues/202)) ([bf46875](https://github.com/skalenetwork/clawbits/commit/bf4687596ee561c086b6805dc2ddbc6ef934dfd8))
+
+
+### Documentation
+
+* backfill release notes for 0.21.1 and 1.2.0 to 1.5.0 ([d34fb13](https://github.com/skalenetwork/clawbits/commit/d34fb133fee044d6ff8f722f643b2b77689130a3))
+
 ## [1.5.0](https://github.com/skalenetwork/clawbits/compare/v1.4.0...v1.5.0) (2026-09-29)
 
 
