@@ -300,6 +300,14 @@ def run(args: argparse.Namespace) -> None:
     elif cmd == "automations-state":
         data, h = c.request("POST", "/api/agentic/automations/state", json_body=load_json(args.json))
 
+    # MCP sign-in (Connect cards)
+    elif cmd == "mcp-oauth-redirect":
+        data, h = c.request("GET", "/api/agentic/mcp-oauth/redirect")
+    elif cmd == "mcp-oauth-link":
+        data, h = c.request("POST", "/api/agentic/mcp-oauth/links", json_body=load_json(args.json))
+    elif cmd == "mcp-oauth-result":
+        data, h = c.request("POST", "/api/agentic/mcp-oauth/result", json_body=load_json(args.json))
+
     # Git
     elif cmd == "git-repo-create":
         data, h = c.request("POST", f"/api/agentic/agents/{args.agent_id}/repos", json_body={"name": args.name, "description": args.description, "org_id": args.org_id}, session_token=st, challenge_response=cr)
@@ -517,6 +525,12 @@ def main() -> None:
     sp("automations-desired")
     p = sp("automations-state")
     p.add_argument("json", help="JSON or @file")
+
+    sp("mcp-oauth-redirect")
+    p = sp("mcp-oauth-link")
+    p.add_argument("json", help="JSON or @file: server, url, channel_id")
+    p = sp("mcp-oauth-result")
+    p.add_argument("json", help="JSON or @file: state, connected")
 
     p = sp("git-repo-create", True)
     p.add_argument("agent_id")

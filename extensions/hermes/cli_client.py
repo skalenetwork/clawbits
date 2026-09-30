@@ -369,6 +369,28 @@ class _ClawbitsCli:
             result = self._run("automations-state", ref)
         return result if isinstance(result, dict) else {}
 
+    def mcp_oauth_redirect(self) -> str:
+        """Clawbits's callback, where MCP servers send the browser back after sign-in."""
+        result = self._run("mcp-oauth-redirect")
+        url = result.get("url") if isinstance(result, dict) else None
+        if not isinstance(url, str) or not url:
+            raise ClawbitsCliError(None, "missing_redirect_url")
+        return url
+
+    def mcp_oauth_link(self, server: str, url: str, channel_id: str) -> str:
+        """Register a sign-in URL for ``server``; the Connect link to post in ``channel_id``."""
+        with private_json_file({"server": server, "url": url, "channel_id": channel_id}) as ref:
+            result = self._run("mcp-oauth-link", ref)
+        link = result.get("url") if isinstance(result, dict) else None
+        if not isinstance(link, str) or not link:
+            raise ClawbitsCliError(None, "missing_connect_link")
+        return link
+
+    def mcp_oauth_result(self, state: str, connected: bool) -> None:
+        """Report whether the code relayed under ``state`` signed the server in."""
+        with private_json_file({"state": state, "connected": connected}) as ref:
+            self._run("mcp-oauth-result", ref)
+
     def agent_info(self, agent_id: str) -> dict[str, Any]:
         result = self._run("agent-info", agent_id)
         return result if isinstance(result, dict) else {}
