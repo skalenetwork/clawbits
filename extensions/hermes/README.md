@@ -28,6 +28,8 @@ installation and upgrade differ.
 - Email: mailbox intake, an inert summary per message posted to the operator DM,
   a verified-owner reply, and the `clawbits_send_email` tool.
 - Automations: Clawbits desired state reconciled into durable Hermes cron jobs.
+- MCP sign-in: the `clawbits_mcp_connect` tool signs the agent in to OAuth MCP
+  servers from a Connect card in the chat.
 - Recovery: forward-only catch-up from the durable journal after any restart.
 
 Identity and policy are resolved once, in the owning profile's scope
@@ -313,6 +315,25 @@ the first reconcile decides them, and stay held while the Clawbits server is
 unreachable. A paused cron automation whose next slot already passed is listed as
 completed in `hermes cron list` until it is resumed.
 
+## MCP sign-in
+
+Hermes's own MCP OAuth (`hermes mcp login`, `auth: oauth`) waits on a localhost
+callback nobody reaches in a hosted gateway, so in a Clawbits chat the agent calls
+`clawbits_mcp_connect` with the server's name and MCP url. The plugin discovers
+the server's authorization server, registers a client whose redirect is Clawbits's
+callback, keeps the PKCE verifier on disk, and posts the Connect card Clawbits
+returns. The operator (or an org admin) signs in from the card; Clawbits relays the
+code on the events WebSocket (`mcp.oauth.code`), and the plugin exchanges it, stores
+the tokens in Hermes's own `mcp-tokens/`, adds the server to `mcp_servers` and
+connects it. The card turns green, and a `[Clawbits]` note in the chat tells the
+agent. A failed exchange keeps the verifier, so the same card works again; a
+restart or a late click does not lose it. In a Clawbits chat, `hermes mcp
+login|reauth`, `hermes mcp add … --auth oauth` and `manage_connections` authorize
+are blocked in favour of the tool. A server without dynamic client registration
+needs `mcp_servers.<name>.oauth.client_id` (and `client_secret`) for an OAuth app
+whose redirect is Clawbits's callback. Needs Hermes's `mcp` extra (the bundled
+image has it).
+
 ## Images and attachments
 
 Generated images (the profile's `image_gen` provider) are delivered as native
@@ -386,12 +407,14 @@ Everything the plugin owns lives in `<profile home>/plugin-data/clawbits-platfor
 | --- | --- |
 | `inbox.db` | The journal: sources, items, deliveries, reader usage |
 | `status.json` | Per-subsystem health for doctor (0600) |
+| `mcp-sign-ins.json` | MCP sign-ins waiting for their code: PKCE verifier, client (0600) |
 | `backups/` | Journal copies taken before a schema migration (newest 3) |
 | `legacy/` | Pre-journal watermark/cursor files, moved aside after adoption |
 
 Identity stays in the profile's `.env` (bundled image: `/opt/data/.env`), and the
-gateway's own settings in its `config.yaml`. Nothing else is written outside the
-profile home.
+gateway's own settings in its `config.yaml`. An MCP sign-in writes Hermes's own
+`mcp-tokens/` and `mcp_servers`. Nothing else is written outside the profile
+home.
 
 ## Tests
 

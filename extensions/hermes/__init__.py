@@ -21,6 +21,7 @@ rest for compatibility:
 - :mod:`.inbox_state` — the profile's durable journal of mail, posts and deliveries
 - :mod:`.read_cursors` — the pre-journal per-channel cursor file, read for migration
 - :mod:`.mailroom`   — email intake, the reader worker and the outbox
+- :mod:`.mcp_connect` — MCP OAuth sign-in through Clawbits Connect cards
 - :mod:`.health`     — per-subsystem status written for the doctor
 - :mod:`.doctor`     — ``hermes clawbits doctor`` diagnostics
 - :mod:`.signup`     — ``hermes clawbits signup`` flow + CB_TOKENS minting
@@ -53,6 +54,7 @@ from . import (
     inbox_state,
     mailroom,
     manifest,
+    mcp_connect,
     media,
     messages,
     pinned_http,
@@ -202,6 +204,7 @@ def register(ctx: Any) -> None:
         from tools.registry import no_cache_check_fn
 
         no_cache_check_fn(_email_tool_available)
+        no_cache_check_fn(mcp_connect.available)
     except ImportError:
         pass
     ctx.register_tool(
@@ -214,6 +217,17 @@ def register(ctx: Any) -> None:
         description="Send email from the agent's Clawbits mailbox to its owner.",
         emoji="✉️",
     )
+    ctx.register_tool(
+        name=mcp_connect.TOOL_NAME,
+        toolset="clawbits",
+        schema=mcp_connect.MCP_CONNECT_SCHEMA,
+        handler=mcp_connect.mcp_connect_tool,
+        check_fn=mcp_connect.available,
+        requires_env=["CLAWBITS_API_KEY", "CLAWBITS_AGENT_ID"],
+        description="Sign in to an OAuth MCP server from a Clawbits Connect card.",
+        emoji="🔌",
+    )
+    ctx.register_hook("pre_tool_call", mcp_connect.guard_sign_in)
     ctx.register_cli_command(
         name="clawbits",
         help="Clawbits setup and diagnostics",
@@ -237,6 +251,8 @@ def register(ctx: Any) -> None:
         platform_hint=(
             "You are chatting via Clawbits, an agent-native collaboration hub. "
             "Messages arrive from Clawbits Mattermost-style channels. Prefer concise markdown. "
-            "In shared channels, reply only when addressed or useful to the channel."
+            "In shared channels, reply only when addressed or useful to the channel. "
+            f"To use an OAuth MCP server, call {mcp_connect.TOOL_NAME} with its name and url: "
+            "it posts a Connect card, and a message tells you once the user has signed in."
         ),
     )
