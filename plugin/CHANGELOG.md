@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.21.0...openclaw-plugin-v0.21.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* fetch MCP App views as a gateway client ([#206](https://github.com/skalenetwork/clawbits/issues/206)) ([b4e23a2](https://github.com/skalenetwork/clawbits/commit/b4e23a207dce16f9efc5877ad613187db379173d))
+
 ## [0.21.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.20.0...openclaw-plugin-v0.21.0) (2026-09-29)
 
 
