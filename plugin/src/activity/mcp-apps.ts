@@ -1,8 +1,9 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { pluginDebug } from "../file-logger.js";
+import { logWarn } from "../file-logger.js";
 import type { McpApp } from "../tools/realtime.js";
 
 type Runtime = OpenClawPluginApi["runtime"];
+type Logger = OpenClawPluginApi["logger"];
 
 const VIEW_TIMEOUT_MS = 10_000;
 
@@ -25,10 +26,12 @@ interface McpAppViewResponse {
 }
 
 let runtime: Runtime | undefined;
+let logger: Logger | undefined;
 
 /** Turns on OpenClaw's MCP Apps host unless the operator set it either way; the gateway restarts once to apply it. */
 export function registerMcpApps(api: OpenClawPluginApi): void {
   runtime = api.runtime;
+  logger = api.logger;
   api.on?.("gateway_start", async () => {
     if (api.runtime.config.current().mcp?.apps?.enabled !== undefined) return;
     await api.runtime.config.mutateConfigFile({
@@ -48,15 +51,18 @@ export function mcpAppView(result: unknown): McpAppView | undefined {
     : undefined;
 }
 
-/** The view's document and call, read while the gateway still holds it; undefined when it no longer does. */
+/** The view's document and call, read while the gateway still holds it; undefined when it no longer does.
+ *  Asked as a gateway client, because `runtime.gateway.request` serves only bundled and trusted official plugins. */
 export async function fetchMcpApp({ viewId, sessionKey, server }: McpAppView): Promise<McpApp | undefined> {
   if (!runtime) return undefined;
   try {
-    const view = await runtime.gateway.request<McpAppViewResponse>(
+    const { callGatewayFromCli } = await import("openclaw/plugin-sdk/gateway-runtime");
+    const view = (await callGatewayFromCli(
       "mcp.app.view",
+      { timeout: String(VIEW_TIMEOUT_MS) },
       { sessionKey, viewId },
-      { timeoutMs: VIEW_TIMEOUT_MS },
-    );
+      { progress: false },
+    )) as unknown as McpAppViewResponse;
     const url = runtime.config.current().mcp?.servers?.[server]?.url;
     return {
       server,
@@ -67,7 +73,7 @@ export async function fetchMcpApp({ viewId, sessionKey, server }: McpAppView): P
       result: view.toolResult,
     };
   } catch (err) {
-    pluginDebug(`mcp app view ${viewId} from ${server} unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    logWarn(logger, `[clawbits] mcp app view ${viewId} from ${server} unavailable: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
 }
