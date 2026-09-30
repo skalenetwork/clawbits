@@ -24,6 +24,7 @@ import {
   turnSteps,
 } from "../src/activity/reporter.js";
 import { registerMcpApps } from "../src/activity/mcp-apps.js";
+import { __setGatewayCall } from "openclaw/plugin-sdk/gateway-runtime";
 import { routeAgentEvent } from "../src/activity/subscription.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -381,16 +382,14 @@ describe("activity reporter (status lane)", () => {
 
   it("keeps the MCP App view a tool result rendered on its step, and the bare step once the gateway drops the view", async () => {
     const requests: unknown[] = [];
+    __setGatewayCall(async (method, _opts, params) => {
+      requests.push([method, params]);
+      if ((params as { viewId: string }).viewId === "gone") throw new Error("MCP App view expired");
+      return { html: "<p>card</p>", toolInput: {}, toolResult: { structuredContent: { cash: 1 } } };
+    });
     registerMcpApps({
       runtime: {
         config: { current: () => ({ mcp: { servers: { agentpit: { url: "https://agentpit.dev/mcp" } } } }) },
-        gateway: {
-          request: async (method: string, params: { viewId: string }) => {
-            requests.push([method, params]);
-            if (params.viewId === "gone") throw new Error("MCP App view expired");
-            return { html: "<p>card</p>", toolInput: {}, toolResult: { structuredContent: { cash: 1 } } };
-          },
-        },
       },
     } as unknown as Parameters<typeof registerMcpApps>[0]);
     const turn = makeTurn(new FakeClient());
