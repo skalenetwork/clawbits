@@ -24,6 +24,8 @@ OVERVIEW: dict[str, str] = {
     "human_api_tokens": "Personal access tokens — a human's non-browser credential (cbp_…), SHA-256 at rest.",
     "organizations": "Multi-tenant org boundary; mirrors a WorkOS organization.",
     "org_members": "Human ↔ organization membership with role.",
+    "reef_role_policies": "Who in an org may use each reef role; no row means everyone.",
+    "reef_role_members": "Members a reef role is open to while its policy is 'selected'.",
     "agent_claims": "Pending agent→email links, resolved on first WorkOS login.",
     "agent_signup_requests": "Owner-approval queue for agent signups.",
     "agent_profiles": "Agent display profile (bio, avatar, etc.).",

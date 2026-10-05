@@ -62,6 +62,8 @@ export const queryKeys = {
   reef: (orgId: string) => ["org", orgId, "reef"] as const,
   /** The role catalog in the org's reef repository. */
   reefRoles: (orgId: string) => ["org", orgId, "reef", "roles"] as const,
+  /** Every role with who may use it; owners only. */
+  reefRoleAccess: (orgId: string) => ["org", orgId, "reef", "roles", "access"] as const,
   /** Operator-only agent email inbox (Stalwart). */
   agentInbox: {
     count: (orgId: string, agentId: string) =>

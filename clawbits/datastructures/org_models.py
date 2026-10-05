@@ -270,6 +270,7 @@ class ReefResponse(BaseModel):
 
 
 class ReefSecretResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     env: str
     host: str
 
@@ -277,11 +278,27 @@ class ReefSecretResponse(BaseModel):
 class ReefRoleResponse(BaseModel):
     """One reviewed role from ``main:roles/``: the whole blast radius an agent
     created from it inherits."""
+    model_config = ConfigDict(from_attributes=True)
     name: str
     image: str
     egress: list[str]
     secrets: list[ReefSecretResponse]
     resources: dict[str, int]
+
+
+class ReefRoleAccess(BaseModel):
+    """Who in the org may declare agents from a role; ``members`` counts only while ``selected``."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    mode: Literal["everyone", "selected", "off"] = "everyone"
+    members: frozenset[int] = frozenset()
+
+    def allows(self, human_id: int) -> bool:
+        return self.mode == "everyone" or (self.mode == "selected" and human_id in self.members)
+
+
+class ReefRoleSettingsResponse(BaseModel):
+    role: ReefRoleResponse
+    access: ReefRoleAccess
 
 
 class OrgMemberResponse(BaseModel):

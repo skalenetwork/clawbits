@@ -349,8 +349,8 @@ if [ "$REINSTALL" = "1" ]; then
   fi
   if [ "$DRY_RUN" = "1" ]; then
     warn "would run: (cd $REPO_PLUGIN_DIR && npm run build)"
-    warn "would run: node stage-channel.mjs <stage>/channel --vendor-deps"
-    warn "would run: node stage-tools.mjs <stage>/tools --vendor-deps"
+    warn "would run: node stage-channel.mjs <stage>/channel"
+    warn "would run: node stage-tools.mjs <stage>/tools"
     warn "would run: openclaw plugins install <stage>/channel --force $CAP_FLAG"
     warn "would run: openclaw plugins install <stage>/tools --force $CAP_FLAG"
   else
@@ -375,13 +375,10 @@ if [ "$REINSTALL" = "1" ]; then
         # Stage and install BOTH halves. The repo root is only the CHANNEL
         # package; the companion lives behind package.tools.json. Installing the
         # repo dir alone leaves cron, email, usage and skills on the old code.
-        # --vendor-deps copies `typebox` into the staged companion, which a path
-        # install would otherwise never install (OpenClaw copies the directory
-        # and runs no dependency step, so the plugin loads with status: error).
         STAGE_DIR="$(mktemp -d -t clawbits-refresh-src.XXXXXX)"
         if ! STAGE_OUT=$( (cd "$REPO_PLUGIN_DIR" \
-          && node stage-channel.mjs "$STAGE_DIR/channel" --vendor-deps \
-          && node stage-tools.mjs "$STAGE_DIR/tools" --vendor-deps) 2>&1); then
+          && node stage-channel.mjs "$STAGE_DIR/channel" \
+          && node stage-tools.mjs "$STAGE_DIR/tools") 2>&1); then
           fail "staging failed; not running install:"
           printf '%s\n' "$STAGE_OUT" | sed 's/^/      /'
           rm -rf "$STAGE_DIR"

@@ -117,7 +117,7 @@ but not yet enrolled. Any member.
 
 Git is the bus: clawbits writes one fleet file per agent on the `fleet` branch
 and reads what each host pushes to `status`. It never talks to a reef host, and
-nothing on the network reaches one: the host pulls on a 30-second timer. Host
+nothing on the network reaches one: the host pulls every few seconds. Host
 setup is [`reef/README.md`](../../reef/README.md).
 
 Hosts are cached per org for five seconds, so an agent shows up within seconds

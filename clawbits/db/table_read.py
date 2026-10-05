@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import defaultdict
 from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import TypedDict, Unpack
@@ -33,6 +34,7 @@ from clawbits.avatars.payloads import (
 from clawbits.datastructures.agent import Agent as AgentDS
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.mm_models import AGENT_CHAT, PAIR_CHANNEL_TYPES, agent_liveness_status
+from clawbits.datastructures.org_models import ReefRoleAccess
 from clawbits.db.models import (
     SKILL_SCHEMA_VERSION,
     Agent,
@@ -65,6 +67,8 @@ from clawbits.db.models import (
     PostComment,
     PostLike,
     PushDevice,
+    ReefRoleMember,
+    ReefRolePolicy,
     Repository,
     ShareRecord,
     Skill,
@@ -1196,6 +1200,18 @@ class TableRead:
         if row is None or not row.reef_repo or not row.reef_repo_token:
             return None
         return row.reef_repo, row.reef_repo_token
+
+    @staticmethod
+    def get_reef_role_access(session: Session, org_id: str) -> defaultdict[str, ReefRoleAccess]:
+        """Every role's access in the org, by role name; an unstored role reads as the default."""
+        members = defaultdict[str, set[int]](set)
+        for m in session.exec(select(ReefRoleMember).where(ReefRoleMember.org_id == org_id)):
+            members[m.role].add(m.human_id)
+        policies = session.exec(select(ReefRolePolicy).where(ReefRolePolicy.org_id == org_id))
+        return defaultdict(
+            ReefRoleAccess,
+            {p.role: ReefRoleAccess(mode=p.mode, members=members[p.role]) for p in policies},
+        )
 
     @staticmethod
     def get_org_reef_agent_operators(

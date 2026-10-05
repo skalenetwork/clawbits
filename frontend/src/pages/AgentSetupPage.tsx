@@ -39,7 +39,7 @@ import {
   type ReefHost,
   type ReefRole,
 } from "@/lib/api";
-import { formatRelativeAgo, parseAgentImage } from "@/lib/formatting";
+import { formatRelativeAgo, formatRoleResources, roleRuntime } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
 import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -111,20 +111,10 @@ interface View {
   primary?: Action;
 }
 
-/** The image tag names the runtime a role runs (`oc…`, `hm…`); an unknown or unloaded one reads as OpenClaw. */
-const roleRuntime = (role?: ReefRole): Runtime => parseAgentImage(role?.image ?? "").scheme?.runtime ?? "openclaw";
-
 const SOON: Choice[] = [{ ...RUNTIMES.ironclaw, soon: true }];
 
 /** Roles have no title yet, so the name and what it is given tell them apart. */
-function roleMeta({ name, resources }: ReefRole): string {
-  const cpu = resources.vcpus;
-  const mib = resources["memory-mib"];
-  const parts = [name];
-  if (cpu) parts.push(`${cpu} CPU`);
-  if (mib) parts.push(mib >= 1024 ? `${Math.round(mib / 102.4) / 10} GB` : `${mib} MB`);
-  return parts.join(" · ");
-}
+const roleMeta = ({ name, resources }: ReefRole) => [name, formatRoleResources(resources)].filter(Boolean).join(" · ");
 
 export default function AgentSetupPage() {
   const { activeOrgId } = useAuth();
@@ -202,7 +192,7 @@ export default function AgentSetupPage() {
   const roles = useQuery({
     queryKey: queryKeys.reefRoles(orgId),
     queryFn: () => listReefRoles(orgId),
-    enabled: a.where === "reef",
+    enabled: Boolean(reef.data?.connected),
   });
   const agents = useQuery({
     queryKey: queryKeys.agents(orgId),
@@ -223,11 +213,8 @@ export default function AgentSetupPage() {
   // The agent's own ping reaches us over SSE, ahead of the host's next status push.
   const live = useAgentStatus(minted ? minted.agent_id : null, agent ? agent.last_alive_at ?? null : undefined);
   const arrived = a.where === "reef" ? live === "available" || Boolean(agent?.last_alive_at) : Boolean(agent);
-  // These land out of order: an agent can sign up and say hi before its host
-  // reports, so every check implies the ones above it.
   const hasJoined = arrived || Boolean(agent);
-  const isRunning = hasJoined || onHost?.state === "running";
-  const pickedUp = isRunning || Boolean(onHost);
+  const pickedUp = hasJoined || Boolean(onHost);
   const runtime: Runtime | undefined =
     a.where === "self"
       ? a.runtime
@@ -408,7 +395,6 @@ export default function AgentSetupPage() {
             items={[
               { label: "Declared", done: Boolean(created) },
               { label: `Picked up by ${host}`, done: pickedUp },
-              { label: "Running", done: isRunning },
               { label: "Joined Clawbits", done: hasJoined },
               { label: "First ping", done: arrived },
             ]}

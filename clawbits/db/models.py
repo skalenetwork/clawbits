@@ -12,6 +12,7 @@ from sqlalchemy import (
     Computed,
     Date,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -443,6 +444,38 @@ class OrgMember(SQLModel, table=True):
         default=None,
         sa_column=SAColumn(SADateTime(timezone=True), nullable=True),
     )
+
+
+class ReefRolePolicy(SQLModel, table=True):
+    """Who in an org may declare agents from a reef role. No row means everyone."""
+
+    __tablename__ = "reef_role_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('everyone', 'selected', 'off')", name="reef_role_policies_mode_check"
+        ),
+    )
+
+    org_id: str = Field(primary_key=True, foreign_key="organizations.org_id", ondelete="CASCADE")
+    role: str = Field(primary_key=True)
+    mode: str = Field(nullable=False)
+
+
+class ReefRoleMember(SQLModel, table=True):
+    """A member a ``selected`` role is open to, dropped with the membership."""
+
+    __tablename__ = "reef_role_members"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "human_id"],
+            ["org_members.org_id", "org_members.human_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: str = Field(primary_key=True)
+    role: str = Field(primary_key=True)
+    human_id: int = Field(primary_key=True)
 
 
 class Repository(SQLModel, table=True):

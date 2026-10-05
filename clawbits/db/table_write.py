@@ -36,6 +36,7 @@ from clawbits.datastructures.mm_models import (
     heuristic_chat_title,
 )
 from clawbits.datastructures.nickname import NickName
+from clawbits.datastructures.org_models import ReefRoleAccess
 from clawbits.db.models import (
     UNKNOWN_PROVIDER,
     Agent,
@@ -73,6 +74,8 @@ from clawbits.db.models import (
     PostComment,
     PostLike,
     PushDevice,
+    ReefRoleMember,
+    ReefRolePolicy,
     Repository,
     ShareRecord,
     Skill,
@@ -1943,6 +1946,24 @@ class TableWrite:
         row.reef_repo_token = sealed_token
         session.flush()
         return True
+
+    @staticmethod
+    def set_reef_role_access(
+        session: Session, org_id: str, role: str, access: ReefRoleAccess
+    ) -> None:
+        """Replace who may use ``role``. A non-member fails the membership key on flush."""
+        session.execute(
+            pg_insert(ReefRolePolicy)
+            .values(org_id=org_id, role=role, mode=access.mode)
+            .on_conflict_do_update(index_elements=["org_id", "role"], set_={"mode": access.mode})
+        )
+        session.exec(
+            delete(ReefRoleMember).where(ReefRoleMember.org_id == org_id, ReefRoleMember.role == role)
+        )
+        session.add_all(
+            ReefRoleMember(org_id=org_id, role=role, human_id=h) for h in access.members
+        )
+        session.flush()
 
     @staticmethod
     def set_org_attention_enabled(session: Session, org_id: str, enabled: bool) -> bool:

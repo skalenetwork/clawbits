@@ -1,24 +1,27 @@
 # Reef reconciler
 
 Git is the bus between clawbits and a reef host. This directory is the whole
-host side of it: a shell script and a timer. There is no daemon, no port, and
-nothing on the network reaches the host: it pulls.
+host side of it: a shell script and the service that runs it. There is no
+port, and nothing on the network reaches the host: it pulls.
 
 ```text
 main    roles/*.toml                platform team, by reviewed pull request
 fleet   fleet/<host>/<name>.toml    clawbits, one file per agent
-status  status/<host>.json          each host, from this timer
+status  status/<host>.json          each host, from this service
 ```
 
-Every 30 seconds the host pulls `main` and `fleet`, and when either has moved
-it runs `reef role apply` and `reef fleet apply --prune`. When neither has, it
+Every two seconds the host asks GitHub where `main` and `fleet` point, over
+one SSH connection it keeps open. When either has moved, or 30 seconds have
+passed, it runs a tick: it pulls what moved, and when that is not what it last
+applied it runs `reef role apply` and `reef fleet apply --prune`. Otherwise it
 runs `reef reconcile`, which starts any agent that died since, after a reboot or
 a crashed gateway, and prints only when that fails. Then it writes what
 `reef` observed to `status/<host>.json`, and only when the content changed does
 it commit, rebase onto `status` and push. Each host touches only its own file,
 so the rebase never conflicts, and a push that loses a race goes out on the
-next tick. Besides the rows of `reef role list`, `reef agent list` and the last
-100 of `reef events`, the file carries:
+next tick. Besides the rows of `reef role list`, `reef agent list` (never
+`agent get`, which prints env and with it the signup token) and the last 100 of
+`reef events`, the file carries:
 
 ```text
 at       heartbeat: the current UTC time rounded down to ten minutes
@@ -40,7 +43,7 @@ the org gets. `journalctl -u reef-reconcile` has the rest.
 
 Prepare the machine first: [reef's host
 guide](https://reef.clawbits.ai/docs/setup/host) covers `msb`, KVM, the `reef`
-account and the state directory. Skip its boot unit: this timer already brings
+account and the state directory. Skip its boot unit: this service already brings
 agents back after a reboot. Then, as `reef`, put the provider secrets in
 `~/.local/state/reef/secrets.toml` (`chmod 600`) and check `reef doctor`.
 
@@ -57,9 +60,9 @@ curl -fsSL https://raw.githubusercontent.com/skalenetwork/clawbits/main/reef/boo
 ```
 
 It makes an ed25519 key, pins github.com's published host key, clones one tree
-per branch so the timer only fast-forwards `main` and `fleet` and rebases its
-own commits onto `status`, and installs the script and the timer with a drop-in
-carrying this machine's account, paths and host name. It also writes
+per branch so the service only fast-forwards `main` and `fleet` and rebases
+its own commits onto `status`, and installs the script and the service with a
+drop-in carrying this machine's account, paths and host name. It also writes
 `empty.toml`, which declares no agents and is passed to every `fleet apply`:
 reef bails when handed no files, and a partial list with `--prune` deletes
 every agent it cannot see.
@@ -76,12 +79,12 @@ the drop-in. `reconcile.sh` finds reef at `REEF`, default `~/.local/bin/reef`.
 ## Check it
 
 ```sh
-systemctl list-timers reef-reconcile.timer
+systemctl status reef-reconcile
 journalctl -u reef-reconcile -n 50
 git -C ~/agents/status log -1 --format='%cr'
 ```
 
-The last one is the liveness signal the org sees: while the timer runs, the
+The last one is the liveness signal the org sees: while the service runs, the
 status commit advances at least every ten minutes.
 
 Once a status file lands, the host appears in clawbits under Settings → Reef and

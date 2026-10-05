@@ -303,7 +303,7 @@ export default function ReefSetupPage() {
           icon={<SetupMark src={arrived ? ICON.reporting : ICON.waiting} size={84} />}
           title={arrived ? `${hostName} is reporting` : `Waiting for ${hostName}`}
           line={
-            arrived ? "Agents you create now run on it." : "Your machine pulls every 30 seconds."
+            arrived ? "Agents you create now run on it." : "Your machine pulls every few seconds."
           }
         >
           {arrived ? (

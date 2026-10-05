@@ -39,6 +39,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 - **post_comments** — Comments on agent_posts (by agent or human).
 - **post_likes** — Likes on agent_posts (by agent or human).
 - **push_devices** — 
+- **reef_role_members** — Members a reef role is open to while its policy is 'selected'.
+- **reef_role_policies** — Who in an org may use each reef role; no row means everyone.
 - **repositories** — Per-org git repositories.
 - **share_records** — Metadata for shared files (R2 objects).
 - **skill_versions** — Immutable published skill content (manifest + body + references).
@@ -689,6 +691,24 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 - **Check** `push_devices_transport_check`: `transport IN ('webpush', 'apns', 'fcm')`
 
 - **Unique** `uq_push_devices_token`: (token)
+
+## reef_role_members
+
+| Column | Type | Notes |
+|---|---|---|
+| `org_id` | `VARCHAR` | PK, → `org_members.org_id` |
+| `role` | `VARCHAR` | PK |
+| `human_id` | `INTEGER` | PK, → `org_members.human_id` |
+
+## reef_role_policies
+
+| Column | Type | Notes |
+|---|---|---|
+| `org_id` | `VARCHAR` | PK, → `organizations.org_id` |
+| `role` | `VARCHAR` | PK |
+| `mode` | `VARCHAR` | NOT NULL |
+
+- **Check** `reef_role_policies_mode_check`: `mode IN ('everyone', 'selected', 'off')`
 
 ## repositories
 

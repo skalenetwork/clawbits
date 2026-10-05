@@ -330,11 +330,7 @@ fn stage_clawhub(staged: &Path) -> Result<()> {
     ] {
         run(
             "bun",
-            [
-                script.as_ref(),
-                staged.join(out).as_os_str(),
-                "--vendor-deps".as_ref(),
-            ],
+            [script.as_ref(), staged.join(out).as_os_str()],
             &plugin,
         )?;
     }

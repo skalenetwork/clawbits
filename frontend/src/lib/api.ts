@@ -388,6 +388,24 @@ export async function listReefRoles(orgId: string) {
   return request<ReefRole[]>(orgUrl(orgId, "/reef/roles"), { detail: true });
 }
 
+export interface ReefRoleAccess {
+  mode: "everyone" | "selected" | "off";
+  members: number[];
+}
+
+export interface ReefRoleSettings {
+  role: ReefRole;
+  access: ReefRoleAccess;
+}
+
+export async function listReefRoleAccess(orgId: string) {
+  return request<ReefRoleSettings[]>(orgUrl(orgId, "/reef/roles/access"), { detail: true });
+}
+
+export async function setReefRoleAccess(orgId: string, role: string, access: ReefRoleAccess) {
+  await send(orgUrl(orgId, `/reef/roles/${encodeURIComponent(role)}/access`), { ...json("PUT", access), detail: true });
+}
+
 export async function createReefAgent(orgId: string, body: { host: string; role: string }) {
   return request<ReefCreatedAgent>(orgUrl(orgId, "/reef/agents"), { ...json("POST", body), detail: true });
 }

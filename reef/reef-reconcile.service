@@ -4,7 +4,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
 KillMode=process
 User=reef
 ExecStart=/home/reef/agents/reconcile.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
