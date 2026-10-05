@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/skalenetwork/clawbits/compare/v1.7.0...v1.8.0) (2026-10-05)
+
+
+### Features
+
+* volume removal for agents on reef, add chat outline ([#212](https://github.com/skalenetwork/clawbits/issues/212)) ([7c53094](https://github.com/skalenetwork/clawbits/commit/7c5309480e402f551c631651379a78e9245d24ca))
+
 ## [1.7.0](https://github.com/skalenetwork/clawbits/compare/v1.6.1...v1.7.0) (2026-10-05)
 
 
