@@ -1,5 +1,5 @@
 import { Image } from "expo-image";
-import { GlassContainer, GlassView } from "expo-glass-effect";
+import { GlassView } from "expo-glass-effect";
 import { SymbolView } from "expo-symbols";
 import { Host } from "@expo/ui";
 import {
@@ -231,18 +231,32 @@ function keepComposerFocus(input: { current: ComposerInput | null }) {
   input.current?.focus();
 }
 
+export type ComposerAttachment = {
+  id: string;
+  name: string;
+  status: "uploading" | "uploaded" | "failed";
+};
+
 export function GlassComposer({
   composerRef,
   onSend,
+  onPlus,
+  onRemoveAttachment,
+  attachments = [],
   sendDisabled,
+  placeholder = "Message",
 }: {
   composerRef?: Ref<GlassComposerHandle>;
   onSend: (text: string) => void;
+  onPlus: () => void;
+  onRemoveAttachment?: (id: string) => void;
+  attachments?: ComposerAttachment[];
   sendDisabled: boolean;
+  placeholder?: string;
 }) {
-  const scheme = useHostColorScheme();
   const [value, setValue] = useState("");
-  const sendOn = !sendDisabled && !!value.trim();
+  const hasFile = attachments.some((file) => file.status === "uploaded");
+  const sendOn = !sendDisabled && (!!value.trim() || hasFile);
   const input = useRef<ComposerInput>(null);
   const keepFocus = () => {
     keepComposerFocus(input);
@@ -260,28 +274,50 @@ export function GlassComposer({
   }));
   const submit = () => {
     const message = value.trim();
-    if (!message || sendDisabled) return;
+    if ((!message && !hasFile) || sendDisabled) return;
     setValue("");
     keepFocus();
     onSend(message);
   };
-  const sendFill = scheme === "dark" ? "#ffffff" : "#000000";
-  const sendGlyph = scheme === "dark" ? "#000000" : "#ffffff";
   return (
-    <GlassContainer spacing={8} style={composer.row}>
+    <View style={composer.column}>
+      {attachments.length > 0 ? (
+        <View style={composer.files}>
+          {attachments.map((file) => (
+            <Pressable
+              key={file.id}
+              accessibilityLabel={`Remove ${file.name}`}
+              onPress={() => onRemoveAttachment?.(file.id)}
+              style={composer.file}
+            >
+              <Text numberOfLines={1} style={composer.fileName}>
+                {file.status === "uploading"
+                  ? `Uploading ${file.name}`
+                  : file.status === "failed"
+                    ? `Failed ${file.name}`
+                    : file.name}
+              </Text>
+              <SymbolView name="xmark" size={12} weight="bold" tintColor={color.header} />
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+      <View style={composer.row}>
       <Pressable
-        disabled
-        accessibilityLabel="Attachments, coming later"
-        style={composer.chip}
+        accessibilityLabel="Attachments"
+        accessibilityRole="button"
+        hitSlop={6}
+        onPress={onPlus}
+        style={composer.plus}
       >
         <GlassView
           glassEffectStyle="regular"
-          isInteractive={false}
-          style={composer.chipGlass}
+          isInteractive
+          style={composer.plusGlass}
         />
         <SymbolView
           name="plus"
-          size={17}
+          size={22}
           weight="medium"
           tintColor={color.header}
         />
@@ -294,7 +330,7 @@ export function GlassComposer({
         <TextInput
           ref={input as never}
           accessibilityLabel="Message"
-          placeholder="Message"
+          placeholder={placeholder}
           placeholderTextColor="#8E8E93"
           onChangeText={setValue}
           value={value}
@@ -305,78 +341,92 @@ export function GlassComposer({
           submitBehavior="newline"
           style={composer.input}
         />
-        <View style={composer.sendSlot}>
-          {sendOn ? (
+        {sendOn ? (
+          <View style={composer.trail}>
             <Pressable
               onPressIn={keepFocus}
               onPress={submit}
               accessibilityLabel="Send message"
-              style={[composer.send, { backgroundColor: sendFill }]}
+              style={composer.send}
             >
               <SymbolView
                 name="arrow.up"
-                size={15}
-                weight="semibold"
-                tintColor={sendGlyph}
+                size={17}
+                weight="bold"
+                tintColor="#ffffff"
               />
             </Pressable>
-          ) : null}
-        </View>
+          </View>
+        ) : null}
       </GlassView>
-    </GlassContainer>
+      </View>
+    </View>
   );
 }
 
-const CHIP = 40;
-const SEND = 30;
-const FIELD_MAX = 21 * 6 + 16;
+const FIELD = 44;
+const SEND = 34;
+const FIELD_MAX = 22 * 6 + 22;
 const composer = StyleSheet.create({
+  column: { paddingHorizontal: 12, gap: 8 },
+  files: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  file: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    maxWidth: 220,
+    height: 32,
+    paddingLeft: 12,
+    paddingRight: 10,
+    borderRadius: 16,
+    backgroundColor: color.secondary,
+  },
+  fileName: { flexShrink: 1, fontSize: 14, color: color.text },
   row: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 6,
-    paddingHorizontal: 22,
+    gap: 10,
   },
-  chip: {
-    width: CHIP,
-    height: CHIP,
+  plus: {
+    width: FIELD,
+    height: FIELD,
     alignItems: "center",
     justifyContent: "center",
   },
-  chipGlass: {
+  plusGlass: {
     position: "absolute",
     top: 0,
     right: 0,
     bottom: 0,
     left: 0,
-    borderRadius: CHIP / 2,
+    borderRadius: FIELD / 2,
   },
   field: {
     flex: 1,
-    minHeight: CHIP,
+    minHeight: FIELD,
     maxHeight: FIELD_MAX,
     flexDirection: "row",
     alignItems: "flex-end",
-    borderRadius: CHIP / 2,
+    borderRadius: FIELD / 2,
     overflow: "hidden",
   },
   input: {
     flex: 1,
-    minHeight: CHIP,
+    minHeight: FIELD,
     maxHeight: FIELD_MAX,
-    paddingLeft: 14,
-    paddingRight: 6,
-    paddingTop: 9,
-    paddingBottom: 9,
-    fontSize: 16,
-    lineHeight: 21,
+    paddingLeft: 16,
+    paddingRight: 4,
+    paddingTop: 11,
+    paddingBottom: 11,
+    fontSize: 17,
+    lineHeight: 22,
     color: color.text,
   },
-  sendSlot: {
-    width: SEND,
-    height: SEND,
-    marginRight: 5,
-    marginBottom: 5,
+  trail: {
+    width: FIELD,
+    height: FIELD,
+    alignItems: "center",
+    justifyContent: "center",
   },
   send: {
     width: SEND,
@@ -384,6 +434,7 @@ const composer = StyleSheet.create({
     borderRadius: SEND / 2,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#8E8E93",
   },
 });
 

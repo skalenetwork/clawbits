@@ -1,10 +1,16 @@
 import {
   KeyboardAwareLegendList,
+  useKeyboardChatComposerInset,
 } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
+import * as Clipboard from "expo-clipboard";
 import { randomUUID } from "expo-crypto";
+import { Image } from "expo-image";
+import * as WebBrowser from "expo-web-browser";
+import * as DocumentPicker from "expo-document-picker";
+import * as ImagePicker from "expo-image-picker";
 import {
   memo,
   useCallback,
@@ -16,23 +22,26 @@ import {
   type ReactNode,
 } from "react";
 import {
+  ActionSheetIOS,
+  Alert,
   AppState,
-  DynamicColorIOS,
   Linking,
+  Modal,
   PlatformColor,
+  Pressable,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
-  type LayoutChangeEvent,
 } from "react-native";
 import { GlassView } from "expo-glass-effect";
-import {
-  KeyboardStickyView,
-  useReanimatedKeyboardAnimation,
-} from "react-native-keyboard-controller";
+import { SymbolView } from "expo-symbols";
+import Svg, { Path } from "react-native-svg";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useDerivedValue, useSharedValue } from "react-native-reanimated";
 import { api, ApiError, mcpConnectLinkId } from "@/lib/api";
+import { BUBBLE_TAIL, bubblePath } from "@/lib/bubblePath";
+import { deleteChannelFile, uploadChannelFile, type LocalFile } from "@/lib/upload";
 import { historyKey, useHistory, useLiveEvents } from "@/lib/data";
 import { useLiveTurn, useLiveTurns, type LiveTurn } from "@/lib/liveTurn";
 import { glyphKind, isPairChannel } from "@/lib/chatFilters";
@@ -59,6 +68,7 @@ import {
   GlassButton,
   GlassComposer,
   styles,
+  type ComposerAttachment,
   type GlassComposerHandle,
 } from "@/components/ui";
 import { McpConnectCard } from "@/components/mcp-connect-card";
@@ -66,12 +76,16 @@ import { TurnTrace } from "@/components/turn-trace";
 
 type Delivery = { uuid: string; text: string; state: "sending" | "uncertain" };
 
+type PendingFile = ComposerAttachment & { fileId?: string };
+
 function itemsAreEqual(prev: Post, next: Post) {
   return (
     prev.post_id === next.post_id &&
     prev.message === next.message &&
     prev.status === next.status &&
-    prev.updated_at === next.updated_at
+    prev.updated_at === next.updated_at &&
+    prev.files.length === next.files.length &&
+    prev.files.every((file, index) => file.file_id === next.files[index]?.file_id)
   );
 }
 
@@ -105,39 +119,23 @@ function Conversation({ id }: { id: string }) {
   const list = useRef<LegendListRef>(null);
   const composer = useRef<ComponentRef<typeof View>>(null);
   const field = useRef<GlassComposerHandle>(null);
-  const composerSize = useSharedValue(56 + insets.bottom);
-  const lastComposer = useRef(0);
-  const { progress } = useReanimatedKeyboardAnimation();
-  const bottomInset = insets.bottom;
-  const closedDrop = 16;
-  const contentInsetEndAdjustment = useDerivedValue(
-    () =>
-      composerSize.value -
-      closedDrop * (1 - progress.value) -
-      bottomInset * progress.value,
+  const { contentInsetEndAdjustment, onComposerLayout } = useKeyboardChatComposerInset(
+    list,
+    composer,
   );
-  const onComposerLayout = (event: LayoutChangeEvent) => {
-    const height = Math.round(event.nativeEvent.layout.height);
-    if (!Number.isFinite(height) || height <= 0) return;
-    if (lastComposer.current === 0) {
-      lastComposer.current = height;
-      composerSize.value = height;
-      return;
-    }
-    if (Math.abs(height - lastComposer.current) < 8) return;
-    lastComposer.current = height;
-    composerSize.value = height;
-  };
   const posts = useMemo(() => historyPosts(history.data), [history.data]);
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [files, setFiles] = useState<PendingFile[]>([]);
   const read = useRef(0);
   const sending = useRef(false);
   const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusedRef = useRef(focused);
   const connectedRef = useRef(connected);
-  focusedRef.current = focused;
-  connectedRef.current = connected;
+  useEffect(() => {
+    focusedRef.current = focused;
+    connectedRef.current = connected;
+  }, [focused, connected]);
   const cached = inbox.data?.channels.find((item) => item.channel_id === id);
   const active = channel.data ?? cached;
   const named = active != null && !isPairChannel(active);
@@ -230,14 +228,125 @@ function Conversation({ id }: { id: string }) {
     [active, backTitle, renderTitle, title],
   );
 
+  const uploading = files.some((file) => file.status === "uploading");
+  const readyFiles = files.filter((file) => file.status === "uploaded" && file.fileId);
+  const addFile = (local: LocalFile) => {
+    const localId = randomUUID();
+    let room = true;
+    setFiles((current) => {
+      if (current.length >= 5) {
+        room = false;
+        return current;
+      }
+      return [...current, { id: localId, name: local.name, status: "uploading" }];
+    });
+    if (!room) {
+      Alert.alert("Too many files", "A message can include up to 5 files.");
+      return;
+    }
+    void uploadChannelFile(token, id, local)
+      .then((fileId) => {
+        setFiles((current) =>
+          current.map((file) =>
+            file.id === localId ? { ...file, status: "uploaded", fileId } : file,
+          ),
+        );
+      })
+      .catch((cause: unknown) => {
+        const detail = cause instanceof Error ? cause.message : "Upload failed.";
+        setFiles((current) =>
+          current.map((file) =>
+            file.id === localId ? { ...file, status: "failed" } : file,
+          ),
+        );
+        Alert.alert("Could not attach", detail);
+      });
+  };
+  const pick = (source: "library" | "camera" | "file") => {
+    void (async () => {
+      if (source === "file") {
+        const chosen = await DocumentPicker.getDocumentAsync({
+          multiple: true,
+          copyToCacheDirectory: true,
+        });
+        if (chosen.canceled) return;
+        for (const asset of chosen.assets)
+          addFile({
+            uri: asset.uri,
+            name: asset.name,
+            type: asset.mimeType || "application/octet-stream",
+            size: asset.size,
+          });
+        return;
+      }
+      const permission =
+        source === "camera"
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          "Permission needed",
+          source === "camera"
+            ? "Allow camera access to take a photo."
+            : "Allow photo access to attach a picture.",
+        );
+        return;
+      }
+      const chosen =
+        source === "camera"
+          ? await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], quality: 0.85 })
+          : await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images"],
+              quality: 0.85,
+              allowsMultipleSelection: true,
+              selectionLimit: 5,
+            });
+      if (chosen.canceled) return;
+      for (const asset of chosen.assets)
+        addFile({
+          uri: asset.uri,
+          name: asset.fileName || "photo.jpg",
+          type: asset.mimeType || "image/jpeg",
+          size: asset.fileSize,
+          width: asset.width,
+          height: asset.height,
+        });
+    })().catch((cause: unknown) => {
+      Alert.alert(
+        "Could not attach",
+        cause instanceof Error ? cause.message : "Please try again.",
+      );
+    });
+  };
+  const openAttachments = () => {
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        options: ["Photo Library", "Take Photo", "Choose File", "Cancel"],
+        cancelButtonIndex: 3,
+      },
+      (index) => {
+        if (index === 0) pick("library");
+        else if (index === 1) pick("camera");
+        else if (index === 2) pick("file");
+      },
+    );
+  };
+  const removeFile = (localId: string) => {
+    const file = files.find((item) => item.id === localId);
+    setFiles((current) => current.filter((item) => item.id !== localId));
+    if (file?.fileId) void deleteChannelFile(token, file.fileId);
+  };
   const send = async (message: string) => {
-    if (!message || sending.current || pending || !connected) return;
+    const fileIds = readyFiles.flatMap((file) => (file.fileId ? [file.fileId] : []));
+    if ((!message && fileIds.length === 0) || sending.current || pending || !connected || uploading)
+      return;
     sending.current = true;
     const uuid = randomUUID();
     setDelivery({ uuid, text: message, state: "sending" });
+    setFiles([]);
     setError(null);
     try {
-      const post = await api.send(token, id, message, uuid);
+      const post = await api.send(token, id, message, uuid, fileIds);
       client.setQueryData<History>(historyKey(id), (old) =>
         mergePost(old, post),
       );
@@ -250,9 +359,11 @@ function Conversation({ id }: { id: string }) {
       if (accepted) setDelivery(null);
       else if (cause instanceof ApiError && cause.status < 500) {
         setDelivery(null);
+        setFiles(readyFiles);
         void field.current?.setText(message);
         setError(cause.message);
       } else {
+        setFiles(readyFiles);
         setDelivery({ uuid, text: message, state: "uncertain" });
         setError(
           "Delivery unconfirmed. Check the conversation before sending again.",
@@ -304,7 +415,7 @@ function Conversation({ id }: { id: string }) {
           alignItemsAtEnd
           maintainScrollAtEnd={{
             animated: false,
-            on: { dataChange: true, footerLayout: true, layout: false, itemLayout: false },
+            on: { dataChange: true, footerLayout: true, layout: true, itemLayout: false },
           }}
           maintainVisibleContentPosition={{ data: true, size: true }}
           contentInsetAdjustmentBehavior="never"
@@ -346,20 +457,11 @@ function Conversation({ id }: { id: string }) {
                 <View
                   style={[chat.row, chat.ungrouped, { alignItems: "flex-end" }]}
                 >
-                  <View style={chat.bubbleWrap}>
-                    <View
-                      style={[
-                        chat.bubble,
-                        chat.outgoing,
-                        bubbleShape(true, false, false),
-                      ]}
-                    >
-                      <Text style={[chat.message, chat.outgoingText]}>
-                        {pending.text}
-                      </Text>
-                    </View>
-                    <BubbleTail own />
-                  </View>
+                  <Bubble own groupedPrev={false} groupedNext={false}>
+                    <Text style={[chat.message, chat.outgoingText]}>
+                      {pending.text}
+                    </Text>
+                  </Bubble>
                   <Text style={chat.author}>
                     {pending.state === "sending"
                       ? "Sending…"
@@ -398,10 +500,14 @@ function Conversation({ id }: { id: string }) {
           )}
           <GlassComposer
             composerRef={field}
+            placeholder={title ? `Message ${title.split(" ")[0]}` : "Message"}
+            attachments={files}
+            onPlus={openAttachments}
+            onRemoveAttachment={removeFile}
             onSend={(message) => {
               void send(message);
             }}
-            sendDisabled={!connected || !!pending}
+            sendDisabled={!connected || !!pending || uploading}
           />
         </View>
       </KeyboardStickyView>
@@ -463,43 +569,48 @@ function ChatTitle({ channel }: { channel: Channel }) {
   );
 }
 
-function bubbleShape(own: boolean, groupedPrev: boolean, groupedNext: boolean) {
-  const outer = 18;
-  const inner = 5;
-  const stem = groupedNext ? inner : 5;
-  if (own) {
-    return {
-      borderTopLeftRadius: outer,
-      borderBottomLeftRadius: outer,
-      borderTopRightRadius: groupedPrev ? inner : outer,
-      borderBottomRightRadius: stem,
-    };
-  }
-  return {
-    borderTopRightRadius: outer,
-    borderBottomRightRadius: outer,
-    borderTopLeftRadius: groupedPrev ? inner : outer,
-    borderBottomLeftRadius: stem,
-  };
-}
-
-function BubbleTail({ own }: { own: boolean }) {
-  const fill = own ? bubbleOut : bubbleIn;
+function Bubble({
+  own,
+  groupedPrev,
+  groupedNext,
+  card = false,
+  children,
+}: {
+  own: boolean;
+  groupedPrev: boolean;
+  groupedNext: boolean;
+  card?: boolean;
+  children: ReactNode;
+}) {
+  const scheme = useColorScheme();
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  const fill = own ? "#007AFF" : scheme === "dark" ? "#3A3A3C" : "#E9E9EB";
+  const tail = groupedNext ? 0 : BUBBLE_TAIL;
   return (
-    <View
-      pointerEvents="none"
-      style={[chat.tail, own ? chat.tailOut : chat.tailIn]}
-    >
+    <View style={card ? chat.cardWrap : chat.bubbleWrap}>
       <View
-        style={[
-          chat.tailNub,
-          own ? chat.tailNubOut : chat.tailNubIn,
-          { backgroundColor: fill },
-        ]}
-      />
-      <View
-        style={[chat.tailScoop, own ? chat.tailScoopOut : chat.tailScoopIn]}
-      />
+        onLayout={(event) => {
+          const w = Math.round(event.nativeEvent.layout.width);
+          const h = Math.round(event.nativeEvent.layout.height);
+          setBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+        }}
+        style={[chat.bubble, card && chat.cardBubble]}
+      >
+        {box.w > 0 && box.h > 0 ? (
+          <Svg
+            width={box.w + tail}
+            height={box.h}
+            pointerEvents="none"
+            style={[chat.bubbleSvg, own ? null : { left: -tail }]}
+          >
+            <Path
+              d={bubblePath(box.w, box.h, own, groupedPrev, groupedNext)}
+              fill={fill}
+            />
+          </Svg>
+        ) : null}
+        {children}
+      </View>
     </View>
   );
 }
@@ -531,6 +642,102 @@ function BubbleText({ text, own }: { text: string; own: boolean }) {
         ),
       )}
     </Text>
+  );
+}
+
+function isImageFile(file: Post["files"][number]) {
+  return (
+    file.content_type?.startsWith("image/") ||
+    /\.(png|jpe?g|gif|webp|heic)$/i.test(file.filename)
+  );
+}
+
+function MessageFiles({ files, own }: { files: Post["files"]; own: boolean }) {
+  const { session } = useSession();
+  const insets = useSafeAreaInsets();
+  const [photo, setPhoto] = useState<string | null>(null);
+  if (!files.length) return null;
+  const openFile = (file: Post["files"][number]) => {
+    const token = session?.token;
+    if (!token) return;
+    void api
+      .fileUrl(token, file.file_id)
+      .then(({ url }) => WebBrowser.openBrowserAsync(url))
+      .catch(() => {
+        Alert.alert("Could not open", file.filename);
+      });
+  };
+  const openPhoto = (file: Post["files"][number]) => {
+    if (file.download_url) {
+      setPhoto(file.download_url);
+      return;
+    }
+    const token = session?.token;
+    if (!token) return;
+    void api
+      .fileUrl(token, file.file_id)
+      .then(({ url }) => setPhoto(url))
+      .catch(() => {
+        Alert.alert("Could not open", file.filename);
+      });
+  };
+  return (
+    <View>
+      {files.map((file) =>
+        isImageFile(file) ? (
+          <Pressable
+            key={file.file_id}
+            accessibilityLabel={file.filename}
+            onPress={() => openPhoto(file)}
+          >
+            <Image
+              source={file.download_url ?? undefined}
+              contentFit="cover"
+              style={{
+                width: 220,
+                height:
+                  file.width && file.height
+                    ? Math.round(Math.min(280, 220 * (file.height / file.width)))
+                    : 160,
+                borderRadius: 14,
+                marginTop: 6,
+                backgroundColor: "rgba(127,127,127,0.25)",
+              }}
+            />
+          </Pressable>
+        ) : (
+          <Text
+            key={file.file_id}
+            onPress={() => openFile(file)}
+            style={[
+              chat.message,
+              own ? chat.outgoingText : chat.incomingText,
+              chat.fileLink,
+            ]}
+          >
+            {file.filename}
+          </Text>
+        ),
+      )}
+      <Modal
+        animationType="fade"
+        visible={photo !== null}
+        onRequestClose={() => setPhoto(null)}
+      >
+        <Pressable
+          accessibilityLabel="Close photo"
+          onPress={() => setPhoto(null)}
+          style={chat.viewer}
+        >
+          {photo ? (
+            <Image source={photo} contentFit="contain" style={chat.viewerPhoto} />
+          ) : null}
+          <View style={[chat.viewerClose, { top: insets.top + 8 }]}>
+            <SymbolView name="xmark" size={16} weight="bold" tintColor="#ffffff" />
+          </View>
+        </Pressable>
+      </Modal>
+    </View>
   );
 }
 
@@ -596,7 +803,7 @@ const Message = memo(function Message({
   const turn = useLiveTurn(post.channel_id, streaming ? post.agent_id : null);
   const groupedPrev = continues(post, previous);
   const groupedNext = !!next && continues(next, post);
-  const body = post.message || (post.files.length ? "Attachment" : "");
+  const body = post.message;
   const linkId = own ? undefined : mcpConnectLinkId(body.trim());
   const caption =
     post.status === "draft"
@@ -604,27 +811,53 @@ const Message = memo(function Message({
       : post.status === "rejected"
         ? "Not published"
         : null;
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copy = () => {
+    if (!body) return;
+    void Clipboard.setStringAsync(body).then(() => {
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1200);
+    });
+  };
+  useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    },
+    [],
+  );
   return (
     <Row post={post} previous={previous} own={own} named={named}>
       {post.agent_id && (streaming || post.status === "published") ? (
         <TurnTrace post={post} turn={turn} />
       ) : null}
-      {streaming && !body ? null : (
-        <View style={linkId ? chat.cardWrap : chat.bubbleWrap}>
-          <View
-            style={[
-              chat.bubble,
-              own ? chat.outgoing : chat.incoming,
-              bubbleShape(own, groupedPrev, groupedNext),
-              linkId && chat.cardBubble,
-            ]}
-          >
-            {linkId ? <McpConnectCard linkId={linkId} /> : <BubbleText text={body} own={own} />}
-          </View>
-          {!groupedNext && <BubbleTail own={own} />}
-        </View>
+      {streaming && !body && post.files.length === 0 ? null : (
+        <Pressable
+          accessibilityHint={body ? "Copies the message" : undefined}
+          delayLongPress={350}
+          onLongPress={body ? copy : undefined}
+        >
+        <Bubble
+          own={own}
+          groupedPrev={groupedPrev}
+          groupedNext={groupedNext}
+          card={!!linkId}
+        >
+          {linkId ? (
+            <McpConnectCard linkId={linkId} />
+          ) : (
+            <>
+              {body ? <BubbleText text={body} own={own} /> : null}
+              <MessageFiles files={post.files} own={own} />
+            </>
+          )}
+        </Bubble>
+        </Pressable>
       )}
-      {caption && <Text style={chat.author}>{caption}</Text>}
+      {(copied || caption) && (
+        <Text style={chat.author}>{copied ? "Copied" : caption}</Text>
+      )}
     </Row>
   );
 });
@@ -632,9 +865,6 @@ const Message = memo(function Message({
 function keyExtractor(post: Post) {
   return String(post.post_id);
 }
-
-const bubbleIn = DynamicColorIOS({ light: "#E9E9EB", dark: "#3A3A3C" });
-const bubbleOut = "#007AFF";
 
 const title = StyleSheet.create({
   pill: {
@@ -675,40 +905,24 @@ const chat = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
+  bubbleSvg: { position: "absolute", top: 0, left: 0 },
   cardBubble: { paddingVertical: 12 },
-  outgoing: { backgroundColor: bubbleOut },
-  incoming: { backgroundColor: bubbleIn },
-  tail: {
-    position: "absolute",
-    bottom: 0,
-    width: 11,
-    height: 17,
-    overflow: "hidden",
-  },
-  tailOut: { right: -6 },
-  tailIn: { left: -6 },
-  tailNub: {
-    position: "absolute",
-    bottom: 0,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-  },
-  tailNubOut: { left: -9 },
-  tailNubIn: { right: -9 },
-  tailScoop: {
-    position: "absolute",
-    bottom: -1,
-    width: 18,
-    height: 21,
-    borderRadius: 10,
-    backgroundColor: PlatformColor("systemBackground"),
-  },
-  tailScoopOut: { left: 2 },
-  tailScoopIn: { right: 2 },
   message: { fontSize: 17, lineHeight: 22 },
   outgoingText: { color: "#ffffff" },
   incomingText: { color: PlatformColor("label") },
   link: { textDecorationLine: "underline" },
+  fileLink: { marginTop: 4, textDecorationLine: "underline" },
+  viewer: { flex: 1, backgroundColor: "#000000" },
+  viewerPhoto: { flex: 1 },
+  viewerClose: {
+    position: "absolute",
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
   sticky: { position: "absolute", bottom: 0, left: 0, right: 0 },
 });

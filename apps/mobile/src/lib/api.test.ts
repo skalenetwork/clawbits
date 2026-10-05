@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { ApiError, auth, mcpConnectLinkId, receiveSession, request } from "./api";
+import { ApiError, auth, mcpConnectLinkId, postBody, receiveSession, request } from "./api";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -58,6 +58,17 @@ test("network failures stay distinct from invalid credentials", async () => {
     expect(error).toBeInstanceOf(TypeError);
     expect(error).not.toBeInstanceOf(ApiError);
   }
+});
+
+test("a file-only post omits the message and keeps the file ids", () => {
+  expect(postBody("", "uuid-1", ["file-a"])).toEqual({
+    client_msg_uuid: "uuid-1",
+    file_ids: ["file-a"],
+  });
+  expect(postBody("hello", "uuid-1", [])).toEqual({
+    message: "hello",
+    client_msg_uuid: "uuid-1",
+  });
 });
 
 test("connect links carry the id of an agent's sign-in", () => {

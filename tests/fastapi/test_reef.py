@@ -24,7 +24,15 @@ import clawbits.fastapi.human_endpoints as he
 from clawbits import reef_repo
 from clawbits.datastructures.known_answers import get_answer_for_question
 from clawbits.db.models import Agent, Organization
-from clawbits.reef_repo import NAME_RE, ReefRepo, ReefRepoError, fleet_name, parse_role
+from clawbits.db.table_write import TableWrite
+from clawbits.reef_repo import (
+    NAME_RE,
+    ReefRepo,
+    ReefRepoError,
+    fleet_name,
+    parse_role,
+    purge_toml,
+)
 from tests.fastapi._auth_helpers import auth_headers as _auth
 from tests.fastapi._auth_helpers import register_human as _register
 
@@ -135,15 +143,10 @@ class FakeRepo:
         found = FakeRepo.files.get((branch, path))
         return ("sha", found) if found is not None else None
 
-    async def write(self, branch, path, content, message, author):
+    async def write(self, branch, path, content, message, author, sha=None):
         self._check()
         FakeRepo.files[(branch, path)] = content
         FakeRepo.commits.append((message, author.name, author.email))
-
-    async def delete(self, branch, path, message, author):
-        self._check()
-        if FakeRepo.files.pop((branch, path), None) is not None:
-            FakeRepo.commits.append((message, author.name, author.email))
 
     async def list(self, branch: str, directory: str) -> list[str]:
         self._check()
@@ -233,10 +236,14 @@ def _enrol(test_client, org_id: str, user: dict, name: str = "ana-bot") -> str:
     return r.json()["agent_id"]
 
 
-def _undeclare(test_client, org_id: str, user: dict, host: str = "prod-eu", name: str = "ana-bot"):
+def _purge(test_client, org_id: str, user: dict, host: str = "prod-eu", name: str = "ana-bot"):
     return test_client.delete(
         f"/api/human/orgs/{org_id}/reef/agents/{host}/{name}", headers=_auth(user["access_token"])
     )
+
+
+def _purged(name: str = "ana-bot") -> bool:
+    return FakeRepo.files.get(("fleet", f"fleet/prod-eu/{name}.toml")) == purge_toml(name)
 
 
 def _delete_agent(test_client, org_id: str, user: dict, agent_id: str):
@@ -473,7 +480,7 @@ def test_a_host_on_an_older_reef_keeps_reporting(test_client):
 
 def test_a_refresh_is_one_listing_plus_a_read_per_host(test_client):
     """The heartbeat rides in the file, so no commit is looked up. The result
-    is cached per org, and declaring or removing an agent drops that cache."""
+    is cached per org, and declaring or purging an agent drops that cache."""
     org_id, owner, _ = _org(test_client, "reef-calls", "rca-o@test.com")
     FakeRepo.files[("status", "status/prod-us.json")] = _status("prod-us")
 
@@ -486,7 +493,7 @@ def test_a_refresh_is_one_listing_plus_a_read_per_host(test_client):
     _declare(test_client, org_id, owner)
     assert org_id not in he._reef_status_cache
     _reef(test_client, org_id, owner)
-    r = _undeclare(test_client, org_id, owner)
+    r = _purge(test_client, org_id, owner)
     assert r.status_code == 204, r.text
     assert org_id not in he._reef_status_cache
 
@@ -647,14 +654,17 @@ def test_declared_clears_once_the_agent_enrols(test_client):
     assert _reef(test_client, org_id, owner).json()["declared"] == []
 
 
-def test_remove_deletes_the_fleet_file(test_client):
+def test_purge_replaces_the_fleet_file_with_its_tombstone(test_client):
     org_id, owner, _ = _org(test_client, "reef-rm", "rm-o@test.com")
     _declare(test_client, org_id, owner)
 
-    r = _undeclare(test_client, org_id, owner)
+    r = _purge(test_client, org_id, owner)
     assert r.status_code == 204, r.text
-    assert FLEET_FILE not in FakeRepo.files
-    assert FakeRepo.commits[-1] == ("remove ana-bot from prod-eu", "rm-o", "rm-o@test.com")
+    assert tomllib.loads(FakeRepo.files[FLEET_FILE].decode()) == {
+        "version": 1,
+        "purge": ["ana-bot"],
+    }
+    assert FakeRepo.commits[-1] == ("purge ana-bot from prod-eu", "rm-o", "rm-o@test.com")
 
 
 def test_declared_survives_an_unsealable_token(test_client, monkeypatch):
@@ -669,126 +679,104 @@ def test_declared_survives_an_unsealable_token(test_client, monkeypatch):
     assert [(d["host"], d["name"]) for d in r.json()["declared"]] == [("prod-eu", "ana-bot")]
 
 
-def test_remove_before_enrolment_burns_the_token(test_client):
-    """The file leaves the branch head but its token stays in git history, so
-    removing an agent that has not enrolled revokes that token too."""
+def test_purge_before_enrolment_burns_the_token(test_client):
+    """The tombstone replaces the file but its token stays in git history, so
+    purging an agent that has not enrolled revokes that token too."""
     org_id, owner, _ = _org(test_client, "reef-burn", "rbu-o@test.com")
     token = _declare(test_client, org_id, owner)
 
-    r = _undeclare(test_client, org_id, owner)
+    r = _purge(test_client, org_id, owner)
     assert r.status_code == 204, r.text
     assert _reef(test_client, org_id, owner).json()["declared"] == []
     r = _commit(test_client, token)
     assert r.status_code == 401, r.text
 
 
-def test_remove_is_open_to_whoever_declared_it(test_client):
+def test_purge_is_open_to_whoever_declared_it(test_client):
     """Before it enrols an agent has no operator; the member who declared it is
     the one it will get, so they may take it back."""
     org_id, _, member = _org(test_client, "reef-rmd", "rmd-o@test.com", "rmd-m@test.com")
     _declare(test_client, org_id, member)
 
-    r = _undeclare(test_client, org_id, member)
+    r = _purge(test_client, org_id, member)
     assert r.status_code == 204, r.text
-    assert FLEET_FILE not in FakeRepo.files
+    assert _purged()
 
 
-def test_remove_is_operator_declarer_or_owner_only(test_client):
+def test_purge_is_operator_declarer_or_owner_only(test_client):
     """A member who neither owns the org nor declared or operates the agent
     cannot pull it out from under its operator."""
     org_id, owner, member = _org(test_client, "reef-rmx", "rx-o@test.com", "rx-m@test.com")
     _declare(test_client, org_id, owner)
 
-    r = _undeclare(test_client, org_id, member)
+    r = _purge(test_client, org_id, member)
     assert r.status_code == 403, r.text
-    assert FLEET_FILE in FakeRepo.files
+    assert not _purged()
 
 
-def test_a_removed_agent_comes_back_under_its_name(test_client, monkeypatch):
-    """Its volumes outlive the fleet file, so declaring the name again brings
-    back the agent that enrolled under it, and a picked name never lands on it."""
-    org_id, owner, _ = _org(test_client, "reef-back", "rbk-o@test.com")
-    monkeypatch.setattr(test_client.app, "_bot_names", {"Wren": "Wren"})
-    enrolled = _enrol(test_client, org_id, owner, "quill")
-    assert _undeclare(test_client, org_id, owner, name="quill").status_code == 204
+def test_a_purged_name_stays_taken(test_client, monkeypatch):
+    """A new agent under a purged name could mount volumes the host has not
+    deleted yet, so the tombstone keeps the name for good."""
+    org_id, owner, _ = _org(test_client, "reef-taken", "rtk-o@test.com")
+    _enrol(test_client, org_id, owner, "quill")
+    assert _purge(test_client, org_id, owner, name="quill").status_code == 204
 
     monkeypatch.setattr(test_client.app, "_bot_names", {"Quill": "Quill"})
     assert _create(test_client, org_id, owner).json()["name"] != "quill"
-    back = _create(test_client, org_id, owner, name="quill").json()
-    assert (back["agent_id"], back["nickname"]) == (enrolled, "Wren")
+    assert _create(test_client, org_id, owner, name="quill").status_code == 409
 
 
-def test_remove_rejects_names_reef_would(test_client):
+def test_purge_rejects_names_reef_would(test_client):
     org_id, owner, _ = _org(test_client, "reef-rmn", "rmn-o@test.com")
     for host, name in (("Prod-EU", "ana-bot"), ("prod-eu", "ana_bot"), ("prod-eu", "bot-")):
-        r = _undeclare(test_client, org_id, owner, host, name)
+        r = _purge(test_client, org_id, owner, host, name)
         assert r.status_code == 422, f"{host}/{name} was accepted"
 
 
-def test_deleting_the_agent_takes_its_fleet_file(test_client):
-    """The agent row and the VM go together: a file left behind keeps the VM
-    running under a name nothing owns."""
+def test_deleting_the_agent_purges_it(test_client):
+    """The agent row, the VM and its volumes go together: nothing of a deleted
+    agent stays on its host."""
     org_id, owner, _ = _org(test_client, "reef-del", "rdl-o@test.com")
     agent_id = _enrol(test_client, org_id, owner)
 
     r = _delete_agent(test_client, org_id, owner, agent_id)
     assert r.status_code == 200, r.text
-    assert FLEET_FILE not in FakeRepo.files
-    assert FakeRepo.commits[-1] == ("remove ana-bot from prod-eu", "rdl-o", "rdl-o@test.com")
+    assert _purged()
+    assert FakeRepo.commits[-1] == ("purge ana-bot from prod-eu", "rdl-o", "rdl-o@test.com")
 
 
-def test_deleting_the_agent_survives_an_unreachable_repo(test_client):
-    """Reef cleanup is best-effort and runs after the delete commits, so
-    GitHub being down never keeps an agent alive in clawbits."""
+def test_deleting_the_agent_fails_closed_on_an_unreachable_repo(test_client):
+    """A delete that cannot purge changes nothing, so the agent is never gone
+    from clawbits while its VM and data live on."""
     org_id, owner, _ = _org(test_client, "reef-del-down", "rdd-o@test.com")
     agent_id = _enrol(test_client, org_id, owner)
     FakeRepo.unreachable = True
 
     r = _delete_agent(test_client, org_id, owner, agent_id)
-    assert r.status_code == 200, r.text
-    assert FLEET_FILE in FakeRepo.files
+    assert r.status_code == 502, r.text
 
     FakeRepo.unreachable = False
+    assert not _purged()
     listed = test_client.get(
         f"/api/human/orgs/{org_id}/agents", headers=_auth(owner["access_token"])
     ).json()
-    assert [a for a in listed["agents"] if a["agent_id"] == agent_id] == []
+    assert [a["agent_id"] for a in listed["agents"]] == [agent_id]
 
 
-def test_deleting_the_agent_burns_the_token_its_file_carried(test_client):
-    """Re-declaring an enrolled agent's name mints that same agent a fresh
-    token, so a live one outlives nothing here: deleting the agent revokes it,
-    whether or not the file removal lands."""
-    org_id, owner, _ = _org(test_client, "reef-del-token", "rdt-o@test.com")
-    agent_id = _enrol(test_client, org_id, owner)
-    r = _undeclare(test_client, org_id, owner)
-    assert r.status_code == 204, r.text
-    token = _declare(test_client, org_id, owner)
-    FakeRepo.unreachable = True
-
-    r = _delete_agent(test_client, org_id, owner, agent_id)
-    assert r.status_code == 200, r.text
-    r = _commit(test_client, token)
-    assert r.status_code == 401, r.text
-
-
-@pytest.mark.parametrize(("deleted", "survives"), [("older", True), ("newest", False)])
-def test_only_the_newest_placement_takes_the_fleet_file(test_client, deleted, survives):
-    """``(reef_host, reef_name)`` is not unique: undeclaring keeps the VM's
-    volumes, so declaring the name again enrols a second agent against the same
-    file. Deleting the superseded row must leave the live agent's VM alone, and
-    the superseded row must not keep that file alive once the live agent goes."""
+@pytest.mark.parametrize(("deleted", "purged"), [("older", False), ("newest", True)])
+def test_only_the_newest_placement_purges(test_client, _test_engine, deleted, purged):
+    """Agents enrolled before purging existed can share a placement: deleting
+    the superseded one must leave the live agent's VM and volumes alone."""
     org_id, owner, _ = _org(test_client, f"reef-del-{deleted}", f"rd-{deleted}@test.com")
-    older = _enrol(test_client, org_id, owner)
-    r = _undeclare(test_client, org_id, owner)
-    assert r.status_code == 204, r.text
+    older = _enrol(test_client, org_id, owner, "old-bot")
     newest = _enrol(test_client, org_id, owner)
-    assert newest != older
+    with Session(_test_engine) as db:
+        TableWrite.set_agent_reef(db, older, "prod-eu", "ana-bot")
+        db.commit()
 
     r = _delete_agent(test_client, org_id, owner, {"older": older, "newest": newest}[deleted])
     assert r.status_code == 200, r.text
-    assert (FLEET_FILE in FakeRepo.files) is survives
-
+    assert _purged() is purged
 
 @pytest.fixture
 def github(monkeypatch) -> list[str | None]:

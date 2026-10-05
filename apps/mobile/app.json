@@ -21,7 +21,11 @@
         "tinted": "./assets/images/ios-icon-tinted.png"
       },
       "supportsTablet": false,
-      "appleTeamId": "KNNT2S5R84"
+      "appleTeamId": "KNNT2S5R84",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Clawbits attaches photos you choose to messages.",
+        "NSCameraUsageDescription": "Clawbits uses the camera to take photos for messages."
+      }
     },
     "plugins": [
       "expo-router",
@@ -47,6 +51,7 @@
           }
         }
       ],
+      "./plugins/with-automatic-signing.js",
       "expo-font",
       "expo-status-bar"
     ],

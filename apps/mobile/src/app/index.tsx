@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
-import { useAnimatedHeaderHeight } from "expo-router/build/react-navigation/native-stack/utils/useAnimatedHeaderHeight";
+import { useAnimatedHeaderHeight } from "expo-router/native-stack";
 import { Animated, FlatList, View } from "react-native";
 import { api, ApiError } from "@/lib/api";
 import {

@@ -4,6 +4,7 @@ import type { PresenceMap } from "@/hooks/useChannelEvents";
 
 const STALE_STREAMING_MS = 60 * 60 * 1000;
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
+const BLOCK_MARKER = /^(?:#{1,6}|>|[-*+]|\d+\.)\s+/;
 
 type TimelineItem =
   | { kind: "post"; post: MmChannelPost; ts: number }
@@ -25,6 +26,15 @@ type DecoratedRow =
     }
   | { kind: "event"; event: MmChannelEvent; newDay: boolean }
   | ({ kind: "generating" } & GeneratingAgent);
+
+/** Where a human turn starts in the rows: the first post of each group a human sent. */
+export interface OutlineSection {
+  index: number;
+  postId: number;
+  /** Set only when more than one human speaks in the loaded rows. */
+  sender: string | null;
+  text: string;
+}
 
 export function dedupePostsById(posts: MmChannelPost[]): MmChannelPost[] {
   const seen = new Set<number>();
@@ -129,4 +139,25 @@ export function decorateRows({
     };
   });
   return [...rows, ...generatingAgents.map((g) => ({ kind: "generating" as const, ...g }))];
+}
+
+function firstLine(post: MmChannelPost): string {
+  const line = post.message
+    .split("\n")
+    .map((l) => l.trim().replace(BLOCK_MARKER, ""))
+    .find((l) => l !== "" && !l.startsWith("```"));
+  return line ?? post.files?.[0]?.filename ?? "Attachment";
+}
+
+export function outlineOf(rows: DecoratedRow[]): OutlineSection[] {
+  const starts = rows.flatMap((row, index) =>
+    row.kind === "post" && row.isGroupStart && row.post.human_id != null ? [{ index, post: row.post }] : [],
+  );
+  const named = new Set(starts.map((s) => s.post.human_id)).size > 1;
+  return starts.map(({ index, post }) => ({
+    index,
+    postId: post.post_id,
+    sender: named ? post.poster_display_name : null,
+    text: firstLine(post),
+  }));
 }

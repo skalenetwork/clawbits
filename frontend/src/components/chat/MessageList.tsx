@@ -4,6 +4,7 @@ import { Virtualizer, type VirtualizerHandle } from "virtua";
 const TOP_SPACER_PX = 64;
 const STICK_THRESHOLD_PX = 80;
 const LOAD_THRESHOLD_PX = 200;
+const READING_LINE = 1 / 3;
 
 export interface MessageListHandle {
   scrollToBottom(smooth?: boolean): void;
@@ -28,6 +29,7 @@ export function MessageList<T>({
   onLoadNewer,
   autoStickToBottom,
   onAtBottomChange,
+  onViewRow,
 }: {
   ref: Ref<MessageListHandle>;
   rows: readonly T[];
@@ -39,6 +41,8 @@ export function MessageList<T>({
   onLoadNewer: () => void;
   autoStickToBottom: boolean;
   onAtBottomChange: (atBottom: boolean) => void;
+  /** The row at the reading line, a third down the viewport, on every scroll. */
+  onViewRow?: (index: number) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtRef = useRef<VirtualizerHandle>(null);
@@ -138,6 +142,7 @@ export function MessageList<T>({
     setAtBottom(shouldStickRef.current);
     if (hasMoreOlder && offset >= 0 && offset < LOAD_THRESHOLD_PX) onLoadOlder();
     if (hasMoreNewer && distFromBottom < LOAD_THRESHOLD_PX) onLoadNewer();
+    onViewRow?.(handle.findItemIndex(offset + handle.viewportSize * READING_LINE));
   };
 
   return (

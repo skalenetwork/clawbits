@@ -66,6 +66,18 @@ export async function request<T>(
     : (response.json() as Promise<T>);
 }
 
+/** A file-only post omits `message`. The server accepts that. */
+export function postBody(message: string, uuid: string, fileIds: string[]) {
+  const body: {
+    message?: string;
+    client_msg_uuid: string;
+    file_ids?: string[];
+  } = { client_msg_uuid: uuid };
+  if (message) body.message = message;
+  if (fileIds.length) body.file_ids = fileIds;
+  return body;
+}
+
 export function mcpConnectLinkId(url: string): string | undefined {
   try {
     return /^\/connect\/([0-9a-f]{32})$/.exec(new URL(url).pathname)?.[1];
@@ -121,11 +133,10 @@ export const api = {
       undefined,
       signal,
     ),
-  send: (token: string, id: string, message: string, uuid: string) =>
-    request<Post>(`${channelPath(id)}/posts`, token, {
-      message,
-      client_msg_uuid: uuid,
-    }),
+  send: (token: string, id: string, message: string, uuid: string, fileIds: string[] = []) =>
+    request<Post>(`${channelPath(id)}/posts`, token, postBody(message, uuid, fileIds)),
+  fileUrl: (token: string, fileId: string) =>
+    request<{ url: string }>(`/api/human/mm/files/${encodeURIComponent(fileId)}/url`, token),
   read: (token: string, id: string, postId: number) =>
     request<{ last_read_post_id: number }>(`${channelPath(id)}/read`, token, {
       post_id: postId,

@@ -29,11 +29,19 @@ import { queryKeys } from "@/lib/queryKeys";
 import { channelListTitle } from "@/lib/formatting";
 import { channelLabel, isPairChannel } from "@/lib/chatFilters";
 import { draftStore } from "@/lib/messageDrafts";
+import { viewRowStore } from "@/lib/viewRow";
 import { trackRecentChannel } from "@/lib/desktop";
 import { errMsg, toast } from "@/lib/toast";
 import { computePendingAutoMention } from "@/lib/autoMention";
 import { mentionHandle, mentionLabel } from "@/lib/messageHelpers";
-import { buildTimeline, decorateRows, generatingAgentsOf, postsOf, queuedOwnPostIdsOf } from "@/lib/channelTimeline";
+import {
+  buildTimeline,
+  decorateRows,
+  generatingAgentsOf,
+  outlineOf,
+  postsOf,
+  queuedOwnPostIdsOf,
+} from "@/lib/channelTimeline";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useChannelAttachments } from "@/hooks/useChannelAttachments";
 import { useChannelDragDrop } from "@/hooks/useChannelDragDrop";
@@ -61,6 +69,7 @@ import { ProfileMenuProvider } from "@/components/ProfileMenu";
 import { ProgressiveBlur } from "@/components/ProgressiveBlur";
 import { UnreadDivider } from "@/components/UnreadDivider";
 import { DmPillStatus, PanelToggle } from "@/components/chat/ChannelHeaderPills";
+import { ChatOutline } from "@/components/chat/ChatOutline";
 import { DaySeparator, MessageSkeletons } from "@/components/chat/dividers";
 import { GeneratingRow } from "@/components/chat/GeneratingRow";
 import { MessageList, type MessageListHandle } from "@/components/chat/MessageList";
@@ -180,6 +189,7 @@ function ChannelView({ channelId }: { channelId: string }) {
   const lastMarkedRef = useRef(0);
   const handledMsgRef = useRef<string | null>(null);
   const messageListRef = useRef<MessageListHandle>(null);
+  const [viewRow] = useState(viewRowStore);
   const composerRef = useRef<ComposerHandle>(null);
   const composerWrapRef = useRef<HTMLDivElement>(null);
   const columnRef = useRef<HTMLDivElement>(null);
@@ -519,6 +529,7 @@ function ChannelView({ channelId }: { channelId: string }) {
     [timeline, firstUnreadPostId, generatingAgents, queuedOwnPostIds],
   );
   const rowsRef = useLatestRef(rows);
+  const outline = useMemo(() => outlineOf(rows), [rows]);
 
   const jumpToPost = async (postId: number) => {
     const index = rowsRef.current.findIndex((r) => r.kind === "post" && r.post.post_id === postId);
@@ -712,7 +723,7 @@ function ChannelView({ channelId }: { channelId: string }) {
       currentUserId={user?.id ?? null}
       onMentionInsert={(handle) => { composerRef.current?.insert(`@${handle} `); }}
     >
-    <div ref={columnRef} className="relative isolate flex h-full min-h-0 flex-1 flex-col">
+    <div ref={columnRef} className="group/chat relative isolate flex h-full min-h-0 flex-1 flex-col">
       <ChannelDropOverlay show={isDragging} />
       <PageHeader
         leading={
@@ -821,6 +832,7 @@ function ChannelView({ channelId }: { channelId: string }) {
             onLoadNewer={() => { void history.loadMoreNewer(); }}
             autoStickToBottom={!history.isAnchored}
             onAtBottomChange={setIsAtBottom}
+            onViewRow={viewRow.set}
             renderRow={(row, index) => {
               if (row.kind === "generating") {
                 const key = memberKey("agent", row.agentId);
@@ -892,6 +904,8 @@ function ChannelView({ channelId }: { channelId: string }) {
           />
         )}
       </div>
+
+      <ChatOutline sections={outline} viewRow={viewRow} onJump={(postId) => { void jumpToPost(postId); }} />
 
       {!isMobile && (
         <ProgressiveBlur

@@ -119,26 +119,28 @@ class ReefRepo:
         return found["sha"], base64.b64decode(found["content"])
 
     async def write(
-        self, branch: str, path: str, content: bytes, message: str, author: Author
+        self,
+        branch: str,
+        path: str,
+        content: bytes,
+        message: str,
+        author: Author,
+        sha: str | None = None,
     ) -> None:
-        """Create a file. No sha is sent, so GitHub refuses to overwrite.
+        """Replace the file at ``sha``, or create one: without a sha GitHub
+        refuses to overwrite.
 
         A 404 means the branch is gone, and it must not read as success: the
         caller has already minted the one-time token this file was to carry, so
         a silent no-op burns it and declares an agent that can never enrol."""
         body = _commit(branch, message, author, content=base64.b64encode(content).decode())
+        if sha:
+            body["sha"] = sha
         written = await self._send("PUT", self._url(path), json=body)
         if written is None:
             raise ReefRepoError(
                 f"branch '{branch}' not found in {self.repo}: nothing was written"
             )
-
-    async def delete(self, branch: str, path: str, message: str, author: Author) -> None:
-        head = await self.read(branch, path)
-        if head is None:
-            return
-        body = _commit(branch, message, author, sha=head[0])
-        await self._send("DELETE", self._url(path), json=body)
 
     async def list(self, branch: str, directory: str) -> list[str]:
         """File names directly under ``directory``; empty when it is absent."""
@@ -251,8 +253,9 @@ def parse_status(raw: bytes, now: datetime) -> dict | None:
 
 
 def fleet_toml(name: str, role: str, owner: str, env: dict[str, str]) -> bytes:
-    """The fleet file clawbits writes, exactly once per agent. Every value is
-    validated by the caller against the patterns above, so plain quoting holds."""
+    """The fleet file that declares an agent, replaced only by its tombstone.
+    Every value is validated by the caller against the patterns above, so plain
+    quoting holds."""
     lines = [
         "version = 1",
         "",
@@ -265,6 +268,12 @@ def fleet_toml(name: str, role: str, owner: str, env: dict[str, str]) -> bytes:
     width = max(len(k) for k in env)
     lines += [f'{k.ljust(width)} = "{v}"' for k, v in env.items()]
     return ("\n".join(lines) + "\n").encode()
+
+
+def purge_toml(name: str) -> bytes:
+    """The tombstone that replaces an agent's fleet file: the host deletes the
+    agent with its volumes, and the name stays taken."""
+    return f'version = 1\npurge = ["{name}"]\n'.encode()
 
 
 def fleet_name(agent_id: str) -> str:

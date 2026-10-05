@@ -77,7 +77,7 @@ export function SettleBody({
     const next = inner.offsetHeight;
     if (prev === null || Math.abs(prev - next) < 1) return;
     // FLIP: pin the old height, force a reflow, transition to the new one.
-    outer.style.overflow = "hidden";
+    outer.style.overflow = "clip";
     outer.style.transition = "none";
     outer.style.height = `${String(prev)}px`;
     void outer.offsetHeight;

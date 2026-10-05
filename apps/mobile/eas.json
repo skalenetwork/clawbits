@@ -6,15 +6,24 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "channel": "development"
+      "channel": "development",
+      "ios": {
+        "image": "sdk-58"
+      }
     },
     "preview": {
       "distribution": "internal",
-      "channel": "staging"
+      "channel": "staging",
+      "ios": {
+        "image": "sdk-58"
+      }
     },
     "production": {
       "autoIncrement": true,
-      "channel": "production"
+      "channel": "production",
+      "ios": {
+        "image": "sdk-58"
+      }
     }
   },
   "submit": {
