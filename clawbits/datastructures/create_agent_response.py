@@ -8,6 +8,10 @@ class CreateAgentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     agent_id: AgentId = Field(description="Created agent identifier")
     api_key: ApiKey = Field(description="Issued API key for the agent")
+    channel_id: str | None = Field(
+        default=None,
+        description="The operator DM, when the agent was bound to its operator at commit.",
+    )
     signup_request_id: str | None = Field(
         default=None,
         description="Signup request ID for anonymous signups awaiting approval; "

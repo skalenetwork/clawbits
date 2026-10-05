@@ -1,4 +1,4 @@
-import type { MmChannelPost, ReefHostAgent } from "@/lib/api";
+import type { MmChannelPost, ReefHostAgent, ReefRole } from "@/lib/api";
 
 /** Backend timestamps are UTC, but SQLite emits them without a zone ("2026-04-16 17:06:00"), which Date reads as local. */
 export function parseUtcTimestamp(timestamp: string | number): Date {
@@ -52,6 +52,15 @@ export const RUNTIME_LOGO: Record<string, string> = {
   hermes: "/hermes.png",
   ironclaw: "/ironclaw.png",
 };
+
+/** The image tag names the runtime a role runs (`oc…`, `hm…`); an unknown or unloaded one reads as OpenClaw. */
+export const roleRuntime = (role?: ReefRole): AgentRuntime => parseAgentImage(role?.image ?? "").scheme?.runtime ?? "openclaw";
+
+/** `4 CPU · 6 GB`: what a role gives each of its agents. */
+export const formatRoleResources = ({ vcpus, "memory-mib": mib }: ReefRole["resources"]) =>
+  [vcpus && `${vcpus} CPU`, mib && (mib >= 1024 ? `${Math.round(mib / 102.4) / 10} GB` : `${mib} MB`)]
+    .filter(Boolean)
+    .join(" · ");
 
 export const fleetKey = (host: string, name: string) => `${host}/${name}`;
 

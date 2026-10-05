@@ -206,9 +206,7 @@ function fromSourceCommands(dir: string): string[] {
   // The repo root is only the CHANNEL package. The companion is behind
   // package.tools.json and has to be staged, so a bare
   // `plugins install <dir>` updates half the install and silently strands cron,
-  // email, usage and skills on the old code. `--vendor-deps` copies `typebox`
-  // into the staged companion, which a path install would otherwise never
-  // install (OpenClaw copies the directory; it runs no dependency step).
+  // email, usage and skills on the old code.
   //
   // Local-path installs also can never inherit capability acceptance on
   // 2026.8+: the install record pins no artifact integrity, so OpenClaw cannot
@@ -219,8 +217,8 @@ function fromSourceCommands(dir: string): string[] {
     "git pull --ff-only   # if this checkout tracks a remote",
     "npm run build",
     'stage="$(mktemp -d)"',
-    `node stage-channel.mjs "$stage/channel" --vendor-deps`,
-    `node stage-tools.mjs "$stage/tools" --vendor-deps`,
+    'node stage-channel.mjs "$stage/channel"',
+    'node stage-tools.mjs "$stage/tools"',
     'openclaw plugins install "$stage/channel" --force --accept-capabilities',
     'openclaw plugins install "$stage/tools" --force --accept-capabilities',
   ];

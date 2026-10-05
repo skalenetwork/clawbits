@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import uuid
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
@@ -13,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from imapclient.exceptions import LoginError
 from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from clawbits import audit
@@ -60,8 +62,9 @@ from clawbits.datastructures.org_models import (
     ReefAgentResponse,
     ReefHostResponse,
     ReefResponse,
+    ReefRoleAccess,
     ReefRoleResponse,
-    ReefSecretResponse,
+    ReefRoleSettingsResponse,
     SetOrgAttentionRequest,
     SetOrgLobstertalkChannelRequest,
     SetOrgLobstertalkRequest,
@@ -1592,6 +1595,19 @@ async def _reef_roles(repo: ReefRepo) -> list[Role]:
     return sorted(filter(None, roles), key=lambda r: r.name)
 
 
+def _reef_access(
+    db: Session, org_id: str, user: dict
+) -> tuple[ReefRepo, defaultdict[str, ReefRoleAccess]]:
+    return _reef_repo(db, org_id, user), TableRead.get_reef_role_access(db, org_id)
+
+
+async def _usable_roles(
+    repo: ReefRepo, access: defaultdict[str, ReefRoleAccess], user: dict
+) -> list[Role]:
+    """The catalog narrowed to the roles ``user`` may declare agents from."""
+    return [r for r in await _reef_roles(repo) if access[r.name].allows(user["id"])]
+
+
 def _reef_author(user: dict) -> Author:
     """Fleet commits carry the person who clicked, so `git log` on the fleet branch is the audit trail."""
     return Author(name=user.get("display_name") or user["email"], email=user["email"])
@@ -1687,18 +1703,47 @@ async def list_reef_roles(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """The role catalog, :func:`_reef_roles`. Any member."""
-    repo = await _in_db(request, lambda db: _reef_repo(db, org_id, user))
-    return [
-        ReefRoleResponse(
-            name=role.name,
-            image=role.image,
-            egress=role.egress,
-            secrets=[ReefSecretResponse(env=s.env, host=s.host) for s in role.secrets],
-            resources=role.resources,
-        )
-        for role in await _reef_roles(repo)
-    ]
+    """The roles the caller may declare agents from. Any member."""
+    repo, access = await _in_db(request, lambda db: _reef_access(db, org_id, user))
+    return await _usable_roles(repo, access, user)
+
+
+@human_router.get(
+    "/api/human/orgs/{org_id}/reef/roles/access",
+    response_model=list[ReefRoleSettingsResponse],
+)
+async def list_reef_role_access(
+    org_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Every role in the catalog with who may use it. Owner only."""
+
+    def load(db: Session) -> tuple[ReefRepo, defaultdict[str, ReefRoleAccess]]:
+        _require_org_owner(db, org_id, user)
+        return _reef_access(db, org_id, user)
+
+    repo, access = await _in_db(request, load)
+    roles = await _reef_roles(repo)
+    return [ReefRoleSettingsResponse(role=r, access=access[r.name]) for r in roles]
+
+
+@human_router.put("/api/human/orgs/{org_id}/reef/roles/{role}/access", status_code=204)
+def set_reef_role_access(
+    org_id: str,
+    body: ReefRoleAccess,
+    request: Request,
+    role: str = Path(pattern=NAME_RE.pattern),
+    user: dict = Depends(get_current_human_user),
+):
+    """Set who may use ``role``. Owner only. Agents already declared from it keep running."""
+    with _get_db(request) as db:
+        _require_org_owner(db, org_id, user)
+        try:
+            TableWrite.set_reef_role_access(db, org_id, role, body)
+        except IntegrityError:
+            raise HTTPException(status_code=422, detail="Every member must be in this organization")
+        db.commit()
 
 
 @human_router.post(
@@ -1719,18 +1764,23 @@ async def create_reef_agent(
     name of an agent that enrolled on the host brings it back, since its
     volumes kept its key. A failed write takes the session down with it, so a
     declared agent always has a file and a file always has a live token."""
-    repo = await _in_db(request, lambda db: _reef_repo(db, org_id, user))
+    repo, access = await _in_db(request, lambda db: _reef_access(db, org_id, user))
     owner = body.owner or user["email"].split("@")[0]
     if not OWNER_RE.match(owner):
         raise HTTPException(status_code=422, detail="owner is required for this account")
-    host = next((h for h in await _reef_hosts(org_id, repo) if h.host == body.host), None)
+    roles, hosts, files = await asyncio.gather(
+        _usable_roles(repo, access, user),
+        _reef_hosts(org_id, repo),
+        repo.list("fleet", f"fleet/{body.host}"),
+    )
+    host = next((h for h in hosts if h.host == body.host), None)
     if host is None:
         raise HTTPException(status_code=422, detail=f"No Reef host named '{body.host}'")
-    if body.role not in {r.name for r in await _reef_roles(repo)}:
+    if body.role not in {r.name for r in roles}:
         raise HTTPException(
-            status_code=422, detail=f"No role named '{body.role}' points at this server"
+            status_code=422, detail=f"No role named '{body.role}' is available to you"
         )
-    declared = {n.removesuffix(".toml") for n in await repo.list("fleet", f"fleet/{body.host}")}
+    declared = {n.removesuffix(".toml") for n in files}
     if body.name in declared:
         raise HTTPException(
             status_code=409, detail=f"'{body.name}' is already declared on {body.host}"

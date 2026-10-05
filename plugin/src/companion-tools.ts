@@ -1,4 +1,3 @@
-import { type Static, Type } from "typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import {
@@ -12,13 +11,13 @@ import { buildClientForAccount } from "./client-factory.js";
 import type { ClawBitsClient } from "./client.js";
 import { frameEmailForDm } from "./email-dm-frame.js";
 import { logWarn } from "./file-logger.js";
-import { connectMcpServer } from "./mcp-oauth.js";
+import { connectMcpServer, type McpConnect } from "./mcp-oauth.js";
 import { getAgentInfo, updateAgentDescription } from "./tools/agents.js";
 import {
   emailGet,
   emailInbox,
   emailSend,
-  type EmailSendAttachment,
+  type EmailSendRequest,
 } from "./tools/email.js";
 import {
   getChannelPosts,
@@ -117,24 +116,16 @@ function jsonResult(value: unknown): {
  *  richer shape (counts, human ids) passes through to the model untouched. */
 type ReactionBuckets = Array<{ emoji: string; agent_ids?: string[] }>;
 
-const accountIdParameter = Type.Optional(
-  Type.String({
-    description:
-      "Clawbits account id from channels.clawbits.accounts. Uses the configured default when omitted.",
-    minLength: 1,
-  }),
-);
+interface AccountParam {
+  accountId?: string;
+}
 
-const MCP_CONNECT_PARAMS = Type.Object({
-  server: Type.String({ description: "MCP server name, such as linear.", pattern: "^\\w[\\w.-]{0,99}$" }),
-  url: Type.String({ description: "The server's MCP endpoint, such as https://mcp.linear.app/mcp.", format: "uri" }),
-  scope: Type.Optional(Type.String({ description: "OAuth scope, when the server asks for one.", minLength: 1 })),
-});
-
-const attachmentParameter = Type.Object({
-  filename: Type.String({ minLength: 1 }),
-  content_b64: Type.String({ minLength: 1 }),
-});
+const accountIdParameter = {
+  type: "string",
+  description:
+    "Clawbits account id from channels.clawbits.accounts. Uses the configured default when omitted.",
+  minLength: 1,
+};
 
 export function registerClawbitsTools(api: OpenClawPluginApi): void {
   api.registerTool(
@@ -142,8 +133,8 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       name: CLAWBITS_TOOL_NAMES[0],
       label: "List Clawbits Channels",
       description: "List the Clawbits channels available to this agent.",
-      parameters: Type.Object({ accountId: accountIdParameter }),
-      async execute(_toolCallId, { accountId }, signal) {
+      parameters: { type: "object", properties: { accountId: accountIdParameter } },
+      async execute(_toolCallId, { accountId }: AccountParam, signal) {
         signal?.throwIfAborted();
         const { client } = clientForConfig(api.config, accountId);
         return jsonResult(
@@ -161,11 +152,15 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       name: CLAWBITS_TOOL_NAMES[1],
       label: "List Clawbits Channel Members",
       description: "List members of one Clawbits channel.",
-      parameters: Type.Object({
-        channelId: Type.String({ description: "Clawbits channel id.", minLength: 1 }),
-        accountId: accountIdParameter,
-      }),
-      async execute(_toolCallId, { channelId, accountId }, signal) {
+      parameters: {
+        type: "object",
+        required: ["channelId"],
+        properties: {
+          channelId: { type: "string", description: "Clawbits channel id.", minLength: 1 },
+          accountId: accountIdParameter,
+        },
+      },
+      async execute(_toolCallId, { channelId, accountId }: AccountParam & { channelId: string }, signal) {
         signal?.throwIfAborted();
         const { client } = clientForConfig(api.config, accountId);
         return jsonResult(
@@ -185,20 +180,24 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       name: CLAWBITS_TOOL_NAMES[2],
       label: "List Clawbits Email",
       description: "List messages in this agent's Clawbits email inbox.",
-      parameters: Type.Object({
-        limit: Type.Optional(
-          Type.Integer({
+      parameters: {
+        type: "object",
+        properties: {
+          limit: {
+            type: "integer",
             description: "Maximum messages to return. Defaults to 20.",
             minimum: 1,
             maximum: 100,
-          }),
-        ),
-        offset: Type.Optional(
-          Type.Integer({ description: "Inbox offset. Defaults to 0.", minimum: 0 }),
-        ),
-        accountId: accountIdParameter,
-      }),
-      async execute(_toolCallId, { limit, offset, accountId }, signal) {
+          },
+          offset: { type: "integer", description: "Inbox offset. Defaults to 0.", minimum: 0 },
+          accountId: accountIdParameter,
+        },
+      },
+      async execute(
+        _toolCallId,
+        { limit, offset, accountId }: AccountParam & { limit?: number; offset?: number },
+        signal,
+      ) {
         signal?.throwIfAborted();
         const { client, agentId } = clientForConfig(api.config, accountId, {
           requireEmail: true,
@@ -221,11 +220,15 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       label: "Read Clawbits Email",
       description:
         "Read one Clawbits email by UID. Reading it marks it read. Attachment bodies are omitted; only attachment metadata is returned.",
-      parameters: Type.Object({
-        messageUid: Type.Integer({ description: "Email message UID.", minimum: 1 }),
-        accountId: accountIdParameter,
-      }),
-      async execute(_toolCallId, { messageUid, accountId }, signal) {
+      parameters: {
+        type: "object",
+        required: ["messageUid"],
+        properties: {
+          messageUid: { type: "integer", description: "Email message UID.", minimum: 1 },
+          accountId: accountIdParameter,
+        },
+      },
+      async execute(_toolCallId, { messageUid, accountId }: AccountParam & { messageUid: number }, signal) {
         signal?.throwIfAborted();
         const { client, agentId } = clientForConfig(api.config, accountId, {
           requireEmail: true,
@@ -247,8 +250,8 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       name: CLAWBITS_TOOL_NAMES[4],
       label: "Get Clawbits Agent Information",
       description: "Get this agent's Clawbits profile and organization information.",
-      parameters: Type.Object({ accountId: accountIdParameter }),
-      async execute(_toolCallId, { accountId }, signal) {
+      parameters: { type: "object", properties: { accountId: accountIdParameter } },
+      async execute(_toolCallId, { accountId }: AccountParam, signal) {
         signal?.throwIfAborted();
         const { client, agentId } = clientForConfig(api.config, accountId);
         return jsonResult(
@@ -269,16 +272,30 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       label: "Send Clawbits Email",
       description:
         "Send an email from this agent to its Clawbits operator. This is a paid, challenge-gated action.",
-      parameters: Type.Object({
-        subject: Type.String({ minLength: 1 }),
-        message: Type.String({ minLength: 1 }),
-        headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-        attachments: Type.Optional(Type.Array(attachmentParameter)),
-        accountId: accountIdParameter,
-      }),
+      parameters: {
+        type: "object",
+        required: ["subject", "message"],
+        properties: {
+          subject: { type: "string", minLength: 1 },
+          message: { type: "string", minLength: 1 },
+          headers: { type: "object", patternProperties: { "^.*$": { type: "string" } } },
+          attachments: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["filename", "content_b64"],
+              properties: {
+                filename: { type: "string", minLength: 1 },
+                content_b64: { type: "string", minLength: 1 },
+              },
+            },
+          },
+          accountId: accountIdParameter,
+        },
+      },
       async execute(
         _toolCallId,
-        { subject, message, headers, attachments, accountId },
+        { subject, message, headers, attachments, accountId }: AccountParam & EmailSendRequest,
         signal,
       ) {
         signal?.throwIfAborted();
@@ -303,9 +320,7 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
                 subject: normalizedSubject,
                 message: normalizedMessage,
                 ...(headers ? { headers } : {}),
-                ...(attachments
-                  ? { attachments: attachments as EmailSendAttachment[] }
-                  : {}),
+                ...(attachments ? { attachments } : {}),
               },
               answer,
               requestSignal,
@@ -349,11 +364,15 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       name: CLAWBITS_TOOL_NAMES[6],
       label: "Update Clawbits Agent Description",
       description: "Update this agent's public Clawbits profile description.",
-      parameters: Type.Object({
-        description: Type.String({ minLength: 1, maxLength: 280 }),
-        accountId: accountIdParameter,
-      }),
-      async execute(_toolCallId, { description, accountId }, signal) {
+      parameters: {
+        type: "object",
+        required: ["description"],
+        properties: {
+          description: { type: "string", minLength: 1, maxLength: 280 },
+          accountId: accountIdParameter,
+        },
+      },
+      async execute(_toolCallId, { description, accountId }: AccountParam & { description: string }, signal) {
         signal?.throwIfAborted();
         const normalizedDescription = description.trim();
         if (!normalizedDescription) {
@@ -385,18 +404,25 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
         "the emoji that fits the meaning, at most one per post, and never in place of an " +
         "answer someone is waiting for. The same emoji a second time removes it. This is " +
         "a paid, challenge-gated action.",
-      parameters: Type.Object({
-        messageId: Type.String({
-          description: "Clawbits post id of the message being reacted to.",
-          minLength: 1,
-        }),
-        emoji: Type.String({ description: "Unicode emoji glyph.", minLength: 1 }),
-        remove: Type.Optional(
-          Type.Boolean({ description: "Remove this agent's reaction instead of toggling." }),
-        ),
-        accountId: accountIdParameter,
-      }),
-      async execute(_toolCallId, { messageId, emoji, remove, accountId }, signal) {
+      parameters: {
+        type: "object",
+        required: ["messageId", "emoji"],
+        properties: {
+          messageId: {
+            type: "string",
+            description: "Clawbits post id of the message being reacted to.",
+            minLength: 1,
+          },
+          emoji: { type: "string", description: "Unicode emoji glyph.", minLength: 1 },
+          remove: { type: "boolean", description: "Remove this agent's reaction instead of toggling." },
+          accountId: accountIdParameter,
+        },
+      },
+      async execute(
+        _toolCallId,
+        { messageId, emoji, remove, accountId }: AccountParam & { messageId: string; emoji: string; remove?: boolean },
+        signal,
+      ) {
         signal?.throwIfAborted();
         const postId = messageId.trim();
         const glyph = emoji.trim();
@@ -442,28 +468,39 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
         "Use it before answering anything about what was said, decided or shared here: " +
         "the conversation history in your prompt is only a short recent window. Results " +
         "carry the post id, so clawbits_channel_posts can read a hit in context.",
-      parameters: Type.Object({
-        query: Type.String({ description: "Search text.", minLength: 1 }),
-        channelId: Type.Optional(
-          Type.String({
+      parameters: {
+        type: "object",
+        required: ["query"],
+        properties: {
+          query: { type: "string", description: "Search text.", minLength: 1 },
+          channelId: {
+            type: "string",
             description: "Restrict to one channel id from clawbits_channels_list.",
             minLength: 1,
-          }),
-        ),
-        sort: Type.Optional(
-          Type.Union([Type.Literal("recent"), Type.Literal("relevant")], {
+          },
+          sort: {
+            anyOf: [
+              { type: "string", const: "recent" },
+              { type: "string", const: "relevant" },
+            ],
             description: "Order hits by recency (default) or match quality.",
-          }),
-        ),
-        limit: Type.Optional(
-          Type.Integer({ description: "Hits to return, 1-50. Defaults to 25.", minimum: 1, maximum: 50 }),
-        ),
-        cursor: Type.Optional(
-          Type.String({ description: "next_cursor from a previous result, for the next page." }),
-        ),
-        accountId: accountIdParameter,
-      }),
-      async execute(_toolCallId, { query, channelId, sort, limit, cursor, accountId }, signal) {
+          },
+          limit: { type: "integer", description: "Hits to return, 1-50. Defaults to 25.", minimum: 1, maximum: 50 },
+          cursor: { type: "string", description: "next_cursor from a previous result, for the next page." },
+          accountId: accountIdParameter,
+        },
+      },
+      async execute(
+        _toolCallId,
+        { query, channelId, sort, limit, cursor, accountId }: AccountParam & {
+          query: string;
+          channelId?: string;
+          sort?: "recent" | "relevant";
+          limit?: number;
+          cursor?: string;
+        },
+        signal,
+      ) {
         signal?.throwIfAborted();
         const q = query.trim();
         if (!q) throw new Error("Clawbits search query must not be blank.");
@@ -502,27 +539,38 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
         "ones, or the window around a post id when aroundPostId is given. Use it to catch " +
         "up on a channel you are not currently answering in, or to read a clawbits_search " +
         "hit in its surrounding conversation.",
-      parameters: Type.Object({
-        channelId: Type.String({
-          description: "Channel id from clawbits_channels_list.",
-          minLength: 1,
-        }),
-        aroundPostId: Type.Optional(
-          Type.Integer({
+      parameters: {
+        type: "object",
+        required: ["channelId"],
+        properties: {
+          channelId: {
+            type: "string",
+            description: "Channel id from clawbits_channels_list.",
+            minLength: 1,
+          },
+          aroundPostId: {
+            type: "integer",
             description: "Centre the window on this post id instead of reading the latest.",
             minimum: 1,
-          }),
-        ),
-        limit: Type.Optional(
-          Type.Integer({
+          },
+          limit: {
+            type: "integer",
             description: "Posts to return, 1-50. Defaults to 25.",
             minimum: 1,
             maximum: 50,
-          }),
-        ),
-        accountId: accountIdParameter,
-      }),
-      async execute(_toolCallId, { channelId, aroundPostId, limit, accountId }, signal) {
+          },
+          accountId: accountIdParameter,
+        },
+      },
+      async execute(
+        _toolCallId,
+        { channelId, aroundPostId, limit, accountId }: AccountParam & {
+          channelId: string;
+          aroundPostId?: number;
+          limit?: number;
+        },
+        signal,
+      ) {
         signal?.throwIfAborted();
         const { client } = clientForConfig(api.config, accountId);
         const requestSignal = toolRequestSignal(signal, TOOL_REQUEST_TIMEOUT_MS);
@@ -550,8 +598,20 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
         "and you get a message when the sign-in finishes. Use it instead of openclaw mcp " +
         "login, whose localhost callback cannot reach you here. Returns card_posted, or " +
         "signed_in when the server needs no sign-in.",
-      parameters: MCP_CONNECT_PARAMS,
-      async execute(_toolCallId: string, params: Static<typeof MCP_CONNECT_PARAMS>, signal?: AbortSignal) {
+      parameters: {
+        type: "object",
+        required: ["server", "url"],
+        properties: {
+          server: { type: "string", description: "MCP server name, such as linear.", pattern: "^\\w[\\w.-]{0,99}$" },
+          url: {
+            type: "string",
+            description: "The server's MCP endpoint, such as https://mcp.linear.app/mcp.",
+            format: "uri",
+          },
+          scope: { type: "string", description: "OAuth scope, when the server asks for one.", minLength: 1 },
+        },
+      },
+      async execute(_toolCallId: string, params: McpConnect, signal?: AbortSignal) {
         signal?.throwIfAborted();
         const channelId = ctx.messageChannel === CHANNEL_ID ? ctx.nativeChannelId : undefined;
         if (!channelId) throw new Error("clawbits_mcp_connect works only while answering in a Clawbits chat.");

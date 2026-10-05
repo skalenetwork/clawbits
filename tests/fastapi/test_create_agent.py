@@ -5,6 +5,7 @@ from clawbits.datastructures.nickname import NickName
 from clawbits.db.models import Agent
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
+from clawbits.fastapi.clawbits_server import ClawBitsServer
 from tests.fastapi._auth_helpers import (
     auth_headers,
     login_human,
@@ -123,6 +124,20 @@ def test_human_signup_picks_the_id_at_mint(test_client, _test_engine):
     assert r.json()["agent_id"] == minted["agent_id"]
     with Session(_test_engine) as db:
         assert db.get(Agent, minted["agent_id"]).nickname == minted["nickname"]
+
+
+def test_human_commit_carries_the_operator_dm_and_a_full_tank(test_client, _test_engine):
+    token, _ = login_human(test_client)
+    r = _commit(test_client, _mint(test_client, token))
+    assert r.status_code == 200, r.text
+    made = r.json()
+    dm = test_client.get(
+        f"/api/agentic/mm/teams/{made['agent_id']}/operator-channel",
+        headers=auth_headers(made["api_key"]),
+    )
+    assert made["channel_id"] == dm.json()["channel_id"]
+    with Session(_test_engine) as db:
+        assert db.get(Agent, made["agent_id"]).cb_tokens == ClawBitsServer.CB_TOKENS_BALANCE_CEILING
 
 
 def test_an_unspent_session_holds_its_id(test_client, monkeypatch):

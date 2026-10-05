@@ -113,10 +113,6 @@ section "Update installed plugin code"
 # alone updates the channel and silently leaves the old companion running — so
 # cron, email, usage and skills keep executing the code you just replaced.
 #
-# --vendor-deps is required for a path install: OpenClaw copies the directory
-# and never installs dependencies, and companion-tools.ts imports `typebox` at
-# module scope, so an unvendored companion loads with `status: error`.
-#
 # OpenClaw 2026.8 ("2.0") also requires capability consent before it will commit
 # an external plugin's staged artifact, and a path install can never inherit an
 # earlier acceptance (no artifact integrity is recorded for a path source), so it
@@ -128,15 +124,15 @@ fi
 STAGE_DIR="$(mktemp -d -t clawbits-update-src.XXXXXX)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 if [ "$DRY_RUN" = "1" ]; then
-  warn "would run: node stage-channel.mjs <stage>/channel --vendor-deps"
-  warn "would run: node stage-tools.mjs <stage>/tools --vendor-deps"
+  warn "would run: node stage-channel.mjs <stage>/channel"
+  warn "would run: node stage-tools.mjs <stage>/tools"
   warn "would run: openclaw plugins install <stage>/channel --force $CAP_FLAG"
   warn "would run: openclaw plugins install <stage>/tools --force $CAP_FLAG"
 else
   ok "staging channel and companion artifacts"
   if ! STAGE_OUT=$( (cd "$REPO_PLUGIN_DIR" \
-    && node stage-channel.mjs "$STAGE_DIR/channel" --vendor-deps \
-    && node stage-tools.mjs "$STAGE_DIR/tools" --vendor-deps) 2>&1); then
+    && node stage-channel.mjs "$STAGE_DIR/channel" \
+    && node stage-tools.mjs "$STAGE_DIR/tools") 2>&1); then
     fail "staging failed"
     printf '%s\n' "$STAGE_OUT" | sed 's/^/      /'
     exit 1

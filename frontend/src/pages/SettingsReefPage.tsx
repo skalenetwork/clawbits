@@ -12,6 +12,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ReefIcon } from "@/components/ReefIcon";
 import { SquircleDefs } from "@/components/home/tiles";
 import { ReefAgentTile, type ReefAgentTileProps } from "@/components/settings/ReefAgentTile";
+import { ReefRolesSection } from "@/components/settings/ReefRolesSection";
 import {
   ReefHealth,
   SettingsPage,
@@ -310,6 +311,8 @@ export default function SettingsReefPage() {
                   </div>
                 )}
               </SettingsSection>
+
+              {isOwner && <ReefRolesSection orgId={orgId} />}
             </>
           )}
 
@@ -319,7 +322,7 @@ export default function SettingsReefPage() {
                 <SettingsRow
                   leading={repoMark}
                   title={<span className="wrap-anywhere">{reef.repo}</span>}
-                  description="Machines sync every 30 seconds"
+                  description="Machines sync every few seconds"
                   control={
                     <Button
                       variant="outline"

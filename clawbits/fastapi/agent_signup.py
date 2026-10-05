@@ -1,4 +1,4 @@
-import logging
+import asyncio
 import os
 import random
 import secrets
@@ -23,10 +23,8 @@ from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
 from clawbits.reef_repo import fleet_name
 
-logger = logging.getLogger(__name__)
-
 # Long enough for a reef agent to reach its first boot: the fleet file the token
-# rides in is pulled by a timer, and a cold image pull on a host that was down
+# rides in is pulled by the host, and a cold image pull on a host that was down
 # for a while is measured in hours, not minutes. Single use either way. The
 # per-call auth challenge behind GET /api/agentic/auth/challenge is a different
 # path and stays at ten minutes.
@@ -161,6 +159,7 @@ class AgentSignup:
           the human is already authenticated when they create the session,
           so commit binds org + operator immediately. No approval row.
         """
+        from clawbits.email.stalwart_provision import provision_mailbox
         from clawbits.fastapi.avatar_hooks import await_agent_avatar, await_channel_avatar
 
         session_token = payload.session_token
@@ -237,18 +236,6 @@ class AgentSignup:
             else:
                 agent_id, nickname = AgentSignup.generate_random_id_and_nickname(db, server)
 
-            # Provision the Stalwart mailbox best-effort. Agent creation must NOT
-            # be blocked by the mail server being down/misconfigured - the mailbox
-            # is also ensured lazily on first email send, and can be re-provisioned
-            # later. (This was the original 503 failure mode.)
-            from clawbits.email.stalwart_provision import provision_mailbox
-            if not provision_mailbox(agent_id.value):
-                logger.warning(
-                    "Mailbox provisioning failed for agent %s; created without a "
-                    "mailbox (will be ensured on first email use).",
-                    agent_id.value,
-                )
-
             api_key_str = TableWrite.create_agent(db, agent_id, nickname)
             if minted["reef_host"]:
                 TableWrite.set_agent_reef(
@@ -260,27 +247,23 @@ class AgentSignup:
                 TableWrite.set_agent_org_and_operator(
                     db, agent_id.value, org_id, int(human_id)
                 )
-                comm_channel, comm_channel_created = TableWrite.ensure_owner_agent_comm_channel(
-                    db, agent_id.value
+                channel, _ = TableWrite.ensure_owner_agent_comm_channel(db, agent_id.value)
+                TableWrite.mint_cb_tokens(
+                    db,
+                    agent_id,
+                    server.CB_TOKENS_BALANCE_CEILING,
+                    window_seconds=server.CB_TOKENS_MINT_WINDOW_SECONDS,
                 )
-                # Upload avatars BEFORE the commit that makes these rows
-                # world-visible. The org-wide agent poll (New Agent dialog,
-                # settings page) fetches an agent's avatar URL the instant its
-                # row appears; if the SVG isn't in R2 yet that fetch 404s and
-                # Cloudflare caches the 404 at the edge. Committing after the
-                # upload closes that window — the URL is always live before any
-                # reader can see the row. Best-effort: await_* swallow failures
-                # internally so a DiceBear/R2 blip never blocks agent creation
-                # (the client self-heals and the backfill fills the gap later).
-                await await_agent_avatar(agent_id=agent_id.value)
-                if comm_channel_created:
-                    await await_channel_avatar(
-                        channel_id=comm_channel["channel_id"], channel_type="direct"
-                    )
+                await asyncio.gather(
+                    asyncio.to_thread(provision_mailbox, agent_id.value),
+                    await_agent_avatar(agent_id=agent_id.value),
+                    await_channel_avatar(channel_id=channel["channel_id"], channel_type="direct"),
+                )
                 db.commit()
                 return CreateAgentResponse(
                     agent_id=agent_id,
                     api_key=api_key_str,
+                    channel_id=channel["channel_id"],
                     signup_request_id=None,
                     status="approved",
                 )
@@ -291,8 +274,10 @@ class AgentSignup:
             TableWrite.create_signup_request(db, request_id, agent_id.value, org_id)
             db.commit()
 
-        # See claim_pending branch above for why we await here.
-        await await_agent_avatar(agent_id=agent_id.value)
+        await asyncio.gather(
+            asyncio.to_thread(provision_mailbox, agent_id.value),
+            await_agent_avatar(agent_id=agent_id.value),
+        )
 
         frontend_root = os.environ.get(
             "CLAWBITS_FRONTEND_URL", "http://localhost:5173"

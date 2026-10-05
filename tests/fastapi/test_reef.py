@@ -368,6 +368,66 @@ def test_roles_only_lists_roles_pointing_here(test_client):
     ]
 
 
+def _set_access(test_client, org_id: str, user: dict, mode: str, *members: int):
+    return test_client.put(
+        f"/api/human/orgs/{org_id}/reef/roles/clawbits-openclaw/access",
+        json={"mode": mode, "members": list(members)},
+        headers=_auth(user["access_token"]),
+    ).status_code
+
+
+def _roles(test_client, org_id: str, user: dict, path: str = "") -> list[dict]:
+    r = test_client.get(
+        f"/api/human/orgs/{org_id}/reef/roles{path}", headers=_auth(user["access_token"])
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_role_access_gates_listing_and_declaring_for_everyone(test_client):
+    """Open to everyone until narrowed: selected admits the listed members,
+    off admits no one, owners included. Create reads the list's rule."""
+    org_id, owner, member = _org(test_client, "reef-access", "ra-o@test.com", "ra-m@test.com")
+    owner_id = owner["user"]["id"]
+    assert len(_roles(test_client, org_id, member)) == 1
+
+    assert _set_access(test_client, org_id, owner, "selected", owner_id) == 204
+    assert _roles(test_client, org_id, member) == []
+    assert _create(test_client, org_id, member, name="mia-bot").status_code == 422
+    assert _create(test_client, org_id, owner, name="ana-bot").status_code == 200
+
+    assert _set_access(test_client, org_id, owner, "off", owner_id) == 204
+    assert _roles(test_client, org_id, owner) == []
+    assert _create(test_client, org_id, owner, name="bob-bot").status_code == 422
+    [setting] = _roles(test_client, org_id, owner, "/access")
+    assert setting["access"] == {"mode": "off", "members": [owner_id]}
+
+
+def test_role_access_is_owner_only(test_client):
+    org_id, _, member = _org(test_client, "reef-acc-own", "rao-o@test.com", "rao-m@test.com")
+    r = test_client.get(
+        f"/api/human/orgs/{org_id}/reef/roles/access", headers=_auth(member["access_token"])
+    )
+    assert r.status_code == 403
+    assert _set_access(test_client, org_id, member, "off") == 403
+
+
+def test_role_access_holds_org_members_only(test_client):
+    """An outsider cannot be granted a role; a member who leaves takes their grant along."""
+    org_id, owner, member = _org(test_client, "reef-acc-mem", "ram-o@test.com", "ram-m@test.com")
+    outsider = _register(test_client, "ram-x@test.com")
+    member_id = member["user"]["id"]
+
+    assert _set_access(test_client, org_id, owner, "selected", outsider["user"]["id"]) == 422
+    assert _set_access(test_client, org_id, owner, "selected", member_id) == 204
+    r = test_client.delete(
+        f"/api/human/orgs/{org_id}/members/{member_id}", headers=_auth(owner["access_token"])
+    )
+    assert r.status_code == 200, r.text
+    [setting] = _roles(test_client, org_id, owner, "/access")
+    assert setting["access"] == {"mode": "selected", "members": []}
+
+
 def test_health_reads_the_heartbeat_and_the_last_apply(test_client):
     """Hosts come back by name. A heartbeat inside 25 minutes is live and an
     older one stale; a failed apply is failing whatever the heartbeat says; a

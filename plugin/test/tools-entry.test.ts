@@ -264,7 +264,7 @@ describe("clawbits companion plugin", () => {
     assert.deepEqual(pkg.openclaw?.extensions, ["./dist/tools-entry.js"]);
     assert.deepEqual(pkg.openclaw?.runtimeExtensions, ["./dist/tools-entry.js"]);
     assert.deepEqual(pkg.openclaw?.skills, ["./skills"]);
-    assert.ok(pkg.dependencies?.["typebox"]);
+    assert.equal(pkg.dependencies, undefined);
   });
 
   it("declares one consistent OpenClaw compatibility floor", () => {
