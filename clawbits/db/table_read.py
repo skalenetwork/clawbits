@@ -1241,21 +1241,6 @@ class TableRead:
         return {human for human in (enrolled, *declared) if human is not None}
 
     @staticmethod
-    def get_org_reef_agents(
-        session: Session, org_id: str, host: str
-    ) -> dict[str, tuple[str, str]]:
-        """``{fleet name: (agent_id, nickname)}`` for the org's agents that
-        enrolled on ``host``, the newest under each name. Removing a fleet file
-        keeps the VM's volumes and so its key: declaring that name again brings
-        this agent back."""
-        rows = session.exec(
-            select(Agent.reef_name, Agent.agent_id, Agent.nickname)
-            .where(Agent.org_id == org_id, Agent.reef_host == host)
-            .order_by(Agent.creation_time)
-        ).all()
-        return {name: (agent_id, nickname) for name, agent_id, nickname in rows if name}
-
-    @staticmethod
     def get_reef_placement(
         session: Session, org_id: str, agent_id: str
     ) -> tuple[str, str] | None:

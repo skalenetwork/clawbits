@@ -84,6 +84,7 @@
   --titlebar-height: 0px;
   --titlebar-traffic-clearance: 0px;
   --header-height: 3rem;
+  --pin-top: calc(var(--header-height) + 2rem);
   /* Non-zero only because index.html sets viewport-fit=cover. */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -109,6 +110,10 @@ html[data-tauri-platform="macos"][data-fullscreen="true"] {
 
 html[data-tauri-platform] {
   --titlebar-inset: calc(var(--titlebar-traffic-clearance) + 5.5rem);
+}
+
+html[data-mobile-shell] {
+  --pin-top: calc(var(--safe-top) + 4rem);
 }
 
 /* Translucency: only the sidebars show the vibrancy; the page column paints its own opaque background. */

@@ -10,6 +10,7 @@ import {
 import { Icon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
 import { ReefIcon } from "@/components/ReefIcon";
+import { DeleteAgentDialog } from "@/components/agent/DeleteAgentDialog";
 import { SquircleDefs } from "@/components/home/tiles";
 import { ReefAgentTile, type ReefAgentTileProps } from "@/components/settings/ReefAgentTile";
 import { ReefRolesSection } from "@/components/settings/ReefRolesSection";
@@ -30,7 +31,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/context/AuthContext";
 import { useActiveOrg } from "@/hooks/useActiveOrg";
-import { deleteReef, deleteReefAgent, getAgents, getReef } from "@/lib/api";
+import { useAgentDmExport } from "@/hooks/useAgentDmExport";
+import { agentDisplay } from "@/lib/agentDisplay";
+import { type AgentUser, deleteReef, deleteReefAgent, getAgents, getReef, removeAgentFromOrg } from "@/lib/api";
 import { confirm } from "@/lib/confirm";
 import { fleetKey, formatRelativeAgo, formatRelativeShort, parseUtcTimestamp } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
@@ -64,6 +67,8 @@ export default function SettingsReefPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [allEvents, setAllEvents] = useState(false);
+  const [deleting, setDeleting] = useState<AgentUser | null>(null);
+  const exportAction = useAgentDmExport(orgId, deleting?.agent_id);
 
   const reefQuery = useQuery({
     queryKey: queryKeys.reef(orgId),
@@ -91,14 +96,29 @@ export default function SettingsReefPage() {
     },
   });
 
-  const remove = useMutation({
+  const purge = useMutation({
     mutationFn: ({ host, name }: { host: string; name: string }) => deleteReefAgent(orgId, host, name),
     onSuccess: (_, { name }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.reef(orgId) });
-      toast.success(`${name} removed`);
+      toast.success(`${name} deleted`);
     },
     onError: (e) => {
-      toast.error(errMsg(e, "Couldn't remove the agent"));
+      toast.error(errMsg(e, "Couldn't delete the agent"));
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: ({ agent, keepContent }: { agent: AgentUser; keepContent: boolean }) =>
+      removeAgentFromOrg(orgId, agent.agent_id, keepContent),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.reef(orgId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents(orgId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
+      setDeleting(null);
+      toast.success("Agent deleted");
+    },
+    onError: (e) => {
+      toast.error(errMsg(e, "Couldn't delete agent"));
     },
   });
 
@@ -145,11 +165,11 @@ export default function SettingsReefPage() {
   const mine = tiles.filter((t) => t.agent?.is_operator);
   const others = tiles.filter((t) => !t.agent?.is_operator);
 
-  const agentMenu = (host: string, name: string) => (
+  const agentMenu = ({ host, name, agent }: ReefAgentTileProps) => (
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={`Actions for ${name}`}
-        disabled={remove.isPending}
+        disabled={purge.isPending || remove.isPending}
         render={
           <Button
             variant="ghost"
@@ -164,16 +184,20 @@ export default function SettingsReefPage() {
         <DropdownMenuItem
           variant="destructive"
           onClick={() => {
+            if (agent) {
+              setDeleting(agent);
+              return;
+            }
             void confirm({
-              title: `Remove ${name}?`,
-              description: `${host} drops it on its next pull. Its data is kept, so declaring the same name again brings it back.`,
-              confirmLabel: "Remove",
+              title: `Delete ${name}?`,
+              description: `${host} deletes it and its data on its next pull. This can't be undone.`,
+              confirmLabel: "Delete",
             }).then((ok) => {
-              if (ok) remove.mutate({ host, name });
+              if (ok) purge.mutate({ host, name });
             });
           }}
         >
-          <Icon icon={Trash} /> Remove
+          <Icon icon={Trash} /> Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -185,7 +209,7 @@ export default function SettingsReefPage() {
     <SettingsSection label={label} stack>
       <div className="grid gap-2 sm:grid-cols-2">
         {items.map((t) => (
-          <ReefAgentTile key={fleetKey(t.host, t.name)} {...t} menu={isOwner ? agentMenu(t.host, t.name) : undefined} />
+          <ReefAgentTile key={fleetKey(t.host, t.name)} {...t} menu={isOwner ? agentMenu(t) : undefined} />
         ))}
       </div>
     </SettingsSection>
@@ -390,6 +414,18 @@ export default function SettingsReefPage() {
           </SettingsSection>
         </>
       )}
+      <DeleteAgentDialog
+        open={deleting != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleting(null);
+        }}
+        agentName={deleting ? agentDisplay(deleting) : ""}
+        isPending={remove.isPending}
+        onConfirm={(keepContent) => {
+          if (deleting) remove.mutate({ agent: deleting, keepContent });
+        }}
+        exportAction={exportAction}
+      />
     </SettingsPage>
   );
 }

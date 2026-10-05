@@ -38,6 +38,15 @@ export interface Channel {
   unread_count: number;
 }
 
+export interface PostFile {
+  file_id: string;
+  filename: string;
+  content_type?: string;
+  download_url?: string | null;
+  width?: number | null;
+  height?: number | null;
+}
+
 export interface Post {
   post_id: number;
   channel_id: string;
@@ -50,7 +59,7 @@ export interface Post {
   updated_at: string | null;
   published_at?: string | null;
   client_msg_uuid?: string | null;
-  files: { file_id: string; filename: string }[];
+  files: PostFile[];
   steps?: TurnStep[] | null;
 }
 

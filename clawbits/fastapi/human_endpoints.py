@@ -142,6 +142,7 @@ from clawbits.reef_repo import (
     fleet_toml,
     parse_role,
     parse_status,
+    purge_toml,
 )
 from clawbits.skills.render import SKILL_RUNTIMES, render_skill, resolve_runtime
 from clawbits.skills.spec import (
@@ -590,24 +591,32 @@ async def remove_agent_from_org(
     channel it left gets a "left the channel" timeline event, fanned out so open
     tabs render it without a refetch.
 
-    A reef-hosted agent loses its fleet file too, so the next reconcile prunes
-    the VM instead of leaving it running under a name nothing owns, and its
-    signup token dies with the row. Mailbox and fleet cleanup are best-effort
-    and run after the delete commits."""
+    A reef-hosted agent is purged first, so its host deletes the VM and its
+    volumes, and a failed purge fails the delete with nothing changed. Mailbox
+    cleanup is best-effort and runs after the delete commits."""
 
-    def delete(db: Session) -> tuple[tuple[str, str] | None, list[dict]]:
+    def locate(db: Session) -> tuple[ReefRepo, str, str] | None:
         _verify_agent_in_org(db, org_id, agent_id, user)
         placement = TableRead.get_reef_placement(db, org_id, agent_id)
-        if placement:
-            # Revoked with the row, not beside the file removal: the token must die even when GitHub is down.
-            TableWrite.revoke_reef_signup(db, org_id, *placement)
+        if placement is None:
+            return None
+        try:
+            return _reef_repo(db, org_id, user), *placement
+        except HTTPException:
+            logger.info("No Reef repository for %s, left %s/%s behind", org_id, *placement)
+            return None
+
+    def delete(db: Session) -> list[dict]:
         departures = TableWrite.delete_agent(
             db, agent_id, keep_content=keep_content, actor_human_id=user["id"]
         )
         db.commit()
-        return placement, departures
+        return departures
 
-    placement, departures = await _in_db(request, delete)
+    if target := await _in_db(request, locate):
+        repo, host, name = target
+        await _purge(repo, org_id, host, name, user)
+    departures = await _in_db(request, delete)
     for departure in departures:
         fire_and_forget(
             publish_channel_event(
@@ -621,15 +630,6 @@ async def remove_agent_from_org(
         await asyncio.to_thread(deprovision_mailbox, agent_id)
     except Exception:
         logger.exception("Failed to deprovision Stalwart mailbox for %s", agent_id)
-    if placement:
-        host, name = placement
-        try:
-            repo = await _in_db(request, lambda db: _reef_repo(db, org_id, user))
-            await _undeclare(repo, org_id, host, name, user)
-        except HTTPException:
-            logger.info("No Reef repository for %s, left %s/%s behind", org_id, host, name)
-        except Exception:
-            logger.exception("Failed to remove fleet file %s/%s for %s", host, name, agent_id)
     return {"agent_id": agent_id, "org_id": org_id, "deleted": True}
 
 
@@ -1613,11 +1613,19 @@ def _reef_author(user: dict) -> Author:
     return Author(name=user.get("display_name") or user["email"], email=user["email"])
 
 
-async def _undeclare(repo: ReefRepo, org_id: str, host: str, name: str, user: dict) -> None:
-    """Take the agent's fleet file off the branch: the next reconcile prunes
-    its VM. Its volumes survive, so the name can be declared again."""
-    message = f"remove {name} from {host}"
-    await repo.delete("fleet", f"fleet/{host}/{name}.toml", message, _reef_author(user))
+async def _purge(repo: ReefRepo, org_id: str, host: str, name: str, user: dict) -> None:
+    """Replace the agent's fleet file with its tombstone: the next reconcile
+    deletes the VM and its volumes, and the name is never declared again."""
+    path = f"fleet/{host}/{name}.toml"
+    head = await repo.read("fleet", path)
+    await repo.write(
+        "fleet",
+        path,
+        purge_toml(name),
+        f"purge {name} from {host}",
+        _reef_author(user),
+        head[0] if head else None,
+    )
     _reef_status_cache.pop(org_id, None)
 
 
@@ -1760,10 +1768,10 @@ async def create_reef_agent(
     The signup token is minted first and the fleet file carries it: it is the
     agent's whole identity until it enrols and keeps its own key. The agent's
     id and nickname are picked with it; without a name the file is named after
-    that id, redrawn until nothing on the host has the name. Re-declaring the
-    name of an agent that enrolled on the host brings it back, since its
-    volumes kept its key. A failed write takes the session down with it, so a
-    declared agent always has a file and a file always has a live token."""
+    that id, redrawn until nothing on the host has the name. A purged agent's
+    tombstone keeps its name taken. A failed write takes the session down with
+    it, so a declared agent always has a file and a file always has a live
+    token."""
     repo, access = await _in_db(request, lambda db: _reef_access(db, org_id, user))
     owner = body.owner or user["email"].split("@")[0]
     if not OWNER_RE.match(owner):
@@ -1783,20 +1791,13 @@ async def create_reef_agent(
     declared = {n.removesuffix(".toml") for n in files}
     if body.name in declared:
         raise HTTPException(
-            status_code=409, detail=f"'{body.name}' is already declared on {body.host}"
+            status_code=409, detail=f"'{body.name}' is taken on {body.host}"
         )
     taken = declared | {a.name for a in host.agents}
 
     def mint(db: Session) -> HumanSession:
-        known = TableRead.get_org_reef_agents(db, org_id, body.host)
         minted = AgentSignup.mint_human_session(
-            db,
-            request.app,
-            org_id,
-            user["id"],
-            reef=(body.host, body.name),
-            taken=taken | known.keys(),
-            returning=known.get(body.name) if body.name else None,
+            db, request.app, org_id, user["id"], reef=(body.host, body.name), taken=taken
         )
         db.commit()
         return minted
@@ -1836,12 +1837,10 @@ async def delete_reef_agent(
     name: str = Path(pattern=NAME_RE.pattern),
     user: dict = Depends(get_current_human_user),
 ):
-    """Remove the fleet file, then revoke the agent's signup token if it has
-    not enrolled: the file leaves HEAD but its token stays in git history. The
-    agent's operator, whoever declared it, or an org owner.
-
-    The next reconcile prunes the VM; its volumes and its clawbits agent row
-    survive, so re-declaring the same name brings the same agent back."""
+    """Purge the agent, then revoke its signup token if it has not enrolled:
+    the tombstone replaces the file but the token stays in git history. The
+    agent's operator, whoever declared it, or an org owner. An enrolled agent
+    is deleted through its own endpoint, which purges it too."""
 
     def authorize(db: Session) -> ReefRepo:
         repo = _reef_repo(db, org_id, user)
@@ -1860,7 +1859,7 @@ async def delete_reef_agent(
         TableWrite.revoke_reef_signup(db, org_id, host, name)
         db.commit()
 
-    await _undeclare(await _in_db(request, authorize), org_id, host, name, user)
+    await _purge(await _in_db(request, authorize), org_id, host, name, user)
     await _in_db(request, revoke)
 
 

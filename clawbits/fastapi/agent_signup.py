@@ -49,13 +49,11 @@ class AgentSignup:
         human_id: int,
         reef: tuple[str, str | None] | None = None,
         taken: Set[str] = frozenset(),
-        returning: tuple[str, str] | None = None,
     ) -> HumanSession:
         """A human-initiated signup session, with the agent's id and nickname
         picked now so both are known before it boots. Declared on a reef host
         without a name, the agent is named after its id, drawn outside
-        ``taken``. ``returning`` is the id and nickname of an agent that
-        enrolled under the name before and kept its key: nothing is held for it.
+        ``taken``.
 
         A concurrent mint of the same id loses on the unique index and draws
         again. The ``human-`` prefix lets commit skip the challenge, so the
@@ -64,11 +62,8 @@ class AgentSignup:
         session_token = "human-" + secrets.token_urlsafe(32)
         expires_at = datetime.now(UTC) + SIGNUP_TOKEN_TTL
         for _ in range(8):
-            if returning:
-                agent_id, nickname = returning
-            else:
-                drawn = AgentSignup.generate_random_id_and_nickname(db, server, taken)
-                agent_id, nickname = drawn[0].value, drawn[1].value
+            drawn = AgentSignup.generate_random_id_and_nickname(db, server, taken)
+            agent_id, nickname = drawn[0].value, drawn[1].value
             try:
                 with db.begin_nested():
                     TableWrite.create_challenge_session(
@@ -81,8 +76,8 @@ class AgentSignup:
                         human_id=human_id,
                         reef_host=reef[0] if reef else None,
                         reef_name=(reef[1] or fleet_name(agent_id)) if reef else None,
-                        agent_id=None if returning else agent_id,
-                        nickname=None if returning else nickname,
+                        agent_id=agent_id,
+                        nickname=nickname,
                     )
             except IntegrityError:
                 continue

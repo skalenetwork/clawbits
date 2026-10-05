@@ -6,7 +6,7 @@ port, and nothing on the network reaches the host: it pulls.
 
 ```text
 main    roles/*.toml                platform team, by reviewed pull request
-fleet   fleet/<host>/<name>.toml    clawbits, one file per agent
+fleet   fleet/<host>/<name>.toml    clawbits, one file per agent, then its tombstone
 status  status/<host>.json          each host, from this service
 ```
 

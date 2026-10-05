@@ -6,6 +6,7 @@ import {
   decorateRows,
   generatingAgentsOf,
   mergePosts,
+  outlineOf,
   postsOf,
   queuedOwnPostIdsOf,
 } from "./channelTimeline";
@@ -190,5 +191,36 @@ describe("queuedOwnPostIdsOf", () => {
 
   it("marks nothing while no agent is generating", () => {
     expect(queuedOwnPostIdsOf([post(1), post(2)], false, 1).size).toBe(0);
+  });
+});
+
+describe("outlineOf", () => {
+  const outline = (posts: MmChannelPost[]) =>
+    outlineOf(
+      decorateRows({
+        timeline: buildTimeline(posts, [event(1, at(4))]),
+        firstUnreadPostId: null,
+        generatingAgents: [],
+        queuedOwnPostIds: new Set<number>(),
+      }),
+    );
+
+  it("starts a section at each human group, never at an agent reply or a continuation", () => {
+    const sections = outline([
+      post(1, { message: "\n## Plan the launch\nsteps" }),
+      post(2, { created_at: at(1) }),
+      post(3, { human_id: null, agent_id: "a", created_at: at(2) }),
+      post(4, { message: "```ts\nx\n```", files: [], created_at: at(3) }),
+    ]);
+    expect(sections).toEqual([
+      { index: 0, postId: 1, sender: null, text: "Plan the launch" },
+      { index: 3, postId: 4, sender: null, text: "x" },
+    ]);
+  });
+
+  it("names senders only when several humans speak, and falls back to the first file", () => {
+    const file = { filename: "q3.pdf" } as NonNullable<MmChannelPost["files"]>[number];
+    const sections = outline([post(1), post(2, { human_id: 9, poster_display_name: "Bob", message: "", files: [file] })]);
+    expect(sections.map((s) => [s.sender, s.text])).toEqual([["Alice", "m1"], ["Bob", "q3.pdf"]]);
   });
 });

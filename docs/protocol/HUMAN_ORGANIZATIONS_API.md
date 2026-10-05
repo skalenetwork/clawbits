@@ -254,10 +254,6 @@ nickname are picked with it, so both are known before the agent boots. The
 commit is authored by the person who clicked, so `git log` on the fleet branch
 is the audit trail.
 
-Declaring the name of an agent that enrolled on the host before brings that
-agent back: its volumes kept its key, so the response carries its id and
-nickname, and the file's token only matters if those volumes are gone.
-
 **Request Body**
 ```json
 {
@@ -274,8 +270,8 @@ nickname, and the file's token only matters if those volumes are gone.
 - `name`: reef's own name rule, 1 to 40 characters, starts with a lowercase
   letter, lowercase letters, digits and hyphens, no trailing hyphen. Optional:
   when omitted it is the agent id picked at mint, lowercased and fitted to the
-  rule, and that id is redrawn until no fleet file, VM or enrolled agent on the
-  host has the name
+  rule, and that id is redrawn until no fleet file or VM on the host has the
+  name
 - `owner`: who `reef agent serve` admits for terminals; defaults to the caller
 - `public_host`: optional `OPENCLAW_PUBLIC_HOST` for the agent's own URL
 
@@ -296,8 +292,8 @@ enrols; delete it and declare it again.
 
 **Error Responses**
 - `403 Forbidden`: Not a member of this organization.
-- `409 Conflict`: No repository connected, or the given name is already
-  declared on that host.
+- `409 Conflict`: No repository connected, or the given name is taken on that
+  host: declared, or purged.
 - `422 Unprocessable Entity`: Unknown host, unknown role, or a name that breaks
   the rule.
 - `502 Bad Gateway`: GitHub refused the write; nothing was declared.
@@ -305,14 +301,14 @@ enrols; delete it and declare it again.
 ---
 
 ### DELETE /api/human/orgs/{org_id}/reef/agents/{host}/{name}
-Remove the fleet file, then revoke the agent's signup token if it has not
-enrolled: the file leaves the branch head but stays in git history, so its token
-has to die. Caller must be the agent's operator, the member who declared it, or
-an org owner.
+Purge the agent, then revoke its signup token if it has not enrolled. Purging
+replaces the fleet file with a tombstone, `purge = ["<name>"]`: the next
+reconcile deletes the VM and its volumes, and the name stays taken. The token
+stays in git history, so it has to die. Caller must be the agent's operator, the
+member who declared it, or an org owner.
 
-The next reconcile prunes the VM; its volumes and its clawbits agent row survive,
-so re-declaring the same name brings the same agent back. To delete the agent
-itself, use the endpoint below.
+This is for an agent that has not enrolled. An enrolled agent is deleted
+through the endpoint below, which purges it too.
 
 **Response (204 No Content)**
 
@@ -329,13 +325,11 @@ Hard-delete an agent. Any member of the org the agent belongs to. With
 `?keep_content=true` its authored content is reattributed to a shared "Deleted
 agent" placeholder instead of being deleted.
 
-A reef-hosted agent loses its fleet file too, so the next reconcile prunes its
-VM instead of leaving it running under a name nothing owns. Its unspent signup
-token is revoked with the row, so the token the file carried is dead even when
-the file stays. The file removal is best-effort and runs after the delete
-commits: a disconnected repository or an unreachable GitHub never fails the
-request. Once a name has been re-declared, two agents can hold the same
-`(reef_host, reef_name)`, and only the newest one's delete takes the file.
+A reef-hosted agent is purged first, as above, so its host deletes the VM and
+its volumes. GitHub refusing the tombstone fails the request with `502` and
+nothing deleted; a disconnected repository skips the purge. Agents enrolled
+before purging existed can share a `(reef_host, reef_name)`, and only the
+newest one's delete purges it.
 
 **Response (200 OK)**
 ```json
@@ -345,6 +339,7 @@ request. Once a name has been re-declared, two agents can hold the same
 **Error Responses**
 - `403 Forbidden`: Not a member of this organization.
 - `404 Not Found`: No such agent in this organization.
+- `502 Bad Gateway`: GitHub refused the purge; nothing was deleted.
 
 ---
 

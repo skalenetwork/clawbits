@@ -24,7 +24,8 @@ import { cn } from "@/lib/utils";
  * the turn's steps, and the thinking this session watched between them, opening under it and above the reply.
  *
  * Its slot spins for as long as the turn is live, so a held step never reads as stalled; the chevron takes over
- * when the line opens and once the turn settles. The line opens from the first row it has to show.
+ * when the line opens and once the turn settles. The line opens from the first row it has to show. An open line pins
+ * under the page header while its rows are on screen, and closing it there keeps it where it is: the rows fold under it.
  *
  * The line reads "N steps · K failed", then one segment: while live, the turn's newest signal (the agent's word,
  * thinking, narration, or a running tool behind its room chip); once settled, how long the turn spanned. A turn that
@@ -298,9 +299,20 @@ export function TurnTrace({
   );
 
   return (
-    <div className="mb-1 max-w-full text-[13px]/5 tracking-normal">
+    <div className="mb-1 max-w-full scroll-mt-(--pin-top) text-[13px]/5 tracking-normal">
       {openable ? (
-        <button type="button" onClick={() => { toggleTrace(key); }} aria-expanded={open} className={LINE}>
+        <button
+          type="button"
+          onClick={(e) => {
+            const trace = e.currentTarget.parentElement;
+            if (open && trace && trace.getBoundingClientRect().top < e.currentTarget.getBoundingClientRect().top) {
+              trace.scrollIntoView({ block: "start" });
+            }
+            toggleTrace(key);
+          }}
+          aria-expanded={open}
+          className={cn(LINE, open && "sticky top-(--pin-top) z-10 bg-background")}
+        >
           {line}
         </button>
       ) : (

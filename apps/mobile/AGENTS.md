@@ -1,3 +1,3 @@
 # Expo HAS CHANGED
 
-This app uses Expo 58 preview. Read https://docs.expo.dev/versions/unversioned/ and verify APIs against the installed packages before writing code.
+This app uses Expo SDK 58 from the `next` tag (`expo@58.0.2`). `npm latest` is still SDK 57. Read https://docs.expo.dev/versions/unversioned/ and verify APIs against the installed packages before writing code.

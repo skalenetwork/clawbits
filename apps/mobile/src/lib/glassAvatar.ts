@@ -121,19 +121,9 @@ export function useGlassAvatar(
   url: string | undefined,
   enabled: boolean,
 ): GlassAvatarLayers | undefined {
-  const [layers, setLayers] = useState<GlassAvatarLayers | undefined>(() =>
-    url && enabled ? cache.get(url) : undefined,
-  );
+  const [fetchedUrl, setFetchedUrl] = useState<string | undefined>();
   useEffect(() => {
-    if (!enabled || !url) {
-      setLayers(undefined);
-      return;
-    }
-    const hit = cache.get(url);
-    if (hit) {
-      setLayers(hit);
-      return;
-    }
+    if (!enabled || !url || cache.has(url)) return;
     let live = true;
     fetch(url)
       .then((response) => {
@@ -141,18 +131,19 @@ export function useGlassAvatar(
         return response.text();
       })
       .then((svg) => {
-        const next = prepareGlassAvatar(svg);
-        cache.set(url, next);
-        if (live) setLayers(next);
+        cache.set(url, prepareGlassAvatar(svg));
+        if (live) setFetchedUrl(url);
       })
       .catch(() => {
-        if (live) setLayers(undefined);
+        if (live) setFetchedUrl(url);
       });
     return () => {
       live = false;
     };
   }, [url, enabled]);
-  return layers;
+  if (!enabled || !url) return undefined;
+  if (cache.has(url) || fetchedUrl === url) return cache.get(url);
+  return undefined;
 }
 
 function dataUri(svg: string): string {
