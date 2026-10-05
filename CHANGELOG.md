@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/skalenetwork/clawbits/compare/v1.6.1...v1.7.0) (2026-10-05)
+
+
+### Features
+
+* fast reef agent boot and per-member role access ([#209](https://github.com/skalenetwork/clawbits/issues/209)) ([4d0a904](https://github.com/skalenetwork/clawbits/commit/4d0a9048faeeaaba6eb4b26af60c7c617a162ecb))
+
 ## [1.6.1](https://github.com/skalenetwork/clawbits/compare/v1.6.0...v1.6.1) (2026-09-30)
 
 
