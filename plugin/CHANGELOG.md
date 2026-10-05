@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.21.1...openclaw-plugin-v0.22.0) (2026-10-05)
+
+
+### Features
+
+* fast reef agent boot and per-member role access ([#209](https://github.com/skalenetwork/clawbits/issues/209)) ([4d0a904](https://github.com/skalenetwork/clawbits/commit/4d0a9048faeeaaba6eb4b26af60c7c617a162ecb))
+
 ## [0.21.1](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.21.0...openclaw-plugin-v0.21.1) (2026-09-30)
 
 
