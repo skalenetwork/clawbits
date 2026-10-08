@@ -31,7 +31,6 @@ import { channelLabel, isPairChannel } from "@/lib/chatFilters";
 import { draftStore } from "@/lib/messageDrafts";
 import { viewRowStore } from "@/lib/viewRow";
 import { trackRecentChannel } from "@/lib/desktop";
-import { errMsg, toast } from "@/lib/toast";
 import { computePendingAutoMention } from "@/lib/autoMention";
 import { mentionHandle, mentionLabel } from "@/lib/messageHelpers";
 import {
@@ -334,9 +333,8 @@ function ChannelView({ channelId }: { channelId: string }) {
     await queryClient.cancelQueries({ queryKey: postsKey });
     return { prev: queryClient.getQueryData<MmPostListPayload>(postsKey) };
   };
-  const rollbackPosts = (ctx: { prev?: MmPostListPayload } | undefined, err: unknown, message: string) => {
+  const rollbackPosts = (ctx: { prev?: MmPostListPayload } | undefined) => {
     if (ctx?.prev) queryClient.setQueryData(postsKey, ctx.prev);
-    toast.error(errMsg(err, message));
   };
   const replacePost = (updated: MmChannelPost) => {
     setPosts((page) => ({ ...page, posts: page.posts.map((p) => (p.post_id === updated.post_id ? updated : p)) }));
@@ -414,7 +412,7 @@ function ChannelView({ channelId }: { channelId: string }) {
         return { ...prev, posts: [created, ...posts] };
       });
     },
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       if (ctx) {
         queryClient.setQueryData<MmPostListPayload>(postsKey, (prev) => {
           const posts = prev?.posts.filter((p) => p.post_id !== ctx.optimistic.post_id);
@@ -425,7 +423,6 @@ function ChannelView({ channelId }: { channelId: string }) {
         if (ctx.replyBefore) setReplyingTo(ctx.replyBefore);
         if (ctx.targetBefore) setManualTargetedAgent(ctx.targetBefore);
       }
-      toast.error(errMsg(err, "Send failed"));
     },
   });
 
@@ -440,7 +437,7 @@ function ChannelView({ channelId }: { channelId: string }) {
       }));
       return ctx;
     },
-    onError: (err, _vars, ctx) => { rollbackPosts(ctx, err, "Couldn't save edit"); },
+    onError: (_err, _vars, ctx) => { rollbackPosts(ctx); },
     onSuccess: (updated) => {
       setEditingPostId(null);
       replacePost(updated);
@@ -458,7 +455,7 @@ function ChannelView({ channelId }: { channelId: string }) {
       }));
       return ctx;
     },
-    onError: (err, _postId, ctx) => { rollbackPosts(ctx, err, "Couldn't delete message"); },
+    onError: (_err, _postId, ctx) => { rollbackPosts(ctx); },
   });
 
   const { mutate: toggleReaction } = useMutation({
@@ -475,7 +472,7 @@ function ChannelView({ channelId }: { channelId: string }) {
       }
       return ctx;
     },
-    onError: (err, _vars, ctx) => { rollbackPosts(ctx, err, "Couldn't toggle reaction"); },
+    onError: (_err, _vars, ctx) => { rollbackPosts(ctx); },
     onSuccess: replacePost,
   });
 
@@ -518,7 +515,6 @@ function ChannelView({ channelId }: { channelId: string }) {
   );
   const { mutate: stopAgents, isPending: isStopping } = useMutation({
     mutationFn: (agentIds: string[]) => Promise.all(agentIds.map((id) => stopAgentTurn(channelId, id))),
-    onError: (err) => { toast.error(errMsg(err, "Couldn't stop the agent")); },
   });
   const queuedOwnPostIds = useMemo(
     () => queuedOwnPostIdsOf(history.posts, generatingAgents.length > 0, user?.id),
@@ -702,7 +698,6 @@ function ChannelView({ channelId }: { channelId: string }) {
       queryClient.setQueryData(queryKeys.mm.channel(channelId), updated);
       void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
     },
-    onError: (e) => { toast.error(errMsg(e, "Couldn't rename")); },
   });
 
   const peerName = channel?.dm_peer?.display_name ?? channel?.dm_peer_agent_id ?? channelTitle;
@@ -723,7 +718,7 @@ function ChannelView({ channelId }: { channelId: string }) {
       currentUserId={user?.id ?? null}
       onMentionInsert={(handle) => { composerRef.current?.insert(`@${handle} `); }}
     >
-    <div ref={columnRef} className="group/chat relative isolate flex h-full min-h-0 flex-1 flex-col">
+    <div ref={columnRef} className="relative isolate flex h-full min-h-0 flex-1 flex-col">
       <ChannelDropOverlay show={isDragging} />
       <PageHeader
         leading={

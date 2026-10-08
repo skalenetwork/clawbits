@@ -28,7 +28,7 @@ export type CronSchedule =
   | { kind: "at"; at: string };
 
 export type CronPayload =
-  | { kind: "agentTurn"; message: string; model?: string; [k: string]: unknown }
+  | { kind: "agentTurn"; message: string; model?: string; timeoutSeconds?: number; [k: string]: unknown }
   | { kind: "command"; argv: string[]; [k: string]: unknown }
   | { kind: "systemEvent"; text?: string; [k: string]: unknown };
 
@@ -285,8 +285,6 @@ export function specToCronAdd(
     // omitted): reconcile updates via cron.update(id, patch) with Partial
     // semantics, so omitting a key would leave a previously-set alert/one-shot
     // flag stuck on the job after the operator removes it from the spec.
-    // If a value doesn't validate against the runtime schema the add/update
-    // rejects and the failure surfaces as sync_status="failed".
     failureAlert: spec.failureAlert !== undefined ? spec.failureAlert : false,
     deleteAfterRun: spec.deleteAfterRun === true,
   };

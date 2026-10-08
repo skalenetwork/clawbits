@@ -33,9 +33,6 @@ function DisplayNameForm({ saved }: { saved: string }) {
             applyProfileUpdate(profile);
             toast.success("Display name saved");
         },
-        onError: (err) => {
-            toast.error(errMsg(err, "Failed to save profile"));
-        },
     });
 
     const trimmed = draft.trim();
@@ -77,9 +74,6 @@ export default function SettingsProfilePage() {
             if (!user) return;
             applyProfileUpdate({ ...user, avatar });
             toast.success("Profile picture reset to default");
-        },
-        onError: (err) => {
-            toast.error(errMsg(err, "Couldn't reset profile picture"));
         },
     });
 

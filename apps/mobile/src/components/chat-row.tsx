@@ -42,16 +42,19 @@ export function ChatRow({
         <View style={{ flexDirection: "row", gap: 8, alignItems: "baseline" }}>
           <Text
             numberOfLines={1}
-            style={[styles.name, { flex: 1 }]}
+            style={[styles.name, badge.name, unread && badge.unread]}
           >
             {name}
           </Text>
-          <Text style={{ fontSize: 15, color: color.muted }}>
+          <Text style={badge.time}>
             {listTime(channel.last_message_at)}
           </Text>
         </View>
         <View style={badge.line}>
-          <Text numberOfLines={1} style={[styles.preview, badge.preview]}>
+          <Text
+            numberOfLines={1}
+            style={[styles.preview, badge.preview, unread && badge.unread]}
+          >
             {previewText(channel, userId)}
           </Text>
           {unread ? (
@@ -68,11 +71,14 @@ export function ChatRow({
 }
 
 const badge = StyleSheet.create({
+  name: { flex: 1 },
+  unread: { fontWeight: "600" },
+  time: { fontSize: 15, color: color.muted },
   line: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginTop: 4,
+    marginTop: 2,
   },
   preview: { flex: 1, marginTop: 0 },
   pill: {
@@ -80,7 +86,7 @@ const badge = StyleSheet.create({
     height: 20,
     paddingHorizontal: 6,
     borderRadius: 10,
-    backgroundColor: color.red,
+    backgroundColor: color.primary,
     alignItems: "center",
     justifyContent: "center",
   },

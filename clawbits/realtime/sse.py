@@ -579,6 +579,13 @@ async def publish_automation_sync(
     )
 
 
+async def publish_skills_sync(bus: EventBus, agent_id: str) -> None:
+    """Nudge a live agent WebSocket to reconcile its skills now rather than on
+    its next poll, which stays the fallback while the agent is offline. The
+    plugin pulls ``GET /api/agentic/skills/desired`` on receipt."""
+    await bus.publish(agent_topic(agent_id), {"type": "skills.sync"})
+
+
 async def publish_model_selection(
     bus: EventBus, agent_id: str, choice: SetAgentModelRequest
 ) -> None:

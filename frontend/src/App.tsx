@@ -102,11 +102,11 @@ function AppShell() {
               <Route element={<AgentTabs />}>
                 <Route index element={<Navigate to="card" replace />} />
                 <Route path="automations/:automationId?" element={<AgentAutomationsPage />} />
+                <Route path="skills/:installId?" element={<AgentSkillsPage />} />
                 <Route path="inbox/:uid?" element={<AgentInboxPage />} />
                 <Route path="card" element={<AgentCardPage />} />
                 <Route path="manage" element={<AgentManagePage />} />
               </Route>
-              <Route path="skills" element={<AgentSkillsPage />} />
             </Route>
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/skills/:skillId" element={<SkillDetailPage />} />

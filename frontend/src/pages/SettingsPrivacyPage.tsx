@@ -10,7 +10,7 @@ import {
   type PrivacySettings,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
+import { errMsg } from "@/lib/toast";
 
 const SECTIONS: {
   label: string;
@@ -70,11 +70,10 @@ export default function SettingsPrivacyPage() {
       }
       return { previous };
     },
-    onError: (err, _patch, ctx) => {
+    onError: (_err, _patch, ctx) => {
       if (ctx?.previous) {
         qc.setQueryData(queryKeys.privacySettings, ctx.previous);
       }
-      toast.error(errMsg(err, "Couldn't update privacy settings"));
     },
     onSuccess: (server) => {
       qc.setQueryData(queryKeys.privacySettings, server);

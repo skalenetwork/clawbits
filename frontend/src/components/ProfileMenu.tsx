@@ -19,7 +19,6 @@ import { useUserStatus } from "@/hooks/useUserPresence";
 import { agentStatusLabel } from "@/lib/agentLiveness";
 import { createOrGetMmDirect } from "@/lib/api";
 import { MENU_ITEM, MENU_SURFACE } from "@/lib/menuSurface";
-import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 interface ProfileCardOptions {
@@ -90,9 +89,6 @@ function ProfileCard({
     onSuccess: channel => {
       onClose();
       void navigate(`/channels/${channel.channel_id}`);
-    },
-    onError: err => {
-      toast.error(err instanceof Error ? err.message : "Could not open DM");
     },
   });
 

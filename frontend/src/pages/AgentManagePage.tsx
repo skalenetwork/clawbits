@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { removeAgentFromOrg } from "@/lib/api";
 import { agentDisplay } from "@/lib/agentDisplay";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
+import { toast } from "@/lib/toast";
 import { useAgentDmExport } from "@/hooks/useAgentDmExport";
 import { useAgentTab } from "@/components/agent/agentTabContext";
 import { DeleteAgentDialog } from "@/components/agent/DeleteAgentDialog";
@@ -33,9 +33,6 @@ export default function AgentManagePage() {
       setDeleteOpen(false);
       toast.success("Agent deleted");
       void navigate("/agents", { replace: true });
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't delete agent"));
     },
   });
 

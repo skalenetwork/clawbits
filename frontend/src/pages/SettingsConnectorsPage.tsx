@@ -100,9 +100,6 @@ export default function SettingsConnectorsPage() {
       void qc.invalidateQueries({ queryKey: queryKeys.connectors });
       toast.success(connectedAs(result.connector.handle));
     },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't connect"));
-    },
   });
 
   const disconnectMutation = useMutation({
@@ -110,9 +107,6 @@ export default function SettingsConnectorsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.connectors });
       toast.success("Disconnected");
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't disconnect"));
     },
   });
 

@@ -22,7 +22,6 @@ import { useAuth } from "@/context/AuthContext";
 import { useActiveOrg } from "@/hooks/useActiveOrg";
 import { getReef, setReef } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
 
 const ICON = {
   repo: "/github.webp",
@@ -116,9 +115,6 @@ export default function ReefSetupPage() {
       }
       if (activeOrgId) void queryClient.invalidateQueries({ queryKey: queryKeys.reef(activeOrgId) });
       void navigate("/settings/reef", { replace: true });
-    },
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't connect that repository"));
     },
   });
 

@@ -34,7 +34,7 @@ export function ChatFilter({
       <VStack
         spacing={8}
         modifiers={[
-          padding({ horizontal: 16, vertical: 8 }),
+          padding({ horizontal: 16, vertical: 4 }),
           frame({ maxWidth: Infinity }),
         ]}
       >

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/context/AuthContext";
 import { listMmChannelPosts, listPinnedMmPosts, pinMmPost, unpinMmPost, type MmChannelPost } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
+import { toast } from "@/lib/toast";
 
 type PostsPage = Awaited<ReturnType<typeof listMmChannelPosts>>;
 
@@ -44,9 +44,8 @@ export function usePinToggle(channelId: string) {
       });
       return { prev };
     },
-    onError: (err, _post, ctx) => {
+    onError: (_err, _post, ctx) => {
       if (ctx?.prev) queryClient.setQueryData(postsKey, ctx.prev);
-      toast.error(errMsg(err, "Couldn't update pin"));
     },
     onSuccess: (updated) => {
       queryClient.setQueryData<PostsPage>(postsKey, (prev) =>

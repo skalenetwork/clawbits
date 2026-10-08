@@ -11,7 +11,6 @@ import {
   type ContactPrincipalType,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
 import { AgentFaceAvatar } from "@/components/AgentFaceAvatar";
 import { Icon } from "@/components/Icon";
 import { UserAvatar } from "@/components/UserAvatar";
@@ -126,8 +125,7 @@ export function AccessSection({
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentProfile(orgId, agentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents(orgId) });
     },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't update permission"));
+    onError: () => {
       void queryClient.invalidateQueries({ queryKey: permsKey });
     },
   });

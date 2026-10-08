@@ -52,6 +52,7 @@
         }
       ],
       "./plugins/with-automatic-signing.js",
+      "./plugins/with-prominent-tab.js",
       "expo-font",
       "expo-status-bar"
     ],

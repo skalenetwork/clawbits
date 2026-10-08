@@ -3,13 +3,14 @@ import { ChevronDown } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ReefHost } from "@/lib/api";
-import { TONE_FILL, type StatusTone } from "@/lib/status";
+import { TONE_FILL, type Pill, type StatusTone } from "@/lib/status";
 import { cn } from "@/lib/utils";
 
 const ROW =
   "relative flex min-h-13 w-full items-center gap-4 px-4 py-3 text-left not-first:before:absolute not-first:before:inset-x-4 not-first:before:top-0 not-first:before:h-px not-first:before:bg-foreground/8";
 const PRESSABLE = "outline-none transition-colors first:rounded-t-[14px] last:rounded-b-[14px]";
 const TITLE = "block text-sm font-medium text-foreground";
+const TILE_TITLE = "block truncate text-sm font-medium";
 
 const STATUS_DOT: Record<StatusTone, string> = { ...TONE_FILL, idle: "border border-muted-foreground" };
 
@@ -93,14 +94,13 @@ export function SettingsRow({
   selected?: boolean;
   expanded?: boolean;
 }) {
-  // A row that reports an expanded state gets the disclosure chevron unless it asked for its own.
-  const side =
-    control ??
-    (expanded == null ? null : (
+  // A row that reports an expanded state gets the disclosure chevron after its control.
+  const chevron =
+    expanded == null ? null : (
       <span className="disclosure-chevron inline-flex text-muted-foreground" data-open={expanded}>
         <ChevronDown className="size-4" />
       </span>
-    ));
+    );
   const body = (
     <>
       {leading != null && (
@@ -133,8 +133,11 @@ export function SettingsRow({
             </span>
           )}
         </span>
-        {side != null && (
-          <span className="relative flex shrink-0 items-center gap-2">{side}</span>
+        {(control != null || chevron != null) && (
+          <span className="relative flex shrink-0 items-center gap-2">
+            {control}
+            {chevron}
+          </span>
         )}
       </span>
     </>
@@ -181,6 +184,98 @@ export function SettingsRowSkeleton({
       description={description ? <Skeleton className="mt-1.5 h-3 w-56 rounded" /> : undefined}
     />
   );
+}
+
+/** The settings card for an entity: one stretched link over a filled tile, with a muted note above a pill on the
+ *  right. `end` takes the last slot (a status dot, a ··· menu); with `endOnHover` it covers the note and pill only
+ *  while the tile is hovered or focused, and keeps its own column wherever there is no fine pointer to hover with. */
+export function SettingsTile({
+  leading,
+  title,
+  href,
+  subtitle,
+  aside,
+  pill,
+  end,
+  endOnHover = false,
+  className,
+}: {
+  leading: ReactNode;
+  title: ReactNode;
+  href?: string;
+  subtitle?: ReactNode;
+  aside?: string | false | null;
+  pill?: Pill | null;
+  end?: ReactNode;
+  endOnHover?: boolean;
+  className?: string;
+}) {
+  const reveal = endOnHover && end != null;
+  return (
+    <div
+      className={cn(
+        "group relative grid min-h-16 items-center gap-x-[11px] rounded-[14px] bg-card p-3 has-[a:hover]:bg-foreground/4 has-[a:focus-visible]:bg-foreground/4",
+        end == null
+          ? "grid-cols-[40px_minmax(6rem,1fr)_minmax(0,auto)]"
+          : "grid-cols-[40px_minmax(6rem,1fr)_minmax(0,auto)_auto]",
+        reveal && "pointer-fine:grid-cols-[40px_minmax(6rem,1fr)_minmax(0,auto)]",
+        className,
+      )}
+    >
+      {leading}
+      <span className="min-w-0">
+        {href ? (
+          <Link to={href} className={cn(TILE_TITLE, "outline-none after:absolute after:inset-0")}>
+            {title}
+          </Link>
+        ) : (
+          <span className={TILE_TITLE}>{title}</span>
+        )}
+        {subtitle != null && (
+          <span className="block truncate text-[13px] text-muted-foreground tabular-nums">{subtitle}</span>
+        )}
+      </span>
+      <span
+        className={cn(
+          "flex min-w-0 flex-col items-end gap-1 text-[13px] text-muted-foreground",
+          reveal &&
+            "pointer-fine:group-hover:invisible pointer-fine:group-focus-within:invisible pointer-fine:group-has-[[aria-expanded=true]]:invisible",
+        )}
+      >
+        {aside && <span className="max-w-full truncate">{aside}</span>}
+        {pill && <TilePill {...pill} />}
+      </span>
+      {end != null && (
+        <span
+          className={cn(
+            "relative flex items-center justify-center gap-1.5",
+            reveal
+              ? "pointer-fine:invisible pointer-fine:absolute pointer-fine:top-1/2 pointer-fine:right-3 pointer-fine:-translate-y-1/2 pointer-fine:group-hover:visible pointer-fine:group-focus-within:visible pointer-fine:group-has-[[aria-expanded=true]]:visible"
+              : "w-7 pointer-coarse:w-auto",
+          )}
+        >
+          {end}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function TilePill({ label, bad }: Pill) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full bg-foreground/6 px-2 py-0.5 text-[12px] whitespace-nowrap",
+        bad ? "text-destructive" : "text-muted-foreground",
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+export function TileGrid({ children }: { children: ReactNode }) {
+  return <div className="grid gap-2 sm:grid-cols-2">{children}</div>;
 }
 
 export function StatusDot({

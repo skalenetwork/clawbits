@@ -39,9 +39,10 @@ export async function request<T>(
   token?: string,
   body?: unknown,
   signal?: AbortSignal,
+  method?: "DELETE",
 ): Promise<T> {
   const response = await fetch(`${apiUrl}${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -147,6 +148,8 @@ export const api = {
       target_id: target.id,
       target_type: target.kind,
     }),
+  deleteAccount: (token: string) =>
+    request<void>("/api/human/account", token, undefined, undefined, "DELETE"),
 };
 
 export async function recipients(

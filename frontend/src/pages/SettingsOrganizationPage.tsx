@@ -10,7 +10,7 @@ import {Input} from "@/components/ui/input";
 import {useActiveOrg} from "@/hooks/useActiveOrg";
 import {removeOrgAvatar, updateOrg, uploadOrgAvatar, type Org} from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
-import {errMsg, toast} from "@/lib/toast";
+import {toast} from "@/lib/toast";
 
 const AvatarEditorDialog = lazy(() =>
     import("@/components/settings/AvatarEditorDialog").then(m => ({default: m.AvatarEditorDialog})),
@@ -26,7 +26,6 @@ function NameForm({org, saved, onSaved}: {org: Org; saved: string; onSaved: () =
             await onSaved();
             toast.success("Name saved");
         },
-        onError: err => { toast.error(errMsg(err, "Couldn't save name")); },
     });
     const trimmed = draft.trim();
     const canSave = trimmed !== "" && trimmed !== saved && !mutation.isPending;
@@ -66,7 +65,6 @@ export default function SettingsOrganizationPage() {
             await refresh();
             toast.success("Picture removed");
         },
-        onError: err => { toast.error(errMsg(err, "Couldn't remove picture")); },
     });
 
     if (isLoading || !org) return null;

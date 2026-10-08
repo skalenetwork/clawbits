@@ -81,6 +81,7 @@ from clawbits.db.models import (
     Skill,
     SkillVersion,
 )
+from clawbits.skills.spec import REPORTED_SKILL_MD_MAX
 
 
 def _as_str(value: object, *, limit: int = 1000) -> str | None:
@@ -4583,9 +4584,9 @@ class TableWrite:
         return fork
 
     @staticmethod
-    def delete_skill(session: Session, *, skill: Skill) -> Skill:
+    def delete_skill(session: Session, *, skill: Skill) -> list[str]:
         """Soft-delete a catalog row, and uninstall it from every agent that has
-        it. Versions stay: forks reference them.
+        it. Versions stay: forks reference them. Returns those agents' ids.
 
         The fan-out is the point. A soft delete leaves ``latest_version_id``
         intact, so a live install would keep resolving to a version and the
@@ -4610,7 +4611,7 @@ class TableWrite:
             # as "Removing..." until the agent confirms the directory is gone.
             TableWrite.uninstall_skill(session, row=row)
         session.flush()
-        return skill
+        return [row.agent_id for row in installs]
 
     # ------------------------------------------------------------------
     # Skills sync plane (agent self-report)
@@ -4636,6 +4637,24 @@ class TableWrite:
         return skill is not None and skill.deleted_at is not None
 
     @staticmethod
+    def _settle_skill_outcome(row: AgentSkillInstall, item: dict) -> bool:
+        """Record the client's outcome for ``row``. True when it cleanly applied
+        the current generation."""
+        obs = item.get("observed_generation")
+        if not isinstance(obs, int):
+            return False
+        row.observed_generation = obs
+        if obs < row.desired_generation:
+            return False
+        if error := item.get("error"):
+            row.sync_status = "failed"
+            row.sync_error = str(error)[:2000]
+            return False
+        row.sync_status = "applied"
+        row.sync_error = None
+        return True
+
+    @staticmethod
     def apply_skill_state_report(
         session: Session,
         agent_id: str,
@@ -4650,6 +4669,7 @@ class TableWrite:
         truncated: bool = False,
         plugin_version: str | None = None,
         agent_runtime_version: str | None = None,
+        bundled: list[dict] | None = None,
     ) -> tuple[int, int]:
         """Apply an agent's skills self-report. Returns ``(seen, mirrored)``.
 
@@ -4691,29 +4711,36 @@ class TableWrite:
                     if row.deleted_at is not None:
                         removed_slugs.add(slug)
                     elif row.managed_by == "clawbits" and TableWrite._wants_absent(session, row):
-                        # A disable (and a deleted catalog skill) is an 'absent'
-                        # intent, NOT a delete: the row has to survive so it can be
-                        # re-enabled. It still has to CONVERGE - discarding this
-                        # report leaves it at 'requested' with observed_generation
-                        # permanently behind desired, so the UI shows a spinner
-                        # forever and the plugin re-removes an already-absent
-                        # directory on every pass. Settled on the same terms as the
-                        # present-path below.
-                        obs = item.get("observed_generation")
-                        if isinstance(obs, int):
-                            row.observed_generation = obs
-                        if isinstance(obs, int) and obs >= row.desired_generation:
-                            if error := item.get("error"):
-                                row.sync_status = "failed"
-                                row.sync_error = str(error)[:2000]
-                            else:
-                                row.sync_status = "applied"
-                                row.sync_error = None
+                        # A disable (or a deleted catalog skill) is an 'absent'
+                        # intent, not a delete: the row survives to be re-enabled,
+                        # but must still settle, or it spins at 'requested' and the
+                        # plugin re-removes the absent directory on every pass.
+                        TableWrite._settle_skill_outcome(row, item)
                         row.last_reported_at = now
                         row.updated_at = now
                 continue
 
             seen_slugs.add(slug)
+
+            # An apply outcome settles sync state only. The scan item for the
+            # same slug carries the mirror; letting the outcome overwrite it
+            # blanked the manifest and would drop the stored SKILL.md each pass.
+            if "status" in item:
+                if row is not None and row.managed_by == "clawbits" and not observing:
+                    if TableWrite._settle_skill_outcome(row, item):
+                        row.takeover = False
+                    applied_hash = _as_str(item.get("content_hash"))
+                    if item["status"] == "applied" and applied_hash and row.skill_id:
+                        row.reported_version = session.exec(
+                            select(SkillVersion.version)
+                            .where(
+                                SkillVersion.skill_id == row.skill_id,
+                                SkillVersion.content_hash == applied_hash,
+                            )
+                            .order_by(SkillVersion.created_at.desc())
+                        ).first()
+                    row.updated_at = now
+                continue
 
             if row is None:
                 row = AgentSkillInstall(
@@ -4729,8 +4756,22 @@ class TableWrite:
                 by_slug[slug] = row
                 mirrored += 1
 
-            row.reported_version = _as_str(item.get("version"))
-            row.reported_content_hash = _as_str(item.get("content_hash"))
+            # The client sends a body once per hash, so a report without one
+            # keeps the stored body unless the hash moved past it. A NUL (a
+            # UTF-16 file read as UTF-8) is unstorable in a text column.
+            content_hash = _as_str(item.get("content_hash"))
+            skill_md = item.get("skill_md")
+            if (
+                isinstance(skill_md, str)
+                and "\x00" not in skill_md
+                and len(skill_md.encode("utf-8")) <= REPORTED_SKILL_MD_MAX
+            ):
+                row.reported_skill_md = skill_md
+                row.reported_skill_md_omitted = None
+            elif content_hash != row.reported_content_hash:
+                row.reported_skill_md = None
+                row.reported_skill_md_omitted = _as_str(item.get("skill_md_omitted"))
+            row.reported_content_hash = content_hash
             row.reported_path = _as_str(item.get("path"))
             row.reported_root = _as_str(item.get("root"))
             # openclaw-bundled / -extra / -workspace / clawhub, computed by
@@ -4748,20 +4789,6 @@ class TableWrite:
             row.missing_since = None
             row.missing_streak = 0
             row.updated_at = now
-
-            if row.managed_by == "clawbits" and not observing:
-                obs = item.get("observed_generation")
-                error = item.get("error")
-                is_current = isinstance(obs, int) and obs >= row.desired_generation
-                if isinstance(obs, int):
-                    row.observed_generation = obs
-                if is_current:
-                    if error:
-                        row.sync_status = "failed"
-                        row.sync_error = str(error)[:2000]
-                    else:
-                        row.sync_status = "applied"
-                        row.sync_error = None
 
         # Drift only means something from a client that can write.
         if not observing:
@@ -4805,6 +4832,12 @@ class TableWrite:
         state_row.report_truncated = bool(truncated) or len(skills or []) > len(items)
         state_row.plugin_version = plugin_version
         state_row.agent_runtime_version = agent_runtime_version
+        if bundled is not None:
+            state_row.bundled = [
+                {"slug": slug, "description": _as_str(b.get("description"))}
+                for b in bundled[: TableWrite.SKILL_REPORT_MAX_ITEMS]
+                if isinstance(b, dict) and (slug := _as_str(b.get("slug"), limit=128))
+            ]
         state_row.last_reported_at = now
         state_row.updated_at = now
 
@@ -4843,11 +4876,13 @@ class TableWrite:
         org_id: str | None,
         skill: Skill,
         installed_by: int | None = None,
+        takeover: bool = False,
     ) -> AgentSkillInstall:
         """Install a catalog skill onto an agent, or revive a removed one.
 
         Reviving rather than inserting matters: UNIQUE(agent_id, slug) is not
-        partial, so a tombstone still occupies the slug.
+        partial, so a tombstone still occupies the slug. The same holds for an
+        external row of that slug, which is how adopt converts one in place.
         """
         row = session.exec(
             select(AgentSkillInstall).where(
@@ -4872,6 +4907,7 @@ class TableWrite:
         row.skill_id = skill.skill_id
         row.managed_by = "clawbits"
         row.enabled = True
+        row.takeover = takeover
         row.deleted_at = None
         row.desired_generation = generation
         row.sync_status = "requested"
@@ -4897,6 +4933,18 @@ class TableWrite:
         session.add(row)
         session.flush()
         return row
+
+    @staticmethod
+    def set_skill_install_pin(
+        session: Session, *, row: AgentSkillInstall, version_id: str | None
+    ) -> None:
+        """Pin to ``version_id``, or follow 'latest' with ``None``. Like a publish,
+        this moves the desired content hash rather than the intent, so the
+        generation stays put and the drift gate does the rest."""
+        row.channel = "pinned" if version_id else "latest"
+        row.pinned_version_id = version_id
+        row.updated_at = _dt.datetime.now(_dt.UTC)
+        session.flush()
 
     @staticmethod
     def uninstall_skill(

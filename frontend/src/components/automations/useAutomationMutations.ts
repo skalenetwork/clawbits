@@ -3,7 +3,7 @@ import { deleteAutomation, runAutomation, updateAutomation, type Automation } fr
 import { withEnabled } from "@/lib/automations";
 import { bumpAutomationsBurst } from "@/lib/automationsPolling";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
+import { toast } from "@/lib/toast";
 
 export function useAutomationMutations(orgId: string, onDeleted?: () => void) {
   const queryClient = useQueryClient();
@@ -19,9 +19,6 @@ export function useAutomationMutations(orgId: string, onDeleted?: () => void) {
       invalidate();
       toast.success("Run requested, the agent picks it up on its next reconcile");
     },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't request a run"));
-    },
   });
 
   const toggleEnabled = useMutation({
@@ -33,9 +30,6 @@ export function useAutomationMutations(orgId: string, onDeleted?: () => void) {
       invalidate();
       toast.success(enabled ? "Resuming, pending until the agent confirms" : "Pausing, keeps its configuration");
     },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't update the automation"));
-    },
   });
 
   const remove = useMutation({
@@ -44,9 +38,6 @@ export function useAutomationMutations(orgId: string, onDeleted?: () => void) {
       invalidate();
       toast.success("Removing, the agent stops it on its next reconcile");
       onDeleted?.();
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't remove the automation"));
     },
   });
 

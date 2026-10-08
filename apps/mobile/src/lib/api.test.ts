@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { ApiError, auth, mcpConnectLinkId, postBody, receiveSession, request } from "./api";
+import { api, apiUrl, ApiError, auth, mcpConnectLinkId, postBody, receiveSession, request } from "./api";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -69,6 +69,41 @@ test("a file-only post omits the message and keeps the file ids", () => {
     message: "hello",
     client_msg_uuid: "uuid-1",
   });
+});
+
+test("account deletion sends DELETE and surfaces a refusal", async () => {
+  const calls: { url: string; method?: string; authorization?: string }[] = [];
+  globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    calls.push({
+      url: String(input),
+      method: init?.method,
+      authorization: headers.get("Authorization") ?? undefined,
+    });
+    return calls.length === 1
+      ? new Response(null, { status: 204 })
+      : Response.json({ detail: "Hand off your agents first" }, { status: 409 });
+  }) as unknown as typeof fetch;
+  await api.deleteAccount("token");
+  try {
+    await api.deleteAccount("token");
+    throw new Error("Expected failure");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).message).toBe("Hand off your agents first");
+  }
+  expect(calls).toEqual([
+    {
+      url: `${apiUrl}/api/human/account`,
+      method: "DELETE",
+      authorization: "Bearer token",
+    },
+    {
+      url: `${apiUrl}/api/human/account`,
+      method: "DELETE",
+      authorization: "Bearer token",
+    },
+  ]);
 });
 
 test("connect links carry the id of an agent's sign-in", () => {

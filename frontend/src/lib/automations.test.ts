@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   automationVisualState,
   automationsUnsupportedReason,
+  buildDesiredSpec,
+  formatTimeLimit,
   supportsAutomations,
 } from "@/lib/automations";
 import type { Automation, AutomationReportedState } from "@/lib/api";
@@ -142,5 +144,41 @@ describe("hermes plugin version floor", () => {
   it("does not apply the floor to other runtimes", () => {
     expect(supportsAutomations("openclaw", "0.1.0")).toBe(true);
     expect(supportsAutomations("ironclaw", "9.9.9")).toBe(false);
+  });
+});
+
+describe("buildDesiredSpec time limit", () => {
+  const form = {
+    name: "Digest",
+    prompt: "post the digest",
+    schedule: { kind: "every", everyMs: 3_600_000 } as const,
+  };
+
+  it("writes the time limit into the payload", () => {
+    const spec = buildDesiredSpec({ ...form, timeoutSeconds: 7200 });
+    expect(spec.payload).toEqual({ kind: "agentTurn", message: "post the digest", timeoutSeconds: 7200 });
+  });
+
+  it("overrides a stored limit and keeps other payload keys", () => {
+    const base = { payload: { kind: "agentTurn", message: "old", model: "m", timeoutSeconds: 3600 } };
+    const spec = buildDesiredSpec({ ...form, timeoutSeconds: 14400, base });
+    expect(spec.payload).toEqual({ kind: "agentTurn", message: "post the digest", model: "m", timeoutSeconds: 14400 });
+  });
+
+  it("leaves a stored limit alone when the runtime has none", () => {
+    const base = { payload: { kind: "agentTurn", message: "old", timeoutSeconds: 5400 } };
+    expect(buildDesiredSpec({ ...form, base }).payload).toEqual({
+      kind: "agentTurn",
+      message: "post the digest",
+      timeoutSeconds: 5400,
+    });
+    expect(buildDesiredSpec(form).payload).toEqual({ kind: "agentTurn", message: "post the digest" });
+  });
+
+  it("formats limits in the largest whole unit", () => {
+    expect(formatTimeLimit(3600)).toBe("1 hour");
+    expect(formatTimeLimit(14400)).toBe("4 hours");
+    expect(formatTimeLimit(5400)).toBe("90 minutes");
+    expect(formatTimeLimit(45)).toBe("45 seconds");
   });
 });

@@ -44,10 +44,10 @@ const TABS: readonly ModalTab<"all" | MmMemberType>[] = [
   { id: "agent", label: "Agents" },
 ];
 
-const TOASTS: Record<Action, { done: string; failed: string }> = {
-  Add: { done: "Member added", failed: "Couldn't add member" },
-  Remove: { done: "Member removed", failed: "Failed to remove" },
-  Leave: { done: "You left the channel", failed: "Failed to remove" },
+const DONE: Record<Action, string> = {
+  Add: "Member added",
+  Remove: "Member removed",
+  Leave: "You left the channel",
 };
 
 const keyOf = (e: Entry) => `${e.kind}:${e.id}`;
@@ -100,14 +100,11 @@ export default function ManageMembersDialog({
       (e.action === "Add" ? addMmChannelMember : removeMmChannelMember)(channelId, e.id, e.kind),
     onSuccess: (_data, e) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelMembers(channelId) });
-      toast.success(TOASTS[e.action].done);
+      toast.success(DONE[e.action]);
       if (e.action !== "Leave") return;
       void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
       setOpen(false);
       void navigate("/home", { replace: true });
-    },
-    onError: (err, e) => {
-      toast.error(errMsg(err, TOASTS[e.action].failed));
     },
   });
 

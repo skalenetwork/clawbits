@@ -20,6 +20,7 @@ import {
   SettingsRow,
   SettingsRowSkeleton,
   SettingsSection,
+  TileGrid,
 } from "@/components/settings/Settings";
 import { SetupMark } from "@/components/setup/SetupShell";
 import { Button } from "@/components/ui/button";
@@ -91,9 +92,6 @@ export default function SettingsReefPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.orgs });
       toast.success("Repository disconnected");
     },
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't disconnect the repository"));
-    },
   });
 
   const purge = useMutation({
@@ -101,9 +99,6 @@ export default function SettingsReefPage() {
     onSuccess: (_, { name }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.reef(orgId) });
       toast.success(`${name} deleted`);
-    },
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't delete the agent"));
     },
   });
 
@@ -116,9 +111,6 @@ export default function SettingsReefPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
       setDeleting(null);
       toast.success("Agent deleted");
-    },
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't delete agent"));
     },
   });
 
@@ -207,11 +199,11 @@ export default function SettingsReefPage() {
 
   const agentSection = (label: string, items: ReefAgentTileProps[]) => (
     <SettingsSection label={label} stack>
-      <div className="grid gap-2 sm:grid-cols-2">
+      <TileGrid>
         {items.map((t) => (
           <ReefAgentTile key={fleetKey(t.host, t.name)} {...t} menu={isOwner ? agentMenu(t) : undefined} />
         ))}
-      </div>
+      </TileGrid>
     </SettingsSection>
   );
 

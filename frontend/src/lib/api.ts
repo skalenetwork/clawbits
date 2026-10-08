@@ -1589,9 +1589,9 @@ export async function listAgentChannels(orgId: string, agentId: string) {
   return request<{ channels: AgentDeliveryChannel[] }>(agentUrl(orgId, agentId, "/channels"), { detail: true });
 }
 
-export type SkillVisibility = "private" | "org" | "public";
 export type SkillOrigin = "authored" | "forked" | "imported";
 export type SkillRuntime = "openclaw" | "hermes" | "ironclaw";
+export type SkillChannel = "latest" | "pinned";
 
 interface SkillRequirements {
   bins?: string[];
@@ -1600,11 +1600,9 @@ interface SkillRequirements {
   os?: string[];
 }
 
-export interface SkillFile {
+interface SkillFile {
   path: string;
-  content?: string;
-  sha256: string;
-  size_bytes: number;
+  content: string;
 }
 
 export interface SkillManifest {
@@ -1620,54 +1618,73 @@ export interface SkillManifest {
   env_declarations?: { name: string; required: boolean; description?: string }[];
 }
 
+/** A skill's content: what a version stores, and what create and publish send. */
+interface SkillBundle {
+  manifest: SkillManifest;
+  body_md: string;
+  files: SkillFile[];
+}
+
 export interface SkillVersion {
   version_id: string;
-  skill_id: string;
   version: string;
-  content_hash: string;
   total_bytes: number;
-  has_executable: boolean;
   changelog: string | null;
-  schema_version: string;
-  published_by: number | null;
+  /** Display name of the human who published it; null when unrecorded. */
+  author?: string | null;
   created_at: string | null;
-  manifest?: SkillManifest;
-  body_md?: string;
-  files?: SkillFile[];
+}
+
+export type SkillVersionDetail = SkillVersion & SkillBundle;
+
+export interface SkillAgentInstall {
+  agent_id: string;
+  nickname: string | null;
+  install_id: string;
+  sync_status: string;
+  channel: SkillChannel;
+  pinned_version_id: string | null;
+  installed_version: string | null;
+  sync_error: string | null;
 }
 
 export interface Skill {
   skill_id: string;
-  org_id: string;
   /** Must equal the frontmatter `name`, so it is fixed after create. */
   slug: string;
   display_name: string;
   summary: string;
   icon_emoji: string | null;
-  visibility: SkillVisibility;
   origin: SkillOrigin;
   runtimes: SkillRuntime[];
   forked_from_skill_id: string | null;
-  forked_from_version_id: string | null;
   latest_version_id: string | null;
   latest_version: string | null;
-  content_hash: string | null;
-  has_executable: boolean;
   is_draft: boolean;
+  /** Agents that confirmed the install. */
   installed_agent_count: number;
-  pending_agent_count: number;
-  archived_at: string | null;
+  /** Live managed installs that need a look, counted by the server. */
+  attention: { failed: number; installing: number; removing: number; behind: number };
   created_by: number | null;
-  created_at: string | null;
   updated_at: string | null;
-  current_version?: SkillVersion | null;
+  /** Detail responses only. */
+  current_version?: SkillVersionDetail | null;
+  /** Detail responses only: every agent with an install of this skill. */
+  agents?: SkillAgentInstall[];
 }
 
-export interface RenderedSkill {
-  runtime: SkillRuntime;
-  path: string;
-  content: string;
-  content_hash: string;
+/** An unsaved skill read from an upload, a GitHub link or an agent's own copy. */
+export interface SkillDraft extends SkillBundle {
+  display_name: string;
+  slug: string;
+  dropped: { path: string; reason: string }[];
+  source: { kind: "upload" | "agent" } | { kind: "url"; url: string };
+}
+
+export interface SkillInstallResult {
+  agent_id: string;
+  status: "requested" | "already_installed" | "refused";
+  detail?: string;
 }
 
 function skillUrl(orgId: string, skillId: string, path = ""): string {
@@ -1682,34 +1699,38 @@ export async function getSkill(orgId: string, skillId: string) {
   return request<Skill>(skillUrl(orgId, skillId), { detail: true });
 }
 
-export async function createSkill(
-  orgId: string,
-  body: {
-    slug: string;
-    display_name: string;
-    manifest: SkillManifest;
-    body_md: string;
-    files?: { path: string; content: string }[];
-  },
-) {
+export async function createSkill(orgId: string, body: SkillBundle & { slug: string; display_name: string }) {
   return request<Skill>(orgUrl(orgId, "/skills"), { ...json("POST", body), detail: true });
 }
 
-export async function publishSkillVersion(
-  orgId: string,
-  skillId: string,
-  body: {
-    manifest: SkillManifest;
-    body_md: string;
-    files?: { path: string; content: string }[];
-    changelog?: string;
-  },
-) {
+export async function publishSkillVersion(orgId: string, skillId: string, body: SkillBundle & { changelog?: string }) {
   return request<SkillVersion>(skillUrl(orgId, skillId, "/versions"), { ...json("POST", body), detail: true });
 }
 
 export async function listSkillVersions(orgId: string, skillId: string) {
   return request<{ versions: SkillVersion[] }>(skillUrl(orgId, skillId, "/versions"), { detail: true });
+}
+
+export async function getSkillVersion(orgId: string, skillId: string, versionId: string) {
+  return request<SkillVersionDetail>(skillUrl(orgId, skillId, `/versions/${encodeURIComponent(versionId)}`), {
+    detail: true,
+  });
+}
+
+export async function importSkillDraft(orgId: string, input: { url: string } | { files: File[] }) {
+  const url = orgUrl(orgId, "/skills/import");
+  if ("url" in input) return request<SkillDraft>(url, { ...json("POST", input), detail: true });
+  const body = new FormData();
+  // The server finds the skill inside a folder by each file's relative path.
+  for (const file of input.files) body.append("files", file, file.webkitRelativePath || file.name);
+  return request<SkillDraft>(url, { method: "POST", body, detail: true });
+}
+
+export async function installSkillOnAgents(orgId: string, skillId: string, agentIds: string[]) {
+  return request<{ results: SkillInstallResult[] }>(skillUrl(orgId, skillId, "/installs"), {
+    ...json("POST", { agent_ids: agentIds }),
+    detail: true,
+  });
 }
 
 export async function renderSkillVersion(
@@ -1718,18 +1739,12 @@ export async function renderSkillVersion(
   versionId: string,
   runtime: SkillRuntime = "openclaw",
 ) {
-  return request<RenderedSkill>(
-    skillUrl(
-      orgId,
-      skillId,
-      `/versions/${encodeURIComponent(versionId)}/render?runtime=${encodeURIComponent(runtime)}`,
-    ),
-    { detail: true },
-  );
+  const path = `/versions/${encodeURIComponent(versionId)}/render?runtime=${encodeURIComponent(runtime)}`;
+  return request<{ content: string }>(skillUrl(orgId, skillId, path), { detail: true });
 }
 
-export async function forkSkill(orgId: string, skillId: string, body: { slug?: string; display_name?: string } = {}) {
-  return request<Skill>(skillUrl(orgId, skillId, "/fork"), { ...json("POST", body), detail: true });
+export async function forkSkill(orgId: string, skillId: string) {
+  return request<Skill>(skillUrl(orgId, skillId, "/fork"), { ...json("POST", {}), detail: true });
 }
 
 export async function deleteSkill(orgId: string, skillId: string) {
@@ -1741,7 +1756,6 @@ export async function deleteSkill(orgId: string, skillId: string) {
 
 export interface AgentSkill {
   install_id: string;
-  agent_id: string;
   skill_id: string | null;
   slug: string;
   managed_by: "clawbits" | "external";
@@ -1749,31 +1763,26 @@ export interface AgentSkill {
   description: string | null;
   sync_status: string;
   sync_error: string | null;
-  enabled: boolean;
   reported_version: string | null;
   reported_path: string | null;
-  reported_root: string | null;
   reported_source: string | null;
   eligible: boolean | null;
-  model_visible: boolean | null;
   missing: SkillRequirements | null;
-  last_seen_at: string | null;
-  updated_at: string | null;
+  has_content: boolean;
 }
 
-export interface AgentSkillsResponse {
+interface AgentSkillsResponse {
   skills: AgentSkill[];
   sync: {
-    report_mode: string | null;
-    skills_root: string | null;
-    scanned_roots: string[] | null;
-    apply_mode: string | null;
-    prompt_chars_observed: number | null;
-    prompt_budget_observed: number | null;
-    truncated: boolean;
-    plugin_version: string | null;
     last_reported_at: string | null;
+    /** The runtime's built-in skills; null until the agent reports them. */
+    bundled: { slug: string; description: string | null }[] | null;
+    reporter: "never_reported" | "stale" | "ok";
   };
+}
+
+function agentSkillUrl(orgId: string, agentId: string, installId: string, path = ""): string {
+  return agentUrl(orgId, agentId, `/skills/${encodeURIComponent(installId)}${path}`);
 }
 
 export async function listAgentSkills(orgId: string, agentId: string) {
@@ -1787,9 +1796,41 @@ export async function installAgentSkill(orgId: string, agentId: string, skillId:
   });
 }
 
+export async function pinAgentSkill(
+  orgId: string,
+  agentId: string,
+  installId: string,
+  body: { channel: "latest" } | { pinned_version_id: string },
+) {
+  return request<AgentSkillsResponse>(agentSkillUrl(orgId, agentId, installId), {
+    ...json("PATCH", body),
+    detail: true,
+  });
+}
+
 export async function uninstallAgentSkill(orgId: string, agentId: string, installId: string) {
-  return request<AgentSkillsResponse>(agentUrl(orgId, agentId, `/skills/${encodeURIComponent(installId)}`), {
+  return request<AgentSkillsResponse>(agentSkillUrl(orgId, agentId, installId), {
     method: "DELETE",
+    detail: true,
+  });
+}
+
+/** A skill's SKILL.md: the library version for a managed install, otherwise what the agent reported.
+ *  `omitted_reason` says why `skill_md` is null. */
+export async function getAgentSkillContent(orgId: string, agentId: string, installId: string) {
+  return request<{ skill_md: string | null; omitted_reason: string | null }>(
+    agentSkillUrl(orgId, agentId, installId, "/content"),
+    { detail: true },
+  );
+}
+
+export async function getAgentSkillDraft(orgId: string, agentId: string, installId: string) {
+  return request<SkillDraft>(agentSkillUrl(orgId, agentId, installId, "/draft"), { detail: true });
+}
+
+export async function adoptAgentSkill(orgId: string, agentId: string, installId: string, skillId: string) {
+  return request<AgentSkill>(agentSkillUrl(orgId, agentId, installId, "/adopt"), {
+    ...json("POST", { skill_id: skillId }),
     detail: true,
   });
 }

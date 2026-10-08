@@ -95,9 +95,6 @@ export default function AgentsPage() {
       }
       toast.success(`${approve ? "Approved" : "Rejected"} ${request.agent_id}`);
     },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't review the request"));
-    },
   });
 
   if (!activeOrgId) {
@@ -234,9 +231,6 @@ function AgentCard({ orgId, agent, fleet, dm }: { orgId: string; agent: AgentUse
     mutationFn: () => createOrGetMmDirect(orgId, "agent", agent.agent_id),
     onSuccess: (channel) => {
       void navigate(`/channels/${channel.channel_id}`);
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't open chat"));
     },
   });
 

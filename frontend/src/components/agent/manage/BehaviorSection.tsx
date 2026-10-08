@@ -1,7 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { updateAgentSettings, type AgentProfile } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
 import { SettingsRow, SettingsSection } from "@/components/settings/Settings";
 import { Stepper } from "@/components/ui/stepper";
 import { Switch } from "@/components/ui/switch";
@@ -19,9 +18,6 @@ export function BehaviorSection({ orgId, profile }: { orgId: string; profile: Ag
       queryClient.setQueryData<AgentProfile>(profileKey, (old) => (old ? { ...old, ...data } : old));
       void queryClient.invalidateQueries({ queryKey: profileKey });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents(orgId) });
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't update settings"));
     },
   });
 

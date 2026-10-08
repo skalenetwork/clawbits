@@ -46,6 +46,8 @@ FILE_MAX = 65_536
 FILES_MAX = 9
 TOTAL_BYTES_MAX = 262_144
 ALLOWED_FILE_ROOT = "references"
+# The client omits a reported SKILL.md past this, and the server holds it to it.
+REPORTED_SKILL_MD_MAX = 65_536
 
 _PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 # "." and ".." match _PATH_SEGMENT_RE, so they need an explicit reject.
@@ -290,6 +292,7 @@ __all__ = [
     "DESCRIPTION_MAX",
     "FILES_MAX",
     "FILE_MAX",
+    "REPORTED_SKILL_MD_MAX",
     "RESERVED_SLUG_PREFIX",
     "SLUG_RE",
     "TOTAL_BYTES_MAX",

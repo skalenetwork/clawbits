@@ -1,6 +1,13 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate, useOutletContext } from "react-router-dom";
-import { BubbleChatIcon, Clock05Icon, Mail01Icon, Passport01Icon, Settings02Icon } from "@hugeicons/core-free-icons";
+import {
+  BookOpen01Icon,
+  BubbleChatIcon,
+  Clock05Icon,
+  Mail01Icon,
+  Passport01Icon,
+  Settings02Icon,
+} from "@hugeicons/core-free-icons";
 import { Icon, type AppIcon } from "@/components/Icon";
 import { PageHeader } from "@/components/PageHeader";
 import type { AgentOutletContext } from "@/components/agent/AgentShell";
@@ -11,14 +18,14 @@ import { SettingsPage, SettingsRow, SettingsRowSkeleton, SettingsSection } from 
 import { Button } from "@/components/ui/button";
 import { createOrGetMmDirect, listAgentAutomations, type AgentProfile } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
-type AgentTab = "automations" | "inbox" | "card" | "manage";
+type AgentTab = "automations" | "skills" | "inbox" | "card" | "manage";
 
 const TABS: { key: AgentTab; label: string; icon: AppIcon }[] = [
   { key: "card", label: "Passport", icon: Passport01Icon },
   { key: "automations", label: "Automations", icon: Clock05Icon },
+  { key: "skills", label: "Skills", icon: BookOpen01Icon },
   { key: "inbox", label: "Inbox", icon: Mail01Icon },
   { key: "manage", label: "Manage", icon: Settings02Icon },
 ];
@@ -27,8 +34,8 @@ const TAB =
   "flex h-[30px] min-w-0 items-center justify-center gap-[7px] rounded-lg px-2 text-[13px] font-medium whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50";
 
 function allowedTabs(profile: AgentProfile): AgentTab[] {
-  if (profile.is_operator) return ["automations", "inbox", "card", "manage"];
-  return profile.can_manage_contacts ? ["card", "manage"] : ["card"];
+  if (profile.is_operator) return ["automations", "skills", "inbox", "card", "manage"];
+  return profile.can_manage_contacts ? ["card", "skills", "manage"] : ["card"];
 }
 
 export function AgentTabs() {
@@ -48,9 +55,6 @@ export function AgentTabs() {
     mutationFn: () => createOrGetMmDirect(orgId, "agent", id),
     onSuccess: (channel) => {
       void navigate(`/channels/${channel.channel_id}`);
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't open chat"));
     },
   });
 
@@ -88,7 +92,7 @@ export function AgentTabs() {
         <>
           <nav
             aria-label="Agent"
-            className="relative z-10 grid grid-cols-4 gap-0.5 rounded-[11px] bg-[color-mix(in_oklab,var(--foreground)_5%,var(--background))]/60 p-[3px] backdrop-blur-sm"
+            className="relative z-10 grid grid-cols-5 gap-0.5 rounded-[11px] bg-[color-mix(in_oklab,var(--foreground)_5%,var(--background))]/60 p-[3px] backdrop-blur-sm"
           >
             {TABS.map(({ key, label, icon }) => {
               const inner = (
@@ -123,7 +127,7 @@ export function AgentTabs() {
                   key={key}
                   role="link"
                   aria-disabled="true"
-                  title={`Only ${operatorName}${key === "manage" ? " or an org owner" : ""} can open ${label}`}
+                  title={`Only ${operatorName}${key === "manage" || key === "skills" ? " or an org owner" : ""} can open ${label}`}
                   className={cn(TAB, "cursor-not-allowed text-muted-foreground opacity-40")}
                 >
                   {inner}

@@ -6,7 +6,8 @@ import re
 from collections import defaultdict
 from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime, timedelta
-from typing import TypedDict, Unpack
+from pathlib import PurePosixPath
+from typing import NamedTuple, TypedDict, Unpack
 
 from eth_account import Account
 from sqlalchemy import (
@@ -101,6 +102,16 @@ class SearchOperators(TypedDict, total=False):
     after: datetime | None
     has_link: bool
     has_file: bool
+
+
+class SkillInstallCounts(NamedTuple):
+    """Agents per skill in each install state. See ``TableRead._install_counts_by_skill``."""
+
+    installed: int = 0
+    failed: int = 0
+    installing: int = 0
+    removing: int = 0
+    behind: int = 0
 
 
 def _privacy_last_seen(row: HumanUser) -> str | None:
@@ -3545,44 +3556,71 @@ class TableRead:
     # Skills catalog
     # ------------------------------------------------------------------
 
+    # Three missed reports at the plugin's 300 s SKILLS_REPORT_INTERVAL_MS.
+    SKILL_REPORT_STALE_AFTER = timedelta(seconds=900)
+
     @staticmethod
     def _install_counts_by_skill(
         session: Session, skill_ids: list[str]
-    ) -> dict[str, tuple[int, int]]:
-        """``skill_id -> (agents that have it, agents still moving)``.
+    ) -> dict[str, SkillInstallCounts]:
+        """``skill_id -> SkillInstallCounts`` over the live managed installs of
+        each skill on agents of the skill's own org, in one grouped read.
 
-        One grouped read for a whole page of skills. ``applied`` is the only
-        status that means the agent confirmed the file is on disk, so it is the
-        only one that counts as installed; ``requested``/``removing`` are the
-        in-flight states and are reported separately rather than folded in. A
-        library row must never claim a skill is live somewhere the agent has
-        not confirmed.
+        ``installed`` counts ``applied`` only, the one status that means the
+        agent confirmed the file is on disk. The attention buckets are disjoint:
+
+        - ``failed``: ``sync_status = 'failed'``.
+        - ``removing``: ``sync_status = 'removing'``.
+        - ``installing``: enabled, ``sync_status = 'requested'`` and no
+          ``reported_version``, i.e. never applied on this agent.
+        - ``behind``: enabled, not failed or removing, and the content hash of
+          ``reported_version`` differs from that of the version it should run:
+          the pinned one on the 'pinned' channel, else the skill's latest (as in
+          ``_resolve_install_version``). With no ``reported_version`` there is
+          no applied content to compare, so such an install is never behind.
         """
         if not skill_ids:
             return {}
         # COUNT(DISTINCT CASE ...) rather than a FILTER clause: both back ends
         # we run on understand it, and SQLite only learned FILTER in 3.30.
-        def _distinct_when(*statuses: str):
+        def _agents_where(condition: ColumnElement[bool]):
             return func.count(
-                func.distinct(
-                    case(
-                        (
-                            AgentSkillInstall.sync_status.in_(statuses),
-                            AgentSkillInstall.agent_id,
-                        ),
-                        else_=None,
-                    )
-                )
+                func.distinct(case((condition, AgentSkillInstall.agent_id), else_=None))
             )
 
+        status = AgentSkillInstall.sync_status
+        live = and_(AgentSkillInstall.enabled.is_(True), status.not_in(("failed", "removing")))
+        pinned = AgentSkillInstall.pinned_version_id
+        target_id = case(
+            (and_(AgentSkillInstall.channel == "pinned", pinned.is_not(None)), pinned),
+            else_=Skill.latest_version_id,
+        )
+        target = aliased(SkillVersion)
+        applied = aliased(SkillVersion)
         rows = session.exec(
             select(
                 AgentSkillInstall.skill_id,
-                _distinct_when("applied"),
-                _distinct_when("requested", "removing"),
+                _agents_where(status == "applied"),
+                _agents_where(status == "failed"),
+                _agents_where(
+                    and_(live, status == "requested", AgentSkillInstall.reported_version.is_(None))
+                ),
+                _agents_where(status == "removing"),
+                _agents_where(and_(live, applied.content_hash != target.content_hash)),
+            )
+            .join(Skill, Skill.skill_id == AgentSkillInstall.skill_id)
+            .join(Agent, Agent.agent_id == AgentSkillInstall.agent_id)
+            .outerjoin(target, target.version_id == target_id)
+            .outerjoin(
+                applied,
+                and_(
+                    applied.skill_id == AgentSkillInstall.skill_id,
+                    applied.version == AgentSkillInstall.reported_version,
+                ),
             )
             .where(
                 AgentSkillInstall.skill_id.in_(skill_ids),
+                Agent.org_id == Skill.org_id,
                 # Same visibility rule as list_agent_skills: an uninstall
                 # soft-deletes the row but leaves it 'removing' until the agent
                 # confirms, and that pending work has to stay countable.
@@ -3593,13 +3631,13 @@ class TableRead:
             )
             .group_by(AgentSkillInstall.skill_id)
         ).all()
-        return {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in rows}
+        return {r[0]: SkillInstallCounts(*(int(n or 0) for n in r[1:])) for r in rows}
 
     @staticmethod
     def _skill_to_dict(
         row: Skill,
         latest: SkillVersion | None = None,
-        counts: tuple[int, int] = (0, 0),
+        counts: SkillInstallCounts = SkillInstallCounts(),
     ) -> dict:
         """Operator/UI projection of a catalog row."""
         return {
@@ -3619,10 +3657,13 @@ class TableRead:
             "content_hash": latest.content_hash if latest is not None else None,
             "has_executable": bool(latest.has_executable) if latest is not None else False,
             "is_draft": row.latest_version_id is None,
-            # Agents that have CONFIRMED the skill on disk, and agents with an
-            # install/removal still in flight. See _install_counts_by_skill.
-            "installed_agent_count": counts[0],
-            "pending_agent_count": counts[1],
+            "installed_agent_count": counts.installed,
+            "attention": {
+                "failed": counts.failed,
+                "installing": counts.installing,
+                "removing": counts.removing,
+                "behind": counts.behind,
+            },
             "archived_at": _iso(row.archived_at),
             "created_by": row.created_by,
             "created_at": _iso(row.created_at),
@@ -3678,7 +3719,7 @@ class TableRead:
             TableRead._skill_to_dict(
                 r,
                 latest_by_id.get(r.latest_version_id or ""),
-                counts.get(r.skill_id, (0, 0)),
+                counts.get(r.skill_id, SkillInstallCounts()),
             )
             for r in rows
         ]
@@ -3707,23 +3748,56 @@ class TableRead:
             else None
         )
         counts = TableRead._install_counts_by_skill(session, [row.skill_id])
-        out = TableRead._skill_to_dict(row, latest, counts.get(row.skill_id, (0, 0)))
+        out = TableRead._skill_to_dict(row, latest, counts.get(row.skill_id, SkillInstallCounts()))
         out["current_version"] = (
             TableRead._skill_version_to_dict(latest, include_content=True)
             if latest is not None
             else None
         )
+        installs = session.exec(
+            select(AgentSkillInstall, Agent.nickname)
+            .join(Agent, Agent.agent_id == AgentSkillInstall.agent_id)
+            .where(
+                AgentSkillInstall.skill_id == skill_id,
+                Agent.org_id == org_id,
+                or_(
+                    AgentSkillInstall.deleted_at.is_(None),
+                    AgentSkillInstall.sync_status == "removing",
+                ),
+            )
+            .order_by(Agent.nickname)
+        ).all()
+        out["agents"] = [
+            {
+                "agent_id": install.agent_id,
+                "nickname": nickname,
+                "install_id": install.install_id,
+                "sync_status": install.sync_status,
+                "channel": install.channel,
+                "pinned_version_id": install.pinned_version_id,
+                "installed_version": install.reported_version,
+                "sync_error": install.sync_error,
+            }
+            for install, nickname in installs
+        ]
         return out
 
     @staticmethod
     def list_skill_versions(session: Session, skill_id: str) -> list[dict]:
-        """The version timeline, newest first. Spine only — no bodies."""
+        """The version timeline, newest first, without bodies. ``author`` is the
+        publisher as :meth:`resolve_human_display` names them, if recorded."""
         rows = session.exec(
-            select(SkillVersion)
+            select(
+                SkillVersion,
+                func.coalesce(func.nullif(HumanUser.display_name, ""), HumanUser.email),
+            )
+            .outerjoin(HumanUser, HumanUser.id == SkillVersion.published_by)
             .where(SkillVersion.skill_id == skill_id)
             .order_by(SkillVersion.created_at.desc())
         ).all()
-        return [TableRead._skill_version_to_dict(r) for r in rows]
+        return [
+            {**TableRead._skill_version_to_dict(r), "author": author} for r, author in rows
+        ]
 
     @staticmethod
     def get_skill_version(
@@ -3741,10 +3815,11 @@ class TableRead:
     @staticmethod
     def get_org_skill_slugs(session: Session, org_id: str) -> set[str]:
         """Live slugs already taken in this org (for fork slug derivation)."""
-        rows = session.exec(
-            select(Skill.slug).where(Skill.org_id == org_id, Skill.deleted_at.is_(None))
-        ).all()
-        return {r for r in rows}
+        return set(
+            session.exec(
+                select(Skill.slug).where(Skill.org_id == org_id, Skill.deleted_at.is_(None))
+            ).all()
+        )
 
     @staticmethod
     def _install_to_dict(row: AgentSkillInstall) -> dict:
@@ -3752,7 +3827,6 @@ class TableRead:
         manifest = row.reported_manifest or {}
         return {
             "install_id": row.install_id,
-            "agent_id": row.agent_id,
             "skill_id": row.skill_id,
             "slug": row.slug,
             "managed_by": row.managed_by,
@@ -3763,14 +3837,11 @@ class TableRead:
             "enabled": row.enabled,
             "reported_version": row.reported_version,
             "reported_path": row.reported_path,
-            "reported_root": row.reported_root,
             "reported_source": row.reported_source,
             # A skill can be present and still unused (missing requirement).
             "eligible": state.get("eligible"),
-            "model_visible": state.get("modelVisible"),
             "missing": state.get("missing"),
-            "last_seen_at": _iso(row.last_seen_at),
-            "updated_at": _iso(row.updated_at),
+            "has_content": row.reported_skill_md is not None,
         }
 
     @staticmethod
@@ -3790,20 +3861,60 @@ class TableRead:
             .order_by(AgentSkillInstall.slug)
         ).all()
         state = session.get(AgentSkillSyncState, agent_id)
+        last_reported = state.last_reported_at if state else None
         return {
             "skills": [TableRead._install_to_dict(r) for r in rows],
             "sync": {
-                "report_mode": state.report_mode if state else None,
-                "skills_root": state.skills_root if state else None,
-                "scanned_roots": state.scanned_roots if state else None,
-                "apply_mode": state.apply_mode if state else None,
-                "prompt_chars_observed": state.prompt_chars_observed if state else None,
-                "prompt_budget_observed": state.prompt_budget_observed if state else None,
-                "truncated": state.report_truncated if state else False,
-                "plugin_version": state.plugin_version if state else None,
-                "last_reported_at": _iso(state.last_reported_at) if state else None,
+                "last_reported_at": _iso(last_reported),
+                "bundled": state.bundled if state else None,
+                "reporter": (
+                    "never_reported"
+                    if last_reported is None
+                    else "stale"
+                    if datetime.now(UTC) - last_reported > TableRead.SKILL_REPORT_STALE_AFTER
+                    else "ok"
+                ),
             },
         }
+
+    @staticmethod
+    def get_agent_skill_install(
+        session: Session, agent_id: str, slug: str
+    ) -> AgentSkillInstall | None:
+        """The agent's row for ``slug``, live, tombstoned or external."""
+        return session.exec(
+            select(AgentSkillInstall).where(
+                AgentSkillInstall.agent_id == agent_id, AgentSkillInstall.slug == slug
+            )
+        ).first()
+
+    @staticmethod
+    def is_in_skills_write_root(session: Session, row: AgentSkillInstall) -> bool:
+        """Whether the agent reported ``row`` at ``<write root>/<slug>``: the one
+        directory a managed install of that slug would have to replace."""
+        state = session.get(AgentSkillSyncState, row.agent_id)
+        if state is None or not state.skills_root or not row.reported_path:
+            return False
+        return (
+            PurePosixPath(row.reported_path).parent
+            == PurePosixPath(state.skills_root) / row.slug
+        )
+
+    @staticmethod
+    def list_skill_follower_agent_ids(session: Session, skill_id: str) -> list[str]:
+        """Agents a new version of ``skill_id`` reaches: a live, enabled, managed
+        install on the 'latest' channel."""
+        return list(
+            session.exec(
+                select(AgentSkillInstall.agent_id).where(
+                    AgentSkillInstall.skill_id == skill_id,
+                    AgentSkillInstall.managed_by == "clawbits",
+                    AgentSkillInstall.channel == "latest",
+                    AgentSkillInstall.enabled.is_(True),
+                    AgentSkillInstall.deleted_at.is_(None),
+                )
+            ).all()
+        )
 
     @staticmethod
     def _resolve_install_version(
@@ -3865,6 +3976,7 @@ class TableRead:
                     "version_id": version.version_id if version else None,
                     "version": version.version if version else None,
                     "content_hash": version.content_hash if version else None,
+                    "takeover": row.takeover,
                 }
             )
         return {

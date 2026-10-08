@@ -49,10 +49,7 @@ function Root() {
         />
       </Stack.Protected>
       <Stack.Protected guard={!!session && !!session.org}>
-        <Stack.Screen
-          name="index"
-          options={{ title: "Chats", headerLargeTitle: true }}
-        />
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen
           name="chat/[id]"
           options={{

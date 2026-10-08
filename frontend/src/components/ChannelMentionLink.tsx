@@ -58,9 +58,6 @@ export function ChannelMentionLink({
       toast.success(`Joined #${displayName}`);
       void navigate(`/channels/${channel.channel_id}`);
     },
-    onError: (e: Error) => {
-      toast.error(e.message || "Couldn't join channel");
-    },
   });
 
   const onClick = () => {

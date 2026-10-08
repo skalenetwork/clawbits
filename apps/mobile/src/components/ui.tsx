@@ -596,13 +596,17 @@ export function Empty({
 
 export const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: color.background },
+  grouped: {
+    flex: 1,
+    backgroundColor: PlatformColor("systemGroupedBackground"),
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    minHeight: 76,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    minHeight: 64,
   },
   avatar: {
     width: 44,
@@ -634,7 +638,7 @@ export const styles = StyleSheet.create({
   separator: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: color.line,
-    marginLeft: 76,
+    marginLeft: 72,
   },
   error: { fontSize: 14, color: color.red, padding: 12, textAlign: "center" },
   buttonIcon: {

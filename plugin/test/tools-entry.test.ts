@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { AnyAgentTool, OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
 import toolsEntry, { CLAWBITS_TOOL_NAMES } from "../src/tools-entry.js";
 import { summarizeChannels, summarizePosts } from "../src/tool-views.js";
@@ -10,6 +13,7 @@ import {
   readSlimChannelHandoff,
   registerSlimChannelHandoff,
   supportsModelSelection,
+  wakeCompanion,
 } from "../src/service-handoff.js";
 
 function readJson(path: string): Record<string, unknown> {
@@ -50,6 +54,16 @@ function hookHandler<K extends HookName>(
   hookName: K,
 ): HookHandler<K> | undefined {
   return handlers.get(hookName)?.[0] as HookHandler<K> | undefined;
+}
+
+type GatewayContext = Parameters<HookHandler<"gateway_start">>[1];
+type GatewayCron = NonNullable<ReturnType<NonNullable<GatewayContext["getCron"]>>>;
+
+async function until(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !check(); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(check(), "timed out waiting for a companion loop");
 }
 
 type PluginRuntime = OpenClawPluginApi["runtime"];
@@ -312,6 +326,59 @@ describe("clawbits companion plugin", () => {
     await start({ port: 0 }, gatewayCtx);
     await stop({}, gatewayCtx);
     await stop({}, gatewayCtx);
+  });
+
+  it("wakes the skills and automations loops from channel sync nudges", async () => {
+    const setup = pluginApi(
+      { serviceOwner: "tools", accounts: { default: { ...DEFAULT_ACCOUNT } } },
+      { registrationMode: "full", runtime: runtimeWithHandoff("0.17.0") },
+    );
+    toolsEntry.register(asPluginApi(setup.api));
+    const start = hookHandler(setup.handlers, "gateway_start");
+    const stop = hookHandler(setup.handlers, "gateway_stop");
+    assert.ok(start);
+    assert.ok(stop);
+
+    const cron: GatewayCron = {
+      list: async () => [],
+      add: async () => ({}),
+      update: async () => ({}),
+      remove: async () => ({ removed: true }),
+      removeStaleJobFamily: async () => 0,
+    };
+    const desired = { skills: 0, automations: 0 };
+    const workspaceDir = await mkdtemp(path.join(tmpdir(), "clawbits-wake-"));
+    const ctx: GatewayContext = { config: setup.api.config, workspaceDir, getCron: () => cron };
+    const stateDir = process.env.CLAWBITS_STATE_DIR;
+    process.env.CLAWBITS_STATE_DIR = workspaceDir;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/agentic/skills/desired")) {
+        desired.skills += 1;
+        return jsonResponse({ paused: false, skills: [] });
+      }
+      if (url.endsWith("/api/agentic/automations/desired")) {
+        desired.automations += 1;
+        return jsonResponse({ automations: [] });
+      }
+      return jsonResponse({});
+    };
+    try {
+      await start({ port: 0 }, ctx);
+      // Both loops have run once and are asleep on intervals of minutes.
+      await until(() => desired.skills === 1 && desired.automations === 1);
+      wakeCompanion("skills.sync", "default");
+      await until(() => desired.skills === 2);
+      wakeCompanion("automation.sync", "default");
+      await until(() => desired.automations === 2);
+    } finally {
+      await stop({}, ctx);
+      globalThis.fetch = originalFetch;
+      if (stateDir === undefined) delete process.env.CLAWBITS_STATE_DIR;
+      else process.env.CLAWBITS_STATE_DIR = stateDir;
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
   });
 
   it("fails closed until tools ownership and a compatible slim channel marker agree", () => {

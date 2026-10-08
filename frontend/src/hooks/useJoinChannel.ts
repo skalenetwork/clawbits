@@ -17,8 +17,5 @@ export function useJoinChannel(opts?: {onJoined?: () => void}) {
             opts?.onJoined?.();
             void navigate(`/channels/${channel.channel_id}`);
         },
-        onError: (e: Error) => {
-            toast.error(e.message || "Couldn't join channel");
-        },
     });
 }

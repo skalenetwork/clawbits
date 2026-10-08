@@ -1,8 +1,4 @@
-import {
-  KeyboardAwareLegendList,
-  useKeyboardChatComposerInset,
-} from "@legendapp/list/keyboard";
-import type { LegendListRef } from "@legendapp/list/react-native";
+import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
 import * as Clipboard from "expo-clipboard";
@@ -18,13 +14,13 @@ import {
   useMemo,
   useRef,
   useState,
-  type ComponentRef,
   type ReactNode,
 } from "react";
 import {
   ActionSheetIOS,
   Alert,
   AppState,
+  Keyboard,
   Linking,
   Modal,
   PlatformColor,
@@ -37,7 +33,7 @@ import {
 import { GlassView } from "expo-glass-effect";
 import { SymbolView } from "expo-symbols";
 import Svg, { Path } from "react-native-svg";
-import { KeyboardStickyView } from "react-native-keyboard-controller";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, ApiError, mcpConnectLinkId } from "@/lib/api";
 import { BUBBLE_TAIL, bubblePath } from "@/lib/bubblePath";
@@ -112,17 +108,29 @@ function Conversation({ id }: { id: string }) {
   const focused = useIsFocused();
   const connected = useLiveEvents(id, focused);
   const insets = useSafeAreaInsets();
+  const [composerHeight, setComposerHeight] = useState(0);
   const listPad = useMemo(
-    () => ({ paddingTop: insets.top + 44, paddingBottom: 0 }),
-    [insets.top],
+    () => ({ paddingTop: insets.top + 44, paddingBottom: composerHeight }),
+    [composerHeight, insets.top],
   );
   const list = useRef<LegendListRef>(null);
-  const composer = useRef<ComponentRef<typeof View>>(null);
   const field = useRef<GlassComposerHandle>(null);
-  const { contentInsetEndAdjustment, onComposerLayout } = useKeyboardChatComposerInset(
-    list,
-    composer,
-  );
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  useEffect(() => {
+    const pinToEnd = () => {
+      void list.current?.scrollToEnd({ animated: false });
+    };
+    const show = Keyboard.addListener("keyboardWillShow", () => {
+      setKeyboardOpen(true);
+      pinToEnd();
+      requestAnimationFrame(pinToEnd);
+    });
+    const hide = Keyboard.addListener("keyboardWillHide", () => setKeyboardOpen(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
   const posts = useMemo(() => historyPosts(history.data), [history.data]);
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -402,9 +410,15 @@ function Conversation({ id }: { id: string }) {
           }}
         />
       ) : (
-        <KeyboardAwareLegendList
-          ref={list}
+        <KeyboardAvoidingView
+          behavior="padding"
+          automaticOffset
           style={chat.list}
+        >
+        <View style={chat.list}>
+        <LegendList
+          ref={list}
+          style={StyleSheet.absoluteFill}
           data={posts}
           keyExtractor={keyExtractor}
           estimatedItemSize={64}
@@ -419,8 +433,6 @@ function Conversation({ id }: { id: string }) {
           }}
           maintainVisibleContentPosition={{ data: true, size: true }}
           contentInsetAdjustmentBehavior="never"
-          contentInsetEndAdjustment={contentInsetEndAdjustment}
-          keyboardLiftBehavior="always"
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
@@ -473,15 +485,16 @@ function Conversation({ id }: { id: string }) {
             </>
           }
         />
-      )}
-      <KeyboardStickyView
-        style={chat.sticky}
-        offset={{ closed: 16, opened: insets.bottom }}
-      >
+        <View pointerEvents="box-none" style={chat.composerDock}>
         <View
-          ref={composer}
-          onLayout={onComposerLayout}
-          style={{ paddingBottom: insets.bottom + 8, paddingTop: 8 }}
+          onLayout={(event) => {
+            const height = Math.round(event.nativeEvent.layout.height);
+            setComposerHeight((current) => (current === height ? current : height));
+          }}
+          style={[
+            chat.composer,
+            { paddingBottom: keyboardOpen ? 8 : insets.bottom + 8 },
+          ]}
         >
           {error && !accepted && (
             <Text accessibilityLiveRegion="polite" style={styles.error}>
@@ -510,7 +523,10 @@ function Conversation({ id }: { id: string }) {
             sendDisabled={!connected || !!pending || uploading}
           />
         </View>
-      </KeyboardStickyView>
+        </View>
+        </View>
+        </KeyboardAvoidingView>
+      )}
       <Stack.Screen options={header} />
     </>
   );
@@ -887,6 +903,8 @@ const title = StyleSheet.create({
 
 const chat = StyleSheet.create({
   list: { flex: 1 },
+  composerDock: { flex: 1, justifyContent: "flex-end" },
+  composer: { paddingTop: 8, backgroundColor: "transparent" },
   date: {
     textAlign: "center",
     color: PlatformColor("secondaryLabel"),
@@ -924,5 +942,4 @@ const chat = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.22)",
   },
-  sticky: { position: "absolute", bottom: 0, left: 0, right: 0 },
 });

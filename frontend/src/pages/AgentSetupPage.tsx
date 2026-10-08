@@ -135,8 +135,7 @@ export default function AgentSetupPage() {
 
   const create = useMutation({
     mutationFn: (body: { host: string; role: string }) => createReefAgent(orgId, body),
-    onError: (e, body) => {
-      toast.error(errMsg(e, "Couldn't create the agent"));
+    onError: (_e, body) => {
       setAnswers(hosts.length > 1 ? { where: "reef", role: body.role } : { where: "reef" });
     },
   });
@@ -146,15 +145,11 @@ export default function AgentSetupPage() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.reef(orgId) });
     },
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't remove the agent"));
-    },
   });
 
   const mint = useMutation({
     mutationFn: () => startHumanAgentSignup(orgId),
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't start the signup"));
+    onError: () => {
       setAnswers({ where: "self" });
     },
   });
@@ -168,9 +163,6 @@ export default function AgentSetupPage() {
     onSuccess: (channel) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
       void navigate(`/channels/${channel.channel_id}`, { replace: true });
-    },
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't open the chat"));
     },
   });
 

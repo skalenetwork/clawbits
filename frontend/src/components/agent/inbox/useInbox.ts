@@ -15,7 +15,7 @@ import {
   type AgentInboxCount,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
+import { toast } from "@/lib/toast";
 
 export const PAGE_SIZE = 50;
 export const MAX_LIMIT = 200;
@@ -93,14 +93,13 @@ export function useMarkRead(orgId: string, agentId: string) {
       writeReadStateToCache(queryClient, orgId, agentId, uid, read);
       return { listSnapshots, countSnapshot };
     },
-    onError: (err: unknown, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       for (const [key, data] of ctx?.listSnapshots ?? []) {
         queryClient.setQueryData(key, data);
       }
       if (ctx?.countSnapshot) {
         queryClient.setQueryData(queryKeys.agentInbox.count(orgId, agentId), ctx.countSnapshot);
       }
-      toast.error(errMsg(err, "Couldn't update the message"));
     },
     onSettled: () => {
       invalidate();
@@ -116,9 +115,6 @@ export function useDeleteEmail(orgId: string, agentId: string, onDeleted: (uid: 
       toast.success("Message deleted");
       invalidate();
       onDeleted(uid);
-    },
-    onError: (err: unknown) => {
-      toast.error(errMsg(err, "Couldn't delete message"));
     },
   });
 }
