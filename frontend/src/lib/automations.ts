@@ -315,6 +315,24 @@ export const BLANK_TEMPLATE: AutomationTemplate = {
   defaultSchedule: { kind: "cron", expr: "0 9 * * *" },
 };
 
+/** Run time limits (seconds) for the Forge "Stop a run after" picker. OpenClaw stops
+ *  an isolated agent turn after 1 hour unless the job sets
+ *  `payload.timeoutSeconds`; the server caps it at the largest choice. */
+export const TIME_LIMIT_CHOICES = [3600, 7200, 14400] as const;
+
+export const DEFAULT_TIME_LIMIT_S = TIME_LIMIT_CHOICES[0];
+
+/** "1 hour", "4 hours", "90 minutes", "45 seconds". */
+export function formatTimeLimit(seconds: number): string {
+  const [n, unit] =
+    seconds % 3600 === 0
+      ? [seconds / 3600, "hour"]
+      : seconds % 60 === 0
+        ? [seconds / 60, "minute"]
+        : [seconds, "second"];
+  return `${String(n)} ${unit}${n === 1 ? "" : "s"}`;
+}
+
 /** Build a normalized OpenClaw cron `desired_spec` from the Forge form.
  *
  *  ``channelId`` is the optional delivery target — a channel/DM the agent is in.
@@ -322,6 +340,10 @@ export const BLANK_TEMPLATE: AutomationTemplate = {
  *  is omitted and the plugin routes to the agent's owner DM (the default). The
  *  operator only authors ``to`` — the plugin fills the runtime channel/account
  *  fields.
+ *
+ *  ``timeoutSeconds`` is always written when given: the cron job keeps a value
+ *  the spec omits, so a pinned number is the only way an edit reaches it.
+ *  Omitted for runtimes that ignore it (Hermes).
  *
  *  ``base`` is the existing spec when editing. PATCH is a FULL REPLACE, so the
  *  base is spread first and only authored fields overwrite it — plugin-owned or
@@ -332,6 +354,7 @@ export function buildDesiredSpec(input: {
   prompt: string;
   schedule: Schedule;
   channelId?: string | null;
+  timeoutSeconds?: number;
   base?: Record<string, unknown> | null;
 }): Record<string, unknown> {
   const base = input.base ?? {};
@@ -339,6 +362,12 @@ export function buildDesiredSpec(input: {
     base.payload && typeof base.payload === "object"
       ? (base.payload as Record<string, unknown>)
       : {};
+  const payload: Record<string, unknown> = {
+    kind: "agentTurn",
+    ...basePayload,
+    message: input.prompt.trim(),
+  };
+  if (input.timeoutSeconds !== undefined) payload.timeoutSeconds = input.timeoutSeconds;
   const spec: Record<string, unknown> = {
     // Clawbits product defaults — neither has a gateway default, so always set
     // them explicitly (see strategy §3.3). Isolated → fresh session per run.
@@ -348,7 +377,7 @@ export function buildDesiredSpec(input: {
     ...base,
     name: input.name.trim(),
     schedule: scheduleToSpec(input.schedule),
-    payload: { kind: "agentTurn", ...basePayload, message: input.prompt.trim() },
+    payload,
   };
   if (input.channelId) {
     spec.delivery = { mode: "announce", to: input.channelId };

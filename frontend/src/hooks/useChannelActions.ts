@@ -73,9 +73,6 @@ export function useChannelActions(): ChannelActions {
     const {mutate: deleteNow} = useMutation({
         mutationFn: (channelId: string) => deleteMmChannel(channelId),
         onSuccess: (_data, channelId) => { onRemoved(channelId, "Channel deleted"); },
-        onError: (err: unknown) => {
-            toast.error(err instanceof Error ? err.message : "Couldn't delete channel");
-        },
     });
 
     const exportAction = (channel: MmChannel) => ({

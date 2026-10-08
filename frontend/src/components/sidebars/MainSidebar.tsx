@@ -17,7 +17,6 @@ import {
     type AgentChatGroup,
     type ChatTab,
 } from "@/lib/chatFilters";
-import {errMsg, toast} from "@/lib/toast";
 import {ContextMenu, ContextMenuContent, ContextMenuTrigger} from "@/components/ui/context-menu";
 import {
     DropdownMenu,
@@ -57,12 +56,10 @@ export function MainSidebar() {
     const newAgentChat = useMutation({
         mutationFn: (agentId: string) => createMmAgentChat(activeOrgId ?? "", agentId),
         onSuccess: openCreated,
-        onError: (e) => { toast.error(errMsg(e, "Couldn't start chat")); },
     });
     const openInbox = useMutation({
         mutationFn: (agentId: string) => createOrGetMmDirect(activeOrgId ?? "", "agent", agentId),
         onSuccess: openCreated,
-        onError: (e) => { toast.error(errMsg(e, "Couldn't open chat")); },
     });
 
     const all = channelsQuery.data?.channels ?? [];

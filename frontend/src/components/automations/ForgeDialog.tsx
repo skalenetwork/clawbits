@@ -18,6 +18,9 @@ import {
     ACCENT_BG,
     accentForId,
     buildDesiredSpec,
+    DEFAULT_TIME_LIMIT_S,
+    formatTimeLimit,
+    TIME_LIMIT_CHOICES,
     type AutomationTemplate,
 } from "@/lib/automations";
 import {bumpAutomationsBurst} from "@/lib/automationsPolling";
@@ -30,7 +33,7 @@ import {
 } from "@/lib/schedule";
 import {agentDisplay} from "@/lib/agentDisplay";
 import {queryKeys} from "@/lib/queryKeys";
-import {errMsg, toast} from "@/lib/toast";
+import {toast} from "@/lib/toast";
 import { isPairType } from "@/lib/chatFilters";
 import {cn} from "@/lib/utils";
 import {Button} from "@/components/ui/button";
@@ -50,7 +53,7 @@ import {ScheduleComposer} from "@/components/automations/ScheduleComposer";
 
 interface SpecShape {
     name?: string;
-    payload?: {message?: string};
+    payload?: {message?: string; timeoutSeconds?: unknown};
     schedule?: Record<string, unknown>;
     delivery?: {to?: string};
 }
@@ -156,6 +159,15 @@ function ForgeForm({orgId, template, editing, agent, onOpenChange}: ForgeProps) 
     );
     const [scheduleValid, setScheduleValid] = useState(() => scheduleIsSaveable(schedule, Date.now()));
     const [channelId, setChannelId] = useState(editSpec?.delivery?.to ?? "");
+    const hasTimeLimit = agent.agent_type !== "hermes";
+    const storedTimeLimit =
+        typeof editSpec?.payload?.timeoutSeconds === "number"
+            ? editSpec.payload.timeoutSeconds
+            : DEFAULT_TIME_LIMIT_S;
+    const [timeLimit, setTimeLimit] = useState(storedTimeLimit);
+    const timeLimitItems = [...new Set<number>([...TIME_LIMIT_CHOICES, storedTimeLimit])]
+        .sort((a, b) => a - b)
+        .map(seconds => ({value: seconds, label: formatTimeLimit(seconds)}));
 
     const now = useNow(30_000);
     const agentStatus = useAgentStatus(agent.agent_id, agent.last_alive_at ?? null);
@@ -185,6 +197,7 @@ function ForgeForm({orgId, template, editing, agent, onOpenChange}: ForgeProps) 
                 prompt,
                 schedule,
                 channelId: channelId || null,
+                timeoutSeconds: hasTimeLimit ? timeLimit : undefined,
                 base: editing?.desired_spec ?? null,
             });
             return editing
@@ -196,9 +209,6 @@ function ForgeForm({orgId, template, editing, agent, onOpenChange}: ForgeProps) 
             void queryClient.invalidateQueries({queryKey: queryKeys.automations(orgId)});
             toast.success(`Sent to ${agentName}, pending until it confirms`);
             onOpenChange(false);
-        },
-        onError: (err: unknown) => {
-            toast.error(errMsg(err, isEdit ? "Couldn't update automation" : "Couldn't create automation"));
         },
     });
 
@@ -326,6 +336,26 @@ function ForgeForm({orgId, template, editing, agent, onOpenChange}: ForgeProps) 
                         </SelectContent>
                     </Select>
                 </div>
+
+                {hasTimeLimit && (
+                    <div className="space-y-1.5">
+                        <Label htmlFor="forge-time-limit">Stop a run after</Label>
+                        <Select
+                            value={timeLimit}
+                            onValueChange={(next: number | null) => { if (next != null) setTimeLimit(next); }}
+                            items={timeLimitItems}
+                        >
+                            <SelectTrigger id="forge-time-limit">
+                                <SelectValue/>
+                            </SelectTrigger>
+                            <SelectContent>
+                                {timeLimitItems.map(item => (
+                                    <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+                )}
             </form>
             <div className={cn(
                 "flex shrink-0 items-center justify-end gap-2",

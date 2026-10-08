@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { router, Stack } from "expo-router";
+import { Stack } from "expo-router";
 import { useAnimatedHeaderHeight } from "expo-router/native-stack";
 import { Animated, FlatList, View } from "react-native";
 import { api, ApiError } from "@/lib/api";
@@ -13,7 +13,7 @@ import { useOrganizations } from "@/lib/data";
 import { useSession } from "@/lib/session";
 import { ChatFilter } from "@/components/chat-filter";
 import { ChatRow } from "@/components/chat-row";
-import { Empty, IconButton, styles } from "@/components/ui";
+import { color, Empty, styles } from "@/components/ui";
 import { OrgMenu } from "@/components/org-menu";
 
 const emptyTitle: Record<ChatTab, string> = {
@@ -99,7 +99,7 @@ export default function Chats() {
             left: 0,
             right: 0,
             zIndex: 1,
-            backgroundColor: "transparent",
+            backgroundColor: color.background,
           },
           { transform: [{ translateY: headerHeight }] },
         ]}
@@ -115,14 +115,6 @@ export default function Chats() {
         options={{
           headerShadowVisible: false,
           headerLeft: () => <OrgMenu />,
-          headerRight: () => (
-            <IconButton
-              name="square.and.pencil"
-              label="New message"
-              disabled={!org}
-              onPress={() => router.push("/new")}
-            />
-          ),
         }}
       />
     </>

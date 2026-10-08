@@ -196,8 +196,8 @@ export const outboundAdapter: ChannelOutboundAdapter = {
           done: true,
           ...(await draft.finish),
         });
-        pluginDebug(
-          `outbound.sendText finalized open draft postId=${String(draft.id)} channel=${channelId} in place (no separate post minted)`,
+        consoleErrorWithFile(
+          `[clawbits/${account.accountId}] outbound.sendText finalized draft postId=${String(draft.id)} channel=${channelId} bytes=${ctx.text?.length ?? 0}`,
         );
         const result: ClawBitsDeliveryResult = {
           channel: CHANNEL_ID,
@@ -239,8 +239,8 @@ export const outboundAdapter: ChannelOutboundAdapter = {
       // value?.trim is not a function"). Always return a string.
       const rawPostId = posted?.id ?? posted?.post_id ?? posted?.message_id;
       const messageId = rawPostId == null ? "" : String(rawPostId);
-      pluginDebug(
-        `Delivered. Clawbits delivery is working — posted reply postId=${messageId || "(unknown)"} channel=${channelId}.`,
+      consoleErrorWithFile(
+        `[clawbits/${account.accountId}] outbound.sendText posted postId=${messageId || "(unknown)"} channel=${channelId} bytes=${ctx.text?.length ?? 0}`,
       );
 
       const result: ClawBitsDeliveryResult = {

@@ -98,9 +98,6 @@ export default function SettingsLobstertalkPage() {
                 healthMutation.reset();
             }
         },
-        onError: (err: unknown) => {
-            toast.error(err instanceof Error ? err.message : "Failed to update LobsterTalk settings");
-        },
     });
 
     if (!activeOrgId) {
@@ -449,9 +446,6 @@ function ChannelsSection({orgId}: {orgId: string}) {
             setOrgLobstertalkChannel(orgId, channelId, approved),
         onSuccess: (_data, {orgId}) => {
             void queryClient.invalidateQueries({queryKey: queryKeys.orgChannels(orgId)});
-        },
-        onError: (err: unknown) => {
-            toast.error(err instanceof Error ? err.message : "Failed to update channel approval");
         },
     });
     const publicChannels = (channelsQuery.data?.channels ?? []).filter(

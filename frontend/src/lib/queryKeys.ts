@@ -40,12 +40,18 @@ export const queryKeys = {
   /** One skill's version timeline. */
   skillVersions: (orgId: string, skillId: string) =>
     ["skills", orgId, skillId, "versions"] as const,
+  /** One version with its content. */
+  skillVersion: (orgId: string, skillId: string, versionId: string) =>
+    ["skills", orgId, skillId, "versions", versionId] as const,
   /** The rendered SKILL.md for one version on one runtime. */
   skillRender: (orgId: string, skillId: string, versionId: string, runtime: string) =>
     ["skills", orgId, skillId, versionId, "render", runtime] as const,
   /** Skills one agent reported as present on disk. */
   agentSkills: (orgId: string, agentId: string) =>
     ["skills", orgId, "agent", agentId] as const,
+  /** One install's SKILL.md. Under agentSkills, so refreshing the list refreshes it. */
+  agentSkillContent: (orgId: string, agentId: string, installId: string) =>
+    ["skills", orgId, "agent", agentId, installId] as const,
   /** Channels/DMs an agent is in — the automation delivery-target picker. */
   agentChannels: (orgId: string, agentId: string) =>
     ["agentChannels", orgId, agentId] as const,

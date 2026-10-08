@@ -1,12 +1,12 @@
 import {BubbleChatIcon, UserCircleIcon} from "@hugeicons/core-free-icons";
 import type {AppIcon} from "@/components/Icon";
-import {Bot, House, type LucideIcon} from "lucide-react";
+import {BookOpen, Bot, House, type LucideIcon} from "lucide-react";
 
-/** The sidebar's primary nav, top to bottom, numbered from ⌘1 on desktop.
- *  Skills is hidden for now: its routes still exist, it just has no nav entry. */
+/** The sidebar's primary nav, top to bottom, numbered from ⌘1 on desktop. */
 export const NAV_SECTIONS: {to: string; label: string; icon: LucideIcon}[] = [
     {to: "/home", label: "Home", icon: House},
     {to: "/agents", label: "Agents", icon: Bot},
+    {to: "/skills", label: "Skills", icon: BookOpen},
 ];
 
 /** Where the sidebar footer's Settings button and ⌘, land. */

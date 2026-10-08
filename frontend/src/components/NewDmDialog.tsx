@@ -6,7 +6,6 @@ import {useOrgDirectory, type DirectoryEntry} from "@/components/modals/useOrgDi
 import {useAuth} from "@/context/AuthContext";
 import {createMmAgentChat, createOrGetMmDirect} from "@/lib/api";
 import {queryKeys} from "@/lib/queryKeys";
-import {errMsg, toast} from "@/lib/toast";
 
 export function NewDmDialog({
     open, onOpenChange, named = false,
@@ -36,9 +35,6 @@ export function NewDmDialog({
             onOpenChange(false);
             void queryClient.invalidateQueries({queryKey: queryKeys.mm.channelsAll});
             void navigate(`/channels/${channel.channel_id}`);
-        },
-        onError: e => {
-            toast.error(errMsg(e, named ? "Couldn't start chat" : "Couldn't start direct message"));
         },
     });
 

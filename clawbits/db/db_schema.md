@@ -187,6 +187,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `resolved_version_id` | `VARCHAR` | — |
 | `desired_content_hash` | `VARCHAR` | — |
 | `enabled` | `BOOLEAN` | NOT NULL, default `true` |
+| `takeover` | `BOOLEAN` | NOT NULL, default `false` |
 | `desired_generation` | `BIGINT` | NOT NULL, default `0` |
 | `observed_generation` | `BIGINT` | — |
 | `sync_status` | `TEXT` | NOT NULL, default `requested` |
@@ -199,6 +200,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `reported_source` | `VARCHAR` | — |
 | `reported_manifest` | `JSONB` | — |
 | `reported_state` | `JSONB` | — |
+| `reported_skill_md` | `TEXT` | — |
+| `reported_skill_md_omitted` | `VARCHAR` | — |
 | `schema_version` | `TEXT` | NOT NULL, default `1` |
 | `plugin_version` | `VARCHAR` | — |
 | `agent_runtime_version` | `VARCHAR` | — |
@@ -233,6 +236,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `prompt_chars_observed` | `INTEGER` | — |
 | `prompt_budget_observed` | `INTEGER` | — |
 | `report_truncated` | `BOOLEAN` | NOT NULL, default `false` |
+| `bundled` | `JSONB` | — |
 | `plugin_version` | `VARCHAR` | — |
 | `agent_runtime_version` | `VARCHAR` | — |
 | `last_reported_at` | `TIMESTAMP WITH TIME ZONE` | — |

@@ -3106,6 +3106,7 @@ class ClawBitsServer(FastAPI):
                 truncated=body.truncated,
                 plugin_version=body.plugin_version,
                 agent_runtime_version=body.runtime_version,
+                bundled=body.bundled,
             )
             db.commit()
         return SkillStateReportResponse(
@@ -3149,7 +3150,7 @@ class ClawBitsServer(FastAPI):
         an agent cannot pull arbitrary catalog content by guessing an id.
         """
         from clawbits.db.models import Agent as _AgentRow
-        from clawbits.skills.render import render_skill, resolve_runtime
+        from clawbits.skills.render import resolve_runtime
 
         agent = extract_agent(self._engine, api_key)
         agent_id = agent.agent_id.value
@@ -3160,12 +3161,7 @@ class ClawBitsServer(FastAPI):
             row = db.get(_AgentRow, agent_id)
             runtime = resolve_runtime(row.agent_type if row else None)
             files = [
-                {
-                    "path": "SKILL.md",
-                    "content": render_skill(
-                        version.manifest, version.body_md, runtime=runtime.name
-                    ),
-                }
+                {"path": "SKILL.md", "content": runtime.render(version.manifest, version.body_md)}
             ] + [
                 {"path": f["path"], "content": f["content"]}
                 for f in (version.files or [])

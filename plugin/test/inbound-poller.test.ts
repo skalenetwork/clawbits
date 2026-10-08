@@ -15,6 +15,7 @@ import {
 } from "../src/inbound-poller.js";
 import { ChannelWatermarkStore } from "../src/channel-watermarks.js";
 import { setMcpOAuthRuntime } from "../src/mcp-oauth.js";
+import { type ClawBitsServiceHandoff, registerSlimChannelHandoff } from "../src/service-handoff.js";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { ResolvedClawBitsAccount } from "../src/types.js";
 
@@ -1744,6 +1745,52 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
     assert.equal(received[0]?.channelId, "room-1");
     assert.equal(received[0]?.senderId, "human:7");
     assert.match(received[0]?.text ?? "", /Signed in to MCP server "agentpit"/);
+  });
+
+  it("forwards skills.sync and automation.sync to the companion's loops", async () => {
+    let handoff: ClawBitsServiceHandoff | undefined;
+    registerSlimChannelHandoff(
+      {
+        channel: {
+          runtimeContexts: {
+            register: ({ context }) => {
+              handoff = context;
+              return { dispose() {} };
+            },
+            get: () => undefined,
+          },
+        },
+      },
+      "0.17.0",
+    );
+    const woken: string[] = [];
+    const unsubscribe = handoff?.onCompanionWake?.((nudge, accountId) => woken.push(`${nudge}:${accountId}`));
+    const post = { id: "ws-1", create_at: 200, human_id: 1, message: "hi", channel_id: "chan-123" };
+    const ws = installMockWebSocket([
+      { type: "skills.sync" },
+      { type: "automation.sync" },
+      { type: "post.created", channel_id: "chan-123", data: post },
+    ]);
+    const stub = installFetchStub(() => ({
+      body: { channels: [{ channel_id: "chan-123", channel_type: "direct" }] },
+    }));
+    const ac = new AbortController();
+    try {
+      await runInboundPoller({
+        client: makeClient(),
+        account: makeAccount({ config: { websocketEnabled: true } }),
+        abortSignal: ac.signal,
+        initialCursor: 150,
+        pollIntervalMs: 10_000,
+        onInboundMessage: () => ac.abort(),
+      });
+    } finally {
+      unsubscribe?.();
+      stub.restore();
+      ws.restore();
+    }
+
+    assert.deepEqual(woken, ["skills.sync:default", "automation.sync:default"]);
   });
 
   it("dispatches post.created over the agent WebSocket without per-channel SSE or post polling", async () => {

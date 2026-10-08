@@ -16,12 +16,7 @@ import {
   supportsCompanionServices,
   supportsModelSelection,
 } from "./service-handoff.js";
-import { getWorkspaceDir, setWorkspaceDir } from "./skills/scan.js";
-import {
-  claimSkillsReporter,
-  releaseSkillsReporter,
-  runSkillsReporter,
-} from "./skills/sync.js";
+import { runSkillsReporter, wakeSkillsReporter } from "./skills/sync.js";
 import { registerUsageHooks } from "./usage/collector.js";
 import { runUsageReporter } from "./usage/reporter.js";
 
@@ -54,7 +49,7 @@ interface RunningServices {
   tasks: Promise<void>[];
   emailWatermarks: ChannelWatermarkStore;
   usageActive: boolean;
-  skillsOwner?: string;
+  stopWakes?: () => void;
 }
 
 let running: RunningServices | undefined;
@@ -63,9 +58,9 @@ async function stopRunningServices(): Promise<void> {
   const current = running;
   running = undefined;
   if (!current) return;
+  current.stopWakes?.();
   current.controller.abort(new Error("Clawbits companion services stopped"));
   await Promise.allSettled(current.tasks);
-  if (current.skillsOwner) releaseSkillsReporter(current.skillsOwner);
   await current.emailWatermarks.flush();
   setCronHandle(undefined);
 }
@@ -94,7 +89,6 @@ async function startCompanionServices(
   }
 
   setCronHandle(ctx.getCron?.());
-  setWorkspaceDir(ctx.workspaceDir);
   const controller = new AbortController();
   const tasks: Promise<void>[] = [];
   const emailWatermarks = ChannelWatermarkStore.emailFileBacked();
@@ -105,7 +99,13 @@ async function startCompanionServices(
     usageActive: false,
   };
   running = state;
-  const modelSelection = supportsModelSelection(readSlimChannelHandoff(api.runtime));
+  const handoff = readSlimChannelHandoff(api.runtime);
+  const modelSelection = supportsModelSelection(handoff);
+  state.stopWakes = handoff?.onCompanionWake?.((nudge, accountId) => {
+    if (nudge === "skills.sync") wakeSkillsReporter();
+    else wakeAutomationsReconciler(accountId);
+  });
+  let skillsStarted = false;
 
   for (const accountId of listClawBitsAccountIds(cfg)) {
     const account = resolveClawBitsAccount({ cfg, accountId });
@@ -153,15 +153,16 @@ async function startCompanionServices(
       );
     }
 
-    if (!state.skillsOwner && claimSkillsReporter(accountId)) {
-      state.skillsOwner = accountId;
+    // One reporter per gateway: the skill roots are shared across accounts.
+    if (!skillsStarted) {
+      skillsStarted = true;
       startTask(
         tasks,
         runSkillsReporter({
           client,
           abortSignal: controller.signal,
           accountId,
-          workspaceDir: getWorkspaceDir(),
+          workspaceDir: ctx.workspaceDir,
           runtimeVersion: api.runtime.version,
           log: api.logger,
         }),

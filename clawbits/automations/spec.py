@@ -42,6 +42,11 @@ _ALLOWED_SPEC_KEYS = frozenset(
 # gateway default — the UI/plugin must always populate them (see strategy §3.3).
 _REQUIRED_SPEC_KEYS = ("name", "schedule", "sessionTarget", "wakeMode", "payload")
 
+# OpenClaw stops an isolated agent turn after 1 hour unless the job sets
+# ``payload.timeoutSeconds``. The plugin's in-process cron handle skips the
+# gateway schema, so the bound is enforced here; 0 would remove every limit.
+_MAX_TIMEOUT_SECONDS = 4 * 3600
+
 
 class SpecValidationError(ValueError):
     """Raised when a ``desired_spec`` is missing required cron fields."""
@@ -93,6 +98,18 @@ def validate_spec(spec: dict[str, Any]) -> None:
         raise SpecValidationError(
             "desired_spec missing required field(s): " + ", ".join(missing)
         )
+    payload = spec["payload"]
+    if not isinstance(payload, dict) or payload.get("kind") != "agentTurn":
+        raise SpecValidationError("payload.kind must be agentTurn")
+    message = payload.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise SpecValidationError("payload.message must be a non-empty string")
+    if "timeoutSeconds" in payload:
+        timeout = payload["timeoutSeconds"]
+        if type(timeout) is not int or not 0 < timeout <= _MAX_TIMEOUT_SECONDS:
+            raise SpecValidationError(
+                f"payload.timeoutSeconds must be whole seconds from 1 to {_MAX_TIMEOUT_SECONDS}"
+            )
 
 
 def canonical_json(value: Any) -> str:

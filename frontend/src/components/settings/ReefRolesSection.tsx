@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { listOrgMembers, listReefRoleAccess, setReefRoleAccess, type ReefRoleAccess } from "@/lib/api";
 import { formatRoleResources, roleRuntime, RUNTIME_LOGO } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
+import { errMsg } from "@/lib/toast";
 
 const MODES: { value: ReefRoleAccess["mode"]; label: string }[] = [
   { value: "everyone", label: "Everyone" },
@@ -29,9 +29,6 @@ export function ReefRolesSection({ orgId }: { orgId: string }) {
   const save = useMutation({
     mutationFn: ({ role, access }: { role: string; access: ReefRoleAccess }) => setReefRoleAccess(orgId, role, access),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.reefRoles(orgId) }),
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't change who can use the role"));
-    },
   });
 
   const granted = new Set(roles.data?.find((r) => r.role.name === editing)?.access.members);

@@ -6,7 +6,7 @@ import { generateAgentDescription } from "@/lib/agentDescription";
 import { agentDisplay } from "@/lib/agentDisplay";
 import { formatRelativeAgo } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/Icon";
 import { ModalButton, ModalField, ModalFooter, ModalHeader, ModalPanel } from "@/components/modals/Modal";
@@ -39,9 +39,6 @@ function RenameForm({ orgId, agentId, initial, onClose }: FormProps) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
       toast.success(`Renamed to ${data.nickname}`);
       onClose();
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't rename agent"));
     },
   });
 
@@ -98,9 +95,6 @@ function DescriptionForm({ orgId, agentId, initial, onClose }: FormProps) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents(orgId) });
       toast.success("Description updated");
       onClose();
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't update the description"));
     },
   });
 
@@ -165,9 +159,6 @@ export function IdentitySection({ orgId, profile }: { orgId: string; profile: Ag
     onSuccess: () => {
       toast.success("Asked the agent to refresh its description");
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentProfile(orgId, agentId) });
-    },
-    onError: (err) => {
-      toast.error(errMsg(err, "Couldn't request a refresh"));
     },
   });
 

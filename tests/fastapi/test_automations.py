@@ -283,6 +283,27 @@ def test_delivery_target_channel(test_client: TestClient, _test_engine):
     assert auto2["desired_spec"]["delivery"] == {"mode": "announce", "to": member_cid}
 
 
+def test_payload_validation(test_client: TestClient, _test_engine):
+    """The payload must be an agentTurn with a prompt; a time limit, when set, is
+    whole seconds within the cap (0 would lift every limit on the job)."""
+    agent_id, _, token, org_id = _setup(test_client, "payload@clawbits.ai")
+    base = f"/api/human/orgs/{org_id}/agents/{agent_id}/automations"
+
+    def post(payload):
+        spec = {**GOOD_SPEC, "payload": payload}
+        return test_client.post(base, headers=auth_headers(token), json={"desired_spec": spec})
+
+    r = post({**GOOD_SPEC["payload"], "timeoutSeconds": 7200})
+    assert r.status_code == 200, r.text
+    assert r.json()["desired_spec"]["payload"]["timeoutSeconds"] == 7200
+
+    for timeout in (0, -1, 14401, 1.5, "3600", True, None):
+        r = post({**GOOD_SPEC["payload"], "timeoutSeconds": timeout})
+        assert r.status_code == 400, timeout
+    assert post({"kind": "command", "argv": ["true"]}).status_code == 400
+    assert post({"kind": "agentTurn", "message": "  "}).status_code == 400
+
+
 def test_alive_is_billing_exempt(test_client: TestClient, _test_engine):
     """The liveness heartbeat must not burn CB_TOKENS (latent-bug fix)."""
     data = _create_agent(test_client, owner_email="alive-auto@clawbits.ai")

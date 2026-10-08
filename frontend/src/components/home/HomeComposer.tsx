@@ -24,7 +24,6 @@ import {
 import { frecencyKey, recordVisit } from "@/lib/frecency";
 import { HOME_DRAFT_KEY, draftStore } from "@/lib/messageDrafts";
 import { queryKeys } from "@/lib/queryKeys";
-import { errMsg, toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 const MAX_LEN = 4000;
@@ -113,8 +112,7 @@ export function HomeComposer({ orgId, agents }: { orgId: string; agents: AgentUs
       void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
       void navigate(`/channels/${channel.channel_id}`);
     },
-    onError: (e) => {
-      toast.error(errMsg(e, "Couldn't start the chat"));
+    onError: () => {
       inputRef.current?.focus();
     },
   });

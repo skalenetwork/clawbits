@@ -1560,6 +1560,11 @@ class AgentSkillInstall(SQLModel, table=True):
     enabled: bool = Field(
         default=True, sa_column=SAColumn(Boolean, nullable=False, server_default=text("true"))
     )
+    # Set by adopt: the client may replace an unmanaged directory of this slug
+    # in its write root. Cleared once the agent confirms the apply.
+    takeover: bool = Field(
+        default=False, sa_column=SAColumn(Boolean, nullable=False, server_default=false())
+    )
 
     desired_generation: int = Field(
         default=0, sa_column=SAColumn(BigInteger, nullable=False, server_default="0")
@@ -1589,6 +1594,13 @@ class AgentSkillInstall(SQLModel, table=True):
     reported_state: dict[str, Any] | None = Field(
         default=None, sa_column=SAColumn(JSONB, nullable=True)
     )
+    # The raw SKILL.md behind ``reported_content_hash``, kept while that hash
+    # holds. The client sends it once per hash, so it is never refetched.
+    reported_skill_md: str | None = Field(
+        default=None, sa_column=SAColumn(Text, nullable=True)
+    )
+    # Why the client sent no body for this hash, e.g. 'too_large'.
+    reported_skill_md_omitted: str | None = None
 
     schema_version: str = Field(
         default=SKILL_SCHEMA_VERSION,
@@ -1648,6 +1660,11 @@ class AgentSkillSyncState(SQLModel, table=True):
     prompt_budget_observed: int | None = None
     report_truncated: bool = Field(
         default=False, sa_column=SAColumn(Boolean, nullable=False, server_default=false())
+    )
+    # OpenClaw's built-in skills as [{slug, description}]. Sent only when the
+    # set changes, so a report without it leaves this as it was.
+    bundled: list[dict[str, Any]] | None = Field(
+        default=None, sa_column=SAColumn(JSONB, nullable=True)
     )
     plugin_version: str | None = None
     agent_runtime_version: str | None = None

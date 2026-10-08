@@ -65,9 +65,6 @@ export default function SettingsChannelsPage() {
             setChannelToDelete(null);
             toast.success(`Deleted ${label}`);
         },
-        onError: (err: unknown) => {
-            toast.error(err instanceof Error ? err.message : "Failed to delete channel");
-        },
     });
 
     if (!activeOrgId) {

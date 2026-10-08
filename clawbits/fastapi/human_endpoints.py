@@ -8,6 +8,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -16,6 +17,7 @@ from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
+from starlette.datastructures import UploadFile
 
 from clawbits import audit
 from clawbits.agent_marks import tidemarks
@@ -129,6 +131,7 @@ from clawbits.realtime import (
     publish_model_selection,
     publish_org_added,
     publish_org_updated,
+    publish_skills_sync,
     publish_user_status,
 )
 from clawbits.reef_repo import (
@@ -144,7 +147,15 @@ from clawbits.reef_repo import (
     parse_status,
     purge_toml,
 )
-from clawbits.skills.render import SKILL_RUNTIMES, render_skill, resolve_runtime
+from clawbits.skills.importer import (
+    ENTRIES_MAX,
+    UPLOAD_MAX,
+    SkillImportError,
+    draft_from_github,
+    draft_from_skill_md,
+    draft_from_upload,
+)
+from clawbits.skills.render import SKILL_RUNTIMES, resolve_runtime
 from clawbits.skills.spec import (
     SkillValidationError,
     normalize_files,
@@ -2440,20 +2451,36 @@ class ForkSkillRequest(BaseModel):
     display_name: str | None = None
 
 
-class InstallSkillRequest(BaseModel):
+class SkillIdRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     skill_id: str
 
 
 class UpdateInstallRequest(BaseModel):
+    """``channel='latest'`` unpins; ``pinned_version_id`` pins that version."""
+
     model_config = ConfigDict(extra="forbid")
-    enabled: bool
+    enabled: bool | None = None
+    channel: Literal["latest"] | None = None
+    pinned_version_id: str | None = None
 
 
-def _skill_or_404(db, org_id: str, skill_id: str):
+class ImportSkillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(max_length=2048)
+
+
+class InstallOnAgentsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+def _skill_or_404(db, org_id: str, skill_id: str, *, published: bool = False):
     row = TableRead.get_skill_for_org(db, skill_id, org_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Skill not found")
+    if published and row.latest_version_id is None:
+        raise HTTPException(status_code=409, detail="This skill has no published version yet")
     return row
 
 
@@ -2480,13 +2507,66 @@ def _prepare_skill_content(
     return normalized, normalized_files
 
 
-def _managed_install(db, agent_id: str, install_id: str) -> AgentSkillInstall:
+def _agent_install(db, agent_id: str, install_id: str) -> AgentSkillInstall:
+    """The caller has already proven the agent is in the org, so matching the
+    row's agent keeps a reported body from ever crossing orgs."""
     row = db.get(AgentSkillInstall, install_id)
     if row is None or row.agent_id != agent_id:
         raise HTTPException(status_code=404, detail="Skill install not found")
+    return row
+
+
+def _managed_install(db, agent_id: str, install_id: str) -> AgentSkillInstall:
+    row = _agent_install(db, agent_id, install_id)
     if row.managed_by != "clawbits":
         raise HTTPException(status_code=409, detail="Clawbits doesn't manage this skill")
     return row
+
+
+def _runtime_refusal(agent: Agent, skill) -> str | None:
+    runtime = resolve_runtime(agent.agent_type)
+    if not runtime.can_receive:
+        return f"Skills require an OpenClaw runtime; this agent runs {runtime.name}"
+    if runtime.name not in (skill.runtimes or ["openclaw"]):
+        return f"'{skill.slug}' does not declare support for {runtime.name}"
+    return None
+
+
+def _install_refusal(db, agent: Agent, skill) -> str | None:
+    """Why ``skill`` cannot go onto ``agent``, or ``None``. An agent's own
+    skill of the same name in its write root is never overwritten here: adopt
+    is the explicit path for that."""
+    if refusal := _runtime_refusal(agent, skill):
+        return refusal
+    row = TableRead.get_agent_skill_install(db, agent.agent_id, skill.slug)
+    if row and row.managed_by == "external" and TableRead.is_in_skills_write_root(db, row):
+        return f"This agent has its own '{skill.slug}' skill; adopt it to replace it"
+    return None
+
+
+def _nudge_skills(agent_ids: list[str]) -> None:
+    """Call after the commit that changed each agent's desired set."""
+    bus = get_bus()
+    for agent_id in agent_ids:
+        fire_and_forget(publish_skills_sync(bus, agent_id))
+
+
+async def _read_uploads(uploads: list) -> list[tuple[str, bytes]]:
+    files: list[tuple[str, bytes]] = []
+    total = 0
+    for upload in uploads:
+        if not isinstance(upload, UploadFile):
+            raise HTTPException(status_code=422, detail="files must be file uploads")
+        data = await upload.read(UPLOAD_MAX + 1 - total)
+        total += len(data)
+        if total > UPLOAD_MAX:
+            raise HTTPException(
+                status_code=422, detail=f"The upload is larger than {UPLOAD_MAX // 2**20} MiB"
+            )
+        files.append((upload.filename or "", data))
+    if not files:
+        raise HTTPException(status_code=422, detail="Attach a zip or the skill's files")
+    return files
 
 
 @human_router.get("/api/human/orgs/{org_id}/skills")
@@ -2532,6 +2612,34 @@ def create_org_skill(
         result = TableRead.get_skill_detail(db, row.skill_id, org_id)
         db.commit()
     return result
+
+
+@human_router.post("/api/human/orgs/{org_id}/skills/import")
+async def import_org_skill(
+    org_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Read a skill into an unsaved draft for the editor: JSON ``{url}`` for a
+    public GitHub link, or multipart ``files`` holding one zip or the files of
+    one folder named by their relative paths. Nothing is stored until the draft
+    is created."""
+    _rate_limit(f"skill-write:{org_id}", limit=_SKILL_WRITE_LIMIT)
+    await _in_db(request, lambda db: _verify_org_membership(db, org_id, user))
+    try:
+        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+            async with request.form(max_files=ENTRIES_MAX, max_fields=ENTRIES_MAX) as form:
+                files = await _read_uploads(form.getlist("files"))
+            return await asyncio.to_thread(draft_from_upload, files)
+        try:
+            body = ImportSkillRequest.model_validate_json(await request.body())
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422, detail="Send a GitHub link as {url}, or upload files"
+            ) from exc
+        return await draft_from_github(body.url)
+    except SkillImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @human_router.get("/api/human/orgs/{org_id}/skills/{skill_id}")
@@ -2597,7 +2705,9 @@ def publish_org_skill_version(
             published_by=user["id"],
         )
         result = TableRead._skill_version_to_dict(version, include_content=True)
+        followers = TableRead.list_skill_follower_agent_ids(db, skill_id)
         db.commit()
+    _nudge_skills(followers)
     return result
 
 
@@ -2613,6 +2723,24 @@ def list_org_skill_versions(
         _verify_org_membership(db, org_id, user)
         _skill_or_404(db, org_id, skill_id)
         return {"versions": TableRead.list_skill_versions(db, skill_id)}
+
+
+@human_router.get("/api/human/orgs/{org_id}/skills/{skill_id}/versions/{version_id}")
+def get_org_skill_version(
+    org_id: str,
+    skill_id: str,
+    version_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """One version with its content, for viewing or pinning an older one."""
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        _skill_or_404(db, org_id, skill_id)
+        version = TableRead.get_skill_version(db, version_id, skill_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="Version not found")
+        return TableRead._skill_version_to_dict(version, include_content=True)
 
 
 @human_router.get(
@@ -2638,7 +2766,7 @@ def render_org_skill_version(
         return {
             "runtime": runtime,
             "path": f"{skill.slug}/SKILL.md",
-            "content": render_skill(version.manifest, version.body_md, runtime=runtime),
+            "content": SKILL_RUNTIMES[runtime].render(version.manifest, version.body_md),
             "content_hash": version.content_hash,
         }
 
@@ -2656,11 +2784,7 @@ def fork_org_skill(
     _rate_limit(f"skill-write:{org_id}", limit=_SKILL_WRITE_LIMIT)
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
-        source = _skill_or_404(db, org_id, skill_id)
-        if source.latest_version_id is None:
-            raise HTTPException(
-                status_code=409, detail="Cannot fork a skill with no published version"
-            )
+        source = _skill_or_404(db, org_id, skill_id, published=True)
         source_version = TableRead.get_skill_version(db, source.latest_version_id, source.skill_id)
         if source_version is None:
             raise HTTPException(status_code=404, detail="Source version not found")
@@ -2697,12 +2821,51 @@ def delete_org_skill(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Soft-delete a skill from the library."""
+    """Soft-delete a skill from the library, uninstalling it everywhere."""
     with _get_db(request) as db:
         _verify_org_membership(db, org_id, user)
-        TableWrite.delete_skill(db, skill=_skill_or_404(db, org_id, skill_id))
+        agent_ids = TableWrite.delete_skill(db, skill=_skill_or_404(db, org_id, skill_id))
         db.commit()
+    _nudge_skills(agent_ids)
     return {"skill_id": skill_id, "deleted": True}
+
+
+@human_router.post("/api/human/orgs/{org_id}/skills/{skill_id}/installs")
+def install_org_skill_on_agents(
+    org_id: str,
+    skill_id: str,
+    body: InstallOnAgentsRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Install one skill onto several agents. Each agent is authorized and
+    checked on its own, and a refusal names its reason rather than failing the
+    rest."""
+    results: list[dict] = []
+    with _get_db(request) as db:
+        _verify_org_membership(db, org_id, user)
+        skill = _skill_or_404(db, org_id, skill_id, published=True)
+        for agent_id in dict.fromkeys(body.agent_ids):
+            if not TableRead.is_agent_in_org(db, agent_id, org_id):
+                refusal = "Agent not found in this organization"
+            elif not TableRead.can_manage_agent_contacts(db, agent_id, user["id"]):
+                refusal = "Only the agent's operator or an org admin can manage its skills"
+            else:
+                refusal = _install_refusal(db, db.get(Agent, agent_id), skill)
+            if refusal is not None:
+                results.append({"agent_id": agent_id, "status": "refused", "detail": refusal})
+                continue
+            row = TableRead.get_agent_skill_install(db, agent_id, skill.slug)
+            status = "already_installed"
+            if row is None or row.skill_id != skill.skill_id or row.deleted_at or not row.enabled:
+                row = TableWrite.install_skill(
+                    db, agent_id=agent_id, org_id=org_id, skill=skill, installed_by=user["id"]
+                )
+                status = "requested"
+            results.append({"agent_id": agent_id, "status": status, "install_id": row.install_id})
+        db.commit()
+    _nudge_skills([r["agent_id"] for r in results if r["status"] == "requested"])
+    return {"results": results}
 
 
 @human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/skills")
@@ -2722,7 +2885,7 @@ def list_agent_skills(
 def install_agent_skill(
     org_id: str,
     agent_id: str,
-    body: InstallSkillRequest,
+    body: SkillIdRequest,
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
@@ -2731,25 +2894,15 @@ def install_agent_skill(
     upstream edit reaching an agent that never opted in."""
     with _get_db(request) as db:
         _require_operator_or_admin(db, org_id, agent_id, user, "manage its skills")
-        runtime = resolve_runtime(db.get(Agent, agent_id).agent_type)
-        if not runtime.can_receive:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Skills require an OpenClaw runtime; this agent runs {runtime.name}",
-            )
-        skill = _skill_or_404(db, org_id, body.skill_id)
-        if skill.latest_version_id is None:
-            raise HTTPException(status_code=409, detail="This skill has no published version yet")
-        if runtime.name not in (skill.runtimes or ["openclaw"]):
-            raise HTTPException(
-                status_code=422,
-                detail=f"'{skill.slug}' does not declare support for {runtime.name}",
-            )
+        skill = _skill_or_404(db, org_id, body.skill_id, published=True)
+        if refusal := _install_refusal(db, db.get(Agent, agent_id), skill):
+            raise HTTPException(status_code=422, detail=refusal)
         TableWrite.install_skill(
             db, agent_id=agent_id, org_id=org_id, skill=skill, installed_by=user["id"]
         )
         result = TableRead.list_agent_skills(db, agent_id)
         db.commit()
+    _nudge_skills([agent_id])
     return result
 
 
@@ -2762,13 +2915,21 @@ def update_agent_skill_install(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Enable or disable an installed skill."""
+    """Enable or disable an installed skill, or pin it to a version."""
     with _get_db(request) as db:
         _require_operator_or_admin(db, org_id, agent_id, user, "manage its skills")
         row = _managed_install(db, agent_id, install_id)
-        TableWrite.set_skill_install_enabled(db, row=row, enabled=body.enabled)
+        if body.enabled is not None:
+            TableWrite.set_skill_install_enabled(db, row=row, enabled=body.enabled)
+        if body.channel == "latest":
+            TableWrite.set_skill_install_pin(db, row=row, version_id=None)
+        elif body.pinned_version_id:
+            if TableRead.get_skill_version(db, body.pinned_version_id, row.skill_id) is None:
+                raise HTTPException(status_code=404, detail="Version not found")
+            TableWrite.set_skill_install_pin(db, row=row, version_id=body.pinned_version_id)
         result = TableRead.list_agent_skills(db, agent_id)
         db.commit()
+    _nudge_skills([agent_id])
     return result
 
 
@@ -2793,4 +2954,95 @@ def uninstall_agent_skill(
             TableWrite.uninstall_skill(db, row=row)
         result = TableRead.list_agent_skills(db, agent_id)
         db.commit()
+    _nudge_skills([agent_id])
+    return result
+
+
+@human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}/content")
+def get_agent_skill_content(
+    org_id: str,
+    agent_id: str,
+    install_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """A skill's SKILL.md: the rendered library version for a managed install,
+    otherwise what the agent reported, with why it sent none."""
+    with _get_db(request) as db:
+        _require_operator_or_admin(db, org_id, agent_id, user, "view its skills")
+        row = _agent_install(db, agent_id, install_id)
+        if version := TableRead._resolve_install_version(db, row):
+            runtime = resolve_runtime(db.get(Agent, agent_id).agent_type)
+            skill_md = runtime.render(version.manifest, version.body_md)
+        else:
+            skill_md = row.reported_skill_md
+        return {
+            "skill_md": skill_md,
+            "omitted_reason": (
+                None if skill_md is not None else row.reported_skill_md_omitted or "not_reported"
+            ),
+        }
+
+
+@human_router.get("/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}/draft")
+def get_agent_skill_draft(
+    org_id: str,
+    agent_id: str,
+    install_id: str,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """The agent's own copy of a skill as an unsaved draft, the first step of
+    adopting it. Agent-reported text is untrusted, so it goes through the same
+    normalization as any import."""
+    with _get_db(request) as db:
+        _require_operator_or_admin(db, org_id, agent_id, user, "view its skills")
+        row = _agent_install(db, agent_id, install_id)
+        if row.reported_skill_md is None:
+            raise HTTPException(
+                status_code=409, detail="The agent hasn't reported this skill's content"
+            )
+        try:
+            return draft_from_skill_md(
+                row.reported_skill_md.encode(), {}, [], folder=row.slug, source={"kind": "agent"}
+            )
+        except SkillImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@human_router.post("/api/human/orgs/{org_id}/agents/{agent_id}/skills/{install_id}/adopt")
+def adopt_agent_skill(
+    org_id: str,
+    agent_id: str,
+    install_id: str,
+    body: SkillIdRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Put an agent's own skill under a library skill of the same name. When the
+    agent's copy sits in its write root, the install carries ``takeover`` so the
+    plugin may replace that directory once."""
+    with _get_db(request) as db:
+        _require_operator_or_admin(db, org_id, agent_id, user, "manage its skills")
+        row = _agent_install(db, agent_id, install_id)
+        if row.managed_by != "external":
+            raise HTTPException(status_code=409, detail="Clawbits already manages this skill")
+        skill = _skill_or_404(db, org_id, body.skill_id, published=True)
+        if skill.slug != row.slug:
+            raise HTTPException(
+                status_code=409, detail=f"Adopt it with a library skill named '{row.slug}'"
+            )
+        if refusal := _runtime_refusal(db.get(Agent, agent_id), skill):
+            raise HTTPException(status_code=422, detail=refusal)
+        row = TableWrite.install_skill(
+            db,
+            agent_id=agent_id,
+            org_id=org_id,
+            skill=skill,
+            installed_by=user["id"],
+            takeover=TableRead.is_in_skills_write_root(db, row),
+        )
+        result = TableRead._install_to_dict(row)
+        db.commit()
+    _nudge_skills([agent_id])
     return result

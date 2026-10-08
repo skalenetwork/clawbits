@@ -84,9 +84,6 @@ export default function OrgMembersPage() {
             }
             toast.success(`Added ${vars.email}`);
         },
-        onError: (err: unknown) => {
-            toast.error(err instanceof Error ? err.message : "Couldn't add member");
-        },
     });
 
     const roleMutation = useMutation({
@@ -103,9 +100,6 @@ export default function OrgMembersPage() {
                 vars.role === "owner" ? "Now an admin" : "Now a member",
             );
         },
-        onError: (err: unknown) => {
-            toast.error(err instanceof Error ? err.message : "Couldn't change role");
-        },
     });
 
     const removeMutation = useMutation({
@@ -117,9 +111,6 @@ export default function OrgMembersPage() {
             }
             setMemberToRemove(null);
             toast.success("Member removed");
-        },
-        onError: (err: unknown) => {
-            toast.error(err instanceof Error ? err.message : "Couldn't remove member");
         },
     });
 

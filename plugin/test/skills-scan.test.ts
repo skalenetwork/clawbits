@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { resolveSkillRoots, scanSkills, writeRoot } from "../src/skills/scan.js";
+import {
+  MAX_SKILL_MD_BYTES,
+  resolveBundledSkillsDir,
+  resolveSkillRoots,
+  scanSkills,
+  writeRoot,
+} from "../src/skills/scan.js";
 
 let dir: string;
 
@@ -76,6 +83,32 @@ describe("scanSkills", () => {
     expect(skills.map((s) => s.slug)).toEqual(["clawbits-email"]);
   });
 
+  test("hashes the raw SKILL.md bytes and carries the text", async () => {
+    const root = path.join(dir, "skills");
+    await writeSkill(root, "weather", "name: weather\ndescription: d");
+    const raw = "---\nname: weather\ndescription: d\n---\n\nbody\n";
+
+    const { skills } = await scanSkills([root]);
+    expect(skills[0]?.skillMd).toEqual({
+      hash: `sha256:${createHash("sha256").update(raw).digest("hex")}`,
+      text: raw,
+    });
+  });
+
+  test("keeps the hash but drops the text past 64 KiB", async () => {
+    const root = path.join(dir, "skills");
+    for (const [slug, size] of [["at-cap", MAX_SKILL_MD_BYTES], ["over-cap", MAX_SKILL_MD_BYTES + 1]] as const) {
+      await mkdir(path.join(root, slug), { recursive: true });
+      await writeFile(path.join(root, slug, "SKILL.md"), "x".repeat(size));
+    }
+
+    const { skills } = await scanSkills([root]);
+    const bySlug = new Map(skills.map((s) => [s.slug, s.skillMd]));
+    expect(bySlug.get("at-cap")?.text).toHaveLength(MAX_SKILL_MD_BYTES);
+    expect(bySlug.get("over-cap")?.hash).toStartWith("sha256:");
+    expect(bySlug.get("over-cap")?.text).toBeUndefined();
+  });
+
   test("finds skills nested below a root", async () => {
     const root = path.join(dir, "skills");
     await writeSkill(path.join(root, "group"), "nested", "name: nested\ndescription: d");
@@ -85,16 +118,56 @@ describe("scanSkills", () => {
 });
 
 describe("resolveSkillRoots", () => {
-  test("puts the workspace root first — highest precedence and the only reef-persistent path", () => {
+  test("writes to the workspace root, then the state and plugin-skills dirs", () => {
     const roots = resolveSkillRoots("/ws");
     expect(roots[0]).toBe(path.join("/ws", "skills"));
     expect(writeRoot("/ws")).toBe(path.join("/ws", "skills"));
-  });
-
-  test("includes the state and plugin-skills dirs, and dedupes", () => {
-    const roots = resolveSkillRoots("/ws", ["/ws/skills"]);
-    expect(new Set(roots).size).toBe(roots.length);
     expect(roots.some((r) => r.endsWith(path.join(".openclaw", "skills")))).toBe(true);
     expect(roots.some((r) => r.endsWith("plugin-skills"))).toBe(true);
+  });
+});
+
+describe("resolveBundledSkillsDir", () => {
+  let override: string | undefined;
+  beforeEach(() => {
+    override = process.env.OPENCLAW_BUNDLED_SKILLS_DIR;
+    delete process.env.OPENCLAW_BUNDLED_SKILLS_DIR;
+  });
+  afterEach(() => {
+    if (override === undefined) delete process.env.OPENCLAW_BUNDLED_SKILLS_DIR;
+    else process.env.OPENCLAW_BUNDLED_SKILLS_DIR = override;
+  });
+
+  async function install(name = "openclaw", withSkills = true): Promise<string> {
+    const root = path.join(dir, "lib", name);
+    await mkdir(path.join(root, "dist"), { recursive: true });
+    await writeFile(path.join(root, "package.json"), JSON.stringify({ name }));
+    await writeFile(path.join(root, "dist", "index.js"), "");
+    if (withSkills) await mkdir(path.join(root, "skills"));
+    return root;
+  }
+
+  test("climbs to <install>/skills from a bin symlink into the package", async () => {
+    const root = await install();
+    await mkdir(path.join(dir, "bin"));
+    await symlink(path.join(root, "dist", "index.js"), path.join(dir, "bin", "openclaw"));
+
+    expect(await resolveBundledSkillsDir(path.join(dir, "bin", "openclaw"))).toBe(
+      await realpath(path.join(root, "skills")),
+    );
+  });
+
+  test("honours the host's override", async () => {
+    const skills = path.join(dir, "elsewhere");
+    await mkdir(skills);
+    process.env.OPENCLAW_BUNDLED_SKILLS_DIR = skills;
+    expect(await resolveBundledSkillsDir(path.join(dir, "nowhere.mjs"))).toBe(skills);
+  });
+
+  test("is undefined without an openclaw package or its skills dir", async () => {
+    const other = await install("not-openclaw");
+    expect(await resolveBundledSkillsDir(path.join(other, "dist", "index.js"))).toBeUndefined();
+    const bare = await install("openclaw", false);
+    expect(await resolveBundledSkillsDir(path.join(bare, "dist", "index.js"))).toBeUndefined();
   });
 });

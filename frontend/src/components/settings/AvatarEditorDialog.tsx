@@ -104,9 +104,6 @@ export function AvatarEditorDialog({ open, onOpenChange, title, name, src, onUpl
             toast.success("Picture updated");
             onOpenChange(false);
         },
-        onError: (err) => {
-            toast.error(errMsg(err, "Couldn't update picture"));
-        },
     });
 
     const acceptFile = useCallback((next: File) => {

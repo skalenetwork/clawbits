@@ -1,225 +1,311 @@
-import { useOutletContext } from "react-router-dom";
+import { useState } from "react";
+import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen01Icon as Book, Delete02Icon as Trash } from "@hugeicons/core-free-icons";
+import { BookOpen01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { ChevronDown } from "lucide-react";
 import { Icon } from "@/components/Icon";
-import { PageHeader } from "@/components/PageHeader";
-import { agentBreadcrumbs } from "@/components/agent/agentBreadcrumbs";
-import type { AgentOutletContext } from "@/components/agent/AgentShell";
+import { useAgentTab } from "@/components/agent/agentTabContext";
+import { Squircle, SquircleDefs } from "@/components/home/tiles";
+import { SettingsRow, SettingsSection, SettingsTile } from "@/components/settings/Settings";
+import { SidePanel } from "@/components/sidebars/SidePanel";
+import { AgentSkillPanel } from "@/components/skills/AgentSkillPanel";
+import { SkillForge } from "@/components/skills/SkillForge";
+import { SkillGlyph } from "@/components/skills/SkillGlyph";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  adoptAgentSkill,
+  getAgentSkillDraft,
   installAgentSkill,
   listAgentSkills,
   listOrgSkills,
-  uninstallAgentSkill,
   type AgentSkill,
+  type SkillDraft,
 } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { errMsg, toast } from "@/lib/toast";
-import { queryKeys } from "@/lib/queryKeys";
+import { confirm } from "@/lib/confirm";
 import { formatRelativeAgo } from "@/lib/formatting";
+import { queryKeys } from "@/lib/queryKeys";
+import { RUNTIME_CAN_RECEIVE, RUNTIME_LABELS, agentRuntime, installPill } from "@/lib/skills";
+import { errMsg, toast } from "@/lib/toast";
+
+const PENDING = new Set(["requested", "removing"]);
+const SELECTED = "bg-foreground/8 has-[a:hover]:bg-foreground/8 has-[a:focus-visible]:bg-foreground/8";
 
 /** What skills this agent actually has, as it last reported them. */
 export default function AgentSkillsPage() {
-  const { orgId, agentId, profile, isLoading } = useOutletContext<AgentOutletContext>();
-  const breadcrumb = agentBreadcrumbs(agentId, profile);
-
+  const { orgId, agentId, profile } = useAgentTab();
+  const { installId } = useParams<{ installId: string }>();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [showBundled, setShowBundled] = useState(false);
+  const [forging, setForging] = useState<{ installId: string; draft: SkillDraft } | null>(null);
+
   const query = useQuery({
-    queryKey: queryKeys.agentSkills(orgId, agentId ?? ""),
-    queryFn: () => listAgentSkills(orgId, agentId ?? ""),
-    enabled: Boolean(orgId) && Boolean(agentId) && Boolean(profile?.is_operator),
+    queryKey: queryKeys.agentSkills(orgId, agentId),
+    queryFn: () => listAgentSkills(orgId, agentId),
+    refetchInterval: (q) => (q.state.data?.skills.some((s) => PENDING.has(s.sync_status)) ? 5_000 : false),
   });
   const libraryQuery = useQuery({
     queryKey: queryKeys.skills(orgId),
     queryFn: () => listOrgSkills(orgId),
-    enabled: Boolean(orgId) && Boolean(profile?.is_operator),
   });
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.skills(orgId) });
   };
   const install = useMutation({
-    mutationFn: (skillId: string) => installAgentSkill(orgId, agentId ?? "", skillId),
-    onSuccess: () => { invalidate(); toast.success("Installing…"); },
-    onError: (e) => { toast.error(errMsg(e)); },
+    mutationFn: (skillId: string) => installAgentSkill(orgId, agentId, skillId),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Installing…");
+    },
   });
-  const uninstall = useMutation({
-    mutationFn: (installId: string) => uninstallAgentSkill(orgId, agentId ?? "", installId),
-    onSuccess: () => { invalidate(); toast.success("Removing…"); },
-    onError: (e) => { toast.error(errMsg(e)); },
+  const adopt = useMutation({
+    mutationFn: (v: { installId: string; skillId: string }) => adoptAgentSkill(orgId, agentId, v.installId, v.skillId),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Adopting…");
+    },
+  });
+  const loadDraft = useMutation({
+    mutationFn: (id: string) => getAgentSkillDraft(orgId, agentId, id),
+    onSuccess: (draft, id) => {
+      setForging({ installId: id, draft });
+    },
   });
 
-  if (!profile?.is_operator) {
+  const base = `/agents/${encodeURIComponent(agentId)}/skills`;
+  const skills = query.data?.skills ?? [];
+  const library = libraryQuery.data?.skills ?? [];
+  const selected = skills.find((s) => s.install_id === installId);
+  const runtime = agentRuntime(profile.agent_type);
+  const installable = library.filter(
+    (s) => !s.is_draft && s.runtimes.includes(runtime) && !skills.some((i) => i.skill_id === s.skill_id),
+  );
+
+  if (installId && query.data && !selected) return <Navigate to={base} replace />;
+
+  if (!RUNTIME_CAN_RECEIVE[runtime]) {
     return (
-      <div className="space-y-6 pb-16">
-        <PageHeader breadcrumb={breadcrumb} />
-        <div className="py-12 text-center text-sm text-muted-foreground">
-          {!profile
-            ? isLoading
-              ? "Loading…"
-              : "Couldn't load this agent."
-            : "Only this agent's operator can view its skills."}
-        </div>
-      </div>
+      <SettingsSection>
+        <SettingsRow
+          title={`Skills aren't available for ${RUNTIME_LABELS[runtime]} agents yet`}
+          description="They install on OpenClaw agents today."
+        />
+      </SettingsSection>
     );
   }
 
-  const skills = query.data?.skills ?? [];
-  const sync = query.data?.sync;
-  const installedSkillIds = new Set(skills.map((s) => s.skill_id).filter(Boolean));
-  const installable = (libraryQuery.data?.skills ?? []).filter(
-    (s) => !s.is_draft && !installedSkillIds.has(s.skill_id),
-  );
+  if (!query.data) {
+    return query.isError ? (
+      <SettingsSection>
+        <SettingsRow title="Couldn't load skills" error={errMsg(query.error, "Try again in a moment")} />
+      </SettingsSection>
+    ) : (
+      <SettingsSection stack>
+        {[0, 1, 2].map((i) => (
+          <SettingsTile
+            key={i}
+            leading={<Skeleton className="size-10 rounded-[12px]" />}
+            title={<Skeleton className="h-3.5 w-32 rounded" />}
+            subtitle={<Skeleton className="mt-1.5 h-3 w-48 rounded" />}
+          />
+        ))}
+      </SettingsSection>
+    );
+  }
+
+  const close = () => {
+    void navigate(base, { replace: true });
+  };
+
+  // The agent's copy goes through the editor first, since its text is untrusted.
+  // When the library already has that name, a new skill would clash, so that one is adopted as is.
+  const startAdopt = (s: AgentSkill) => {
+    const existing = library.find((l) => l.slug === s.slug);
+    if (!existing) {
+      loadDraft.mutate(s.install_id);
+      return;
+    }
+    void confirm({
+      title: `Adopt ${s.name}?`,
+      description: `The library already has ${existing.display_name}. Clawbits will manage it here and replace the agent's copy with the library version.`,
+      confirmLabel: "Adopt",
+    }).then((ok) => {
+      if (ok) adopt.mutate({ installId: s.install_id, skillId: existing.skill_id });
+    });
+  };
+
+  const tile = (s: AgentSkill) => {
+    const lib = library.find((l) => l.skill_id === s.skill_id);
+    const bins = s.missing?.bins ?? [];
+    const fact = s.skill_id
+      ? s.reported_version && `v${s.reported_version}`
+      : s.reported_source === "clawhub" && "From ClawHub";
+    return (
+      <SettingsTile
+        key={s.install_id}
+        leading={<SkillGlyph skill={{ slug: s.slug, icon_emoji: lib?.icon_emoji ?? null }} />}
+        title={lib?.display_name ?? s.name}
+        href={`${base}/${encodeURIComponent(s.install_id)}`}
+        subtitle={
+          s.eligible === false && bins.length > 0
+            ? `Needs ${bins.join(", ")} on the agent.`
+            : (s.description ?? lib?.summary)
+        }
+        aside={fact}
+        pill={installPill(s)}
+        className={s.install_id === installId ? SELECTED : undefined}
+      />
+    );
+  };
+
+  const { sync } = query.data;
+  const managed = skills.filter((s) => s.managed_by === "clawbits");
+  const external = skills.filter((s) => s.managed_by === "external");
+  const bundled = sync.bundled ?? [];
+  const reported = formatRelativeAgo(sync.last_reported_at);
 
   return (
-    <div className="space-y-6 pb-16">
-      <PageHeader
-        breadcrumb={breadcrumb}
-        actions={
-          installable.length > 0 ? (
-            <Select
-              value=""
-              onValueChange={(v) => { if (v) install.mutate(v); }}
+    <>
+      <SquircleDefs />
+
+      {sync.reporter === "never_reported" && (
+        <SettingsSection>
+          <SettingsRow
+            title="No report from this agent yet"
+            description="Skills need the Clawbits tools plugin on this agent. Anything added here waits until it reports."
+          />
+        </SettingsSection>
+      )}
+
+      <SettingsSection
+        label="From the library"
+        stack={managed.length > 0}
+        aside={
+          <DropdownMenu>
+            <DropdownMenuTrigger
               disabled={install.isPending}
+              className="inline-flex items-center gap-1 rounded font-medium text-foreground outline-none hover:opacity-70 focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <SelectTrigger className="w-44">
-                <SelectValue placeholder="Add a skill" />
-              </SelectTrigger>
-              <SelectContent>
-                {installable.map((s) => (
-                  <SelectItem key={s.skill_id} value={s.skill_id}>
-                    {s.display_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null
+              <Icon icon={PlusSignIcon} className="size-[13px]" />
+              Add skill
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {installable.map((s) => (
+                <DropdownMenuItem
+                  key={s.skill_id}
+                  onClick={() => {
+                    install.mutate(s.skill_id);
+                  }}
+                >
+                  <SkillGlyph skill={s} size={20} />
+                  {s.display_name}
+                </DropdownMenuItem>
+              ))}
+              {installable.length > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuItem
+                onClick={() => {
+                  void navigate("/skills");
+                }}
+              >
+                Open library
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         }
+      >
+        {managed.length > 0 ? managed.map(tile) : <SettingsRow title="Nothing from the library yet" />}
+      </SettingsSection>
+
+      {(external.length > 0 || sync.reporter !== "never_reported") && (
+        <SettingsSection
+          label="Found on the agent"
+          stack={external.length > 0}
+          footer={
+            sync.reporter === "stale"
+              ? `Last report ${reported}. The agent may be offline, so this may not match what it has now.`
+              : sync.reporter === "ok"
+                ? `Reported ${reported}.`
+                : undefined
+          }
+        >
+          {external.length > 0 ? external.map(tile) : <SettingsRow title="Nothing else on this agent" />}
+        </SettingsSection>
+      )}
+
+      {bundled.length > 0 && (
+        <SettingsSection label="Built in" stack footer="They come with OpenClaw and can't be managed here.">
+          <SettingsTile
+            leading={
+              <Squircle size={40} glass={false} className="bg-muted text-muted-foreground">
+                <Icon icon={BookOpen01Icon} className="size-5" />
+              </Squircle>
+            }
+            title={
+              <button
+                type="button"
+                aria-expanded={showBundled}
+                onClick={() => {
+                  setShowBundled((v) => !v);
+                }}
+                className="block w-full truncate text-left outline-none after:absolute after:inset-0"
+              >
+                {bundled.length} skill{bundled.length === 1 ? "" : "s"} included with OpenClaw
+              </button>
+            }
+            subtitle={bundled.map((b) => b.slug).join(", ")}
+            end={
+              <span className="disclosure-chevron inline-flex text-muted-foreground" data-open={showBundled}>
+                <ChevronDown className="size-4" />
+              </span>
+            }
+            className="has-[button:hover]:bg-foreground/4 has-[button:focus-visible]:bg-foreground/4"
+          />
+          {showBundled && (
+            <ul className="rounded-[14px] bg-card py-2 pr-3 pl-[63px] text-[13px]">
+              {bundled.map((b) => (
+                <li key={b.slug} className="flex min-w-0 gap-2 py-1">
+                  <span className="shrink-0 font-medium">{b.slug}</span>
+                  {b.description && <span className="truncate text-muted-foreground">{b.description}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </SettingsSection>
+      )}
+
+      <SkillForge
+        open={forging != null}
+        draft={forging?.draft}
+        onCreated={(skill) => {
+          if (forging) adopt.mutate({ installId: forging.installId, skillId: skill.skill_id });
+        }}
+        onOpenChange={() => {
+          setForging(null);
+        }}
       />
 
-      {query.isPending ? (
-        <div className="text-sm text-muted-foreground">Loading…</div>
-      ) : query.isError ? (
-        <div className="text-sm text-destructive">{errMsg(query.error)}</div>
-      ) : skills.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/60 px-6 py-16 text-center">
-          <span className="flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-            <Icon icon={Book} className="size-6" />
-          </span>
-          <h2 className="mt-4 text-base font-semibold tracking-tight text-foreground">
-            Nothing reported yet
-          </h2>
-          <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-            {sync?.last_reported_at
-              ? "This agent reported no skills."
-              : "This agent hasn't reported its skills yet. It needs a plugin version that supports skills."}
-          </p>
-        </div>
-      ) : (
-        <ul className="divide-y divide-border/60 rounded-xl border border-border/60">
-          {skills.map((s) => (
-            <SkillRow
-              key={s.install_id}
-              skill={s}
-              onRemove={
-                s.managed_by === "clawbits"
-                  ? () => { uninstall.mutate(s.install_id); }
-                  : undefined
-              }
-            />
-          ))}
-        </ul>
-      )}
-
-      {sync?.last_reported_at && (
-        <p className="text-caption text-muted-foreground">
-          Reported {formatRelativeAgo(sync.last_reported_at)}
-          {sync.scanned_roots?.length
-            ? ` from ${String(sync.scanned_roots.length)} folder${sync.scanned_roots.length === 1 ? "" : "s"}`
-            : ""}
-          . Skills added here are managed by Clawbits; the rest are shown as found.
-        </p>
-      )}
-    </div>
+      <SidePanel open={selected != null} title="Skill" onClose={close}>
+        {selected && (
+          <AgentSkillPanel
+            key={selected.install_id}
+            skill={selected}
+            library={library.find((l) => l.skill_id === selected.skill_id)}
+            adopting={loadDraft.isPending || adopt.isPending}
+            onAdopt={() => {
+              startAdopt(selected);
+            }}
+            onRemoved={close}
+          />
+        )}
+      </SidePanel>
+    </>
   );
-}
-
-function SkillRow({ skill, onRemove }: { skill: AgentSkill; onRemove?: () => void }) {
-  // eligible === false means the loader found the skill but a requirement is
-  // missing, so the agent will never use it. Worth saying out loud.
-  const blocked = skill.eligible === false;
-  // No optimistic success: the amber state stands until the agent confirms.
-  const pending = skill.sync_status === "requested" || skill.sync_status === "removing";
-  const missingBins = skill.missing?.bins ?? [];
-
-  return (
-    <li className="flex items-start gap-3 px-4 py-3">
-      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-        <Icon icon={Book} className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{skill.name}</span>
-          {skill.reported_source && (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-caption text-muted-foreground">
-              {sourceLabel(skill.reported_source)}
-            </span>
-          )}
-          {blocked && (
-            <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-caption font-medium text-amber-700 dark:text-amber-400">
-              Not usable
-            </span>
-          )}
-          {pending && (
-            <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-caption font-medium text-amber-700 dark:text-amber-400">
-              {skill.sync_status === "removing" ? "Removing…" : "Installing…"}
-            </span>
-          )}
-          {skill.sync_status === "failed" && (
-            <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-caption font-medium text-destructive">
-              Failed
-            </span>
-          )}
-        </div>
-        {skill.description && (
-          <p className="mt-0.5 line-clamp-2 text-caption text-muted-foreground">
-            {skill.description}
-          </p>
-        )}
-        {skill.sync_error && (
-          <p className="mt-1 text-caption text-destructive">{skill.sync_error}</p>
-        )}
-        {blocked && missingBins.length > 0 && (
-          <p className="mt-1 text-caption text-amber-700 dark:text-amber-400">
-            Needs {missingBins.join(", ")} on the agent.
-          </p>
-        )}
-      </div>
-      <span className="shrink-0 font-mono text-caption text-muted-foreground">
-        {skill.slug}
-      </span>
-      {onRemove && (
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-label={`Remove ${skill.name}`}
-          onClick={onRemove}
-        >
-          <Icon icon={Trash} className="size-4" />
-        </Button>
-      )}
-    </li>
-  );
-}
-
-function sourceLabel(source: string): string {
-  if (source === "clawhub") return "ClawHub";
-  if (source === "path" || source === "git") return "Installed";
-  return source;
 }

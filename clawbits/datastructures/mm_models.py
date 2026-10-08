@@ -104,6 +104,7 @@ RealtimeEventType = Literal[
     "agent.status",
     "org.added",
     "automation.sync",
+    "skills.sync",
     "model.selection",
     "server.hello",
 ]
@@ -977,6 +978,8 @@ class SkillStateReportRequest(BaseModel):
     prompt_budget_observed: int | None = None
     truncated: bool = False
     skills: list[dict[str, Any]] = Field(default_factory=list)
+    # OpenClaw's built-in skills; absent when unchanged since the last report.
+    bundled: list[dict[str, Any]] | None = None
 
 
 class SkillStateReportResponse(BaseModel):

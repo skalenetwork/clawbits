@@ -23,6 +23,7 @@ import {
 } from "./file-logger.js";
 import { finishMcpSignIn, isMcpSignIn, type McpSignIn } from "./mcp-oauth.js";
 import { choiceOf, INHERIT, type ModelSelection } from "./model-choice.js";
+import { wakeCompanion } from "./service-handoff.js";
 import * as mmTools from "./tools/mattermost.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
 
@@ -1595,8 +1596,9 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
           );
           return;
         }
-        if (event.type === "automation.sync") {
-          // Reconciled by the companion service on its bounded poll interval.
+        // Both loops live in the tools plugin, which polls when nothing is bridged.
+        if (event.type === "skills.sync" || event.type === "automation.sync") {
+          wakeCompanion(event.type, account.accountId);
           return;
         }
         if (event.type === "turn.stop") {

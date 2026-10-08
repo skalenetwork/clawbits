@@ -1,301 +1,264 @@
 import {useState} from "react";
 import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
-import {SkillGlyph} from "@/components/skills/SkillGlyph";
-import {useAuth} from "@/context/AuthContext";
-import {useIsMobile} from "@/hooks/use-mobile";
-import {createSkill, getSkill, publishSkillVersion, type Skill} from "@/lib/api";
-import {
-    DESCRIPTION_MAX,
-    buildManifest,
-    slugProblem,
-    slugify,
-} from "@/lib/skills";
-import {queryKeys} from "@/lib/queryKeys";
-import {errMsg, toast} from "@/lib/toast";
-import {cn} from "@/lib/utils";
-import {Button} from "@/components/ui/button";
+import {Squircle} from "@/components/home/tiles";
+import {ModalButton, ModalField, ModalFooter, ModalHeader, ModalPanel} from "@/components/modals/Modal";
 import {Input} from "@/components/ui/input";
-import {Label} from "@/components/ui/label";
-import {Dialog, DialogContent, DialogTitle} from "@/components/ui/dialog";
-import {Drawer, DrawerContent, DrawerTitle} from "@/components/ui/drawer";
+import {Skeleton} from "@/components/ui/skeleton";
+import {useAuth} from "@/context/AuthContext";
+import {createSkill, getSkill, publishSkillVersion, type Skill, type SkillDraft} from "@/lib/api";
+import {DESCRIPTION_MAX, buildManifest, skillMonogram, slugProblem, slugify} from "@/lib/skills";
+import {queryKeys} from "@/lib/queryKeys";
+import {toast} from "@/lib/toast";
+import {cn} from "@/lib/utils";
+
+const BODY = "flex flex-col gap-4 p-4";
+const HELP = "text-[12px] text-muted-foreground";
+const TEXTAREA =
+    "w-full min-w-0 resize-y rounded-md border border-transparent bg-input/50 px-3 py-2 text-base leading-relaxed outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 md:text-sm";
 
 /** Create a skill, or publish an edit as a new version. The slug is
- *  create-only: it is the directory name on every agent that has the skill. */
-function ForgeForm({editing, onOpenChange}: {
-    editing: Skill | null;
+ *  create-only: it is the directory name on every agent that has the skill.
+ *  A draft prefills create; one read from an agent keeps its slug, since adopt
+ *  needs the library skill to match the agent's folder. */
+function ForgeForm({editing, draft, onOpenChange, onCreated}: {
+    editing?: Skill;
+    draft?: SkillDraft;
     onOpenChange: (open: boolean) => void;
+    onCreated?: (skill: Skill) => void;
 }) {
     const {activeOrgId} = useAuth();
-    const isMobile = useIsMobile();
+    const orgId = activeOrgId ?? "";
     const queryClient = useQueryClient();
-    const isEdit = editing != null;
     const current = editing?.current_version;
+    const source = draft?.source;
+    const slugLocked = editing != null || source?.kind === "agent";
 
-    const [displayName, setDisplayName] = useState(editing?.display_name ?? "");
-    const [slug, setSlug] = useState(editing?.slug ?? "");
-    const [slugTouched, setSlugTouched] = useState(isEdit);
-    const [description, setDescription] = useState(
-        editing?.summary ?? "",
-    );
-    const [emoji, setEmoji] = useState(editing?.icon_emoji ?? "");
-    const [bodyMd, setBodyMd] = useState(current?.body_md ?? "");
+    const [displayName, setDisplayName] = useState(editing?.display_name ?? draft?.display_name ?? "");
+    // Null while the slug follows the name.
+    const [slug, setSlug] = useState(editing?.slug ?? draft?.slug ?? null);
+    const [description, setDescription] = useState(editing?.summary ?? draft?.manifest.description ?? "");
+    const [emoji, setEmoji] = useState(editing?.icon_emoji ?? draft?.manifest.emoji ?? "");
+    const [bodyMd, setBodyMd] = useState(current?.body_md ?? draft?.body_md ?? "");
     const [changelog, setChangelog] = useState("");
 
-    const effectiveSlug = isEdit ? (editing.slug) : (slugTouched ? slug : slugify(displayName));
-    const slugIssue = isEdit ? null : slugProblem(effectiveSlug);
+    const effectiveSlug = slug ?? slugify(displayName);
+    const slugIssue = editing ? null : slugProblem(effectiveSlug);
     // Blocks Save regardless; just not shown on an untouched form.
-    const showSlugIssue = slugIssue != null && (slugTouched || displayName.trim().length > 0);
+    const showSlugIssue = slugIssue != null && (slug != null || displayName.trim().length > 0);
     const descTooLong = description.trim().length > DESCRIPTION_MAX;
-    const canSave =
-        Boolean(activeOrgId) &&
-        displayName.trim().length > 0 &&
-        description.trim().length > 0 &&
-        bodyMd.trim().length > 0 &&
-        !descTooLong &&
-        slugIssue == null;
+    const canSave = [displayName, description, bodyMd].every(v => v.trim()) && !descTooLong && slugIssue == null;
+    // Mirrors spec.next_patch_version.
+    const semver = editing?.latest_version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
+    const nextVersion = semver ? `${Number(semver[1])}.${Number(semver[2])}.${Number(semver[3]) + 1}` : "1.0.0";
 
     const save = useMutation({
         mutationFn: async () => {
-            if (!activeOrgId) throw new Error("No organization selected");
-            const manifest = buildManifest({
-                slug: effectiveSlug,
-                description,
-                emoji,
-            });
+            const base = current?.manifest ?? draft?.manifest;
+            const manifest = buildManifest({slug: effectiveSlug, description, emoji, base});
             if (editing) {
-                return publishSkillVersion(activeOrgId, editing.skill_id, {
+                await publishSkillVersion(orgId, editing.skill_id, {
                     manifest,
                     body_md: bodyMd,
-                    // Reference files are carried forward untouched: this form
-                    // edits the document, and dropping them silently on every
-                    // publish would be a data-loss bug wearing a save button.
-                    // Carried forward: this form edits the document only.
-                    files: (current?.files ?? [])
-                        .filter((f): f is typeof f & {content: string} => typeof f.content === "string")
-                        .map(f => ({path: f.path, content: f.content})),
+                    // Carried forward without the server's hash and size: this form edits the document only.
+                    files: (current?.files ?? []).map(({path, content}) => ({path, content})),
                     changelog: changelog.trim() || undefined,
                 });
+                return null;
             }
-            return createSkill(activeOrgId, {
+            return createSkill(orgId, {
                 slug: effectiveSlug,
                 display_name: displayName.trim(),
                 manifest,
                 body_md: bodyMd,
+                files: draft?.files ?? [],
             });
         },
-        onSuccess: () => {
-            void queryClient.invalidateQueries({queryKey: queryKeys.skills(activeOrgId ?? "")});
-            toast.success(isEdit ? "New version published" : "Skill created");
+        onSuccess: (created) => {
+            void queryClient.invalidateQueries({queryKey: queryKeys.skills(orgId)});
+            toast.success(editing ? "New version published" : "Skill created");
+            if (created) onCreated?.(created);
             onOpenChange(false);
         },
-        onError: (e) => { toast.error(errMsg(e)); },
     });
-
-    const Title = isMobile ? DrawerTitle : DialogTitle;
 
     return (
         <>
-            <div className={cn("flex items-center gap-3 border-b border-border/60", isMobile ? "px-4 py-3" : "p-6 pb-4")}>
-                {/* Live preview of the row the library will show — same glyph
-                    component, so the emoji field's effect is visible as it is
-                    typed and an empty one falls back to the same monogram. */}
-                <SkillGlyph
-                    skill={{slug: effectiveSlug || "new-skill", icon_emoji: emoji}}
-                    size="lg"
-                />
-                <Title className="text-lg font-semibold tracking-tight">
-                    {editing ? `Edit ${editing.display_name}` : "New skill"}
-                </Title>
-            </div>
-
-            <div className={cn("min-h-0 space-y-4 overflow-y-auto", isMobile ? "flex-1 px-4 py-3" : "p-6")}>
-                <div className="space-y-2">
-                    <Label htmlFor="skill-name">Name</Label>
-                    <Input
-                        id="skill-name"
-                        value={displayName}
-                        onChange={(e) => { setDisplayName(e.target.value); }}
-                        placeholder="Invoice triage"
-                        autoFocus={!isEdit}
-                    />
-                </div>
-
-                <div className="space-y-2">
-                    <Label htmlFor="skill-slug">Identifier</Label>
-                    <Input
-                        id="skill-slug"
-                        value={effectiveSlug}
-                        onChange={(e) => {
-                            setSlugTouched(true);
-                            setSlug(e.target.value.toLowerCase());
-                        }}
-                        disabled={isEdit}
-                        placeholder="invoice-triage"
-                    />
-                    <p className={cn("text-xs", showSlugIssue ? "text-destructive" : "text-muted-foreground")}>
-                        {(showSlugIssue ? slugIssue : null) ??
-                            (isEdit
-                                ? "The identifier can't change — it's the folder name on every agent that has this skill."
-                                : "The folder name on the agent, and the name the model sees.")}
-                    </p>
-                </div>
-
-                <div className="space-y-2">
-                    <Label htmlFor="skill-emoji">Icon</Label>
-                    <Input
-                        id="skill-emoji"
-                        value={emoji}
-                        onChange={(e) => { setEmoji(e.target.value); }}
-                        placeholder="🧾"
-                        className="w-24 text-center text-lg"
-                    />
-                </div>
-
-                <div className="space-y-2">
-                    <div className="flex items-baseline justify-between">
-                        <Label htmlFor="skill-desc">When to use it</Label>
-                        <span className={cn("text-caption tabular-nums", descTooLong ? "text-destructive" : "text-muted-foreground")}>
-                            {description.trim().length}/{DESCRIPTION_MAX}
-                        </span>
+            <ModalHeader
+                title={
+                    editing
+                        ? `Edit ${editing.display_name}`
+                        : source?.kind === "agent" ? "Adopt a skill" : source ? "Import a skill" : "New skill"
+                }
+                subtitle={source?.kind === "url" ? source.url : undefined}
+            />
+            <form
+                onSubmit={(e) => {
+                    e.preventDefault();
+                    if (canSave && !save.isPending) save.mutate();
+                }}
+            >
+                <div className={BODY}>
+                    <div className="grid grid-cols-[36px_minmax(0,1fr)] gap-3">
+                        <ModalField label="Icon" htmlFor="skill-emoji">
+                            <Squircle
+                                size={36}
+                                glass={false}
+                                className="bg-muted text-muted-foreground focus-within:bg-foreground/10"
+                            >
+                                <input
+                                    id="skill-emoji"
+                                    value={emoji}
+                                    onChange={(e) => { setEmoji(e.target.value); }}
+                                    placeholder={skillMonogram(effectiveSlug || "new-skill")}
+                                    className="size-full bg-transparent text-center text-[20px] leading-none outline-none placeholder:text-[13px] placeholder:font-medium placeholder:text-muted-foreground"
+                                />
+                            </Squircle>
+                        </ModalField>
+                        <ModalField label="Name" htmlFor="skill-name">
+                            <Input
+                                id="skill-name"
+                                value={displayName}
+                                onChange={(e) => { setDisplayName(e.target.value); }}
+                                placeholder="Invoice triage"
+                                autoFocus={!editing}
+                            />
+                        </ModalField>
                     </div>
-                    <textarea
-                        id="skill-desc"
-                        className={cn(
-                            "min-h-[72px] w-full min-w-0 resize-y rounded-xl bg-muted/40 p-3",
-                            "text-sm leading-relaxed text-foreground outline-none",
-                            "transition-shadow placeholder:text-muted-foreground/50",
-                            "focus-visible:ring-2 focus-visible:ring-ring/30",
-                        )}
-                        value={description}
-                        onChange={(e) => { setDescription(e.target.value); }}
-                        placeholder="Triage inbound invoices and flag the ones over budget."
-                    />
-                    <p className="text-xs text-muted-foreground">
-                        The agent reads this in every conversation to decide whether to use the skill, so keep it short and specific.
-                    </p>
-                </div>
 
-                <div className="space-y-2">
-                    <Label htmlFor="skill-body">Instructions</Label>
-                    <textarea
-                        id="skill-body"
-                        className={cn(
-                            "min-h-[220px] w-full min-w-0 resize-y rounded-xl bg-muted/40 p-4",
-                            "font-mono text-sm leading-relaxed text-foreground outline-none",
-                            "transition-shadow placeholder:text-muted-foreground/50",
-                            "focus-visible:ring-2 focus-visible:ring-ring/30",
-                        )}
-                        value={bodyMd}
-                        onChange={(e) => { setBodyMd(e.target.value); }}
-                        placeholder={"# Invoice triage\n\nRead the invoice, compare it to the budget, flag anything over."}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                        Markdown. The agent reads this only once it has decided to use the skill.
-                    </p>
-                </div>
-
-                {isEdit && (
-                    <div className="space-y-2">
-                        <Label htmlFor="skill-changelog">What changed (optional)</Label>
+                    <ModalField label="Identifier" htmlFor="skill-slug">
                         <Input
-                            id="skill-changelog"
-                            value={changelog}
-                            onChange={(e) => { setChangelog(e.target.value); }}
-                            placeholder="sharper wording"
+                            id="skill-slug"
+                            className="font-mono"
+                            value={effectiveSlug}
+                            onChange={(e) => { setSlug(e.target.value.toLowerCase()); }}
+                            disabled={slugLocked}
+                            placeholder="invoice-triage"
                         />
-                        <p className="text-xs text-muted-foreground">
-                            Publishing creates version {nextVersionHint(editing.latest_version)} — the current one stays, so you can roll back.
+                        <p className={cn(HELP, showSlugIssue && "text-destructive")}>
+                            {showSlugIssue
+                                ? slugIssue
+                                : editing
+                                    ? "The folder name on every agent that has this skill, so it can't change."
+                                    : slugLocked
+                                        ? "Matches the folder on the agent, so the library copy can replace it."
+                                        : "The folder name on the agent, and the name the model sees. It can't change later."}
                         </p>
-                    </div>
-                )}
-            </div>
+                    </ModalField>
 
-            <div className={cn("flex items-center justify-end gap-2 border-t border-border/60", isMobile ? "px-4 py-3" : "p-6 pt-4")}>
-                <Button variant="ghost" onClick={() => { onOpenChange(false); }}>Cancel</Button>
-                <Button
-                    onClick={() => { save.mutate(); }}
-                    disabled={!canSave || save.isPending}
-                >
-                    {save.isPending ? "Saving…" : isEdit ? "Publish version" : "Create skill"}
-                </Button>
-            </div>
+                    <ModalField label="When to use it" htmlFor="skill-desc">
+                        <textarea
+                            id="skill-desc"
+                            rows={3}
+                            className={TEXTAREA}
+                            value={description}
+                            onChange={(e) => { setDescription(e.target.value); }}
+                            placeholder="Triage inbound invoices and flag the ones over budget."
+                        />
+                        <div className={cn(HELP, "flex items-baseline justify-between gap-3")}>
+                            <p>
+                                The agent reads this in every conversation to decide whether to use the skill, so keep it short and specific.
+                            </p>
+                            <span className={cn("shrink-0 tabular-nums", descTooLong && "text-destructive")}>
+                                {description.trim().length}/{DESCRIPTION_MAX}
+                            </span>
+                        </div>
+                    </ModalField>
+
+                    <ModalField label="Instructions" htmlFor="skill-body">
+                        <textarea
+                            id="skill-body"
+                            rows={6}
+                            className={cn(TEXTAREA, "font-mono")}
+                            value={bodyMd}
+                            onChange={(e) => { setBodyMd(e.target.value); }}
+                            placeholder={"# Invoice triage\n\nRead the invoice, compare it to the budget, flag anything over."}
+                        />
+                        <p className={HELP}>Markdown. The agent reads this only once it has decided to use the skill.</p>
+                    </ModalField>
+
+                    {draft && draft.dropped.length > 0 && (
+                        <ModalField label="Left out">
+                            <ul className="flex flex-wrap gap-x-3 font-mono text-[12px] text-muted-foreground">
+                                {draft.dropped.map(d => (
+                                    <li key={d.path} title={d.reason} className="max-w-full truncate">
+                                        {d.path}
+                                    </li>
+                                ))}
+                            </ul>
+                            <p className={HELP}>Skills are text only, so scripts and assets are not imported.</p>
+                        </ModalField>
+                    )}
+
+                    {editing && (
+                        <ModalField label="What changed (optional)" htmlFor="skill-changelog">
+                            <Input
+                                id="skill-changelog"
+                                value={changelog}
+                                onChange={(e) => { setChangelog(e.target.value); }}
+                                placeholder="Sharper wording"
+                            />
+                            <p className={HELP}>
+                                Publishing creates version {nextVersion}. The current one stays, so you can roll back.
+                            </p>
+                        </ModalField>
+                    )}
+                </div>
+                <ModalFooter>
+                    <ModalButton onClick={() => { onOpenChange(false); }} disabled={save.isPending}>Cancel</ModalButton>
+                    <ModalButton type="submit" tone="primary" disabled={!canSave || save.isPending}>
+                        {save.isPending ? "Saving…" : editing ? "Publish version" : "Create skill"}
+                    </ModalButton>
+                </ModalFooter>
+            </form>
         </>
     );
 }
 
-/** The version number a publish will produce. */
-function nextVersionHint(current: string | null | undefined): string {
-    if (!current) return "1.0.0";
-    const parts = current.split(".");
-    if (parts.length !== 3 || parts.some(p => !/^\d+$/.test(p))) return "1.0.0";
-    const [major, minor, patch] = parts as [string, string, string];
-    return `${major}.${minor}.${String(Number(patch) + 1)}`;
-}
-
-export function SkillForge({open, editing, onOpenChange}: {
+export function SkillForge({open, editing, draft, onOpenChange, onCreated}: {
     open: boolean;
-    editing?: Skill | null;
+    editing?: Skill;
+    /** Prefills create mode, e.g. from an import. */
+    draft?: SkillDraft;
     onOpenChange: (open: boolean) => void;
+    onCreated?: (skill: Skill) => void;
 }) {
-    const isMobile = useIsMobile();
     const {activeOrgId} = useAuth();
-    // Cache across the close transition; key a fresh form per open.
-    const [cached, setCached] = useState<Skill | null>(null);
-    const [epoch, setEpoch] = useState(0);
-    const [wasOpen, setWasOpen] = useState(false);
-    if (open !== wasOpen) {
-        setWasOpen(open);
-        if (open) {
-            setCached(editing ?? null);
-            setEpoch(e => e + 1);
-        }
-    }
+    // Held through the close transition, which still renders the form after the parent clears its props.
+    const [held, setHeld] = useState({editing, draft});
+    if (open && (held.editing !== editing || held.draft !== draft)) setHeld({editing, draft});
 
-    // ``current_version`` is optional on ``Skill`` because the LIST projection
-    // omits it - and the form seeds its body and reference files from exactly
-    // that field. Handed a list row (which is what the library grid has), the
-    // form opens with an empty Instructions box and publishes it over the real
-    // body, dropping every reference/ file with it. So: re-read the full record
-    // here and do not mount the form until it is in hand. Fetching in the
-    // wrapper rather than the form keeps ``useState`` initialisers correct -
-    // they run once, on a mount that already has the data.
-    const skillId = cached?.skill_id ?? null;
+    // A list row has no current_version, which seeds the body and reference
+    // files, so an edit mounts the form only once the full record is in hand.
+    const skillId = held.editing?.skill_id ?? "";
     const detailQuery = useQuery({
-        queryKey: queryKeys.skill(activeOrgId ?? "", skillId ?? ""),
-        queryFn: () => getSkill(activeOrgId ?? "", skillId ?? ""),
-        enabled: open && Boolean(activeOrgId) && skillId !== null,
+        queryKey: queryKeys.skill(activeOrgId ?? "", skillId),
+        queryFn: () => getSkill(activeOrgId ?? "", skillId),
+        enabled: open && skillId !== "",
     });
 
-    const record = skillId === null ? null : (detailQuery.data ?? null);
-    const form = skillId !== null && record === null ? (
-        <div className="px-6 py-10 text-center text-caption text-muted-foreground">
-            {detailQuery.isError
-                ? "That skill could not be loaded, so it is not safe to edit it here."
-                : "Loading the current version..."}
-        </div>
-    ) : (
-        <ForgeForm
-            key={`${cached?.skill_id ?? "new"}:${String(epoch)}`}
-            editing={record ?? cached}
-            onOpenChange={onOpenChange}
-        />
-    );
-
-    if (isMobile) {
-        return (
-            <Drawer open={open} onOpenChange={onOpenChange}>
-                <DrawerContent>{form}</DrawerContent>
-            </Drawer>
-        );
-    }
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent
-                className="grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl"
-                style={{maxHeight: "min(44rem, calc(100dvh - 4rem))"}}
-            >
-                {form}
-            </DialogContent>
-        </Dialog>
+        <ModalPanel open={open} onOpenChange={onOpenChange} kind="form">
+            {held.editing && !detailQuery.data ? (
+                <>
+                    <ModalHeader title={`Edit ${held.editing.display_name}`}/>
+                    <div className={BODY}>
+                        {detailQuery.isError ? (
+                            <p className="text-[13px] text-destructive">
+                                This skill couldn't be loaded, so it isn't safe to edit here.
+                            </p>
+                        ) : (
+                            [0, 1, 2].map(i => <Skeleton key={i} className="h-9 w-full rounded-md"/>)
+                        )}
+                    </div>
+                </>
+            ) : (
+                <ForgeForm
+                    editing={held.editing && detailQuery.data}
+                    draft={held.draft}
+                    onOpenChange={onOpenChange}
+                    onCreated={onCreated}
+                />
+            )}
+        </ModalPanel>
     );
 }
