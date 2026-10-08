@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/skalenetwork/clawbits/compare/v1.8.0...v1.9.0) (2026-10-08)
+
+
+### Features
+
+* skills library with import, adopt and an agent skills tab ([#215](https://github.com/skalenetwork/clawbits/issues/215)) ([ddd9311](https://github.com/skalenetwork/clawbits/commit/ddd931121f47fb96d083c41d78bcebbe20a438c5))
+
 ## [1.8.0](https://github.com/skalenetwork/clawbits/compare/v1.7.0...v1.8.0) (2026-10-05)
 
 
