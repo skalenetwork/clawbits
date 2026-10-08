@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.22.0...openclaw-plugin-v0.23.0) (2026-10-08)
+
+
+### Features
+
+* skills library with import, adopt and an agent skills tab ([#215](https://github.com/skalenetwork/clawbits/issues/215)) ([ddd9311](https://github.com/skalenetwork/clawbits/commit/ddd931121f47fb96d083c41d78bcebbe20a438c5))
+
 ## [0.22.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.21.1...openclaw-plugin-v0.22.0) (2026-10-05)
 
 
