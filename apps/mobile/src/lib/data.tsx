@@ -9,11 +9,12 @@ import {
   QueryClient,
   useInfiniteQuery,
   useIsRestoring,
+  useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useEffectEvent, useState, type ReactNode } from "react";
-import { AppState } from "react-native";
+import { Alert, AppState } from "react-native";
 import { api, apiUrl, ApiError, channelPath } from "./api";
 import { endChannelTurns, memberStatus, presenceSnapshot, replyPublished } from "./liveTurn";
 import {
@@ -27,6 +28,14 @@ import {
 } from "./models";
 import { useSession } from "./session";
 import { stream } from "./stream";
+import {
+  activeWidgetsKey,
+  applyWidget,
+  applyWidgetEvent,
+  widgetKey,
+  type Widget,
+  type WidgetAction,
+} from "./widgets";
 
 export const historyKey = (channel: string) => ["history", channel] as const;
 
@@ -213,8 +222,12 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
       void client.invalidateQueries({
         queryKey: channel ? historyKey(channel) : ["channels"],
       });
-      if (channel)
+      if (channel) {
         void client.invalidateQueries({ queryKey: ["channel", channel] });
+        // The bus keeps no history: a widget may have moved while the stream was down.
+        void client.invalidateQueries({ queryKey: activeWidgetsKey(channel) });
+        void client.invalidateQueries({ queryKey: ["widget"] });
+      }
     };
     const streamed = (post: Post) =>
       (
@@ -280,6 +293,13 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
         inOrder(() => {
           presenceSnapshot(channel, members);
         });
+      } else if (incoming.type === "widget.updated") {
+        applyWidgetEvent(client, incoming.data);
+      } else if (incoming.type === "widget.turn") {
+        void client.invalidateQueries({ queryKey: ["channels"] });
+      } else if (incoming.type === "channel.widgets") {
+        void client.invalidateQueries({ queryKey: ["channel", incoming.channel_id] });
+        void client.invalidateQueries({ queryKey: ["channels"] });
       } else if (incoming.type === "channel.removed") {
         client.removeQueries({ queryKey: historyKey(incoming.channel_id) });
         void client.invalidateQueries({
@@ -367,4 +387,51 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
     };
   }, [channel]);
   return connected;
+}
+
+/** One widget; `widget.updated` keeps it live, so no polling. */
+export function useWidget(id: string) {
+  const { session } = useSession();
+  return useQuery({
+    queryKey: widgetKey(id),
+    queryFn: ({ signal }) => api.widget(session!.token, id, signal),
+    staleTime: 60_000,
+  });
+}
+
+/** The chat's active widget, if any (the server allows one), for the dock. */
+export function useActiveWidgets(channel: string, enabled: boolean) {
+  const { session } = useSession();
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: activeWidgetsKey(channel),
+    enabled,
+    staleTime: 60_000,
+    queryFn: async ({ signal }) => {
+      const { widgets } = await api.activeWidgets(session!.token, channel, signal);
+      for (const widget of widgets)
+        client.setQueryData<Widget>(widgetKey(widget.widget_id), (old) =>
+          old && old.rev > widget.rev ? old : widget,
+        );
+      return widgets;
+    },
+  });
+}
+
+/** Act as the viewer's seat. A refused action refetches, since the scene it was taken on may be stale. */
+export function useWidgetAction() {
+  const { token } = useSession();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ widget, action }: { widget: Widget; action: WidgetAction }) =>
+      api.actOnWidget(token() ?? "", widget.widget_id, action, widget.rev),
+    onSuccess: (fresh) => {
+      applyWidget(client, fresh);
+    },
+    onError: (error, { widget }) => {
+      Alert.alert("That didn't go through", error instanceof Error ? error.message : undefined);
+      void client.invalidateQueries({ queryKey: widgetKey(widget.widget_id) });
+      void client.invalidateQueries({ queryKey: activeWidgetsKey(widget.channel_id) });
+    },
+  });
 }

@@ -10,6 +10,7 @@ import {
   deleteMmChannelPost,
   editMmChannelPost,
   getMmChannel,
+  getOrgs,
   listDiscoverableMmChannels,
   listMmChannelEvents,
   listMmChannelMembers,
@@ -17,6 +18,7 @@ import {
   listMmChannels,
   markMmChannelRead,
   patchMmChannel,
+  startWidget,
   stopAgentTurn,
   toggleMmPostReaction,
   type MmChannel,
@@ -24,6 +26,7 @@ import {
   type MmChannelPost,
   type MmFile,
   type MmPostListPayload,
+  type WidgetKindName,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { channelListTitle } from "@/lib/formatting";
@@ -31,6 +34,8 @@ import { channelLabel, isPairChannel } from "@/lib/chatFilters";
 import { draftStore } from "@/lib/messageDrafts";
 import { viewRowStore } from "@/lib/viewRow";
 import { trackRecentChannel } from "@/lib/desktop";
+import { errMsg, toast } from "@/lib/toast";
+import { applyWidget, isWidgetChat, widgetsAvailable } from "@/lib/widgets";
 import { computePendingAutoMention } from "@/lib/autoMention";
 import { mentionHandle, mentionLabel } from "@/lib/messageHelpers";
 import {
@@ -47,6 +52,7 @@ import { useChannelDragDrop } from "@/hooks/useChannelDragDrop";
 import { memberKey, useChannelEvents } from "@/hooks/useChannelEvents";
 import { useChannelHistory } from "@/hooks/useChannelHistory";
 import { useChannelPresence } from "@/hooks/useChannelPresence";
+import { useActiveWidgets } from "@/hooks/useWidget";
 import { useLatestRef } from "@/hooks/useLatestRef";
 import { usePinToggle, usePinnedPosts } from "@/hooks/usePinnedPosts";
 import { Icon } from "@/components/Icon";
@@ -74,6 +80,7 @@ import { GeneratingRow } from "@/components/chat/GeneratingRow";
 import { MessageList, type MessageListHandle } from "@/components/chat/MessageList";
 import { MessageRow } from "@/components/chat/MessageRow";
 import { SystemMessage } from "@/components/chat/SystemMessage";
+import { WidgetDock } from "@/components/widgets/WidgetDock";
 
 const POSTS_POLL_IDLE_MS = 30_000;
 const POSTS_POLL_FAST_MS = 4_000;
@@ -244,6 +251,11 @@ function ChannelView({ channelId }: { channelId: string }) {
   const isPair = channel != null && isPairChannel(channel);
   const isAgentChat = channel?.channel_type === "agent_chat";
   const channelOrgId = channel?.org_id ?? null;
+  const orgsQuery = useQuery({ queryKey: queryKeys.orgs, queryFn: () => getOrgs(), staleTime: 60_000 });
+  const channelOrg = orgsQuery.data?.organizations.find((o) => o.org_id === channelOrgId) ?? null;
+  const widgetChat = isWidgetChat(channel);
+  const activeWidgets = useActiveWidgets(channelId, widgetChat);
+  const canStartWidget = widgetsAvailable(channel, channelOrg) && activeWidgets.data?.length === 0;
 
   const postsQuery = useQuery({
     queryKey: postsKey,
@@ -692,6 +704,12 @@ function ChannelView({ channelId }: { channelId: string }) {
     if (last) setEditingPostId(last.post_id);
   };
 
+  const startGame = useMutation({
+    mutationFn: (kind: WidgetKindName) => startWidget(channelId, kind),
+    onSuccess: (widget) => { applyWidget(queryClient, widget); },
+    onError: (e) => { toast.error(errMsg(e, "Couldn't start a game")); },
+  });
+
   const renameChat = useMutation({
     mutationFn: (displayName: string) => patchMmChannel(channelId, displayName),
     onSuccess: (updated) => {
@@ -948,6 +966,21 @@ function ChannelView({ channelId }: { channelId: string }) {
         activityPeople={activityPeople}
         agentDm={channel?.channel_type === "direct" && members.some((m) => m.agent_id != null)}
         onTyping={signalTyping}
+        dock={widgetChat && (
+          <WidgetDock
+            channelId={channelId}
+            userId={user?.id ?? null}
+            enabled
+            // The board lives in the message that started it: the dock scrolls there, opening nothing of its own.
+            // Its id comes with the widget; a server without it still finds the message among those loaded.
+            onShow={(widget) => {
+              const postId = widget.post_id ?? rowsRef.current.flatMap((r) =>
+                r.kind === "post" && r.post.widget_id === widget.widget_id ? [r.post.post_id] : [])[0];
+              if (postId != null) void jumpToPost(postId);
+            }}
+          />
+        )}
+        onStartWidget={canStartWidget && !startGame.isPending ? (kind) => { startGame.mutate(kind); } : undefined}
         placeholder={
           channel &&
           (!isPair

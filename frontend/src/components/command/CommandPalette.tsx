@@ -12,6 +12,7 @@ import {
     Building2,
     CalendarClock,
     ChartColumn,
+    ChessPawn,
     Hash,
     House,
     Link,
@@ -105,6 +106,7 @@ const SETTINGS_PAGES: {label: string; path: string; icon: LucideIcon; owner?: bo
     {label: "Channels", path: "/settings/channels", icon: Hash, owner: true},
     {label: "LobsterTalk", path: "/settings/lobstertalk", icon: Megaphone, owner: true},
     {label: "Reef", path: "/settings/reef", icon: Waves, owner: true},
+    {label: "Widgets", path: "/settings/widgets", icon: ChessPawn, owner: true},
 ];
 
 const OPERATORS: {token: string; hint: string; icon: LucideIcon}[] = [

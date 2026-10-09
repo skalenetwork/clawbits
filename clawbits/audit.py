@@ -36,6 +36,7 @@ ORGANIZATION_MEMBER_REMOVED = "organization.member_removed"
 ORGANIZATION_MEMBER_ROLE_UPDATED = "organization.member_role_updated"
 ORGANIZATION_LOBSTERTALK_UPDATED = "organization.lobstertalk_updated"
 ORGANIZATION_LOBSTERTALK_CHANNEL_UPDATED = "organization.lobstertalk_channel_updated"
+ORGANIZATION_WIDGETS_UPDATED = "organization.widgets_updated"
 
 AGENT_CREATED = "agent.created"
 AGENT_DELETED = "agent.deleted"
@@ -213,6 +214,28 @@ def lobstertalk_channel_updated(
         actor=_user_actor(actor_user),
         target=AuditLogEventTarget(id=channel_id, name=channel_name, type="mm_channel"),
         metadata={"approved": "true" if approved else "false"},
+    )
+
+
+def widgets_updated(
+    request: Request,
+    *,
+    actor_user: dict,
+    workos_org_id: str,
+    enabled: bool | None = None,
+    ended: int | None = None,
+) -> None:
+    """The org's widgets switch was written, or an owner ended every active widget in the org."""
+    _emit(
+        request,
+        action=ORGANIZATION_WIDGETS_UPDATED,
+        organization_id=workos_org_id,
+        actor=_user_actor(actor_user),
+        target=AuditLogEventTarget(id=workos_org_id, name="widgets", type="organization_setting"),
+        metadata={
+            "enabled": "" if enabled is None else ("true" if enabled else "false"),
+            "ended": "" if ended is None else str(ended),
+        },
     )
 
 

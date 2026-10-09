@@ -32,6 +32,7 @@ import { MessageMarkdown } from "@/components/MessageMarkdown";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { PostAvatar } from "@/components/chat/PostAvatar";
 import { McpAppView } from "@/components/chat/McpAppView";
+import { WidgetCard } from "@/components/widgets/WidgetCard";
 import { TurnTrace } from "@/components/chat/TurnTrace";
 import { StreamingMarkdown } from "@/components/chat/StreamingMarkdown";
 import { SettleBody } from "@/components/chat/SettleBody";
@@ -675,7 +676,7 @@ export const MessageRow = memo(function MessageRow({
   const actions: MessageAction[] = hasActions
     ? [
         settled && { key: "reply", icon: ArrowTurnBackwardIcon, label: "Reply", onClick: () => { onReply(post); } },
-        isOwnHumanPost && isPublished && {
+        isOwnHumanPost && isPublished && !post.widget_id && {
           key: "edit",
           icon: Edit02Icon,
           label: "Edit",
@@ -720,6 +721,8 @@ export const MessageRow = memo(function MessageRow({
       onSave={(message) => { onSaveEdit({ postId: post.post_id, message }); }}
       onCancel={() => { onEdit(null); }}
     />
+  ) : post.widget_id ? (
+    <WidgetCard widgetId={post.widget_id} channelId={post.channel_id} userId={currentUserId} />
   ) : adminCommand ? (
     <div className="my-1 inline-flex max-w-full items-center gap-2 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-foreground/80">
       <AdminCommandGlyph kind={adminCommand.kind} className="size-5" />
@@ -735,9 +738,10 @@ export const MessageRow = memo(function MessageRow({
     <MessageMarkdown content={post.message}/>
   );
 
-  const previewUrl = settled && !post.link_preview ? extractUrls(post.message).find((url) => !mcpConnectLinkId(url)) : undefined;
+  const previewUrl = settled && !post.link_preview && !post.widget_id ? extractUrls(post.message).find((url) => !mcpConnectLinkId(url)) : undefined;
   const reactionPicker = settled && <ReactionQuickPicker onSelect={react}/>;
-  const receipt = receiptOf(post, channelType, currentUserId, members);
+  // A widget fills its row to the corner where the receipt would sit, and a move never changes what was read.
+  const receipt = post.widget_id ? undefined : receiptOf(post, channelType, currentUserId, members);
   const handleText = authorMember ? `@${mentionHandle(authorMember)}` : "@user";
 
   const row = (

@@ -8,6 +8,7 @@ import { type AgentActivity, applyActivity, keepTurn, type LiveTurn, type Turn }
 import { updateAgentPresence } from "@/hooks/useAgentPresence";
 import { endChannelTurns, endLiveTurn, liveTurnKey } from "@/hooks/useTraceState";
 import { updateUserPresence } from "@/hooks/useUserPresence";
+import { applyWidgetEvent } from "@/lib/widgets";
 import type {
   GlobalUserStatus,
   MmChannelEvent,
@@ -15,6 +16,7 @@ import type {
   MmChannelMember,
   MmChannelPost,
   MmPostListPayload,
+  Widget,
 } from "@/lib/api";
 
 type MemberStatus = "online" | "idle" | "typing" | "generating" | "offline";
@@ -39,7 +41,8 @@ type ServerEvent =
     }
   | { type: "agent.status"; data: { agent_id: string; last_alive_at: string | null } }
   | { type: "member.read"; data: { human_id?: number; agent_id?: string; last_read_post_id: number } }
-  | { type: "channel.event"; data: MmChannelEvent };
+  | { type: "channel.event"; data: MmChannelEvent }
+  | { type: "widget.updated"; data: Widget };
 
 // Mirrors STATUS_TTL_SECONDS in clawbits/realtime/bus.py; Redis expiry never broadcasts, so clear locally.
 const PRESENCE_TTL_MS: Partial<Record<MemberStatus, number>> = {
@@ -298,7 +301,11 @@ export function useChannelEvents(channelId: string) {
           );
           setOptimisticAgents((prev) => (prev.size === 0 ? prev : new Set()));
           // The bus has no replay: every snapshot after the first marks a reconnect, so refetch what was missed.
-          if (reconnected) void qc.invalidateQueries({ queryKey: postsKey });
+          if (reconnected) {
+            void qc.invalidateQueries({ queryKey: postsKey });
+            void qc.invalidateQueries({ queryKey: queryKeys.mm.activeWidgets(channelId) });
+            void qc.invalidateQueries({ queryKey: queryKeys.mm.widgetsAll });
+          }
           reconnected = true;
         });
       } else if (evt.type === "user.status") {
@@ -328,6 +335,8 @@ export function useChannelEvents(channelId: string) {
           return { events: [event, ...prev.events], total: prev.total + 1 };
         });
         void qc.invalidateQueries({ queryKey: queryKeys.mm.channelMembers(channelId) });
+      } else if (evt.type === "widget.updated") {
+        applyWidgetEvent(qc, evt.data);
       }
     });
 

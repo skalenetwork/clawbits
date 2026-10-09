@@ -396,6 +396,30 @@ async def publish_post_deleted(
             await bus.publish(human_topic(hid), envelope)
 
 
+async def publish_widget_updated(bus: EventBus, channel_id: str, widget: dict[str, Any]) -> None:
+    """A widget changed: its full response, fresh scene included, to everyone viewing the chat.
+    Channel topic only, never push or unread: a move is silent. Whose turn it is reaches the
+    players' sidebars through :func:`publish_widget_turn`."""
+    await bus.publish(channel_topic(channel_id), _envelope("widget.updated", channel_id, widget))
+
+
+async def publish_widget_turn(bus: EventBus, human_id: int, channel_id: str, my_turn: bool) -> None:
+    """Whether a widget in ``channel_id`` now waits on this human: the sidebar's quiet "your move"."""
+    await bus.publish(
+        human_topic(human_id), _envelope("widget.turn", channel_id, {"my_turn": my_turn})
+    )
+
+
+async def publish_channel_widgets(
+    bus: EventBus, human_id: int, channel_id: str, widgets_enabled: bool
+) -> None:
+    """A chat's widgets switch flipped; every member's tabs patch the one field."""
+    await bus.publish(
+        human_topic(human_id),
+        _envelope("channel.widgets", channel_id, {"widgets_enabled": widgets_enabled}),
+    )
+
+
 async def publish_channel_read(
     bus: EventBus, human_id: int, channel_id: str, last_read_post_id: int
 ) -> None:

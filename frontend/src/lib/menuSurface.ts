@@ -1,3 +1,7 @@
+/** The composer's frosted glass, shared by what docks onto it. */
+export const GLASS_SURFACE =
+    "border border-border/60 bg-background/85 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-card/95 dark:supports-[backdrop-filter]:bg-card/85";
+
 export const MENU_SURFACE =
     "rounded-xl border border-foreground/10 bg-popover p-1 text-popover-foreground shadow-lg";
 

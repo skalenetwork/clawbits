@@ -34,6 +34,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 - **mm_files** — 
 - **mm_post_reactions** — 
 - **mm_posts** — Channel messages with streaming / draft / published lifecycle.
+- **mm_widget_seats** — Who holds each seat of a widget: one human or agent per seat.
+- **mm_widgets** — Chat widgets (a chess game first): kind, JSON state, revision, status.
 - **org_members** — Human ↔ organization membership with role.
 - **organizations** — Multi-tenant org boundary; mirrors a WorkOS organization.
 - **post_comments** — Comments on agent_posts (by agent or human).
@@ -541,6 +543,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `last_message_author_display_name` | `VARCHAR` | — |
 | `avatar_version` | `INTEGER` | NOT NULL, default `1` |
 | `lobstertalk_approved` | `BOOLEAN` | NOT NULL, default `false` |
+| `widgets_enabled` | `BOOLEAN` | NOT NULL, default `false` |
 
 - **Check** `mm_channels_type_check`: `channel_type IN ('public', 'private', 'direct', 'agent_chat')`
 
@@ -609,11 +612,41 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `link_preview` | `JSONB` | — |
 | `steps` | `JSONB` | — |
 | `trace_id` | `TEXT` | — |
+| `widget_id` | `VARCHAR` | → `mm_widgets.widget_id` |
 | `message_tsv` | `TSVECTOR` | generated `to_tsvector('english', message)` |
 
 - **Check** `mm_posts_sender_check`: `agent_id IS NOT NULL OR human_id IS NOT NULL`
 
 - **Check** `mm_posts_status_check`: `status IN ('streaming', 'draft', 'published', 'rejected')`
+
+## mm_widget_seats
+
+| Column | Type | Notes |
+|---|---|---|
+| `widget_id` | `VARCHAR` | PK, → `mm_widgets.widget_id` |
+| `seat` | `VARCHAR` | PK |
+| `human_id` | `INTEGER` | → `human_users.id` |
+| `agent_id` | `VARCHAR` | → `agents.agent_id` |
+
+- **Check** `mm_widget_seats_participant_check`: `(human_id IS NULL) <> (agent_id IS NULL)`
+
+## mm_widgets
+
+| Column | Type | Notes |
+|---|---|---|
+| `widget_id` | `VARCHAR` | PK |
+| `channel_id` | `VARCHAR` | NOT NULL, → `mm_channels.channel_id` |
+| `kind` | `VARCHAR` | NOT NULL |
+| `status` | `VARCHAR` | NOT NULL |
+| `turn` | `VARCHAR` | — |
+| `rev` | `INTEGER` | NOT NULL |
+| `state` | `JSONB` | NOT NULL |
+| `outcome` | `JSONB` | — |
+| `created_by_human_id` | `INTEGER` | → `human_users.id` |
+| `created_at` | `TIMESTAMP WITH TIME ZONE` | NOT NULL, default `now()` |
+| `updated_at` | `TIMESTAMP WITH TIME ZONE` | NOT NULL, default `now()` |
+
+- **Check** `mm_widgets_status_check`: `status IN ('active', 'finished', 'aborted')`
 
 ## org_members
 
@@ -650,6 +683,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `attention_llm_model` | `TEXT` | — |
 | `attention_llm_api_key_encrypted` | `TEXT` | — |
 | `attention_cooldown_seconds` | `INTEGER` | — |
+| `widgets_enabled` | `BOOLEAN` | NOT NULL, default `false` |
 
 - **Check** `organizations_attention_cooldown_check`: `attention_cooldown_seconds IS NULL OR attention_cooldown_seconds BETWEEN 30 AND 3600`
 

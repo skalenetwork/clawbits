@@ -7,12 +7,14 @@ import type {
   Recipient,
   User,
 } from "./models";
+import type { Widget, WidgetAction, WidgetKindName } from "./widgets";
 
 export const apiUrl = (
   process.env.EXPO_PUBLIC_CLAWBITS_API_URL || "https://app.clawbits.ai"
 ).replace(/\/+$/, "");
 export const channelPath = (id: string): string =>
   `/api/human/mm/channels/${encodeURIComponent(id)}`;
+const widgetPath = (id: string): string => `/api/human/mm/widgets/${encodeURIComponent(id)}`;
 export const auth: {
   refresh?: (previous: string, next: string) => Promise<void>;
 } = {};
@@ -39,10 +41,10 @@ export async function request<T>(
   token?: string,
   body?: unknown,
   signal?: AbortSignal,
-  method?: "DELETE",
+  method: "GET" | "POST" | "PATCH" | "DELETE" = body === undefined ? "GET" : "POST",
 ): Promise<T> {
   const response = await fetch(`${apiUrl}${path}`, {
-    method: method ?? (body === undefined ? "GET" : "POST"),
+    method,
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -150,6 +152,19 @@ export const api = {
     }),
   deleteAccount: (token: string) =>
     request<void>("/api/human/account", token, undefined, undefined, "DELETE"),
+  /** The chat's games switch; either person in the chat may flip it. */
+  setChatWidgets: (token: string, id: string, enabled: boolean) =>
+    request<Channel>(channelPath(id), token, { widgets_enabled: enabled }, undefined, "PATCH"),
+  widget: (token: string, id: string, signal?: AbortSignal) =>
+    request<Widget>(widgetPath(id), token, undefined, signal),
+  activeWidgets: (token: string, channel: string, signal?: AbortSignal) =>
+    request<{ widgets: Widget[] }>(`${channelPath(channel)}/widgets`, token, undefined, signal),
+  /** The caller's seat is drawn at random. */
+  startWidget: (token: string, channel: string, kind: WidgetKindName) =>
+    request<Widget>(`${channelPath(channel)}/widgets`, token, { kind }),
+  /** `rev` is the rev the action was taken on; a newer one answers 409. */
+  actOnWidget: (token: string, id: string, action: WidgetAction, rev: number) =>
+    request<Widget>(`${widgetPath(id)}/actions`, token, { action, expected_rev: rev }),
 };
 
 export async function recipients(

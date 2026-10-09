@@ -1,4 +1,8 @@
-import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
+import {
+  LegendList,
+  type LegendListRef,
+  type OnViewableItemsChangedInfo,
+} from "@legendapp/list/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
 import * as Clipboard from "expo-clipboard";
@@ -38,7 +42,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, ApiError, mcpConnectLinkId } from "@/lib/api";
 import { BUBBLE_TAIL, bubblePath } from "@/lib/bubblePath";
 import { deleteChannelFile, uploadChannelFile, type LocalFile } from "@/lib/upload";
-import { historyKey, useHistory, useLiveEvents } from "@/lib/data";
+import { historyKey, useActiveWidgets, useHistory, useLiveEvents, useOrganizations } from "@/lib/data";
 import { useLiveTurn, useLiveTurns, type LiveTurn } from "@/lib/liveTurn";
 import { glyphKind, isPairChannel } from "@/lib/chatFilters";
 import {
@@ -58,6 +62,15 @@ import {
 } from "@/lib/models";
 import { useSession } from "@/lib/session";
 import {
+  applyWidget,
+  canPlay,
+  isWidgetChat,
+  WIDGET_KINDS,
+  widgetPostIndex,
+  type Widget,
+  type WidgetKindName,
+} from "@/lib/widgets";
+import {
   AvatarView,
   color,
   Empty,
@@ -69,6 +82,8 @@ import {
 } from "@/components/ui";
 import { McpConnectCard } from "@/components/mcp-connect-card";
 import { TurnTrace } from "@/components/turn-trace";
+import { WidgetCard } from "@/components/widgets/widget-card";
+import { WidgetDock } from "@/components/widgets/widget-dock";
 
 type Delivery = { uuid: string; text: string; state: "sending" | "uncertain" };
 
@@ -84,6 +99,10 @@ function itemsAreEqual(prev: Post, next: Post) {
     prev.files.every((file, index) => file.file_id === next.files[index]?.file_id)
   );
 }
+
+// A message counts as on screen while 40% of it shows: a game taller than the
+// screen still counts.
+const GAME_VIEWABILITY = { itemVisiblePercentThreshold: 40 };
 
 export default function ConversationRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -132,6 +151,45 @@ function Conversation({ id }: { id: string }) {
     };
   }, []);
   const posts = useMemo(() => historyPosts(history.data), [history.data]);
+  // The games whose message is on screen: the dock steps aside while its game
+  // is in view.
+  const [shownGames, setShownGames] = useState<string[]>([]);
+  const onViewableItemsChanged = useCallback(
+    ({ viewableItems }: OnViewableItemsChangedInfo<Post>) => {
+      setShownGames(
+        viewableItems.flatMap((token) =>
+          token.item.widget_id ? [token.item.widget_id] : [],
+        ),
+      );
+    },
+    [],
+  );
+  /** The dock's tap: the chat scrolls to the message that started the game,
+   *  loading older pages until it's in. */
+  const showWidget = async (widget: Widget) => {
+    let data = history.data;
+    let more = history.hasNextPage;
+    // A game many pages back stays there: past twenty, the chat keeps its place.
+    for (let page = 0; page <= 20; page++) {
+      const index = widgetPostIndex(historyPosts(data), widget);
+      if (index >= 0) {
+        // Once the list has a page just loaded; the game then sits in the
+        // middle of the screen.
+        requestAnimationFrame(() => {
+          void list.current?.scrollToIndex({
+            index,
+            animated: true,
+            viewPosition: 0.5,
+          });
+        });
+        return;
+      }
+      if (!more) return;
+      const next = await history.fetchNextPage();
+      data = next.data;
+      more = next.hasNextPage;
+    }
+  };
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [files, setFiles] = useState<PendingFile[]>([]);
@@ -148,6 +206,11 @@ function Conversation({ id }: { id: string }) {
   const active = channel.data ?? cached;
   const named = active != null && !isPairChannel(active);
   const userId = session!.user.id;
+  const { selected: organization } = useOrganizations();
+  const gameChat = isWidgetChat(active);
+  const activeWidgets = useActiveWidgets(id, gameChat);
+  // One widget at a time in a chat: the + menu offers a game only while none is running.
+  const playable = canPlay(active, organization) && activeWidgets.isSuccess && activeWidgets.data.length === 0;
   const forbidden =
     channel.error instanceof ApiError &&
     [403, 404].includes(channel.error.status);
@@ -326,16 +389,55 @@ function Conversation({ id }: { id: string }) {
       );
     });
   };
+  /** Start a game, turning the chat's widgets switch on first when it is off: either person may. */
+  const startGame = async (kind: WidgetKindName) => {
+    try {
+      if (!active?.widgets_enabled) {
+        const allowed = await new Promise<boolean>((resolve) => {
+          Alert.alert("Widgets are off in this chat", "Turn them on for both of you?", [
+            { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+            { text: "Turn On", onPress: () => resolve(true) },
+          ]);
+        });
+        if (!allowed) return;
+        client.setQueryData<Channel>(["channel", id], await api.setChatWidgets(token, id, true));
+      }
+      applyWidget(client, await api.startWidget(token, id, kind));
+    } catch (cause) {
+      Alert.alert(
+        "Could not start the game",
+        cause instanceof Error ? cause.message : "Please try again.",
+      );
+    }
+  };
+  const chooseGame = () => {
+    const options = [...WIDGET_KINDS.map((item) => item.label), "Cancel"];
+    ActionSheetIOS.showActionSheetWithOptions(
+      { title: "Play a game", options, cancelButtonIndex: options.length - 1 },
+      (index) => {
+        const kind = WIDGET_KINDS[index]?.kind;
+        if (kind) void startGame(kind);
+      },
+    );
+  };
   const openAttachments = () => {
+    const options = [
+      "Photo Library",
+      "Take Photo",
+      "Choose File",
+      ...(playable ? ["Play a Game"] : []),
+      "Cancel",
+    ];
     ActionSheetIOS.showActionSheetWithOptions(
       {
-        options: ["Photo Library", "Take Photo", "Choose File", "Cancel"],
-        cancelButtonIndex: 3,
+        options,
+        cancelButtonIndex: options.length - 1,
       },
       (index) => {
         if (index === 0) pick("library");
         else if (index === 1) pick("camera");
         else if (index === 2) pick("file");
+        else if (playable && index === 3) chooseGame();
       },
     );
   };
@@ -444,6 +546,8 @@ function Conversation({ id }: { id: string }) {
               void history.fetchNextPage();
           }}
           onStartReachedThreshold={1}
+          onViewableItemsChanged={onViewableItemsChanged}
+          viewabilityConfig={GAME_VIEWABILITY}
           onMomentumScrollEnd={scheduleRead}
           onScrollEndDrag={scheduleRead}
           ListHeaderComponent={
@@ -496,6 +600,14 @@ function Conversation({ id }: { id: string }) {
             { paddingBottom: keyboardOpen ? 8 : insets.bottom + 8 },
           ]}
         >
+          <WidgetDock
+            channelId={id}
+            enabled={gameChat}
+            onScreen={shownGames}
+            onShow={(widget) => {
+              void showWidget(widget);
+            }}
+          />
           {error && !accepted && (
             <Text accessibilityLiveRegion="polite" style={styles.error}>
               {error}
@@ -848,7 +960,11 @@ const Message = memo(function Message({
       {post.agent_id && (streaming || post.status === "published") ? (
         <TurnTrace post={post} turn={turn} />
       ) : null}
-      {streaming && !body && post.files.length === 0 ? null : (
+      {post.widget_id ? (
+        <View style={chat.widget}>
+          <WidgetCard widgetId={post.widget_id} channelId={post.channel_id} />
+        </View>
+      ) : streaming && !body && post.files.length === 0 ? null : (
         <Pressable
           accessibilityHint={body ? "Copies the message" : undefined}
           delayLongPress={350}
@@ -918,6 +1034,7 @@ const chat = StyleSheet.create({
   ungrouped: { paddingTop: 6, paddingBottom: 6 },
   author: { fontSize: 11, color: color.muted, marginLeft: 16, marginBottom: 2 },
   bubbleWrap: { maxWidth: "75%" },
+  widget: { alignSelf: "stretch" },
   cardWrap: { width: "88%" },
   bubble: {
     paddingHorizontal: 12,

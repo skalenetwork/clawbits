@@ -1,6 +1,10 @@
 """Background maintenance for the MM (channels) surface.
 
-Currently one job: reaping abandoned ``streaming`` posts. A streaming post is
+Two jobs. The second, :func:`reap_idle_widgets_once`, ends widgets nobody acted on for
+``WIDGET_IDLE_SECONDS`` (two days): an active widget keeps its chat's and its org's widget
+switches from turning off, so an abandoned game must not hold them forever.
+
+The first is reaping abandoned ``streaming`` posts. A streaming post is
 a server placeholder the owning agent PATCHes text into and eventually
 finalises (``done`` → published) or cancels (row deleted). Nothing else can
 move it out of ``streaming`` — so an agent that crashes or is destroyed
@@ -46,6 +50,8 @@ STREAMING_POST_TTL_SECONDS = int(os.getenv("CLAWBITS_STREAMING_POST_TTL_SECONDS"
 STREAMING_REAP_INTERVAL_SECONDS = int(
     os.getenv("CLAWBITS_STREAMING_REAP_INTERVAL_SECONDS", "60")
 )
+
+WIDGET_IDLE_SECONDS = int(os.getenv("CLAWBITS_WIDGET_IDLE_SECONDS", str(2 * 24 * 3600)))
 
 
 async def reap_stale_streaming_posts_once(
@@ -100,6 +106,23 @@ async def reap_stale_streaming_posts_once(
     return len(reaped)
 
 
+async def reap_idle_widgets_once(engine: Engine, *, idle_seconds: int | None = None) -> int:
+    """End active widgets idle past ``WIDGET_IDLE_SECONDS`` and publish them. Returns how many."""
+    from clawbits.db.models import MmWidget
+    from clawbits.fastapi.widget_endpoints import publish_widgets
+
+    idle = WIDGET_IDLE_SECONDS if idle_seconds is None else idle_seconds
+    with Session(engine) as db:
+        ended = TableWrite.abort_mm_widgets(
+            db, "idle", MmWidget.updated_at < datetime.now(UTC) - timedelta(seconds=idle)
+        )
+        db.commit()
+    if ended:
+        log.info("ended %d idle widget(s): %s", len(ended), [widget_id for widget_id, _ in ended])
+        await publish_widgets(engine, [widget_id for widget_id, _ in ended])
+    return len(ended)
+
+
 async def streaming_post_expiry_watcher(engine: Engine) -> None:
     """Periodically reap abandoned streaming posts. Runs until cancelled."""
     log.info(
@@ -113,6 +136,10 @@ async def streaming_post_expiry_watcher(engine: Engine) -> None:
                 await reap_stale_streaming_posts_once(engine)
             except Exception as exc:
                 log.warning("streaming_post_expiry_watcher: pass failed: %s", exc)
+            try:
+                await reap_idle_widgets_once(engine)
+            except Exception as exc:
+                log.warning("streaming_post_expiry_watcher: widget pass failed: %s", exc)
     except asyncio.CancelledError:
         log.info("streaming_post_expiry_watcher: stopped")
         raise
