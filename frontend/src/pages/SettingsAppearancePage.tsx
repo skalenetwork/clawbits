@@ -9,12 +9,15 @@ import { SettingsPage, SettingsRow, SettingsSection } from "@/components/setting
 import { DELAY_RANGE, dictationSupported, getDictationPrefs, setDictationPrefs, type DictationPrefs } from "@/hooks/useDictation";
 import { useTheme, type Theme } from "@/hooks/useTheme";
 import { isMacDesktop, getStoredTranslucency, setTranslucency } from "@/lib/desktop";
+import { setPieceSet, usePieceSet, type PieceSet } from "@/lib/pieceSet";
 
 const THEMES: Record<Theme, string> = { light: "Light", dark: "Dark", system: "System" };
+const PIECE_SETS: Record<PieceSet, string> = { sea: "Sea", classic: "Classic" };
 const SECONDS = new Intl.NumberFormat("en", { style: "unit", unit: "second", unitDisplay: "long" });
 
 export default function SettingsAppearancePage() {
     const { theme, setTheme } = useTheme();
+    const pieceSet = usePieceSet();
     const [translucent, setTranslucent] = useState(getStoredTranslucency);
     const [dictation, setDictation] = useState(getDictationPrefs);
     const updateDictation = (change: Partial<DictationPrefs>) => {
@@ -42,6 +45,26 @@ export default function SettingsAppearancePage() {
                             </SelectTrigger>
                             <SelectContent>
                                 {Object.entries(THEMES).map(([value, label]) => (
+                                    <SelectItem key={value} value={value}>{label}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    }
+                />
+                <SettingsRow
+                    title="Chess pieces"
+                    description="Sea creatures or classic shapes, on this device"
+                    control={
+                        <Select
+                            value={pieceSet}
+                            items={PIECE_SETS}
+                            onValueChange={(next) => { if (next) setPieceSet(next); }}
+                        >
+                            <SelectTrigger size="sm" aria-label="Chess pieces">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {Object.entries(PIECE_SETS).map(([value, label]) => (
                                     <SelectItem key={value} value={value}>{label}</SelectItem>
                                 ))}
                             </SelectContent>

@@ -1,4 +1,5 @@
 import type { InfiniteData } from "@tanstack/react-query";
+import type { Widget } from "./widgets";
 
 export interface Avatar {
   url: string;
@@ -19,6 +20,8 @@ export interface Organization {
   avatar?: Avatar | null;
   is_personal: boolean;
   member_count?: number;
+  /** Chat widgets (games) allowed in the org's one-to-one chats. */
+  widgets_enabled?: boolean;
 }
 
 export interface Channel {
@@ -29,6 +32,7 @@ export interface Channel {
   channel_type: "public" | "private" | "direct" | "agent_chat";
   dm_peer: { display_name: string | null; avatar: Avatar | null } | null;
   dm_peer_agent_id?: string | null;
+  dm_peer_human_id?: number | null;
   avatar: Avatar | null;
   last_message_at: string | null;
   last_message_text: string | null;
@@ -36,6 +40,10 @@ export interface Channel {
   last_message_author_human_id?: number | null;
   last_message_author_display_name?: string | null;
   unread_count: number;
+  /** The chat's own widgets switch. */
+  widgets_enabled?: boolean;
+  /** An active widget here waits on the viewer. */
+  widget_turn?: boolean;
 }
 
 export interface PostFile {
@@ -61,6 +69,8 @@ export interface Post {
   client_msg_uuid?: string | null;
   files: PostFile[];
   steps?: TurnStep[] | null;
+  /** The widget this post started; the post shows the widget, never its text. */
+  widget_id?: string | null;
 }
 
 /** A finished agent turn's tool call or narration, kept on its reply. */
@@ -116,6 +126,9 @@ export type ChatEvent = { channel_id: string } & (
   | { type: "member.status"; data: MemberStatus }
   | { type: "presence.snapshot"; data: { members: MemberStatus[] } }
   | { type: `channel.${"added" | "removed" | "read" | "muted"}` }
+  | { type: "widget.updated"; data: Widget }
+  | { type: "widget.turn"; data: { my_turn: boolean } }
+  | { type: "channel.widgets"; data: { widgets_enabled: boolean } }
 );
 
 export function channelName(channel: Channel): string {

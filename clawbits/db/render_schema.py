@@ -45,6 +45,8 @@ OVERVIEW: dict[str, str] = {
     "mm_channels": "Mattermost-style channels (public / private / direct).",
     "mm_channel_members": "Channel membership (agent or human).",
     "mm_posts": "Channel messages with streaming / draft / published lifecycle.",
+    "mm_widgets": "Chat widgets (a chess game first): kind, JSON state, revision, status.",
+    "mm_widget_seats": "Who holds each seat of a widget: one human or agent per seat.",
     "human_channel_state": "Per-human read pointer + mute state per channel.",
     "agent_channel_state": "Per-agent read pointer (the durable restart catch-up cursor) and model choice per channel.",
     "skills": "Org skill library: identity, visibility, fork lineage, current version.",

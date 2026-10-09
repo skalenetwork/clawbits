@@ -110,6 +110,7 @@ from clawbits.realtime import (
     publish_channel_pinned,
     publish_channel_read,
     publish_channel_removed,
+    publish_channel_widgets,
     publish_member_read,
     publish_member_removed,
     publish_member_status,
@@ -562,27 +563,55 @@ async def patch_channel(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    def save() -> dict:
+    """Rename a named chat, or flip a one-to-one chat's widgets switch. The switch turns off only
+    while no widget is active in the chat (409), and only in a chat between people for now."""
+    def save() -> tuple[dict, list[int]]:
         with _get_db(request) as db:
             _require_human_member(db, channel_id, user["id"])
-            row = db.get(MmChannel, channel_id)
+            # Locked so no widget can start between the active check below and the commit.
+            row = (
+                TableWrite.lock_mm_channel(db, channel_id)
+                if body.widgets_enabled is not None
+                else db.get(MmChannel, channel_id)
+            )
             if row is None:
                 raise HTTPException(status_code=404, detail="Channel not found")
-            if row.channel_type != AGENT_CHAT:
-                raise HTTPException(status_code=400, detail="Only named chats can be renamed")
-            row.display_name = body.display_name.strip()
-            if not row.display_name:
-                raise HTTPException(status_code=400, detail="Name is required")
+            if body.display_name is not None:
+                if row.channel_type != AGENT_CHAT:
+                    raise HTTPException(status_code=400, detail="Only named chats can be renamed")
+                row.display_name = body.display_name.strip()
+                if not row.display_name:
+                    raise HTTPException(status_code=400, detail="Name is required")
+            if body.widgets_enabled is not None:
+                if row.channel_type != "direct" or TableRead.dm_agent_peer(db, channel_id):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Widgets run in one-to-one chats between people for now",
+                    )
+                if not body.widgets_enabled and TableRead.active_mm_widget_id(db, channel_id):
+                    raise HTTPException(
+                        status_code=409, detail="A widget is active in this chat; finish or end it first"
+                    )
+                row.widgets_enabled = body.widgets_enabled
             db.add(row)
             db.commit()
             ch = TableRead.get_mm_channel(db, channel_id)
             TableRead.apply_dm_peers(db, [ch], user["id"])
-            return ch
+            members = (
+                TableRead.get_mm_channel_human_member_ids(db, channel_id)
+                if body.widgets_enabled is not None
+                else []
+            )
+            return ch, members
 
-    ch = await asyncio.to_thread(save)
+    ch, members = await asyncio.to_thread(save)
     await _present_dm_peers([ch])
     response = MmChannelResponse(**ch)
-    fire_and_forget(publish_channel_added(get_bus(), user["id"], response.model_dump()))
+    bus = get_bus()
+    if body.display_name is not None:
+        fire_and_forget(publish_channel_added(bus, user["id"], response.model_dump()))
+    for human_id in members:
+        fire_and_forget(publish_channel_widgets(bus, human_id, channel_id, response.widgets_enabled))
     return response
 
 
@@ -1555,6 +1584,10 @@ def delete_post(
     fire_and_forget(
         publish_post_deleted(get_bus(), channel_id, post_id, member_human_ids=member_human_ids)
     )
+    if snapshot.widget_id is not None:
+        from clawbits.fastapi.widget_endpoints import publish_widgets
+
+        fire_and_forget(publish_widgets(request.app._engine, [snapshot.widget_id]))
     return Response(status_code=204)
 
 

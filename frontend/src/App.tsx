@@ -56,6 +56,8 @@ const AgentsPage = lazy(() => import("./pages/AgentsPage"));
 const SettingsChannelsPage = lazy(() => import("./pages/SettingsChannelsPage"));
 const SettingsLobstertalkPage = lazy(() => import("./pages/SettingsLobstertalkPage"));
 const SettingsReefPage = lazy(() => import("./pages/SettingsReefPage"));
+const SettingsWidgetsPage = lazy(() => import("./pages/SettingsWidgetsPage"));
+const WidgetPage = lazy(() => import("./pages/WidgetPage"));
 const AgentSkillsPage = lazy(() => import("./pages/AgentSkillsPage"));
 const SkillDetailPage = lazy(() => import("./pages/SkillDetailPage"));
 const SkillsPage = lazy(() => import("./pages/SkillsPage"));
@@ -111,6 +113,7 @@ function AppShell() {
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/skills/:skillId" element={<SkillDetailPage />} />
             <Route path="/channels/:channelId" element={<ChannelPage />} />
+            <Route path="/widgets/:widgetId" element={<WidgetPage />} />
             <Route path="/settings" element={<SettingsMenuPage />} />
             <Route path="/settings/profile" element={<SettingsProfilePage />} />
             <Route path="/settings/connectors" element={<SettingsConnectorsPage />} />
@@ -123,6 +126,7 @@ function AppShell() {
             <Route path="/settings/channels" element={<SettingsChannelsPage />} />
             <Route path="/settings/lobstertalk" element={<SettingsLobstertalkPage />} />
             <Route path="/settings/reef" element={<SettingsReefPage />} />
+            <Route path="/settings/widgets" element={<SettingsWidgetsPage />} />
             {/* agent_signup.py mints this path into every approval_url. */}
             <Route path="/settings/agents" element={<Navigate to="/agents" replace />} />
           </Route>

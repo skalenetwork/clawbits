@@ -62,6 +62,8 @@ export const queryKeys = {
     ["agentContactPermissions", agentId] as const,
   orgSignupRequests: (orgId: string) => ["org", orgId, "signup-requests"] as const,
   mcpConnectLink: (linkId: string) => ["mcp-connect-link", linkId] as const,
+  /** The org's widgets switch and how many widgets are active under it. */
+  orgWidgets: (orgId: string) => ["org", orgId, "widgets"] as const,
   /** The org's LobsterTalk attention config (toggle + mode + LLM connection). */
   orgLobstertalk: (orgId: string) => ["org", orgId, "lobstertalk"] as const,
   /** The org's reef repository, plus the hosts reporting into it. */
@@ -106,6 +108,11 @@ export const queryKeys = {
       ["mm", "channel", channelId, "members"] as const,
     channelPinnedPosts: (channelId: string) =>
       ["mm", "channel", channelId, "pinned-posts"] as const,
+    /** One widget, kept apart from posts so its board updates wherever it is shown. */
+    widget: (widgetId: string) => ["mm", "widget", widgetId] as const,
+    widgetsAll: ["mm", "widget"] as const,
+    /** The chat's active widget (at most one), for the dock above the composer. */
+    activeWidgets: (channelId: string) => ["mm", "channel", channelId, "widgets"] as const,
     linkPreview: (url: string) => ["mm", "link-preview", url] as const,
     search: (orgId: string | null, query: string, sort: string, filters: MmSearchFilters) =>
       ["mm", "search", orgId, query, sort, filters] as const,

@@ -189,6 +189,7 @@ class OrgResponse(BaseModel):
     created_by: int = Field(description="Human user ID of the creator")
     created_at: str
     attention_enabled: bool = False
+    widgets_enabled: bool = False
     reef_connected: bool = False
     my_role: Literal["owner", "member"] | None = None
     last_visited_at: str | None = None

@@ -81,6 +81,9 @@ _ALL_TABLES_FK_ORDER = (
     # FK to mm_posts.post_id and mm_channels.channel_id — wipe before both.
     "mm_files",
     "mm_posts",
+    # FK to mm_channels.channel_id and human_users.id — wipe before both.
+    "mm_widget_seats",
+    "mm_widgets",
     # FK to mm_channels.channel_id and human_users.id / agents.agent_id —
     # wipe before mm_channels, agents, human_users.
     "mm_channel_events",

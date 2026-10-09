@@ -5,14 +5,15 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   type Ref,
   type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowDown, ArrowUp, Plus, Reply, Square, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChessPawn, Club, Gamepad2, Plus, Reply, Ship, Spade, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
-import { MENU_SURFACE } from "@/lib/menuSurface";
+import { GLASS_SURFACE as SURFACE, MENU_SURFACE } from "@/lib/menuSurface";
 
 import { AgentTargetChip } from "@/components/composer/AgentTargetChip";
 import { ModelPicker } from "@/components/composer/ModelPicker";
@@ -27,6 +28,7 @@ import {
 import { AttachmentChip } from "@/components/AttachmentChip";
 import { MENTION_TOKEN_RE, MentionsContext, type MessageMentions } from "@/components/mentionsContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { extractAdminCommandQuery, getAdminCommandOptions } from "@/lib/adminCommands";
 import { extractClipboardFiles } from "@/lib/clipboardFiles";
 import { extractShortcodeQuery } from "@/lib/emoji";
@@ -43,7 +45,7 @@ import {
   posterName,
   quotedBodyText,
 } from "@/lib/messageHelpers";
-import type { MmChannelMember, MmChannelPost, MmChannelType } from "@/lib/api";
+import type { MmChannelMember, MmChannelPost, MmChannelType, WidgetKindName } from "@/lib/api";
 import { isPairType } from "@/lib/chatFilters";
 import type { PendingAutoMention } from "@/lib/autoMention";
 import type { PendingAttachment } from "@/hooks/useChannelAttachments";
@@ -51,9 +53,6 @@ import type { PendingAttachment } from "@/hooks/useChannelAttachments";
 const MAX_LEN = 4000;
 const COUNTER_THRESHOLD = 3500;
 const SUGGESTION_LIMIT = 8;
-
-const SURFACE =
-  "border border-border/60 bg-background/85 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-card/95 dark:supports-[backdrop-filter]:bg-card/85";
 
 const SHORTCUTS = [
   { keys: ["↵"], label: "Send message" },
@@ -113,6 +112,10 @@ interface MessageComposerProps {
   agentDm: boolean;
   onTyping: () => void;
   placeholder?: string;
+  /** Sits above the input and moves with it: the chat's active widget. */
+  dock?: ReactNode;
+  /** Starts a game; absent where widgets can't start. */
+  onStartWidget?: (kind: WidgetKindName) => void;
 }
 
 function ComposerHighlightedText({ text, mentions }: { text: string; mentions: MessageMentions | null }) {
@@ -253,6 +256,8 @@ export function MessageComposer({
   agentDm,
   onTyping,
   placeholder,
+  dock,
+  onStartWidget,
 }: MessageComposerProps) {
   const mentions = use(MentionsContext);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -537,6 +542,7 @@ export function MessageComposer({
         {popover?.kind === "emoji" && (
           <EmojiShortcodePopover options={emojiOptions} activeIndex={activeIndex} onSelect={complete}/>
         )}
+        {dock}
         <TypingRow people={activityPeople}/>
         <form
           data-stacked={stacked ? "" : undefined}
@@ -602,6 +608,31 @@ export function MessageComposer({
             />
             <TooltipContent side="top" sideOffset={6} className="text-xs">Attach files</TooltipContent>
           </Tooltip>
+          {onStartWidget && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                aria-label="Play a game"
+                title="Play a game"
+                className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground/6 text-muted-foreground outline-none transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Gamepad2 className="size-4"/>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="start" className="w-48">
+                <DropdownMenuItem onClick={() => { onStartWidget("chess"); }}>
+                  <ChessPawn/> Chess
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { onStartWidget("battleship"); }}>
+                  <Ship/> Battleship
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { onStartWidget("poker"); }}>
+                  <Spade/> Poker
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { onStartWidget("blackjack"); }}>
+                  <Club/> Blackjack
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <div className="grid min-w-0 flex-1 px-1 group-data-stacked/composer:order-first group-data-stacked/composer:basis-full group-data-stacked/composer:px-[7px] group-data-stacked/composer:pt-1 group-data-stacked/composer:pb-0.5">
             <div
               ref={sizerRef}
