@@ -1,0 +1,239 @@
+/* Chat widgets' own design layer. Components use only these roles, never raw colours, so the in-app theme,
+   dark mode and any future tinting remap them in one place. Ramps are OKLCH; shades derive with color-mix().
+   Neutrals and ink are Clawbits' own (warm paper, hue ~85), so a widget always sits in the app's theme; the
+   widget's own colour is warm too: a caramel-brown accent, a walnut-and-cream board, a sepia notebook, and the
+   app's lobster-red signal for danger. Dark is a second palette, not an inversion: gold, not caramel. */
+
+.wgt {
+  color-scheme: light;
+
+  /* Neutral surfaces, ink on them, and outlines: the app's tokens, which follow its theme. */
+  --w-surface: var(--card);
+  --w-on-surface: var(--foreground);
+  --w-on-surface-variant: var(--muted-foreground);
+  --w-outline-variant: var(--border);
+
+  /* One warm accent, then semantic hues. */
+  --w-primary: oklch(0.5 0.1 68);
+  --w-on-primary: oklch(0.975 0.012 90);
+  --w-success: oklch(0.55 0.12 140);
+  --w-danger: var(--signal);
+  --w-highlight: oklch(0.86 0.15 95);
+  /* Players, by seat order: ivory and ebony, as the chess sides (white moves first), which no action wears, so a
+     person never reads as a button. Each takes an edge where its theme's card would swallow it. */
+  --w-seat-1: var(--w-piece-light);
+  --w-on-seat-1: var(--w-piece-light-edge);
+  --w-seat-1-edge: var(--w-piece-light-edge);
+  --w-seat-2: var(--w-piece-light-edge);
+  --w-on-seat-2: var(--w-piece-light);
+  --w-seat-2-edge: transparent;
+
+  /* Game surfaces; coordinates sit outside, on the card. The piece tones ring a picked square and dot a target. */
+  --w-square-light: oklch(0.9 0.055 85);
+  --w-square-dark: oklch(0.64 0.075 60);
+  --w-piece-light: oklch(0.985 0.012 90);
+  --w-piece-light-edge: oklch(0.24 0.02 60);
+  --w-paper: oklch(0.975 0.022 90);
+  --w-grid: oklch(0.85 0.045 80);
+  --w-ink: oklch(0.42 0.075 55);
+  /* A card table: walnut felt, cream cards that stay light in both themes, a claw-red back. */
+  --w-felt: oklch(0.46 0.06 60);
+  --w-on-felt: oklch(0.96 0.02 85);
+  --w-card-face: oklch(0.985 0.008 90);
+  --w-suit-red: oklch(0.53 0.19 27);
+  --w-suit-black: oklch(0.24 0.02 60);
+  --w-card-back: oklch(0.48 0.13 35);
+
+  /* Materials, shadows in the app's warm shadow hue. */
+  --w-glass-tint: 66%;
+  --w-glass-shine: oklch(1 0 0 / 0.75);
+  --w-glass-edge: oklch(0.28 0.03 60 / 0.12);
+  --w-shadow-color: oklch(0.28 0.03 60);
+
+  /* Derived shades. */
+  --w-surface-container: color-mix(in oklch, var(--w-on-surface) 5%, var(--w-surface));
+  --w-surface-container-high: color-mix(in oklch, var(--w-on-surface) 9%, var(--w-surface));
+  --w-outline: color-mix(in oklch, var(--w-on-surface) 45%, var(--w-surface));
+  --w-primary-container: color-mix(in oklch, var(--w-primary) 16%, var(--w-surface));
+  --w-on-primary-container: color-mix(in oklch, var(--w-primary) 72%, var(--w-on-surface));
+  --w-success-container: color-mix(in oklch, var(--w-success) 16%, var(--w-surface));
+  --w-on-success-container: color-mix(in oklch, var(--w-success) 72%, var(--w-on-surface));
+  --w-danger-container: color-mix(in oklch, var(--w-danger) 14%, var(--w-surface));
+  --w-on-danger-container: color-mix(in oklch, var(--w-danger) 78%, var(--w-on-surface));
+  --w-glass: color-mix(in oklch, var(--w-surface) var(--w-glass-tint), transparent);
+  --w-state-hover: color-mix(in oklch, var(--w-on-surface) 6%, transparent);
+  --w-state-press: color-mix(in oklch, var(--w-on-surface) 10%, transparent);
+  --w-elevation-1: 0 1px 2px color-mix(in oklch, var(--w-shadow-color) 8%, transparent),
+    0 2px 8px -2px color-mix(in oklch, var(--w-shadow-color) 8%, transparent);
+  --w-elevation-3: 0 2px 6px color-mix(in oklch, var(--w-shadow-color) 10%, transparent),
+    0 18px 44px -12px color-mix(in oklch, var(--w-shadow-color) 30%, transparent);
+
+  /* Shape: inner radius = outer radius − padding, so nested corners stay concentric. */
+  --w-radius: 1.25rem;
+  --w-pad: 0.5rem;
+  --w-radius-inner: calc(var(--w-radius) - var(--w-pad));
+
+  color: var(--w-on-surface);
+}
+
+/* The app's tokens already turn dark under .dark; these are the widget's own second palette. */
+.dark .wgt {
+  color-scheme: dark;
+  --w-primary: oklch(0.8 0.1 82);
+  --w-on-primary: oklch(0.24 0.03 60);
+  --w-success: oklch(0.77 0.11 140);
+  --w-highlight: oklch(0.76 0.12 90);
+  --w-seat-1-edge: transparent;
+  --w-seat-2-edge: oklch(0.5 0.015 70);
+  --w-square-light: oklch(0.78 0.05 80);
+  --w-square-dark: oklch(0.56 0.065 58);
+  --w-paper: oklch(0.22 0.012 70);
+  --w-grid: oklch(0.36 0.03 70);
+  --w-ink: oklch(0.82 0.08 82);
+  --w-felt: oklch(0.33 0.045 60);
+  --w-on-felt: oklch(0.93 0.025 85);
+  --w-card-face: oklch(0.93 0.012 85);
+  --w-glass-tint: 58%;
+  --w-glass-shine: oklch(1 0 0 / 0.16);
+  --w-glass-edge: oklch(1 0 0 / 0.1);
+  --w-shadow-color: oklch(0.08 0.01 60);
+}
+
+/* Content (a widget in a message) sits on tone, not glass. */
+.wgt-card {
+  background: var(--w-surface);
+  border-radius: var(--w-radius);
+  padding: var(--w-pad);
+  box-shadow: inset 0 0 0 1px var(--w-outline-variant), var(--w-elevation-1);
+}
+
+/* A floating sheet: larger corners, and the corners nested in it follow. */
+.wgt-sheet {
+  --w-radius: 1.5rem;
+  border-radius: var(--w-radius);
+  padding: var(--w-pad);
+}
+
+/* Liquid glass, for the floating layer only: tint (the legibility floor), a specular top edge, a hairline,
+   lift. A browser without backdrop-filter, or a reader asking for less transparency, gets a solid surface. */
+.wgt-glass {
+  --w-glass-state: linear-gradient(transparent, transparent);
+  background:
+    var(--w-glass-state),
+    linear-gradient(180deg, color-mix(in oklch, var(--w-glass-shine) 40%, transparent), transparent 42%),
+    var(--w-glass);
+  -webkit-backdrop-filter: blur(22px) saturate(1.8);
+  backdrop-filter: blur(22px) saturate(1.8);
+  box-shadow:
+    inset 0 1px 0 var(--w-glass-shine),
+    inset 0 0 0 1px var(--w-glass-edge),
+    var(--w-elevation-3);
+}
+
+/* A glass control's hover is a state layer inside the material, so the sheen and the edge stay put. */
+button.wgt-glass:hover {
+  --w-glass-state: linear-gradient(var(--w-state-hover), var(--w-state-hover));
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .wgt-glass {
+    background: var(--w-surface-container-high);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .wgt-glass {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--w-surface-container-high);
+  }
+}
+
+/* The card table. Felt is content, not a floating layer, so it is opaque: a soft light from above, a rim. Cards
+   are a fifth of the table's width less the gaps, measured on the scene's container, and never oversized. */
+.wgt-felt {
+  --card-w: min(5.5rem, calc((100cqi - 3.5rem) / 5));
+  background: radial-gradient(
+    120% 85% at 50% 35%,
+    color-mix(in oklch, var(--w-felt) 86%, white),
+    var(--w-felt) 55%,
+    color-mix(in oklch, var(--w-felt) 86%, black)
+  );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--w-felt) 70%, black),
+    inset 0 2px 14px color-mix(in oklch, var(--w-shadow-color) 30%, transparent);
+  color: var(--w-on-felt);
+}
+
+.wgt-playing-card {
+  display: block;
+  flex: none;
+  width: var(--card-w);
+  aspect-ratio: 5 / 7;
+  border-radius: calc(var(--card-w) * 0.1);
+  transition: transform 200ms ease-out, opacity 200ms ease-out;
+}
+.wgt-card-face,
+.wgt-card-back {
+  box-shadow:
+    0 1px 2px color-mix(in oklch, var(--w-shadow-color) 30%, transparent),
+    0 3px 8px -3px color-mix(in oklch, var(--w-shadow-color) 40%, transparent);
+}
+.wgt-card-face {
+  background: var(--w-card-face);
+}
+/* A back: a cream border round a cross-hatched field, as on a real deck. */
+.wgt-card-back {
+  border: calc(var(--card-w) * 0.07) solid var(--w-card-face);
+  background-clip: padding-box;
+  background-color: var(--w-card-back);
+  background-image:
+    repeating-linear-gradient(45deg, color-mix(in oklch, var(--w-card-back) 72%, white) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(-45deg, color-mix(in oklch, var(--w-card-back) 72%, white) 0 1px, transparent 1px 5px);
+}
+.wgt-card-slot {
+  border: 1.5px dashed color-mix(in oklch, var(--w-on-felt) 30%, transparent);
+  background: color-mix(in oklch, var(--w-on-felt) 6%, transparent);
+}
+/* A winning card rises and takes the highlight ring. */
+.wgt-card-lift {
+  transform: translateY(-8%);
+  box-shadow:
+    0 0 0 2px var(--w-highlight),
+    0 6px 14px -4px color-mix(in oklch, var(--w-shadow-color) 45%, transparent);
+}
+
+@keyframes wgt-deal {
+  from {
+    opacity: 0;
+    transform: translateY(-12%) scale(0.94);
+  }
+}
+.wgt-deal {
+  animation: wgt-deal 260ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wgt-deal {
+    animation: none;
+  }
+  .wgt-playing-card {
+    transition: none;
+  }
+}
+
+/* Capsule controls: a pressed capsule gives a little, the one shape change that signals state. */
+.wgt-capsule {
+  border-radius: 9999px;
+  transition: transform 120ms ease-out, background-color 120ms ease-out;
+}
+.wgt-capsule:active:not(:disabled) {
+  transform: scale(0.97);
+}
+@media (prefers-reduced-motion: reduce) {
+  .wgt-capsule {
+    transition: none;
+  }
+  .wgt-capsule:active:not(:disabled) {
+    transform: none;
+  }
+}
