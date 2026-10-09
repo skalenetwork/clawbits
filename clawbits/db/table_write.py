@@ -69,6 +69,8 @@ from clawbits.db.models import (
     MmFile,
     MmPost,
     MmPostReaction,
+    MmWidget,
+    MmWidgetSeat,
     Organization,
     OrgMember,
     PostComment,
@@ -1564,6 +1566,18 @@ class TableWrite:
             if other_members is None:
                 orgs_to_delete.append(org_id)
 
+        # ---- Widgets they played: a game they hadn't finished ends ("left"), their seat goes from every
+        # game, finished ones too, and games they started carry on without a creator ----
+        TableWrite.abort_mm_widgets(
+            session,
+            "left",
+            MmWidget.widget_id.in_(select(MmWidgetSeat.widget_id).where(MmWidgetSeat.human_id == human_id)),
+        )
+        session.exec(delete(MmWidgetSeat).where(MmWidgetSeat.human_id == human_id))
+        session.exec(
+            update(MmWidget).where(MmWidget.created_by_human_id == human_id).values(created_by_human_id=None)
+        )
+
         # ---- Repoint refs that would block the post delete ----
         user_post_ids_subq = select(MmPost.post_id).where(MmPost.human_id == human_id)
         session.exec(
@@ -1849,7 +1863,7 @@ class TableWrite:
         session.flush()
 
     @staticmethod
-    def remove_org_member(session: Session, org_id: str, human_id: int) -> list[str]:
+    def remove_org_member(session: Session, org_id: str, human_id: int) -> tuple[list[str], list[str]]:
         """Remove a human from an org, and from that org's channels.
 
         Dropping only the ``OrgMember`` row left every ``mm_channel_members``
@@ -1866,8 +1880,10 @@ class TableWrite:
         person rejoins, ``create_or_get_direct`` re-attaches both parties rather than colliding.
 
         Returns the channel ids the human was removed from, so the caller can
-        close their live streams and drop the channels from their sidebar.
+        close their live streams and drop the channels from their sidebar, and
+        the widgets ended because they left, for the caller to publish.
         """
+        ended: list[str] = []
         channel_ids = list(
             session.exec(
                 select(MmChannelMember.channel_id)
@@ -1877,6 +1893,18 @@ class TableWrite:
             ).all()
         )
         if channel_ids:
+            # A player who left can't finish, and an active widget keeps both widget switches on.
+            ended = [
+                widget_id
+                for widget_id, _ in TableWrite.abort_mm_widgets(
+                    session,
+                    "left",
+                    MmWidget.channel_id.in_(channel_ids),
+                    MmWidget.widget_id.in_(
+                        select(MmWidgetSeat.widget_id).where(MmWidgetSeat.human_id == human_id)
+                    ),
+                )
+            ]
             session.exec(
                 delete(MmChannelMember)
                 .where(MmChannelMember.human_id == human_id)
@@ -1896,7 +1924,7 @@ class TableWrite:
             .where(OrgMember.human_id == human_id)
         )
         session.flush()
-        return channel_ids
+        return channel_ids, ended
 
     @staticmethod
     def update_org_member_role(
@@ -2832,6 +2860,7 @@ class TableWrite:
         parent_post_id: int | None = None,
         link_preview: dict | None = None,
         trace_id: str | None = None,
+        widget_id: str | None = None,
     ) -> int:
         from clawbits.db.table_read import TableRead
 
@@ -2844,6 +2873,7 @@ class TableWrite:
             parent_post_id=parent_post_id,
             link_preview=link_preview,
             trace_id=trace_id,
+            widget_id=widget_id,
         )
         session.add(post)
         session.flush()
@@ -3342,7 +3372,11 @@ class TableWrite:
             message=post.message,
             parent_post_id=post.parent_post_id,
             status=post.status,
+            widget_id=post.widget_id,
         )
+        if post.widget_id is not None:
+            # Nothing would show the widget any more, and an active one pins the switches on.
+            TableWrite.abort_mm_widgets(session, "host_deleted", MmWidget.widget_id == post.widget_id)
 
         children = session.exec(
             select(MmPost).where(MmPost.parent_post_id == post_id)
@@ -4970,3 +5004,107 @@ class TableWrite:
         """
         session.delete(row)
         session.flush()
+
+    # ---------------- widgets ----------------
+
+    @staticmethod
+    def lock_mm_channel(session: Session, channel_id: str) -> MmChannel | None:
+        """The channel row, read fresh and locked until commit."""
+        return session.exec(
+            select(MmChannel)
+            .where(MmChannel.channel_id == channel_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).first()
+
+    @staticmethod
+    def lock_organization(session: Session, org_id: str, *, shared: bool = False) -> Organization | None:
+        """The org row, read fresh and locked until commit: shared to hold its switches steady
+        while a widget starts, exclusive to flip one."""
+        return session.exec(
+            select(Organization)
+            .where(Organization.org_id == org_id)
+            .with_for_update(read=shared)
+            .execution_options(populate_existing=True)
+        ).first()
+
+    @staticmethod
+    def create_mm_widget(
+        session: Session,
+        *,
+        channel_id: str,
+        kind: str,
+        state: dict,
+        turn: str | None,
+        seats: dict[str, int],
+        created_by_human_id: int,
+    ) -> str:
+        """Start a widget with its seats. A second active widget in the channel fails the
+        ``uq_mm_widgets_channel_active`` index on flush (``IntegrityError``)."""
+        widget_id = _uuid.uuid4().hex
+        session.add(MmWidget(
+            widget_id=widget_id,
+            channel_id=channel_id,
+            kind=kind,
+            state=state,
+            turn=turn,
+            created_by_human_id=created_by_human_id,
+        ))
+        session.flush()
+        session.add_all(
+            MmWidgetSeat(widget_id=widget_id, seat=seat, human_id=human_id)
+            for seat, human_id in seats.items()
+        )
+        session.flush()
+        return widget_id
+
+    @staticmethod
+    def lock_mm_widget(session: Session, widget_id: str) -> MmWidget | None:
+        """The widget row, read fresh and locked until commit: actions on it run one at a time."""
+        return session.exec(
+            select(MmWidget)
+            .where(MmWidget.widget_id == widget_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).first()
+
+    @staticmethod
+    def save_mm_widget_step(
+        session: Session,
+        widget: MmWidget,
+        *,
+        state: dict,
+        status: str,
+        outcome: dict | None,
+        turn: str | None,
+    ) -> None:
+        """Store what an action did and bump ``rev``. ``turn`` clears once the widget ends."""
+        widget.state = state
+        widget.status = status
+        widget.outcome = outcome
+        widget.turn = turn if status == "active" else None
+        widget.rev += 1
+        widget.updated_at = _dt.datetime.now(_dt.UTC)
+        session.add(widget)
+        session.flush()
+
+    @staticmethod
+    def abort_mm_widgets(session: Session, reason: str, *where) -> list[tuple[str, str]]:
+        """End the active widgets matching ``where`` for their players, recording ``reason``.
+        Returns ``(widget_id, channel_id)`` per widget ended, for the caller to publish."""
+        return [
+            (widget_id, channel_id)
+            for widget_id, channel_id in session.execute(
+                update(MmWidget)
+                .where(MmWidget.status == "active", *where)
+                .values(
+                    status="aborted",
+                    turn=None,
+                    rev=MmWidget.rev + 1,
+                    outcome={"reason": reason},
+                    updated_at=func.now(),
+                )
+                .returning(MmWidget.widget_id, MmWidget.channel_id)
+                .execution_options(synchronize_session=False)
+            ).all()
+        ]

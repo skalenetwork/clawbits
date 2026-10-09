@@ -1,6 +1,6 @@
 import {NavLink, useLocation, useNavigate} from "react-router-dom";
 import {useMutation, useQuery, useQueryClient} from "@tanstack/react-query";
-import {Check, ListFilter, Pin, Plus, Search} from "lucide-react";
+import {Check, ChessPawn, ListFilter, Pin, Plus, Search} from "lucide-react";
 import {Icon} from "@/components/Icon";
 import {useAuth} from "@/context/AuthContext";
 import {createMmAgentChat, createOrGetMmDirect, listMmChannels, type MmChannel} from "@/lib/api";
@@ -341,10 +341,11 @@ function NewChatHoverAction({disabled, onClick}: {disabled?: boolean; onClick: (
     );
 }
 
-/** Loudest first: a mention pierces mute, then unread, an agent mid-reply, the pin, the time. */
+/** Loudest first: a mention pierces mute, then unread, a widget waiting on you, an agent mid-reply, the pin, the time. */
 type Signal =
     | {kind: "mention"; n: number}
     | {kind: "count"; n: number}
+    | {kind: "turn"}
     | {kind: "working"}
     | {kind: "pinned"}
     | {kind: "time"; at: string};
@@ -354,6 +355,7 @@ function signalOf(channel: MmChannel, active: boolean, activityLead = false): Si
     const unread = channel.unread_count ?? 0;
     if (!active && mentions > 0) return {kind: "mention", n: mentions};
     if (!active && unread > 0 && !channel.muted) return {kind: "count", n: unread};
+    if (channel.widget_turn) return {kind: "turn"};
     if (channel.working && !activityLead) return {kind: "working"};
     if (channel.pinned) return {kind: "pinned"};
     return {kind: "time", at: channel.last_message_at ?? channel.created_at};
@@ -405,6 +407,12 @@ function RowSignal({signal}: {signal: Signal}) {
                 </span>
             );
         }
+        case "turn":
+            return (
+                <span role="img" aria-label="Your move" title="Your move" className="grid w-5 place-items-center text-primary">
+                    <ChessPawn className="size-3.5"/>
+                </span>
+            );
         case "working":
             return (
                 <span className="grid w-5 place-items-center">

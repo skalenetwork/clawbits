@@ -35,7 +35,9 @@ type GlobalEvent =
       channel_id: string;
       data: { agent_id: string; status: AgentLivenessStatus; last_alive_at: string | null };
     }
-  | { type: "server.hello"; channel_id: string; data: { version: string } };
+  | { type: "server.hello"; channel_id: string; data: { version: string } }
+  | { type: "widget.turn"; channel_id: string; data: { my_turn: boolean } }
+  | { type: "channel.widgets"; channel_id: string; data: { widgets_enabled: boolean } };
 
 const byRecency = (a: MmChannel, b: MmChannel) => {
   const ta = a.last_message_at ?? a.created_at;
@@ -185,6 +187,12 @@ export function useGlobalEvents(): void {
         }]);
       } else if (evt.type === "agent.status") {
         updateAgentPresence([{ agentId: evt.data.agent_id, lastAliveAt: evt.data.last_alive_at }]);
+      } else if (evt.type === "widget.turn") {
+        patchChannel(qc, evt.channel_id, (c) => ({ ...c, widget_turn: evt.data.my_turn }));
+      } else if (evt.type === "channel.widgets") {
+        const { widgets_enabled } = evt.data;
+        patchChannel(qc, evt.channel_id, (c) => ({ ...c, widgets_enabled }));
+        qc.setQueryData<MmChannel>(queryKeys.mm.channel(evt.channel_id), (c) => c && { ...c, widgets_enabled });
       } else if (evt.type === "server.hello") {
         const version = evt.data.version;
         // The desktop app updates through Tauri's updater; a reload would not fetch a new build.

@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
+import { SymbolView } from "expo-symbols";
 import { glyphKind, listTime, previewText } from "@/lib/chatFilters";
 import { channelName, type Channel } from "@/lib/models";
 import { AvatarView, color, styles } from "@/components/ui";
@@ -17,7 +18,7 @@ export function ChatRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${name}${unread ? `, ${channel.unread_count} unread` : ""}`}
+      accessibilityLabel={`${name}${unread ? `, ${channel.unread_count} unread` : ""}${channel.widget_turn ? ", your move" : ""}`}
       onPress={() =>
         router.push({
           pathname: "/chat/[id]",
@@ -57,6 +58,10 @@ export function ChatRow({
           >
             {previewText(channel, userId)}
           </Text>
+          {/* A game here waits on you: quiet, beside the unread count rather than another badge. */}
+          {channel.widget_turn ? (
+            <SymbolView name="gamecontroller.fill" size={15} tintColor={color.muted} />
+          ) : null}
           {unread ? (
             <View style={badge.pill}>
               <Text style={badge.count}>

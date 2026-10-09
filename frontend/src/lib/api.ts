@@ -105,6 +105,8 @@ export interface Org {
   unread_count?: number;
   unread_channel_count?: number;
   attention_enabled?: boolean;
+  /** Chats may run widgets (chess); each chat also has its own switch. */
+  widgets_enabled?: boolean;
   reef_connected?: boolean;
 }
 
@@ -467,6 +469,197 @@ export async function setOrgLobstertalkChannel(orgId: string, channelId: string,
   );
 }
 
+export type WidgetStatus = "active" | "finished" | "aborted";
+
+export interface WidgetSeat {
+  seat: string;
+  human_id: number | null;
+  agent_id: string | null;
+  display_name: string | null;
+}
+
+export interface WidgetSceneInput {
+  /** The action a pick or a tap commits: `{from, to, choice?}` for a pick, `{at}` for a tap. */
+  action: string;
+  /** The board it applies to; a one-board scene needs none. */
+  board?: string;
+  /** Two-step moves: a cell to pick up, and where it may go. */
+  pick?: Record<string, string[]>;
+  choose?: Record<string, { value: string; sprite: string }[]>;
+  /** One-step moves: the cells that may be tapped. */
+  tap?: string[];
+}
+
+export interface WidgetSceneAction {
+  type: string;
+  label: string;
+  confirm?: string;
+  /** `primary` for the move the moment asks for, `danger` for one that ends the game. */
+  tone?: "primary" | "danger";
+  /** A state to show, not an action to take (e.g. a draw already offered). */
+  disabled?: boolean;
+  /** Sent with the action, e.g. a bet's size. */
+  args?: Record<string, unknown>;
+  /** A number the viewer picks before acting, sent as `args[amount.arg]`; the button reads "<label> <number>". */
+  amount?: WidgetSceneAmount;
+}
+
+export interface WidgetSceneAmount {
+  arg: string;
+  min: number;
+  max: number;
+  step: number;
+  /** Where the pick starts. */
+  value: number;
+  /** Quick picks, e.g. half the pot. */
+  presets?: { label: string; value: number }[];
+}
+
+export interface WidgetSceneToken {
+  id: string;
+  sprite: string;
+  at: string;
+  /** Cells covered across and along the rows from `at`, its lowest column and row; one cell by default. */
+  span?: [number, number];
+}
+
+export interface WidgetSceneMark {
+  at: string;
+  tone: string;
+}
+
+export interface WidgetBoardLayout {
+  cols: string[];
+  rows: string[];
+  pattern?: "checker" | "plain";
+  /** `board` draws squares; `notebook` draws graph paper with labels outside it. */
+  style?: "board" | "notebook";
+  /** Where the first row sits; chess counts from the bottom, a notebook from the top. */
+  origin?: "bottom" | "top";
+  show_labels?: boolean;
+}
+
+export interface WidgetBoard extends WidgetBoardLayout {
+  id: string;
+  title?: string;
+  /** The board's name for screen readers, where no title shows. */
+  label?: string;
+  /** The seat whose board it is (a fleet): that player shows beneath it. */
+  seat?: string;
+  tokens?: WidgetSceneToken[];
+  marks?: WidgetSceneMark[];
+}
+
+/** A row of cards on a table: a hand, or cards both share, like a poker board. */
+export interface WidgetCardRow {
+  id: string;
+  /** Whose cards these are; none for shared ones. */
+  seat?: string;
+  /** What a screen reader calls the row, e.g. "Your cards". */
+  label?: string;
+  /** Rank then suit (`As`, `Td`), `back` for a card face down, null for a place still empty. */
+  cards: (string | null)[];
+  /** A short line by the cards, e.g. a bet or the pot. */
+  note?: string;
+  /** Places of the cards that stand out, e.g. a winning hand. */
+  lift?: number[];
+  /** The hand being played now. */
+  active?: boolean;
+}
+
+/** A widget's declarative view, drawn by `SceneView`: data only. A private widget's scene is the viewer's own. */
+export interface WidgetScene {
+  v: number;
+  title?: string;
+  /** One board, its tokens and marks at the top level. */
+  board?: WidgetBoardLayout;
+  tokens?: WidgetSceneToken[];
+  marks?: WidgetSceneMark[];
+  /** Several boards, each with its own tokens and marks. */
+  boards?: WidgetBoard[];
+  /** Cards instead of a board: rows from the top of the table down. */
+  table?: { rows: WidgetCardRow[] };
+  /** A short line per seat shown in place of the seat's name, e.g. its chips. */
+  seat_notes?: Record<string, string>;
+  turn?: string | null;
+  flip_for?: string | null;
+  input?: Record<string, WidgetSceneInput>;
+  actions?: Record<string, WidgetSceneAction[]>;
+  status?: { text: string; tone: string };
+  log?: string[];
+}
+
+export interface Widget {
+  widget_id: string;
+  channel_id: string;
+  kind: string;
+  status: WidgetStatus;
+  rev: number;
+  turn: string | null;
+  seats: WidgetSeat[];
+  scene: WidgetScene;
+  /** The scene is the viewer's own; a realtime event carries only the public one. */
+  private?: boolean;
+  /** The message that started it, which shows the board in the chat. */
+  post_id?: number | null;
+  outcome: Record<string, unknown> | null;
+  created_by_human_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WidgetAction {
+  type: string;
+  args?: Record<string, unknown>;
+}
+
+function widgetUrl(widgetId: string, path = ""): string {
+  return `/api/human/mm/widgets/${encodeURIComponent(widgetId)}${path}`;
+}
+
+export async function getWidget(widgetId: string) {
+  return request<Widget>(widgetUrl(widgetId), { detail: true });
+}
+
+export async function listActiveWidgets(channelId: string) {
+  return (await request<{ widgets: Widget[] }>(channelUrl(channelId, "/widgets"), { detail: true })).widgets;
+}
+
+export type WidgetKindName = "chess" | "battleship" | "poker" | "blackjack";
+
+export async function startWidget(channelId: string, kind: WidgetKindName, seat?: string) {
+  return request<Widget>(channelUrl(channelId, "/widgets"), { ...json("POST", { kind, seat }), detail: true });
+}
+
+/** `expectedRev` is the rev the caller acted on; a newer one answers 409. */
+export async function actOnWidget(widgetId: string, action: WidgetAction, expectedRev: number) {
+  return request<Widget>(widgetUrl(widgetId, "/actions"), {
+    ...json("POST", { action, expected_rev: expectedRev }),
+    detail: true,
+  });
+}
+
+export async function setChannelWidgets(channelId: string, enabled: boolean) {
+  return request<MmChannel>(channelUrl(channelId), { ...json("PATCH", { widgets_enabled: enabled }), detail: true });
+}
+
+export interface OrgWidgetsSettings {
+  enabled: boolean;
+  active_count: number;
+}
+
+export async function getOrgWidgets(orgId: string) {
+  return request<OrgWidgetsSettings>(orgUrl(orgId, "/widgets"), { detail: true });
+}
+
+export async function setOrgWidgets(orgId: string, enabled: boolean) {
+  return request<OrgWidgetsSettings>(orgUrl(orgId, "/widgets"), { ...json("PUT", { enabled }), detail: true });
+}
+
+export async function endActiveWidgets(orgId: string) {
+  return request<{ ended: number }>(orgUrl(orgId, "/widgets/end-active"), { method: "POST", detail: true });
+}
+
 export type AgentSignupStatus = "pending_approval" | "approved" | "rejected";
 
 export interface AgentSignupSession {
@@ -733,6 +926,10 @@ export interface MmChannel {
   dm_peer_agent_id?: string | null;
   dm_peer?: MmChannelMember | null;
   avatar?: AvatarRef | null;
+  /** The chat's own widgets switch; widgets also need the org's. */
+  widgets_enabled?: boolean;
+  /** An active widget here waits on the viewer: the sidebar's quiet "your move". */
+  widget_turn?: boolean;
 }
 
 export interface MmPostParentPreview {
@@ -840,6 +1037,8 @@ export interface MmChannelPost {
   client_msg_uuid?: string | null;
   /** The finished turn an agent reply came from: its tool calls and narration, as the channel saw them live. */
   steps?: MmTurnStep[] | null;
+  /** The widget this post shows, set only by the server. */
+  widget_id?: string | null;
 }
 
 /** The MCP App view a tool call rendered: its stored `ui://` document and the call it shows. */

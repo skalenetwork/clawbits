@@ -63,6 +63,8 @@ from clawbits.db.models import (
     MmFile,
     MmPost,
     MmPostReaction,
+    MmWidget,
+    MmWidgetSeat,
     Organization,
     OrgMember,
     PostComment,
@@ -81,6 +83,7 @@ from clawbits.utils.parse import (
 from clawbits.utils.parse import (
     parse_32b_hex_private_key,
 )
+from clawbits.widgets import KINDS as WIDGET_KINDS
 
 # Clients render past 99 as "99+", so counting stops here: 100 means "at least 100".
 UNREAD_COUNT_CAP = 100
@@ -1175,6 +1178,7 @@ class TableRead:
             "created_by": o.created_by,
             "created_at": _iso(o.created_at),
             "attention_enabled": bool(o.attention_enabled),
+            "widgets_enabled": bool(o.widgets_enabled),
             # Whether a reef repository is usable, never which one: the repo
             # and its token stay on the server.
             "reef_connected": bool(o.reef_repo and o.reef_repo_token),
@@ -1548,6 +1552,7 @@ class TableRead:
             "avatar": avatar_ref_for_channel(
                 channel_id=c.channel_id, version=c.avatar_version
             ).model_dump(),
+            "widgets_enabled": bool(c.widgets_enabled),
         }
 
     @staticmethod
@@ -1895,6 +1900,7 @@ class TableRead:
                 "link_preview": p.link_preview,
                 "steps": p.steps,
                 "trace_id": p.trace_id,
+                "widget_id": p.widget_id,
                 "reactions": list(reactions.get(p.post_id, {}).values()),
                 "files": files.get(p.post_id, []),
                 "_raw_created_at": p.created_at,
@@ -2611,9 +2617,11 @@ class TableRead:
                 .group_by(MmFile.post_id)
             ).all()
         ) if latest_post_ids else {}
+        widget_turns = TableRead.mm_widget_turn_channel_ids(session, human_id)
         out = [
             {
                 **TableRead._channel_to_dict(c),
+                "widget_turn": c.channel_id in widget_turns,
                 "last_message_at": _iso(last_message_at),
                 "latest_post_id": latest_post_id,
                 "last_read_post_id": last_read_post_id,
@@ -4007,3 +4015,131 @@ class TableRead:
             if version is not None and version.version_id == version_id:
                 return version
         return None
+
+    # ---------------- widgets ----------------
+
+    @staticmethod
+    def _mm_widget_dicts(
+        session: Session, rows: Sequence[MmWidget], viewer_human_id: int | None = None
+    ) -> list[dict]:
+        """Response dicts for ``rows``, each with its seats and a fresh scene as ``viewer_human_id``
+        may see it; ``None`` gets the public scene a realtime event may carry. Three statements."""
+        if not rows:
+            return []
+        seats = session.exec(
+            select(MmWidgetSeat, HumanUser)
+            .join(HumanUser, HumanUser.id == MmWidgetSeat.human_id, isouter=True)
+            .where(MmWidgetSeat.widget_id.in_([w.widget_id for w in rows]))
+        ).all()
+        # The message that started each, which shows its board in the chat.
+        hosts = dict(
+            session.exec(
+                select(MmPost.widget_id, MmPost.post_id).where(MmPost.widget_id.in_([w.widget_id for w in rows]))
+            ).all()
+        )
+        by_widget: dict[str, list[dict]] = defaultdict(list)
+        for seat, human in seats:
+            by_widget[seat.widget_id].append({
+                "seat": seat.seat,
+                "human_id": seat.human_id,
+                "agent_id": seat.agent_id,
+                "display_name": (human.display_name or human.email) if human else seat.agent_id,
+            })
+        out = []
+        for w in rows:
+            kind = WIDGET_KINDS.get(w.kind)
+            order = kind.seats if kind else ()
+            seat = next(
+                (s["seat"] for s in by_widget[w.widget_id]
+                 if viewer_human_id is not None and s["human_id"] == viewer_human_id),
+                None,
+            )
+            out.append({
+                "widget_id": w.widget_id,
+                "channel_id": w.channel_id,
+                "kind": w.kind,
+                "status": w.status,
+                "rev": w.rev,
+                "turn": w.turn,
+                "seats": sorted(
+                    by_widget[w.widget_id],
+                    key=lambda s: order.index(s["seat"]) if s["seat"] in order else len(order),
+                ),
+                "scene": kind.scene(w.state, w.status, w.outcome, seat) if kind else {},
+                "private": bool(kind and kind.private),
+                "post_id": hosts.get(w.widget_id),
+                "outcome": w.outcome,
+                "created_by_human_id": w.created_by_human_id,
+                "created_at": _iso(w.created_at),
+                "updated_at": _iso(w.updated_at),
+            })
+        return out
+
+    @staticmethod
+    def get_mm_widget(
+        session: Session, widget_id: str, viewer_human_id: int | None = None
+    ) -> dict | None:
+        row = session.get(MmWidget, widget_id)
+        return TableRead._mm_widget_dicts(session, [row], viewer_human_id)[0] if row else None
+
+    @staticmethod
+    def list_mm_widgets(
+        session: Session,
+        channel_id: str,
+        *,
+        active_only: bool = True,
+        viewer_human_id: int | None = None,
+    ) -> list[dict]:
+        """The channel's widgets, newest first, as the viewer sees them; only the active one by default."""
+        stmt = select(MmWidget).where(MmWidget.channel_id == channel_id)
+        if active_only:
+            stmt = stmt.where(MmWidget.status == "active")
+        rows = session.exec(stmt.order_by(MmWidget.created_at.desc()).limit(20)).all()
+        return TableRead._mm_widget_dicts(session, rows, viewer_human_id)
+
+    @staticmethod
+    def active_mm_widget_ids_seating(session: Session, human_id: int) -> list[str]:
+        """The active widgets ``human_id`` holds a seat in, in any chat."""
+        return list(
+            session.exec(
+                select(MmWidget.widget_id)
+                .join(MmWidgetSeat, MmWidgetSeat.widget_id == MmWidget.widget_id)
+                .where(MmWidgetSeat.human_id == human_id)
+                .where(MmWidget.status == "active")
+            ).all()
+        )
+
+    @staticmethod
+    def active_mm_widget_id(session: Session, channel_id: str) -> str | None:
+        return session.exec(
+            select(MmWidget.widget_id)
+            .where(MmWidget.channel_id == channel_id)
+            .where(MmWidget.status == "active")
+        ).first()
+
+    @staticmethod
+    def count_active_mm_widgets_in_org(session: Session, org_id: str) -> int:
+        return session.exec(
+            select(func.count())
+            .select_from(MmWidget)
+            .join(MmChannel, MmChannel.channel_id == MmWidget.channel_id)
+            .where(MmChannel.org_id == org_id)
+            .where(MmWidget.status == "active")
+        ).one()
+
+    @staticmethod
+    def mm_widget_turn_channel_ids(session: Session, human_id: int) -> set[str]:
+        """Channels where an active widget waits on this human's seat: the sidebar's "your move"."""
+        return set(session.exec(
+            select(MmWidget.channel_id)
+            .join(
+                MmWidgetSeat,
+                (MmWidgetSeat.widget_id == MmWidget.widget_id) & (MmWidgetSeat.seat == MmWidget.turn),
+            )
+            .where(MmWidgetSeat.human_id == human_id)
+            .where(MmWidget.status == "active")
+        ).all())
+
+    @staticmethod
+    def get_org_member_human_ids(session: Session, org_id: str) -> list[int]:
+        return list(session.exec(select(OrgMember.human_id).where(OrgMember.org_id == org_id)).all())

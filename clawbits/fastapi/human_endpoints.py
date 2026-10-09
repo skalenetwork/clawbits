@@ -659,11 +659,16 @@ def delete_my_account(
     orgs the user solely occupied are torn down there so a later login cannot
     re-adopt them."""
     with _get_db(request) as db:
+        # The games they're still playing end with the account; the other players hear it once this commits.
+        ending_widget_ids = TableRead.active_mm_widget_ids_seating(db, user["id"])
         try:
             deleted_workos_org_ids = TableWrite.delete_human_user(db, user["id"])
         except UserDeletionBlocked as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         db.commit()
+    from clawbits.fastapi.widget_endpoints import publish_widgets  # it imports this module
+
+    fire_and_forget(publish_widgets(request.app._engine, ending_widget_ids))
 
     client = request.app.state.workos
     delete_workos_user(client, workos_user_id=user.get("workos_user_id") or "")
@@ -2246,7 +2251,7 @@ def remove_org_member(
         if target_role == "owner":
             _require_another_owner(db, org_id, "remove")
         target = TableRead.get_human_user_by_id(db, member_id)
-        revoked_channel_ids = TableWrite.remove_org_member(db, org_id, member_id)
+        revoked_channel_ids, ended_widget_ids = TableWrite.remove_org_member(db, org_id, member_id)
         org = TableRead.get_organization(db, org_id)
         members = TableRead.get_org_members(db, org_id)
         db.commit()
@@ -2255,6 +2260,10 @@ def remove_org_member(
     for channel_id in revoked_channel_ids:
         fire_and_forget(publish_member_removed(bus, channel_id, human_id=member_id))
         fire_and_forget(publish_channel_removed(bus, member_id, channel_id))
+    # The games they were in ended with them: the players left hear it, rather than keep a board that's over.
+    from clawbits.fastapi.widget_endpoints import publish_widgets  # it imports this module
+
+    fire_and_forget(publish_widgets(request.app._engine, ended_widget_ids))
 
     if org is not None and target is not None:
         unregister_membership(

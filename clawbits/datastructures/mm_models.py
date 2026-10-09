@@ -107,6 +107,9 @@ RealtimeEventType = Literal[
     "skills.sync",
     "model.selection",
     "server.hello",
+    "widget.updated",
+    "widget.turn",
+    "channel.widgets",
 ]
 MmPostStatus = Literal["streaming", "draft", "published", "rejected"]
 # Extend together with the DB check constraint.
@@ -226,7 +229,16 @@ class MmAgentChatRequest(BaseModel):
 
 class MmChannelPatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    display_name: str = Field(min_length=1, max_length=128)
+    display_name: str | None = Field(default=None, min_length=1, max_length=128)
+    widgets_enabled: bool | None = Field(
+        default=None, description="The chat's widgets switch; off is refused while one is active"
+    )
+
+    @model_validator(mode="after")
+    def _require_a_change(self) -> MmChannelPatchRequest:
+        if self.display_name is None and self.widgets_enabled is None:
+            raise ValueError("display_name or widgets_enabled is required")
+        return self
 
 
 class ModelChoice(BaseModel):
@@ -265,6 +277,9 @@ class MmChannelResponse(BaseModel):
     avatar: AvatarRef | None = None
     model: str | None = None
     thinking: str | None = None
+    widgets_enabled: bool = False
+    # An active widget here waits on the viewer's seat (sidebar lists only).
+    widget_turn: bool = False
 
 
 class MmChannelMemberResponse(BaseModel):
@@ -540,6 +555,7 @@ class MmPostResponse(BaseModel):
     client_msg_uuid: str | None = None
     trace_id: str | None = None
     steps: list[MmTurnStep] | None = None
+    widget_id: str | None = None
 
 
 class MmChannelEventResponse(BaseModel):
