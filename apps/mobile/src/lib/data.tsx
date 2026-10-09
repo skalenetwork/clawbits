@@ -32,6 +32,8 @@ import {
   activeWidgetsKey,
   applyWidget,
   applyWidgetEvent,
+  freshActiveWidgets,
+  freshWidget,
   widgetKey,
   type Widget,
   type WidgetAction,
@@ -389,12 +391,14 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
   return connected;
 }
 
-/** One widget; `widget.updated` keeps it live, so no polling. */
+/** One widget; `widget.updated` keeps it live, so no polling. A slow answer never undoes a newer rev an event brought
+ *  while it was out. */
 export function useWidget(id: string) {
   const { session } = useSession();
+  const client = useQueryClient();
   return useQuery({
     queryKey: widgetKey(id),
-    queryFn: ({ signal }) => api.widget(session!.token, id, signal),
+    queryFn: async ({ signal }) => freshWidget(client, await api.widget(session!.token, id, signal)),
     staleTime: 60_000,
   });
 }
@@ -409,11 +413,7 @@ export function useActiveWidgets(channel: string, enabled: boolean) {
     staleTime: 60_000,
     queryFn: async ({ signal }) => {
       const { widgets } = await api.activeWidgets(session!.token, channel, signal);
-      for (const widget of widgets)
-        client.setQueryData<Widget>(widgetKey(widget.widget_id), (old) =>
-          old && old.rev > widget.rev ? old : widget,
-        );
-      return widgets;
+      return freshActiveWidgets(client, widgets);
     },
   });
 }

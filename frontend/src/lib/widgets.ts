@@ -2,16 +2,36 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { MmChannel, Org, Widget, WidgetScene } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 
-/** Fold a fresh widget into its caches; an older rev never overwrites a newer one. */
+/** Fold a fresh widget into its caches; an older rev never overwrites a newer one. The widget's own entry keeps
+ *  its newest rev, so a late event for a game that has since ended can't put it back in the chat's active list
+ *  (where it no longer is to compare with). */
 export function applyWidget(qc: QueryClient, widget: Widget): void {
-  qc.setQueryData<Widget>(queryKeys.mm.widget(widget.widget_id), (prev) =>
-    prev && prev.rev > widget.rev ? prev : widget,
-  );
+  const known = qc.getQueryData<Widget>(queryKeys.mm.widget(widget.widget_id));
+  if (known && known.rev > widget.rev) return;
+  qc.setQueryData<Widget>(queryKeys.mm.widget(widget.widget_id), widget);
   qc.setQueryData<Widget[]>(queryKeys.mm.activeWidgets(widget.channel_id), (prev) => {
     const known = prev?.find((w) => w.widget_id === widget.widget_id);
     if (known && known.rev > widget.rev) return prev;
     const rest = (prev ?? []).filter((w) => w.widget_id !== widget.widget_id);
     return widget.status === "active" ? [widget, ...rest] : prev && rest;
+  });
+}
+
+/** A widget a request answered with, unless the cache already holds a newer rev of it: a realtime event that beat a
+ *  slow answer stays. */
+export function freshWidget(qc: QueryClient, fetched: Widget): Widget {
+  const known = qc.getQueryData<Widget>(queryKeys.mm.widget(fetched.widget_id));
+  return known && known.rev > fetched.rev ? known : fetched;
+}
+
+/** A chat's active widgets as a request listed them, set against each widget's own cache: a newer rev there stands
+ *  in for the listed one, and a widget that has ended since stays off the list, so a slow answer can't bring a
+ *  finished game back (and with it block a new one). Each listed widget at least as new as its cache seeds it. */
+export function freshActiveWidgets(qc: QueryClient, listed: Widget[]): Widget[] {
+  return listed.flatMap((fetched) => {
+    const widget = freshWidget(qc, fetched);
+    if (widget === fetched) qc.setQueryData<Widget>(queryKeys.mm.widget(fetched.widget_id), fetched);
+    return widget.status === "active" ? [widget] : [];
   });
 }
 

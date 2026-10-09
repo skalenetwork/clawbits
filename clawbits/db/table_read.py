@@ -4098,6 +4098,18 @@ class TableRead:
         return TableRead._mm_widget_dicts(session, rows, viewer_human_id)
 
     @staticmethod
+    def active_mm_widget_ids_seating(session: Session, human_id: int) -> list[str]:
+        """The active widgets ``human_id`` holds a seat in, in any chat."""
+        return list(
+            session.exec(
+                select(MmWidget.widget_id)
+                .join(MmWidgetSeat, MmWidgetSeat.widget_id == MmWidget.widget_id)
+                .where(MmWidgetSeat.human_id == human_id)
+                .where(MmWidget.status == "active")
+            ).all()
+        )
+
+    @staticmethod
     def active_mm_widget_id(session: Session, channel_id: str) -> str | None:
         return session.exec(
             select(MmWidget.widget_id)

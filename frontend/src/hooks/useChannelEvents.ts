@@ -301,11 +301,14 @@ export function useChannelEvents(channelId: string) {
           );
           setOptimisticAgents((prev) => (prev.size === 0 ? prev : new Set()));
           // The bus has no replay: every snapshot after the first marks a reconnect, so refetch what was missed.
-          if (reconnected) {
-            void qc.invalidateQueries({ queryKey: postsKey });
-            void qc.invalidateQueries({ queryKey: queryKeys.mm.activeWidgets(channelId) });
-            void qc.invalidateQueries({ queryKey: queryKeys.mm.widgetsAll });
-          }
+          if (reconnected) void qc.invalidateQueries({ queryKey: postsKey });
+          // This chat's boards refetch on every opening, the first too: one cached while the chat was closed counts
+          // as fresh for a minute, and may have missed the moves made meanwhile.
+          void qc.invalidateQueries({ queryKey: queryKeys.mm.activeWidgets(channelId) });
+          void qc.invalidateQueries({
+            queryKey: queryKeys.mm.widgetsAll,
+            predicate: (query) => (query.state.data as Widget | undefined)?.channel_id === channelId,
+          });
           reconnected = true;
         });
       } else if (evt.type === "user.status") {

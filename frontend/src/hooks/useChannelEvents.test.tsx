@@ -28,14 +28,14 @@ const status = (activity: object) => ({
   data: { member_kind: "agent", member_id: "a", status: "generating", activity },
 });
 
-function follow() {
-  const client = new QueryClient();
+function follow(client = new QueryClient()) {
   const hook = renderHook(() => useChannelEvents("c"), {
     wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
   });
   const handler = vi.mocked(openSseStream).mock.lastCall![1];
   return {
     hook,
+    client,
     emit: (event: unknown) => {
       act(() => { handler(event); });
     },
@@ -86,5 +86,17 @@ describe("useChannelEvents", () => {
       ]);
     });
     expect(open.result.current).toBe(true);
+  });
+
+  it("refetches this chat's boards on its first snapshot, which may have missed moves while it was closed", async () => {
+    const client = new QueryClient();
+    const board = { widget_id: "w1", channel_id: "c", rev: 3 };
+    const elsewhere = { widget_id: "w2", channel_id: "d", rev: 1 };
+    client.setQueryData(["mm", "widget", "w1"], board);
+    client.setQueryData(["mm", "widget", "w2"], elsewhere);
+    const { emit } = follow(client);
+    emit({ type: "presence.snapshot", data: { members: [] } });
+    await waitFor(() => { expect(client.getQueryState(["mm", "widget", "w1"])?.isInvalidated).toBe(true); });
+    expect(client.getQueryState(["mm", "widget", "w2"])?.isInvalidated).toBe(false);
   });
 });

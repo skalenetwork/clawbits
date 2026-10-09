@@ -10,7 +10,7 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { openSseStream } from "@/lib/sse";
 import { errMsg, toast } from "@/lib/toast";
-import { applyWidget, applyWidgetEvent } from "@/lib/widgets";
+import { applyWidget, applyWidgetEvent, freshActiveWidgets, freshWidget } from "@/lib/widgets";
 
 // The widgets whose board is on screen now, so the dock steps aside while the board itself is in view.
 const onScreen = new Set<string>();
@@ -52,22 +52,24 @@ export function useWidgetOnScreenRef(widgetId: string): (el: HTMLElement | null)
   }, [widgetId]);
 }
 
-/** One widget; `widget.updated` keeps it live, so no polling. */
+/** One widget; `widget.updated` keeps it live, so no polling. A slow answer never undoes a newer rev an event brought
+ *  while it was out. */
 export function useWidget(widgetId: string) {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: queryKeys.mm.widget(widgetId),
-    queryFn: () => getWidget(widgetId),
+    queryFn: async () => freshWidget(qc, await getWidget(widgetId)),
     staleTime: 60_000,
   });
 }
 
 /** Keeps a widget live where its chat isn't open (the widget's own page): the chat's stream, widget events only.
- *  The bus keeps no history, so every connect after the first refetches the widget. */
+ *  The bus keeps no history, so every connect refetches the widget, the first too: one cached before the page opened
+ *  counts as fresh for a minute, and may have missed the moves made meanwhile. */
 export function useWidgetLive(widgetId: string, channelId: string | undefined) {
   const qc = useQueryClient();
   useEffect(() => {
     if (!channelId) return;
-    let opened = false;
     const conn = openSseStream(
       `/api/human/mm/channels/${encodeURIComponent(channelId)}/events`,
       (raw) => {
@@ -76,8 +78,7 @@ export function useWidgetLive(widgetId: string, channelId: string | undefined) {
       },
       {
         onOpen: () => {
-          if (opened) void qc.invalidateQueries({ queryKey: queryKeys.mm.widget(widgetId) });
-          opened = true;
+          void qc.invalidateQueries({ queryKey: queryKeys.mm.widget(widgetId) });
         },
       },
     );
@@ -90,13 +91,7 @@ export function useActiveWidgets(channelId: string, enabled: boolean) {
   const qc = useQueryClient();
   return useQuery({
     queryKey: queryKeys.mm.activeWidgets(channelId),
-    queryFn: async () => {
-      const widgets = await listActiveWidgets(channelId);
-      for (const w of widgets) {
-        qc.setQueryData<Widget>(queryKeys.mm.widget(w.widget_id), (prev) => (prev && prev.rev > w.rev ? prev : w));
-      }
-      return widgets;
-    },
+    queryFn: async () => freshActiveWidgets(qc, await listActiveWidgets(channelId)),
     enabled,
     staleTime: 60_000,
   });

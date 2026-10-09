@@ -13,6 +13,8 @@ import {
   drawsChessPieces,
   endOf,
   displayOf,
+  freshActiveWidgets,
+  freshWidget,
   fanMargin,
   logLine,
   normalizeBoards,
@@ -62,6 +64,10 @@ describe("widget caches", () => {
     expect(client.getQueryData<Widget[]>(activeWidgetsKey("c1"))?.map((w) => w.rev)).toEqual([3]);
     applyWidget(client, widget(4, "finished"));
     expect(client.getQueryData<Widget[]>(activeWidgetsKey("c1"))).toEqual([]);
+    // The move before the end, delivered after it, doesn't bring the game back.
+    applyWidget(client, widget(3));
+    expect(client.getQueryData<Widget[]>(activeWidgetsKey("c1"))).toEqual([]);
+    expect(client.getQueryData<Widget>(widgetKey("w1"))?.status).toBe("finished");
   });
 
   test("a private widget's event refetches the viewer's own scene instead of showing the public one", () => {
@@ -203,5 +209,24 @@ describe("the result", () => {
     expect(resultOf(over, "black")).toEqual({ end: "lost", headline: "You lost" });
     expect(resultOf(over, null)?.end).toBe("finished");
     expect(resultOf(widget(1), "white")).toBeNull();
+  });
+});
+
+describe("answers that arrive late", () => {
+  test("a slow fetch never undoes a newer rev an event brought while it was out", () => {
+    const client = new QueryClient();
+    applyWidget(client, widget(2));
+    expect(freshWidget(client, widget(1)).rev).toBe(2);
+    expect(freshWidget(client, widget(3)).rev).toBe(3);
+  });
+
+  test("a slow active list keeps a game that ended meanwhile off, and seeds the widgets it brings", () => {
+    const client = new QueryClient();
+    applyWidget(client, widget(2, "finished"));
+    expect(freshActiveWidgets(client, [widget(1)])).toEqual([]);
+    expect(client.getQueryData<Widget>(widgetKey("w1"))?.status).toBe("finished");
+    const other = { ...widget(5), widget_id: "w2" };
+    expect(freshActiveWidgets(client, [other])).toEqual([other]);
+    expect(client.getQueryData<Widget>(widgetKey("w2"))?.rev).toBe(5);
   });
 });

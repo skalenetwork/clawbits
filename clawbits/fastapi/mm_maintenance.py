@@ -112,14 +112,20 @@ async def reap_idle_widgets_once(engine: Engine, *, idle_seconds: int | None = N
     from clawbits.fastapi.widget_endpoints import publish_widgets
 
     idle = WIDGET_IDLE_SECONDS if idle_seconds is None else idle_seconds
-    with Session(engine) as db:
-        ended = TableWrite.abort_mm_widgets(
-            db, "idle", MmWidget.updated_at < datetime.now(UTC) - timedelta(seconds=idle)
-        )
-        db.commit()
+
+    def end_idle() -> list[str]:
+        with Session(engine) as db:
+            ended = TableWrite.abort_mm_widgets(
+                db, "idle", MmWidget.updated_at < datetime.now(UTC) - timedelta(seconds=idle)
+            )
+            db.commit()
+        return [widget_id for widget_id, _ in ended]
+
+    # On a worker thread: a slow query or a lock wait must not stall the event loop.
+    ended = await asyncio.to_thread(end_idle)
     if ended:
-        log.info("ended %d idle widget(s): %s", len(ended), [widget_id for widget_id, _ in ended])
-        await publish_widgets(engine, [widget_id for widget_id, _ in ended])
+        log.info("ended %d idle widget(s): %s", len(ended), ended)
+        await publish_widgets(engine, ended)
     return len(ended)
 
 

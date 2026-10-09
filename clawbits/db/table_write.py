@@ -1566,6 +1566,18 @@ class TableWrite:
             if other_members is None:
                 orgs_to_delete.append(org_id)
 
+        # ---- Widgets they played: a game they hadn't finished ends ("left"), their seat goes from every
+        # game, finished ones too, and games they started carry on without a creator ----
+        TableWrite.abort_mm_widgets(
+            session,
+            "left",
+            MmWidget.widget_id.in_(select(MmWidgetSeat.widget_id).where(MmWidgetSeat.human_id == human_id)),
+        )
+        session.exec(delete(MmWidgetSeat).where(MmWidgetSeat.human_id == human_id))
+        session.exec(
+            update(MmWidget).where(MmWidget.created_by_human_id == human_id).values(created_by_human_id=None)
+        )
+
         # ---- Repoint refs that would block the post delete ----
         user_post_ids_subq = select(MmPost.post_id).where(MmPost.human_id == human_id)
         session.exec(
@@ -1851,7 +1863,7 @@ class TableWrite:
         session.flush()
 
     @staticmethod
-    def remove_org_member(session: Session, org_id: str, human_id: int) -> list[str]:
+    def remove_org_member(session: Session, org_id: str, human_id: int) -> tuple[list[str], list[str]]:
         """Remove a human from an org, and from that org's channels.
 
         Dropping only the ``OrgMember`` row left every ``mm_channel_members``
@@ -1868,8 +1880,10 @@ class TableWrite:
         person rejoins, ``create_or_get_direct`` re-attaches both parties rather than colliding.
 
         Returns the channel ids the human was removed from, so the caller can
-        close their live streams and drop the channels from their sidebar.
+        close their live streams and drop the channels from their sidebar, and
+        the widgets ended because they left, for the caller to publish.
         """
+        ended: list[str] = []
         channel_ids = list(
             session.exec(
                 select(MmChannelMember.channel_id)
@@ -1880,14 +1894,17 @@ class TableWrite:
         )
         if channel_ids:
             # A player who left can't finish, and an active widget keeps both widget switches on.
-            TableWrite.abort_mm_widgets(
-                session,
-                "left",
-                MmWidget.channel_id.in_(channel_ids),
-                MmWidget.widget_id.in_(
-                    select(MmWidgetSeat.widget_id).where(MmWidgetSeat.human_id == human_id)
-                ),
-            )
+            ended = [
+                widget_id
+                for widget_id, _ in TableWrite.abort_mm_widgets(
+                    session,
+                    "left",
+                    MmWidget.channel_id.in_(channel_ids),
+                    MmWidget.widget_id.in_(
+                        select(MmWidgetSeat.widget_id).where(MmWidgetSeat.human_id == human_id)
+                    ),
+                )
+            ]
             session.exec(
                 delete(MmChannelMember)
                 .where(MmChannelMember.human_id == human_id)
@@ -1907,7 +1924,7 @@ class TableWrite:
             .where(OrgMember.human_id == human_id)
         )
         session.flush()
-        return channel_ids
+        return channel_ids, ended
 
     @staticmethod
     def update_org_member_role(

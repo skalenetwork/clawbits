@@ -1,6 +1,7 @@
 """Chat widgets over HTTP: the two switches, one game's lifecycle, and every way one ends."""
 
 import asyncio
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -10,7 +11,8 @@ from starlette.testclient import TestClient
 
 import clawbits.fastapi.widget_endpoints as widget_endpoints
 import clawbits.widgets.blackjack as blackjack
-from clawbits.db.models import MmPost, MmWidget
+from clawbits.db.models import MmPost, MmWidget, MmWidgetSeat
+from clawbits.db.table_write import TableWrite
 from clawbits.widgets.cards import DECK
 from tests.fastapi._auth_helpers import (
     add_human_to_org,
@@ -253,7 +255,17 @@ def test_idle_widgets_are_reaped(test_client, monkeypatch):
         db.commit()
     fake = _FakeBus()
     monkeypatch.setattr(bus_module, "_bus", fake)
+    # The reaper's transaction runs off the event loop's thread.
+    threads: list[str] = []
+    abort = TableWrite.abort_mm_widgets
+
+    def watched(*args, **kwargs):
+        threads.append(threading.current_thread().name)
+        return abort(*args, **kwargs)
+
+    monkeypatch.setattr(TableWrite, "abort_mm_widgets", staticmethod(watched))
     assert asyncio.run(reap_idle_widgets_once(engine)) == 1
+    assert threads and threading.main_thread().name not in threads
     reaped = test_client.get(
         f"/api/human/mm/widgets/{widget['widget_id']}", headers=auth_headers(bob["access_token"])
     ).json()
@@ -284,6 +296,51 @@ def test_losing_the_message_or_a_player_ends_the_widget(test_client, way):
         row = db.get(MmWidget, widget["widget_id"])
         assert (row.status, row.outcome) == ("aborted", {"reason": reason})
     assert _switch_org(test_client, alice, org_id, False).status_code == 200
+
+
+def _widget_updates(fake: _FakeBus) -> list[dict]:
+    """The ``widget.updated`` events published, once the request's fire-and-forget publish has run."""
+    deadline = time.monotonic() + 2
+    while not any(e["type"] == "widget.updated" for _, e in fake.published) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return [e["data"] for _, e in fake.published if e["type"] == "widget.updated"]
+
+
+def test_deleting_an_account_ends_its_games_and_frees_its_seats(test_client, monkeypatch):
+    from clawbits.realtime import bus as bus_module
+
+    alice, bob, org_id, channel_id, finished = _game(test_client, "wdelacct")
+    assert _act(test_client, alice, finished, {"type": "resign"}).status_code == 200
+    started = _start(test_client, bob, channel_id, seat="black")  # Bob's own game, still running
+    assert started.status_code == 201, started.text
+    active = started.json()
+    fake = _FakeBus()
+    monkeypatch.setattr(bus_module, "_bus", fake)
+    r = test_client.delete("/api/human/account", headers=auth_headers(bob["access_token"]))
+    assert r.status_code == 204, r.text
+    with Session(test_client.app._engine) as db:
+        ended = db.get(MmWidget, active["widget_id"])
+        over = db.get(MmWidget, finished["widget_id"])
+        assert (ended.status, ended.outcome, ended.created_by_human_id) == ("aborted", {"reason": "left"}, None)
+        assert (over.status, over.created_by_human_id) == ("finished", alice["user"]["id"])
+        assert db.exec(select(MmWidgetSeat).where(MmWidgetSeat.human_id == bob["user"]["id"])).all() == []
+    # Alice hears that the running game ended; the finished one had nothing left to say.
+    updates = _widget_updates(fake)
+    assert [(u["widget_id"], u["status"]) for u in updates] == [(active["widget_id"], "aborted")]
+
+
+def test_removing_a_player_tells_the_others_their_game_ended(test_client, monkeypatch):
+    from clawbits.realtime import bus as bus_module
+
+    alice, bob, org_id, channel_id, widget = _game(test_client, "wrmpub")
+    fake = _FakeBus()
+    monkeypatch.setattr(bus_module, "_bus", fake)
+    r = test_client.delete(f"/api/human/orgs/{org_id}/members/{bob['user']['id']}", headers=auth_headers(alice["access_token"]))
+    assert r.status_code in (200, 204), r.text
+    updates = _widget_updates(fake)
+    assert [(u["widget_id"], u["status"], u["outcome"]) for u in updates] == [
+        (widget["widget_id"], "aborted", {"reason": "left"})
+    ]
 
 
 def test_battleship_keeps_each_fleet_private(test_client, monkeypatch):

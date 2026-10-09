@@ -141,16 +141,36 @@ export interface WidgetAction {
 export const widgetKey = (id: string) => ["widget", id] as const;
 export const activeWidgetsKey = (channel: string) => ["widgets", channel] as const;
 
-/** Folds a fresh widget into its caches; an older rev never overwrites a newer one. */
+/** Folds a fresh widget into its caches; an older rev never overwrites a newer one. The widget's own entry keeps
+ *  its newest rev, so a late event for a game that has since ended can't put it back in the chat's active list
+ *  (where it no longer is to compare with). */
 export function applyWidget(client: QueryClient, widget: Widget): void {
-  client.setQueryData<Widget>(widgetKey(widget.widget_id), (old) =>
-    old && old.rev > widget.rev ? old : widget,
-  );
+  const known = client.getQueryData<Widget>(widgetKey(widget.widget_id));
+  if (known && known.rev > widget.rev) return;
+  client.setQueryData<Widget>(widgetKey(widget.widget_id), widget);
   client.setQueryData<Widget[]>(activeWidgetsKey(widget.channel_id), (old) => {
     const known = old?.find((item) => item.widget_id === widget.widget_id);
     if (known && known.rev > widget.rev) return old;
     const rest = (old ?? []).filter((item) => item.widget_id !== widget.widget_id);
     return widget.status === "active" ? [widget, ...rest] : old && rest;
+  });
+}
+
+/** A widget a request answered with, unless the cache already holds a newer rev of it: a live event that beat a slow
+ *  answer stays. */
+export function freshWidget(client: QueryClient, fetched: Widget): Widget {
+  const known = client.getQueryData<Widget>(widgetKey(fetched.widget_id));
+  return known && known.rev > fetched.rev ? known : fetched;
+}
+
+/** A chat's active widgets as a request listed them, set against each widget's own cache: a newer rev there stands in
+ *  for the listed one, and a widget that has ended since stays off the list, so a slow answer can't bring a finished
+ *  game back (and with it block a new one). Each listed widget at least as new as its cache seeds it. */
+export function freshActiveWidgets(client: QueryClient, listed: Widget[]): Widget[] {
+  return listed.flatMap((fetched) => {
+    const widget = freshWidget(client, fetched);
+    if (widget === fetched) client.setQueryData<Widget>(widgetKey(fetched.widget_id), fetched);
+    return widget.status === "active" ? [widget] : [];
   });
 }
 

@@ -40,6 +40,16 @@ describe("applyWidget", () => {
     expect(qc.getQueryData<Widget[]>(queryKeys.mm.activeWidgets("c1"))).toEqual([]);
     expect(qc.getQueryData<Widget>(queryKeys.mm.widget("w1"))?.status).toBe("finished");
   });
+
+  it("never brings an ended widget back on an event that arrives late", () => {
+    const qc = new QueryClient();
+    applyWidget(qc, widget());
+    applyWidget(qc, widget({ rev: 2, status: "finished", turn: null }));
+    // The move before the end, delivered after it.
+    applyWidget(qc, widget({ rev: 1 }));
+    expect(qc.getQueryData<Widget[]>(queryKeys.mm.activeWidgets("c1"))).toEqual([]);
+    expect(qc.getQueryData<Widget>(queryKeys.mm.widget("w1"))?.status).toBe("finished");
+  });
 });
 
 describe("seatOf", () => {
