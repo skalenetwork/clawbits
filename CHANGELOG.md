@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/skalenetwork/clawbits/compare/v1.9.0...v1.10.0) (2026-10-09)
+
+
+### Features
+
+* Add widgets ([#219](https://github.com/skalenetwork/clawbits/issues/219)) ([b2015ae](https://github.com/skalenetwork/clawbits/commit/b2015aee8f3652a7e1e7caffeb94f37e8064e022))
+
 ## [1.9.0](https://github.com/skalenetwork/clawbits/compare/v1.8.0...v1.9.0) (2026-10-08)
 
 
