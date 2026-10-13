@@ -11,6 +11,7 @@ import {
   resultOf,
   seatOf,
   snapAmount,
+  waitsOn,
   type Widget,
   type WidgetSceneAction,
   type WidgetSceneAmount,
@@ -26,7 +27,8 @@ import { Sprite } from "./sprites";
 type Tone = "tonal" | "primary" | "danger";
 
 /** A widget with its players, status, recent log and the viewer's actions around the board, stacked for a phone:
- *  the opponent above the board and the viewer below it, as on a board turned towards them. */
+ *  the opponent above the board and the viewer below it, as on a board turned towards them. A player may end it at
+ *  any time, with no winner, from its corner. */
 export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number }) {
   const palette = useWidgetPalette();
   const act = useWidgetAction();
@@ -39,6 +41,7 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
   const chessPieces = drawsChessPieces(scene);
   const log = logLine(notesOf(scene));
   const bySeat = boardsBySeat(scene);
+  const canEnd = mySeat != null && widget.status === "active";
   // The game's notes (its moves, its hands) wait behind a button.
   const [notes, setNotes] = useState(false);
   const send = (type: string, args?: Record<string, unknown>) => {
@@ -57,6 +60,13 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
         style: action.tone === "danger" ? "destructive" : "default",
         onPress: () => send(action.type, args),
       },
+    ]);
+  };
+  /** Ending asks first in the same alert: it stops the game for both players. */
+  const end = () => {
+    Alert.alert("End this game?", "It stops for both of you, with no winner.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "End Game", style: "destructive", onPress: () => send("end", {}) },
     ]);
   };
   const statusColor =
@@ -127,9 +137,9 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
   const ending = result ? (
     <Result end={result.end} headline={result.headline} reason={scene.status?.text} palette={palette} />
   ) : null;
-  // The notes' switch and the piece set: kept apart from the moves, and in reach while the notes are open.
+  // The notes' switch, the piece set and End: kept apart from the moves, and in reach while the notes are open.
   const tools =
-    log || chessPieces ? (
+    log || chessPieces || canEnd ? (
       <View style={s.tools}>
         {log ? (
           <Pressable
@@ -144,6 +154,19 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
           </Pressable>
         ) : null}
         {chessPieces ? <PieceSetSwitch palette={palette} /> : null}
+        {canEnd ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="End game"
+            accessibilityHint="Stops the game for both players, with no winner"
+            disabled={act.isPending}
+            hitSlop={4}
+            onPress={end}
+            style={[s.end, act.isPending && { opacity: 0.5 }]}
+          >
+            <SymbolView name="stop.circle" size={17} tintColor={palette.onSurfaceVariant} />
+          </Pressable>
+        ) : null}
       </View>
     ) : null;
 
@@ -286,7 +309,7 @@ function SeatBadge({
 }) {
   const name = seat.display_name ?? "Player";
   const you = seat.human_id != null && seat.human_id === userId;
-  const toAct = widget.status === "active" && widget.turn === seat.seat;
+  const toAct = waitsOn(widget, seat.seat);
   return (
     <View
       accessible
@@ -322,7 +345,7 @@ function SeatLine({
   if (!seat) return null;
   const name = seat.display_name ?? "Player";
   const you = seat.human_id != null && seat.human_id === userId;
-  const toAct = widget.status === "active" && widget.turn === seat.seat;
+  const toAct = waitsOn(widget, seat.seat);
   // A kind may say more about a seat than its name, e.g. its chips; that line takes the name's place.
   const note = widget.scene.seat_notes?.[seat.seat] ?? seat.seat.charAt(0).toUpperCase() + seat.seat.slice(1);
   return (

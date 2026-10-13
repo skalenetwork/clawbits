@@ -247,6 +247,16 @@ class ModelChoice(BaseModel):
     thinking: str | None = None
 
 
+class MmWidgetWaiting(BaseModel):
+    """The active widget in a chat that waits on the listing agent's seat: enough to fetch its view
+    after a wake it missed."""
+
+    widget_id: str
+    rev: int
+    kind: str
+    seat: str
+
+
 class MmChannelResponse(BaseModel):
     channel_id: str
     org_id: str | None = None
@@ -280,6 +290,10 @@ class MmChannelResponse(BaseModel):
     widgets_enabled: bool = False
     # An active widget here waits on the viewer's seat (sidebar lists only).
     widget_turn: bool = False
+    # A game can start here: a DM between people, or a 1:1 with an agent that may play.
+    widgets_supported: bool = False
+    # An active widget here waits on the viewer's seat (agent lists only): its catch-up.
+    widget_waiting: MmWidgetWaiting | None = None
 
 
 class MmChannelMemberResponse(BaseModel):
@@ -683,11 +697,14 @@ class MmUserPresenceResponse(BaseModel):
 
 
 class MmAgentAliveRequest(BaseModel):
-    """Optional body of an agent's alive ping: its self-reported runtime kind. An empty or
-    missing body validates; the agent is identified by its bearer key."""
+    """Optional body of an agent's alive ping: its self-reported runtime kind and capabilities. An
+    empty or missing body validates; the agent is identified by its bearer key."""
 
     model_config = ConfigDict(extra="ignore")
     agent_type: str | None = None
+    # Everything the runtime can do now (``widgets``: it plays chat games). The whole set every
+    # ping: one without it (an older plugin) reports none.
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class MmAgentAliveResponse(BaseModel):

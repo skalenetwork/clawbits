@@ -83,6 +83,38 @@ export function resultOf(widget: Widget, seat: string | null): { end: WidgetEnd;
   return { end, headline: winner ? `${winner} won` : HEADLINE[end] };
 }
 
+/** A widget's state in a few words, for its strip, its bar and its line in the chat: the scene's status while it
+ *  runs; once over, how it ended and why (`Ended · A player ended it`), as the phone app says it. */
+export function statusOf(widget: Widget, seat: string | null): string {
+  const reason = widget.scene.status?.text;
+  const result = resultOf(widget, seat);
+  if (result) return reason && reason !== result.headline ? `${result.headline} · ${reason}` : result.headline;
+  return reason ?? "";
+}
+
+/** The game the chat's panel shows: one picked from its line in the chat, until another game starts; else the
+ *  running one; else the latest posted in the loaded messages; else the one last seen running here, whose message
+ *  is too far back to be loaded, so its result still shows once it ends. */
+export function panelGameOf({ picked, active, posted, lastActive }: {
+  picked: { widgetId: string; over: string | null } | null;
+  active: string | null;
+  posted: string | null;
+  lastActive: string | null;
+}): string | null {
+  return (picked?.over === active ? picked.widgetId : null) ?? active ?? posted ?? lastActive;
+}
+
+/** The seats the game waits on: the server's list, or its one turn from a server that sends none. None once over. */
+export function waitingOn(widget: Widget): string[] {
+  if (widget.status !== "active") return [];
+  return widget.waiting_on ?? (widget.turn ? [widget.turn] : []);
+}
+
+/** Whether the game waits on this seat: for the viewer's seat, "your move". */
+export function waitsOn(widget: Widget, seat: string | null): boolean {
+  return seat != null && waitingOn(widget).includes(seat);
+}
+
 /** Whether a scene draws chess pieces, so the piece-set switch belongs beside it. */
 export function drawsChessPieces(scene: WidgetScene): boolean {
   return [scene.tokens ?? [], ...(scene.boards ?? []).map((board) => board.tokens ?? [])]

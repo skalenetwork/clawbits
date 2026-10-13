@@ -35,7 +35,8 @@ import { draftStore } from "@/lib/messageDrafts";
 import { viewRowStore } from "@/lib/viewRow";
 import { trackRecentChannel } from "@/lib/desktop";
 import { errMsg, toast } from "@/lib/toast";
-import { applyWidget, isWidgetChat, widgetsAvailable } from "@/lib/widgets";
+import { applyWidget, isWidgetChat, panelGameOf, widgetsAvailable } from "@/lib/widgets";
+import { setWidgetView } from "@/lib/widgetView";
 import { computePendingAutoMention } from "@/lib/autoMention";
 import { mentionHandle, mentionLabel } from "@/lib/messageHelpers";
 import {
@@ -80,7 +81,7 @@ import { GeneratingRow } from "@/components/chat/GeneratingRow";
 import { MessageList, type MessageListHandle } from "@/components/chat/MessageList";
 import { MessageRow } from "@/components/chat/MessageRow";
 import { SystemMessage } from "@/components/chat/SystemMessage";
-import { WidgetDock } from "@/components/widgets/WidgetDock";
+import { GameBar, GameColumn } from "@/components/widgets/GamePanel";
 
 const POSTS_POLL_IDLE_MS = 30_000;
 const POSTS_POLL_FAST_MS = 4_000;
@@ -256,6 +257,12 @@ function ChannelView({ channelId }: { channelId: string }) {
   const widgetChat = isWidgetChat(channel);
   const activeWidgets = useActiveWidgets(channelId, widgetChat);
   const canStartWidget = widgetsAvailable(channel, channelOrg) && activeWidgets.data?.length === 0;
+  const activeWidgetId = activeWidgets.data?.[0]?.widget_id ?? null;
+  // A game picked from the chat, which shows in the panel until another game starts.
+  const [pickedWidget, setPickedWidget] = useState<{ widgetId: string; over: string | null } | null>(null);
+  // The game last active here, for its result once it ends with its message too far back to be loaded.
+  const [lastActiveId, setLastActiveId] = useState<string | null>(null);
+  if (activeWidgetId && activeWidgetId !== lastActiveId) setLastActiveId(activeWidgetId);
 
   const postsQuery = useQuery({
     queryKey: postsKey,
@@ -267,6 +274,15 @@ function ChannelView({ channelId }: { channelId: string }) {
     refetchOnWindowFocus: true,
   });
   const latestPosts = postsQuery.data?.posts ?? NO_POSTS;
+  // The latest game posted here: one that has ended stays in the panel, as its strip, until it's dismissed.
+  const postedWidgetId = useMemo(
+    () => latestPosts.reduce<MmChannelPost | null>(
+      (last, p) => (p.widget_id && (!last || p.post_id > last.post_id) ? p : last),
+      null,
+    )?.widget_id ?? null,
+    [latestPosts],
+  );
+  const gameId = panelGameOf({ picked: pickedWidget, active: activeWidgetId, posted: postedWidgetId, lastActive: lastActiveId });
 
   const eventsQuery = useQuery({
     queryKey: queryKeys.mm.channelEvents(channelId, 100),
@@ -706,9 +722,20 @@ function ChannelView({ channelId }: { channelId: string }) {
 
   const startGame = useMutation({
     mutationFn: (kind: WidgetKindName) => startWidget(channelId, kind),
-    onSuccess: (widget) => { applyWidget(queryClient, widget); },
+    onSuccess: (widget) => {
+      // Its starter sees the board at once, on a phone too.
+      setWidgetView(widget.widget_id, "open");
+      applyWidget(queryClient, widget);
+    },
     onError: (e) => { toast.error(errMsg(e, "Couldn't start a game")); },
   });
+
+  // A game's line in the chat brings its board forward: the panel shows it, open, over any panel covering it.
+  const openWidget = (widgetId: string) => {
+    setPickedWidget({ widgetId, over: activeWidgetId });
+    setWidgetView(widgetId, "open");
+    if (panels?.panel) panels.togglePanel(panels.panel);
+  };
 
   const renameChat = useMutation({
     mutationFn: (displayName: string) => patchMmChannel(channelId, displayName),
@@ -736,7 +763,11 @@ function ChannelView({ channelId }: { channelId: string }) {
       currentUserId={user?.id ?? null}
       onMentionInsert={(handle) => { composerRef.current?.insert(`@${handle} `); }}
     >
-    <div ref={columnRef} className="relative isolate flex h-full min-h-0 flex-1 flex-col">
+    <div
+      ref={columnRef}
+      // The phone's game bar sits under the header: the first message and anything pinned keep clear of it.
+      className="relative isolate flex h-full min-h-0 flex-1 flex-col has-[[data-game-bar]]:[--game-bar-space:3.25rem] has-[[data-game-bar]]:[--pin-top:calc(var(--safe-top)+7.25rem)]"
+    >
       <ChannelDropOverlay show={isDragging} />
       <PageHeader
         leading={
@@ -903,6 +934,7 @@ function ChannelView({ channelId }: { channelId: string }) {
                     onJumpToParent={jumpToPost}
                     onToggleReaction={toggleReaction}
                     onTogglePin={togglePin}
+                    onOpenWidget={openWidget}
                     isEditing={editingPostId === post.post_id}
                     onEdit={setEditingPostId}
                     onSaveEdit={saveEdit}
@@ -919,6 +951,31 @@ function ChannelView({ channelId }: { channelId: string }) {
       </div>
 
       <ChatOutline sections={outline} viewRow={viewRow} onJump={(postId) => { void jumpToPost(postId); }} />
+
+      {gameId && (isMobile ? (
+        <GameBar
+          key={gameId}
+          widgetId={gameId}
+          channelId={channelId}
+          userId={user?.id ?? null}
+          picked={gameId === pickedWidget?.widgetId}
+          onDismiss={() => { setPickedWidget(null); }}
+        />
+      ) : (
+        <GameColumn
+          key={gameId}
+          widgetId={gameId}
+          channelId={channelId}
+          userId={user?.id ?? null}
+          picked={gameId === pickedWidget?.widgetId}
+          covered={panels?.panel != null}
+          onDismiss={() => {
+            setPickedWidget(null);
+            // The dismissed column takes its focus with it.
+            composerRef.current?.focus();
+          }}
+        />
+      ))}
 
       {!isMobile && (
         <ProgressiveBlur
@@ -966,20 +1023,6 @@ function ChannelView({ channelId }: { channelId: string }) {
         activityPeople={activityPeople}
         agentDm={channel?.channel_type === "direct" && members.some((m) => m.agent_id != null)}
         onTyping={signalTyping}
-        dock={widgetChat && (
-          <WidgetDock
-            channelId={channelId}
-            userId={user?.id ?? null}
-            enabled
-            // The board lives in the message that started it: the dock scrolls there, opening nothing of its own.
-            // Its id comes with the widget; a server without it still finds the message among those loaded.
-            onShow={(widget) => {
-              const postId = widget.post_id ?? rowsRef.current.flatMap((r) =>
-                r.kind === "post" && r.post.widget_id === widget.widget_id ? [r.post.post_id] : [])[0];
-              if (postId != null) void jumpToPost(postId);
-            }}
-          />
-        )}
         onStartWidget={canStartWidget && !startGame.isPending ? (kind) => { startGame.mutate(kind); } : undefined}
         placeholder={
           channel &&

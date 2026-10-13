@@ -111,7 +111,7 @@ export const queryKeys = {
     /** One widget, kept apart from posts so its board updates wherever it is shown. */
     widget: (widgetId: string) => ["mm", "widget", widgetId] as const,
     widgetsAll: ["mm", "widget"] as const,
-    /** The chat's active widget (at most one), for the dock above the composer. */
+    /** The chat's active widget (at most one), for its game panel. */
     activeWidgets: (channelId: string) => ["mm", "channel", channelId, "widgets"] as const,
     linkPreview: (url: string) => ["mm", "link-preview", url] as const,
     search: (orgId: string | null, query: string, sort: string, filters: MmSearchFilters) =>

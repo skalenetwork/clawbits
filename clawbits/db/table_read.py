@@ -14,6 +14,7 @@ from sqlalchemy import (
     ColumnElement,
     ScalarSelect,
     and_,
+    any_,
     case,
     func,
     literal,
@@ -77,6 +78,7 @@ from clawbits.db.models import (
     Skill,
     SkillVersion,
 )
+from clawbits.fastapi.version_check import widgets_eligible
 from clawbits.utils.parse import (
     format_db_timestamp as _iso,
 )
@@ -1574,8 +1576,9 @@ class TableRead:
     @staticmethod
     def get_mm_channels_for_agent(session: Session, agent_id: str) -> list[dict]:
         """The agent's channels with its read pointer, latest post and unread counts, so a
-        reconnecting agent drains only the channels that moved. A ``None`` pointer means first
-        boot. DMs the agent may no longer access are dropped."""
+        reconnecting agent drains only the channels that moved, and the game waiting on its move
+        there (``widget_waiting``), so it catches up on a wake it missed. A ``None`` pointer means
+        first boot. DMs the agent may no longer access are dropped."""
         latest_post = (
             select(MmPost.post_id.label("post_id"))
             .where(MmPost.channel_id == MmChannel.channel_id)
@@ -1612,6 +1615,7 @@ class TableRead:
             .where(MmChannelMember.agent_id == agent_id)
             .order_by(MmChannel.created_at.desc())
         ).all()
+        waiting = TableRead.mm_widgets_waiting_on_agent(session, agent_id)
         return [
             {
                 **TableRead._channel_to_dict(c, session),
@@ -1621,6 +1625,7 @@ class TableRead:
                 "unread_mention_count": unread_mention_count,
                 "model": model,
                 "thinking": thinking,
+                "widget_waiting": waiting.get(c.channel_id),
             }
             for (
                 c,
@@ -2671,8 +2676,10 @@ class TableRead:
         named agent chats keep their title), ``dm_peer`` the peer as
         :meth:`get_mm_channel_members` returns it (``can_tag`` included for an
         agent), and ``dm_peer_human_id`` or ``dm_peer_agent_id`` its id.
-        Presence is the endpoint's to apply. Returns the agent 1:1s the viewer
-        may no longer contact. Two statements for the whole list."""
+        Presence is the endpoint's to apply. ``widgets_supported`` says whether a
+        game can start here: a DM between people, or a 1:1 with an agent that may
+        take a seat. Returns the agent 1:1s the viewer may no longer contact. Two
+        statements for the whole list."""
         pair_ids = [d["channel_id"] for d in channels if d["channel_type"] in PAIR_CHANNEL_TYPES]
         if not pair_ids:
             return set()
@@ -2697,14 +2704,18 @@ class TableRead:
             row = peers.get(d["channel_id"])
             if row is None:
                 continue
-            m, u, *_ = row
+            m, u, _, a, *_ = row
             peer = TableRead._member_to_dict(*row, viewer_human_id=viewer_human_id)
             name = (u.display_name or u.email) if u else peer["display_name"]
             if name and d["channel_type"] != AGENT_CHAT:
                 d["display_name"] = name
             if m.agent_id is None:
                 d["dm_peer_human_id"] = m.human_id
+                d["widgets_supported"] = d["channel_type"] == "direct"
             else:
+                d["widgets_supported"] = a is not None and widgets_eligible(
+                    a.agent_type, a.capabilities, a.widgets_enabled
+                )
                 grant = grants.get(m.agent_id)
                 operates = peer["is_operator"]
                 peer["can_tag"] = operates or bool(grant and grant.can_tag)
@@ -4020,15 +4031,22 @@ class TableRead:
 
     @staticmethod
     def _mm_widget_dicts(
-        session: Session, rows: Sequence[MmWidget], viewer_human_id: int | None = None
+        session: Session,
+        rows: Sequence[MmWidget],
+        viewer_human_id: int | None = None,
+        *,
+        viewer_agent_id: str | None = None,
     ) -> list[dict]:
-        """Response dicts for ``rows``, each with its seats and a fresh scene as ``viewer_human_id``
-        may see it; ``None`` gets the public scene a realtime event may carry. Three statements."""
+        """Response dicts for ``rows``, each with its seats and a fresh scene as the viewer (a human
+        or an agent, at most one) may see it; neither gets the public scene a realtime event may
+        carry. Three statements."""
         if not rows:
             return []
         seats = session.exec(
-            select(MmWidgetSeat, HumanUser)
+            select(MmWidgetSeat, HumanUser, Agent, AgentProfile)
             .join(HumanUser, HumanUser.id == MmWidgetSeat.human_id, isouter=True)
+            .join(Agent, Agent.agent_id == MmWidgetSeat.agent_id, isouter=True)
+            .join(AgentProfile, AgentProfile.agent_id == MmWidgetSeat.agent_id, isouter=True)
             .where(MmWidgetSeat.widget_id.in_([w.widget_id for w in rows]))
         ).all()
         # The message that started each, which shows its board in the chat.
@@ -4038,20 +4056,43 @@ class TableRead:
             ).all()
         )
         by_widget: dict[str, list[dict]] = defaultdict(list)
-        for seat, human in seats:
+        for seat, human, agent, profile in seats:
             by_widget[seat.widget_id].append({
                 "seat": seat.seat,
                 "human_id": seat.human_id,
                 "agent_id": seat.agent_id,
-                "display_name": (human.display_name or human.email) if human else seat.agent_id,
+                # The agent's name as every other surface resolves it, never its id unless that's all.
+                "display_name": (
+                    (human.display_name or human.email)
+                    if human
+                    else (profile.display_name if profile else None)
+                    or (agent.nickname if agent else None)
+                    or seat.agent_id
+                ),
+                "is_agent": seat.agent_id is not None,
+                "avatar": (
+                    avatar_ref_for_user(
+                        user_id=human.id, version=human.avatar_version, kind=human.avatar_kind
+                    ).model_dump()
+                    if human
+                    else avatar_ref_for_agent(
+                        agent_id=agent.agent_id, version=agent.avatar_version, kind=agent.avatar_kind
+                    ).model_dump()
+                    if agent
+                    else None
+                ),
             })
         out = []
         for w in rows:
             kind = WIDGET_KINDS.get(w.kind)
             order = kind.seats if kind else ()
             seat = next(
-                (s["seat"] for s in by_widget[w.widget_id]
-                 if viewer_human_id is not None and s["human_id"] == viewer_human_id),
+                (
+                    s["seat"]
+                    for s in by_widget[w.widget_id]
+                    if (viewer_human_id is not None and s["human_id"] == viewer_human_id)
+                    or (viewer_agent_id is not None and s["agent_id"] == viewer_agent_id)
+                ),
                 None,
             )
             out.append({
@@ -4061,6 +4102,7 @@ class TableRead:
                 "status": w.status,
                 "rev": w.rev,
                 "turn": w.turn,
+                "waiting_on": list(w.waiting_on),
                 "seats": sorted(
                     by_widget[w.widget_id],
                     key=lambda s: order.index(s["seat"]) if s["seat"] in order else len(order),
@@ -4077,10 +4119,18 @@ class TableRead:
 
     @staticmethod
     def get_mm_widget(
-        session: Session, widget_id: str, viewer_human_id: int | None = None
+        session: Session,
+        widget_id: str,
+        viewer_human_id: int | None = None,
+        *,
+        viewer_agent_id: str | None = None,
     ) -> dict | None:
         row = session.get(MmWidget, widget_id)
-        return TableRead._mm_widget_dicts(session, [row], viewer_human_id)[0] if row else None
+        if row is None:
+            return None
+        return TableRead._mm_widget_dicts(
+            session, [row], viewer_human_id, viewer_agent_id=viewer_agent_id
+        )[0]
 
     @staticmethod
     def list_mm_widgets(
@@ -4089,13 +4139,16 @@ class TableRead:
         *,
         active_only: bool = True,
         viewer_human_id: int | None = None,
+        viewer_agent_id: str | None = None,
     ) -> list[dict]:
         """The channel's widgets, newest first, as the viewer sees them; only the active one by default."""
         stmt = select(MmWidget).where(MmWidget.channel_id == channel_id)
         if active_only:
             stmt = stmt.where(MmWidget.status == "active")
         rows = session.exec(stmt.order_by(MmWidget.created_at.desc()).limit(20)).all()
-        return TableRead._mm_widget_dicts(session, rows, viewer_human_id)
+        return TableRead._mm_widget_dicts(
+            session, rows, viewer_human_id, viewer_agent_id=viewer_agent_id
+        )
 
     @staticmethod
     def active_mm_widget_ids_seating(session: Session, human_id: int) -> list[str]:
@@ -4108,6 +4161,22 @@ class TableRead:
                 .where(MmWidget.status == "active")
             ).all()
         )
+
+    @staticmethod
+    def list_active_mm_widgets_seating_agent(
+        session: Session, agent_id: str, channel_id: str | None = None
+    ) -> list[dict]:
+        """The active widgets ``agent_id`` holds a seat in, newest first (only ``channel_id``'s when
+        given), each with the public scene."""
+        stmt = (
+            select(MmWidget)
+            .join(MmWidgetSeat, MmWidgetSeat.widget_id == MmWidget.widget_id)
+            .where(MmWidgetSeat.agent_id == agent_id)
+            .where(MmWidget.status == "active")
+        )
+        if channel_id is not None:
+            stmt = stmt.where(MmWidget.channel_id == channel_id)
+        return TableRead._mm_widget_dicts(session, session.exec(stmt.order_by(MmWidget.created_at.desc())).all())
 
     @staticmethod
     def active_mm_widget_id(session: Session, channel_id: str) -> str | None:
@@ -4128,13 +4197,32 @@ class TableRead:
         ).one()
 
     @staticmethod
+    def mm_widgets_waiting_on_agent(session: Session, agent_id: str) -> dict[str, dict]:
+        """``{channel_id: {widget_id, rev, kind, seat}}`` for each active widget waiting on a seat
+        ``agent_id`` holds: one per chat at most, as only one widget is active there."""
+        return {
+            channel_id: {"widget_id": widget_id, "rev": rev, "kind": kind, "seat": seat}
+            for channel_id, widget_id, rev, kind, seat in session.exec(
+                select(MmWidget.channel_id, MmWidget.widget_id, MmWidget.rev, MmWidget.kind, MmWidgetSeat.seat)
+                .join(
+                    MmWidgetSeat,
+                    (MmWidgetSeat.widget_id == MmWidget.widget_id)
+                    & (MmWidgetSeat.seat == any_(MmWidget.waiting_on)),
+                )
+                .where(MmWidgetSeat.agent_id == agent_id)
+                .where(MmWidget.status == "active")
+            ).all()
+        }
+
+    @staticmethod
     def mm_widget_turn_channel_ids(session: Session, human_id: int) -> set[str]:
         """Channels where an active widget waits on this human's seat: the sidebar's "your move"."""
         return set(session.exec(
             select(MmWidget.channel_id)
             .join(
                 MmWidgetSeat,
-                (MmWidgetSeat.widget_id == MmWidget.widget_id) & (MmWidgetSeat.seat == MmWidget.turn),
+                (MmWidgetSeat.widget_id == MmWidget.widget_id)
+                & (MmWidgetSeat.seat == any_(MmWidget.waiting_on)),
             )
             .where(MmWidgetSeat.human_id == human_id)
             .where(MmWidget.status == "active")

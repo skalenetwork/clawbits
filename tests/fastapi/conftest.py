@@ -210,6 +210,22 @@ def _truncate_transient(request, _test_engine, test_client):
     test_client.cookies.clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_widget_limits():
+    """Widget call caps count in Redis, which outlives each test: every test starts with none spent,
+    so a long game in one never trips a cap another left behind. No Redis: nothing to clear."""
+    import redis
+
+    from clawbits.widgets import limits
+
+    try:
+        for key in limits.client().scan_iter(f"{limits.KEY_PREFIX}*"):
+            limits.client().delete(key)
+    except redis.RedisError:
+        pass
+    yield
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",

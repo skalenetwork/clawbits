@@ -127,7 +127,7 @@ export type ChatEvent = { channel_id: string } & (
   | { type: "presence.snapshot"; data: { members: MemberStatus[] } }
   | { type: `channel.${"added" | "removed" | "read" | "muted"}` }
   | { type: "widget.updated"; data: Widget }
-  | { type: "widget.turn"; data: { my_turn: boolean } }
+  | { type: "widget.turn"; data: { my_turn: boolean; widget_id?: string; rev?: number } }
   | { type: "channel.widgets"; data: { widgets_enabled: boolean } }
 );
 

@@ -1,17 +1,18 @@
 """Chat widgets over HTTP: start one, act on it, and the org switch that allows them.
 
-Widgets run in one-to-one chats between people for now. An action is a row lock on the widget,
-a move validated by its kind (:mod:`clawbits.widgets`), and a ``widget.updated`` carrying the
-fresh scene. Nothing posts: only starting a widget writes a message, so a move never pings.
+Widgets run in one-to-one chats for now: between people, or a person and an agent that may play.
+An action is a row lock on the widget, a move validated by its kind (both in
+:mod:`clawbits.widgets.service`), and a ``widget.updated`` carrying the fresh scene. Nothing posts:
+only starting a widget writes a message, so a move never pings. A seated agent is woken instead,
+with ids only, on its own control topic.
 The chat's own switch lives on ``PATCH /api/human/mm/channels/{id}``.
 """
 import asyncio
-import random
+import logging
 from collections.abc import Collection
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import Engine
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from clawbits import audit
@@ -25,12 +26,11 @@ from clawbits.datastructures.widget_models import (
     WidgetListResponse,
     WidgetResponse,
 )
-from clawbits.db.models import MmChannel, MmChannelMember, MmPost, MmWidget, MmWidgetSeat
+from clawbits.db.models import MmChannel, MmPost, MmWidget
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
 from clawbits.fastapi.human_endpoints import (
     _get_db,
-    _rate_limit,
     _require_org_owner,
     _verify_org_membership,
 )
@@ -40,33 +40,48 @@ from clawbits.realtime import (
     EventBus,
     fire_and_forget,
     get_bus,
+    publish_agent_widget_turn,
     publish_channel_read,
     publish_org_updated,
     publish_post_created,
     publish_widget_turn,
     publish_widget_updated,
 )
-from clawbits.widgets import KINDS, InvalidAction, NotYourTurn
+from clawbits.widgets import KINDS, limits
+from clawbits.widgets import service as widget_service
+from clawbits.widgets.service import Participant, WidgetError
+
+log = logging.getLogger(__name__)
 
 widget_router = APIRouter(tags=["Widgets"])
 
-_CREATE_LIMIT = 10
-_INTRO = {
-    "chess": "♟ {name} started a chess game",
-    "battleship": "⚓ {name} started a game of battleship",
-    "poker": "♠ {name} started a poker match",
-    "blackjack": "♣ {name} started a blackjack match",
-}
-
 
 async def publish_widget(bus: EventBus, widget: dict) -> None:
-    """The widget's fresh public scene to its chat, and to each seated human whether it waits on them.
+    """The widget's fresh public scene to its chat, to each seated human whether it waits on them,
+    and a wake to each seated agent, the one that just acted included, and when it ends.
     ``widget`` must be the public view (no viewer): a private kind's event tells clients to refetch."""
     await publish_widget_updated(bus, widget["channel_id"], WidgetResponse(**widget).model_dump())
     for seat in widget["seats"]:
+        waiting = widget["status"] == "active" and seat["seat"] in widget["waiting_on"]
         if seat["human_id"] is not None:
-            my_turn = widget["status"] == "active" and widget["turn"] == seat["seat"]
-            await publish_widget_turn(bus, seat["human_id"], widget["channel_id"], my_turn)
+            await publish_widget_turn(bus, seat["human_id"], widget, waiting)
+        elif seat["agent_id"] is not None:
+            await _wake_agent(bus, seat["agent_id"], widget, seat["seat"], waiting)
+
+
+async def _wake_agent(bus: EventBus, agent_id: str, widget: dict, seat: str, waiting: bool) -> None:
+    """Wake a seated agent: once per rev, within its daily budget, since each wake costs it a turn.
+    A wake skipped or unheard is caught up from its channel list's ``widget_waiting``."""
+    widget_id, rev = widget["widget_id"], widget["rev"]
+    verdict = await asyncio.to_thread(limits.claim_wake, agent_id, widget_id, rev)
+    if verdict == "over_budget":
+        log.warning(
+            "agent %s is past its daily widget wakes; widget %s rev %s not sent", agent_id, widget_id, rev
+        )
+    if verdict != "wake":
+        return
+    if await publish_agent_widget_turn(bus, agent_id, widget, seat, waiting) == 0:
+        log.info("agent %s has no live socket for widget %s rev %s", agent_id, widget_id, rev)
 
 
 async def publish_widgets(engine: Engine, widget_ids: Collection[str]) -> None:
@@ -83,19 +98,16 @@ async def publish_widgets(engine: Engine, widget_ids: Collection[str]) -> None:
         await publish_widget(bus, widget)
 
 
-def _dm_opponent(db: Session, channel: MmChannel, human_id: int) -> int:
-    """The other person of a one-to-one chat between people: the only place widgets run for now."""
-    members = db.exec(
-        select(MmChannelMember.human_id, MmChannelMember.agent_id).where(
-            MmChannelMember.channel_id == channel.channel_id
-        )
-    ).all()
-    others = [h for h, _ in members if h is not None and h != human_id]
-    if channel.channel_type != "direct" or any(a is not None for _, a in members) or len(others) != 1:
-        raise HTTPException(
-            status_code=422, detail="Widgets run in one-to-one chats between people for now"
-        )
-    return others[0]
+def _limit(limit: limits.Limit, human_id: int) -> None:
+    """429 once the person is past ``limit`` this minute, worded like the other rate limits."""
+    if (retry := limits.retry_after(limit, human_id)) is not None:
+        # The hint rides in the detail: the global HTTPException handler drops exc.headers.
+        raise HTTPException(status_code=429, detail=f"Too many requests; retry in ~{retry}s")
+
+
+def _http(e: WidgetError) -> HTTPException:
+    """A refused widget call as these routes have always answered it."""
+    return HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @widget_router.post(
@@ -108,47 +120,22 @@ def create_widget(
     user: dict = Depends(get_current_human_user),
 ):
     """Start a widget in a one-to-one chat; the caller takes ``seat`` (random when omitted) and
-    the other person the remaining one. Needs the org's and the chat's switches on, and no
-    other active widget in the chat. Posts one message that shows it."""
-    kind = KINDS[body.kind]
-    if body.seat is not None and body.seat not in kind.seats:
+    the other side (a person, or an agent that may play) the remaining one. Needs the org's and
+    the chat's switches on, and no other active widget in the chat. Posts one message that shows
+    it. An agent that can't play now is a 422 ``This agent can't play games``."""
+    # Before the rate limit, as it always was: a malformed request costs no slot.
+    if body.seat is not None and body.seat not in KINDS[body.kind].seats:
         raise HTTPException(status_code=422, detail=f"Unknown seat {body.seat!r}")
-    _rate_limit(f"widget-create:{user['id']}", limit=_CREATE_LIMIT)
+    _limit(limits.CREATE, user["id"])
     with _get_db(request) as db:
         _require_human_member(db, channel_id, user["id"])
-        # The chat locked, the org held: neither switch turns off between this check and the insert.
-        channel = TableWrite.lock_mm_channel(db, channel_id)
-        if channel is None:
-            raise HTTPException(status_code=404, detail="Channel not found")
-        org = TableWrite.lock_organization(db, channel.org_id, shared=True) if channel.org_id else None
-        if org is None or not org.widgets_enabled:
-            raise HTTPException(status_code=403, detail="Widgets are off in this organization")
-        if not channel.widgets_enabled:
-            raise HTTPException(status_code=403, detail="Widgets are off in this chat")
-        opponent = _dm_opponent(db, channel, user["id"])
-        mine = body.seat or random.choice(kind.seats)
-        theirs = next(seat for seat in kind.seats if seat != mine)
-        state = kind.init()
         try:
-            widget_id = TableWrite.create_mm_widget(
-                db,
-                channel_id=channel_id,
-                kind=body.kind,
-                state=state,
-                turn=kind.turn(state),
-                seats={mine: user["id"], theirs: opponent},
-                created_by_human_id=user["id"],
+            created = widget_service.create(
+                db, user["id"], channel_id, body.kind, body.seat, frontend_root=_frontend_root()
             )
-        except IntegrityError:
-            db.rollback()
-            raise HTTPException(status_code=409, detail="This chat already has an active widget")
-        name = TableRead.resolve_human_display(db, user["id"]) or "Someone"
-        message = f"{_INTRO[body.kind].format(name=name)} · {_frontend_root()}/widgets/{widget_id}"
-        post_id = TableWrite.create_mm_post_human(db, channel_id, user["id"], message, widget_id=widget_id)
-        TableWrite.mark_mm_channel_read(db, channel_id, user["id"], post_id)
-        db.commit()
-        widget = TableRead.get_mm_widget(db, widget_id, viewer_human_id=user["id"])
-        public = TableRead.get_mm_widget(db, widget_id)
+        except WidgetError as e:
+            raise _http(e) from e
+        post_id = created.post_id
         post = MmPostResponse(**TableRead.hydrate_mm_posts(db, [db.get(MmPost, post_id)])[0])
         member_human_ids = TableRead.get_mm_channel_human_member_ids(db, channel_id)
 
@@ -157,8 +144,8 @@ def create_widget(
         publish_post_created(bus, channel_id, post.model_dump(), member_human_ids=member_human_ids)
     )
     fire_and_forget(publish_channel_read(bus, user["id"], channel_id, post_id))
-    fire_and_forget(publish_widget(bus, public))
-    return WidgetResponse(**widget)
+    fire_and_forget(publish_widget(bus, created.public))
+    return WidgetResponse(**created.view)
 
 
 @widget_router.get("/api/human/mm/channels/{channel_id}/widgets", response_model=WidgetListResponse)
@@ -195,47 +182,23 @@ def act_on_widget(
     user: dict = Depends(get_current_human_user),
 ):
     """Apply one action by the caller's seat. ``expected_rev`` must be the current ``rev``, so
-    an action taken on a stale board is a 409 rather than a surprise."""
+    an action taken on a stale board is a 409 rather than a surprise. ``end`` is the exception:
+    any seated player stops the game with it, on any board, even with a switch off."""
+    _limit(limits.HUMAN_ACT, user["id"])
     with _get_db(request) as db:
-        widget = TableWrite.lock_mm_widget(db, widget_id)
-        if widget is None or not TableRead.is_mm_channel_member_human(
-            db, widget.channel_id, user["id"]
-        ):
-            raise HTTPException(status_code=404, detail="Widget not found")
-        if widget.status != "active":
-            raise HTTPException(status_code=409, detail="This widget has ended")
-        if body.expected_rev != widget.rev:
-            raise HTTPException(status_code=409, detail="The widget changed meanwhile; try again")
-        seat = db.exec(
-            select(MmWidgetSeat.seat)
-            .where(MmWidgetSeat.widget_id == widget_id)
-            .where(MmWidgetSeat.human_id == user["id"])
-        ).first()
-        if seat is None:
-            raise HTTPException(status_code=403, detail="You don't have a seat in this widget")
-        kind = KINDS.get(widget.kind)
-        if kind is None:
-            raise HTTPException(status_code=409, detail="This kind of widget is no longer available")
         try:
-            step = kind.act(widget.state, seat, body.action.model_dump())
-        except NotYourTurn as e:
-            raise HTTPException(status_code=403, detail=str(e)) from e
-        except InvalidAction as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
-        TableWrite.save_mm_widget_step(
-            db,
-            widget,
-            state=step.state,
-            status=step.status,
-            outcome=step.outcome,
-            turn=kind.turn(step.state),
-        )
-        db.commit()
-        out = TableRead.get_mm_widget(db, widget_id, viewer_human_id=user["id"])
-        public = TableRead.get_mm_widget(db, widget_id)
+            result = widget_service.act(
+                db,
+                Participant.human(user["id"]),
+                widget_id,
+                body.action.model_dump(),
+                body.expected_rev,
+            )
+        except WidgetError as e:
+            raise _http(e) from e
 
-    fire_and_forget(publish_widget(get_bus(), public))
-    return WidgetResponse(**out)
+    fire_and_forget(publish_widget(get_bus(), result.public))
+    return WidgetResponse(**result.view)
 
 
 @widget_router.get("/api/human/orgs/{org_id}/widgets", response_model=OrgWidgetsResponse)

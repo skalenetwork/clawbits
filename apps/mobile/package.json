@@ -57,7 +57,7 @@
     "ios:device": "expo run:ios --device",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "bun test src/lib"
+    "test": "bun test src"
   },
   "private": true
 }

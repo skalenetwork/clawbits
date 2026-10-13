@@ -186,11 +186,18 @@ class EventBus:
             log.warning("EventBus.publish(%s) failed: %s", topic, exc)
             return None
 
-    async def subscribe(self, topic: str) -> AsyncIterator[dict[str, Any]]:
+    async def subscribe(
+        self, topic: str, *, ready: asyncio.Event | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
         """Yield events published to `topic` until the consumer stops.
 
         Caller must `async for event in bus.subscribe(topic): ...`. The
         subscription is cleaned up on GeneratorExit / cancellation.
+
+        ``ready`` is set once ``SUBSCRIBE`` is on the wire (again after each
+        reconnect): Redis runs commands in arrival order, so anything published
+        after that reaches this subscriber. A caller that reads a snapshot waits
+        on it first, so nothing published in between is lost.
 
         Resilient to transient Redis failures. A single hiccup on the pub/sub
         connection (idle-socket reap, read timeout, broker restart) used to
@@ -208,6 +215,8 @@ class EventBus:
             pubsub = client.pubsub()
             try:
                 await pubsub.subscribe(topic)
+                if ready is not None:
+                    ready.set()
                 backoff = 0.5  # reset after a clean (re)subscribe
                 while True:
                     # Poll rather than ``listen()``. ``listen()`` does a blocking

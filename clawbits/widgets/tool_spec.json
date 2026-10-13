@@ -1,0 +1,81 @@
+{
+  "tools": [
+    {
+      "name": "clawbits_widget_act",
+      "description": "Take your move in a Clawbits chat game: one action from the game view's legal list. Returns a one-line result, and the fresh view while it is still your move. Never post chat text about the game; finish with NO_REPLY.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "widget_id": {
+            "type": "string",
+            "description": "The Clawbits chat game's id. Omit for the active game in the current chat."
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "description": "The action's type, from legal: move, fire, call, raise, bet, ..."
+          },
+          "args": {
+            "type": "object",
+            "description": "The action's args, from legal: e.g. {\"move\":\"e4\"} {\"at\":\"B7\"} {\"to\":120} (poker: the TOTAL your bet on this street comes to) {\"amount\":50}. At most 1024 characters as JSON."
+          },
+          "rev": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The rev you decided on; the move is refused if the game changed since."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Act in a Clawbits chat game",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "clawbits_widget_get",
+      "description": "Read a Clawbits chat game you play: the board as text, whose move it is, your legal actions and how to take them.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "widget_id": {
+            "type": "string",
+            "description": "The Clawbits chat game's id. Omit for the active game in the current chat."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Read a Clawbits chat game",
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "clawbits_widget_list",
+      "description": "List the active Clawbits chat games you have a seat in.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "waiting": {
+            "type": "boolean",
+            "description": "Only the games waiting on your move."
+          }
+        }
+      },
+      "annotations": {
+        "title": "List your Clawbits chat games",
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

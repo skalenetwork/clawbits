@@ -38,6 +38,7 @@ import json
 import logging
 import re
 import tomllib
+from collections.abc import Collection
 from functools import cache
 from pathlib import Path
 
@@ -313,3 +314,20 @@ def supports_turn_stop(agent_type: str | None, plugin_version: str | None) -> bo
     floor = _TURN_STOP_MIN_VERSIONS.get(agent_type or "")
     version = _parse_header(plugin_version)
     return floor is not None and version is not None and version >= floor
+
+
+# The capability an agent reports on its alive ping once its runtime can play chat games.
+WIDGETS_CAPABILITY = "widgets"
+# Runtimes with a widget adapter. IronClaw's channel can't register tools, and an agent that never
+# said what it runs (NULL ``agent_type``) has no adapter we know of.
+_WIDGET_AGENT_TYPES = frozenset({PLUGIN_KIND_OPENCLAW, PLUGIN_KIND_HERMES})
+
+
+def widgets_eligible(agent_type: str | None, capabilities: Collection[str], widgets_enabled: bool) -> bool:
+    """May this agent take a widget seat: a runtime with an adapter that reported the ``widgets``
+    capability, and its "Can play games" setting on."""
+    return (
+        widgets_enabled
+        and agent_type in _WIDGET_AGENT_TYPES
+        and WIDGETS_CAPABILITY in capabilities
+    )

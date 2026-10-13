@@ -16,6 +16,7 @@ import {
   freshActiveWidgets,
   freshWidget,
   fanMargin,
+  lastWidgetId,
   logLine,
   normalizeBoards,
   notesOf,
@@ -24,8 +25,13 @@ import {
   seatOf,
   snapAmount,
   spriteLabel,
+  waitingOn,
+  waitsOn,
+  widgetDismissedKey,
   widgetKey,
-  widgetPostIndex,
+  widgetLine,
+  widgetOpenKey,
+  widgetTitle,
   type Widget,
   type WidgetBoardLayout,
 } from "./widgets";
@@ -56,7 +62,7 @@ const chess: WidgetBoardLayout = {
 };
 
 describe("widget caches", () => {
-  test("a newer rev wins, an older one is ignored, and an ended widget leaves the dock", () => {
+  test("a newer rev wins, an older one is ignored, and an ended widget leaves the active list", () => {
     const client = new QueryClient();
     applyWidget(client, widget(3));
     applyWidget(client, widget(2));
@@ -185,12 +191,70 @@ describe("players beneath their boards", () => {
   });
 });
 
-describe("the dock's jump", () => {
-  const posts = [{ post_id: 7 }, { post_id: 9, widget_id: "w1" }, { post_id: 12 }];
-  test("finds the message that started the game, by its id or else by the game", () => {
-    expect(widgetPostIndex(posts, { ...widget(1), post_id: 9 })).toBe(1);
-    expect(widgetPostIndex(posts, { ...widget(1), post_id: null })).toBe(1);
-    expect(widgetPostIndex(posts, { ...widget(1), post_id: 3 })).toBe(-1);
+describe("the bar's game", () => {
+  test("is the latest game a loaded message started, or none", () => {
+    expect(lastWidgetId([{ widget_id: "w1" }, { widget_id: null }, { widget_id: "w2" }, {}])).toBe("w2");
+    expect(lastWidgetId([{}, { widget_id: null }])).toBeNull();
+  });
+
+  test("keeps its folds and put-away results under a key per game", () => {
+    expect(widgetOpenKey("w1")).toBe("clawbits.widget-bar.open.w1");
+    expect(widgetDismissedKey("w1")).toBe("clawbits.widget-bar.dismissed.w1");
+    expect(widgetOpenKey("w1")).not.toBe(widgetOpenKey("w2"));
+  });
+});
+
+describe("your move", () => {
+  const setup = { ...widget(1), turn: null, waiting_on: ["white", "black"] };
+  test("is every seat the game waits on, both at once while fleets are set", () => {
+    expect(waitingOn(setup)).toEqual(["white", "black"]);
+    expect(waitsOn(setup, "white")).toBe(true);
+    expect(waitsOn(setup, "black")).toBe(true);
+    expect(waitsOn(setup, null)).toBe(false);
+    expect(waitsOn({ ...widget(1), waiting_on: ["black"] }, "white")).toBe(false);
+  });
+
+  test("falls back to the turn from an older server", () => {
+    expect(waitingOn(widget(1))).toEqual(["white"]);
+    expect(waitsOn(widget(1), "white")).toBe(true);
+    expect(waitsOn(widget(1), "black")).toBe(false);
+    expect(waitingOn({ ...widget(1), turn: null })).toEqual([]);
+  });
+
+  test("is no one's once the game is over", () => {
+    expect(waitingOn({ ...widget(1, "finished"), waiting_on: ["white"] })).toEqual([]);
+    expect(waitsOn({ ...widget(1, "aborted"), turn: "white" }, "white")).toBe(false);
+  });
+});
+
+describe("the bar's line", () => {
+  const playing = (text: string) => ({ ...widget(1), scene: { v: 1, title: "Chess", status: { text, tone: "neutral" } } });
+  test("names the game by its scene, else its kind", () => {
+    expect(widgetTitle(playing("White to move"))).toBe("Chess");
+    expect(widgetTitle({ ...widget(1), kind: "poker" })).toBe("Poker");
+    expect(widgetTitle({ ...widget(1), kind: "go" })).toBe("go");
+  });
+
+  test("says your move while it waits on you, else how it stands", () => {
+    expect(widgetLine(playing("White to move"), "white")).toBe("Your move");
+    expect(widgetLine(playing("White to move"), "black")).toBe("White to move");
+    expect(widgetLine(playing("White to move"), null)).toBe("White to move");
+    expect(widgetLine({ ...widget(1), waiting_on: [] }, "white")).toBe("Playing");
+  });
+
+  test("gives the result once over, with its reason", () => {
+    const over = (status: Widget["status"], outcome: Record<string, unknown>, text: string) => ({
+      ...widget(2, status),
+      outcome,
+      scene: { v: 1, status: { text, tone: "info" } },
+    });
+    expect(widgetLine(over("finished", { winner: "white" }, "Checkmate"), "white")).toBe("You won · Checkmate");
+    expect(widgetLine(over("finished", { winner: "white" }, "Checkmate"), "black")).toBe("You lost · Checkmate");
+    expect(widgetLine(over("finished", { winner: "white" }, "Checkmate"), null)).toBe("Alice won · Checkmate");
+    expect(widgetLine(over("finished", { winner: null }, "Draw"), "white")).toBe("Draw");
+    expect(widgetLine(over("aborted", { reason: "stopped" }, "A player ended it"), "black")).toBe(
+      "Ended · A player ended it",
+    );
   });
 });
 

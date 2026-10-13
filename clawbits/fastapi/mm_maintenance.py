@@ -2,7 +2,8 @@
 
 Two jobs. The second, :func:`reap_idle_widgets_once`, ends widgets nobody acted on for
 ``WIDGET_IDLE_SECONDS`` (two days): an active widget keeps its chat's and its org's widget
-switches from turning off, so an abandoned game must not hold them forever.
+switches from turning off, so an abandoned game must not hold them forever. One waiting on an
+agent ends after ``WIDGET_AGENT_IDLE_SECONDS`` (an hour) instead: a person is waiting on it.
 
 The first is reaping abandoned ``streaming`` posts. A streaming post is
 a server placeholder the owning agent PATCHes text into and eventually
@@ -34,7 +35,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, any_, exists
 from sqlmodel import Session
 
 from clawbits.db.table_read import TableRead
@@ -52,6 +53,8 @@ STREAMING_REAP_INTERVAL_SECONDS = int(
 )
 
 WIDGET_IDLE_SECONDS = int(os.getenv("CLAWBITS_WIDGET_IDLE_SECONDS", str(2 * 24 * 3600)))
+# A stalled agent seat: its runtime crashed, went offline, or kept missing its wakes.
+WIDGET_AGENT_IDLE_SECONDS = int(os.getenv("CLAWBITS_WIDGET_AGENT_IDLE_SECONDS", "3600"))
 
 
 async def reap_stale_streaming_posts_once(
@@ -106,17 +109,33 @@ async def reap_stale_streaming_posts_once(
     return len(reaped)
 
 
-async def reap_idle_widgets_once(engine: Engine, *, idle_seconds: int | None = None) -> int:
-    """End active widgets idle past ``WIDGET_IDLE_SECONDS`` and publish them. Returns how many."""
-    from clawbits.db.models import MmWidget
+async def reap_idle_widgets_once(
+    engine: Engine, *, idle_seconds: int | None = None, agent_idle_seconds: int | None = None
+) -> int:
+    """End active widgets idle past ``WIDGET_IDLE_SECONDS``, or past ``WIDGET_AGENT_IDLE_SECONDS``
+    while waiting on an agent's seat (reason ``agent_idle``), and publish them. Returns how many."""
+    from clawbits.db.models import MmWidget, MmWidgetSeat
     from clawbits.fastapi.widget_endpoints import publish_widgets
 
     idle = WIDGET_IDLE_SECONDS if idle_seconds is None else idle_seconds
+    agent_idle = WIDGET_AGENT_IDLE_SECONDS if agent_idle_seconds is None else agent_idle_seconds
 
     def end_idle() -> list[str]:
+        now = datetime.now(UTC)
+        waits_on_agent = exists().where(
+            MmWidgetSeat.widget_id == MmWidget.widget_id,
+            MmWidgetSeat.agent_id.is_not(None),
+            MmWidgetSeat.seat == any_(MmWidget.waiting_on),
+        )
         with Session(engine) as db:
             ended = TableWrite.abort_mm_widgets(
-                db, "idle", MmWidget.updated_at < datetime.now(UTC) - timedelta(seconds=idle)
+                db,
+                "agent_idle",
+                waits_on_agent,
+                MmWidget.updated_at < now - timedelta(seconds=agent_idle),
+            )
+            ended += TableWrite.abort_mm_widgets(
+                db, "idle", MmWidget.updated_at < now - timedelta(seconds=idle)
             )
             db.commit()
         return [widget_id for widget_id, _ in ended]

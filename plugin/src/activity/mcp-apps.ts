@@ -1,4 +1,6 @@
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { listClawBitsAccountIds, resolveClawBitsAccount } from "../accounts.js";
 import { logWarn } from "../file-logger.js";
 import type { McpApp } from "../tools/realtime.js";
 
@@ -7,15 +9,21 @@ type Logger = OpenClawPluginApi["logger"];
 
 const VIEW_TIMEOUT_MS = 10_000;
 
+/** Clawbits' own MCP server name and App resource prefix. */
+const OWN_SERVER = "clawbits";
+const OWN_RESOURCE_PREFIX = "ui://clawbits/";
+
 /** OpenClaw's handle on the App view a tool result rendered, held in the gateway for ten minutes. */
 export interface McpAppView {
   viewId: string;
   sessionKey: string;
   server: string;
+  /** The App's `ui://` resource, when OpenClaw names it. */
+  resource?: string;
 }
 
 interface McpAppPreview {
-  mcpApp?: { viewId?: unknown; originSessionKey?: unknown; serverName?: unknown };
+  mcpApp?: { viewId?: unknown; originSessionKey?: unknown; serverName?: unknown; uiResourceUri?: unknown };
 }
 
 interface McpAppViewResponse {
@@ -45,10 +53,36 @@ export function registerMcpApps(api: OpenClawPluginApi): void {
 
 export function mcpAppView(result: unknown): McpAppView | undefined {
   const app = (result as { details?: { mcpAppPreview?: McpAppPreview } } | undefined)?.details?.mcpAppPreview?.mcpApp;
-  const { viewId, originSessionKey, serverName } = app ?? {};
+  const { viewId, originSessionKey, serverName, uiResourceUri } = app ?? {};
   return typeof viewId === "string" && typeof originSessionKey === "string" && typeof serverName === "string"
-    ? { viewId, sessionKey: originSessionKey, server: serverName }
+    ? {
+        viewId,
+        sessionKey: originSessionKey,
+        server: serverName,
+        ...(typeof uiResourceUri === "string" ? { resource: uiResourceUri } : {}),
+      }
     : undefined;
+}
+
+function originOf(url: string | undefined): string | undefined {
+  try {
+    return url ? new URL(url).origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A view clawbits' own MCP server rendered: by name, `ui://clawbits/` resource, or a server URL on a
+ *  configured account endpoint's origin. It may show one seat's private game state, and a reply's steps
+ *  reach every chat member, so it is never captured. */
+export function isOwnMcpApp({ server, resource }: McpAppView): boolean {
+  if (server.toLowerCase() === OWN_SERVER || resource?.toLowerCase().startsWith(OWN_RESOURCE_PREFIX)) return true;
+  const cfg = runtime?.config.current() as OpenClawConfig | undefined;
+  const origin = originOf(cfg?.mcp?.servers?.[server]?.url);
+  if (!cfg || !origin) return false;
+  return listClawBitsAccountIds(cfg).some(
+    (accountId) => originOf(resolveClawBitsAccount({ cfg, accountId }).endpoint) === origin,
+  );
 }
 
 /** The view's document and call, read while the gateway still holds it; undefined when it no longer does.

@@ -596,6 +596,9 @@ export interface Widget {
   status: WidgetStatus;
   rev: number;
   turn: string | null;
+  /** Every seat the game waits on (both while fleets are placed or bets made), empty once over; an older server
+   *  sends none, and `turn` stands in. */
+  waiting_on?: string[];
   seats: WidgetSeat[];
   scene: WidgetScene;
   /** The scene is the viewer's own; a realtime event carries only the public one. */
@@ -631,7 +634,7 @@ export async function startWidget(channelId: string, kind: WidgetKindName, seat?
   return request<Widget>(channelUrl(channelId, "/widgets"), { ...json("POST", { kind, seat }), detail: true });
 }
 
-/** `expectedRev` is the rev the caller acted on; a newer one answers 409. */
+/** `expectedRev` is the rev the caller acted on; a newer one answers 409. A seated player's `end` skips that check. */
 export async function actOnWidget(widgetId: string, action: WidgetAction, expectedRev: number) {
   return request<Widget>(widgetUrl(widgetId, "/actions"), {
     ...json("POST", { action, expected_rev: expectedRev }),

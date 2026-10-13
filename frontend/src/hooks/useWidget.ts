@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   actOnWidget,
@@ -11,46 +11,6 @@ import { queryKeys } from "@/lib/queryKeys";
 import { openSseStream } from "@/lib/sse";
 import { errMsg, toast } from "@/lib/toast";
 import { applyWidget, applyWidgetEvent, freshActiveWidgets, freshWidget } from "@/lib/widgets";
-
-// The widgets whose board is on screen now, so the dock steps aside while the board itself is in view.
-const onScreen = new Set<string>();
-const onScreenListeners = new Set<() => void>();
-
-function setWidgetOnScreen(widgetId: string, shown: boolean): void {
-  if (onScreen.has(widgetId) === shown) return;
-  if (shown) onScreen.add(widgetId);
-  else onScreen.delete(widgetId);
-  for (const listener of onScreenListeners) listener();
-}
-
-/** Whether a widget's board is on screen now. */
-export function useWidgetOnScreen(widgetId: string): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      onScreenListeners.add(listener);
-      return () => { onScreenListeners.delete(listener); };
-    },
-    () => onScreen.has(widgetId),
-  );
-}
-
-/** A ref for the element that shows a widget's board, telling `useWidgetOnScreen` while most of it shows: half of
- *  it, or half the screen for a board taller than that. The glass header and composer don't count as showing. */
-export function useWidgetOnScreenRef(widgetId: string): (el: HTMLElement | null) => (() => void) | undefined {
-  return useCallback((el: HTMLElement | null) => {
-    if (!el) return undefined;
-    const observer = new IntersectionObserver(([entry]) => {
-      if (!entry) return;
-      const whole = Math.min(entry.boundingClientRect.height, entry.rootBounds?.height ?? window.innerHeight);
-      setWidgetOnScreen(widgetId, entry.isIntersecting && entry.intersectionRect.height >= whole / 2);
-    }, { rootMargin: "-64px 0px -160px 0px", threshold: Array.from({ length: 11 }, (_, i) => i / 10) });
-    observer.observe(el);
-    return () => {
-      observer.disconnect();
-      setWidgetOnScreen(widgetId, false);
-    };
-  }, [widgetId]);
-}
 
 /** One widget; `widget.updated` keeps it live, so no polling. A slow answer never undoes a newer rev an event brought
  *  while it was out. */
@@ -86,7 +46,7 @@ export function useWidgetLive(widgetId: string, channelId: string | undefined) {
   }, [qc, widgetId, channelId]);
 }
 
-/** The chat's active widget, if any (the server allows one), for the dock. */
+/** The chat's active widget, if any (the server allows one), for its game panel. */
 export function useActiveWidgets(channelId: string, enabled: boolean) {
   const qc = useQueryClient();
   return useQuery({

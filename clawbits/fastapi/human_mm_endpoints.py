@@ -564,7 +564,8 @@ async def patch_channel(
     user: dict = Depends(get_current_human_user),
 ):
     """Rename a named chat, or flip a one-to-one chat's widgets switch. The switch turns off only
-    while no widget is active in the chat (409), and only in a chat between people for now."""
+    while no widget is active in the chat (409), and only in a one-to-one chat for now: a DM
+    between people, or a person's DM or agent chat with an agent."""
     def save() -> tuple[dict, list[int]]:
         with _get_db(request) as db:
             _require_human_member(db, channel_id, user["id"])
@@ -583,7 +584,7 @@ async def patch_channel(
                 if not row.display_name:
                     raise HTTPException(status_code=400, detail="Name is required")
             if body.widgets_enabled is not None:
-                if row.channel_type != "direct" or TableRead.dm_agent_peer(db, channel_id):
+                if row.channel_type not in PAIR_CHANNEL_TYPES:
                     raise HTTPException(
                         status_code=400,
                         detail="Widgets run in one-to-one chats between people for now",
@@ -764,10 +765,23 @@ def remove_member(
                     detail="Cannot remove the other party from a direct message channel",
                 )
             _require_channel_admin(db, channel, user["id"], "remove other members")
+        # Locked as starting a widget locks it: a game can't begin seating someone who is leaving.
+        TableWrite.lock_mm_channel(db, channel_id)
         if removed_human_id is not None:
             TableWrite.remove_mm_channel_member_human(db, channel_id, removed_human_id)
         else:
             TableWrite.remove_mm_channel_member(db, channel_id, member_id)
+        # A player who left can't finish: the game here ends for the others.
+        ended_widget_ids = [
+            widget_id
+            for widget_id, _ in TableWrite.abort_mm_widgets_seating(
+                db,
+                reason="left",
+                channel_id=channel_id,
+                human_id=removed_human_id,
+                agent_id=removed_agent_id,
+            )
+        ]
 
         members = TableRead.get_mm_channel_members(db, channel_id)
         remaining_human_ids = [m["human_id"] for m in members if m["human_id"] is not None]
@@ -778,6 +792,7 @@ def remove_member(
             orphaned_agent_ids = [m["agent_id"] for m in members if m["agent_id"] is not None]
             TableWrite.delete_mm_channel(db, channel_id)
             members = []
+            ended_widget_ids = []  # gone with the channel: no one is left to tell
         else:
             event = _record_channel_event(
                 db, channel_id, "member.removed",
@@ -803,6 +818,10 @@ def remove_member(
         fire_and_forget(
             publish_channel_event(bus, channel_id, event, member_human_ids=remaining_human_ids)
         )
+    if ended_widget_ids:
+        from clawbits.fastapi.widget_endpoints import publish_widgets  # it imports this module
+
+        fire_and_forget(publish_widgets(request.app._engine, ended_widget_ids))
     return MmChannelMembersListResponse(
         members=[MmChannelMemberResponse(**m) for m in members],
         total=len(members),

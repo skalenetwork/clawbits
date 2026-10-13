@@ -23,7 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Column as SAColumn
 from sqlalchemy import DateTime as SADateTime
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.sql import func
 from sqlmodel import Field, SQLModel
 
@@ -139,6 +139,18 @@ class Agent(SQLModel, table=True):
     plugin_version: str | None = None
     model: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
     thinking: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
+    # "Can play games": the operator's (or an org owner's) consent to the agent taking a widget
+    # seat. Off by default; switching it off ends the agent's active games.
+    widgets_enabled: bool = Field(
+        default=False,
+        sa_column=SAColumn(Boolean, nullable=False, server_default=false()),
+    )
+    # What the runtime said it can do on its last liveness ping (``widgets``, ...). Every ping
+    # restates the whole set, so a downgraded plugin can't keep a capability it no longer has.
+    capabilities: list[str] = Field(
+        default_factory=list,
+        sa_column=SAColumn(ARRAY(Text), nullable=False, server_default="{}"),
+    )
 
 
 class ShareRecord(SQLModel, table=True):
@@ -1803,8 +1815,9 @@ class MmWidget(SQLModel, table=True):
 
     ``state`` belongs to the kind (``clawbits.widgets``) and changes only through a validated
     action; each one bumps ``rev``, so a client acting on a stale board gets a 409 instead of
-    overwriting. ``turn`` is the seat expected to act, kept here so "your move" is one indexed
-    read. At most one ``active`` widget per channel. The post that shows it carries
+    overwriting. ``turn`` is the seat expected to act and ``waiting_on`` every seat the widget
+    waits on (both fleets in setup), kept here so "your move" is one indexed read; both clear once
+    it ends. At most one ``active`` widget per channel. The post that shows it carries
     ``mm_posts.widget_id``.
     """
 
@@ -1828,7 +1841,17 @@ class MmWidget(SQLModel, table=True):
     kind: str = Field(nullable=False)
     status: str = Field(default="active", nullable=False)
     turn: str | None = None
+    waiting_on: list[str] = Field(
+        default_factory=list,
+        sa_column=SAColumn(ARRAY(Text), nullable=False, server_default="{}"),
+    )
     rev: int = Field(default=0, nullable=False)
+    # ``{seat: rev}``: the rev at which each seat last acted or the move came to it. A person's
+    # action on an older board is still taken when neither happened since that board.
+    acted_revs: dict[str, int] = Field(
+        default_factory=dict,
+        sa_column=SAColumn(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
     state: dict[str, Any] = Field(sa_column=SAColumn(JSONB, nullable=False))
     outcome: dict[str, Any] | None = Field(default=None, sa_column=SAColumn(JSONB, nullable=True))
     created_by_human_id: int | None = Field(default=None, foreign_key="human_users.id")
@@ -1845,6 +1868,7 @@ class MmWidgetSeat(SQLModel, table=True):
             "(human_id IS NULL) <> (agent_id IS NULL)", name="mm_widget_seats_participant_check"
         ),
         Index("ix_mm_widget_seats_human_id", "human_id"),
+        Index("ix_mm_widget_seats_agent_id", "agent_id"),
     )
 
     widget_id: str = Field(

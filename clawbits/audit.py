@@ -43,6 +43,7 @@ AGENT_DELETED = "agent.deleted"
 AGENT_SIGNUP_APPROVED = "agent.signup_request.approved"
 AGENT_SIGNUP_REJECTED = "agent.signup_request.rejected"
 AGENT_API_KEY_ROTATED = "agent.api_key_rotated"
+AGENT_WIDGETS_UPDATED = "agent.widgets_updated"
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +237,27 @@ def widgets_updated(
             "enabled": "" if enabled is None else ("true" if enabled else "false"),
             "ended": "" if ended is None else str(ended),
         },
+    )
+
+
+def agent_widgets_updated(
+    request: Request,
+    *,
+    actor_user: dict,
+    workos_org_id: str,
+    agent_id: str,
+    enabled: bool,
+    ended: int,
+) -> None:
+    """An agent's "Can play games" setting was written by its operator or an org owner, and how
+    many of its active games that ended."""
+    _emit(
+        request,
+        action=AGENT_WIDGETS_UPDATED,
+        organization_id=workos_org_id,
+        actor=_user_actor(actor_user),
+        target=AuditLogEventTarget(id=agent_id, name=agent_id, type="agent"),
+        metadata={"enabled": "true" if enabled else "false", "ended": str(ended)},
     )
 
 

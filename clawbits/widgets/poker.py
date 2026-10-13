@@ -290,6 +290,11 @@ class Poker:
             return _other(state["button"])  # the next hand's dealer, first to act in it
         return state["to_act"]
 
+    def waiting_on(self, state: dict[str, Any]) -> tuple[str, ...]:
+        # Either seat may deal after a showdown, but only the next dealer is waited on, as in turn().
+        seat = self.turn(state)
+        return (seat,) if seat else ()
+
     def act(self, state: dict[str, Any], seat: str, action: dict[str, Any]) -> Step:
         kind = action.get("type")
         args = action.get("args") or {}

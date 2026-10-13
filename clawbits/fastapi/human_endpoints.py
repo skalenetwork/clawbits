@@ -617,17 +617,29 @@ async def remove_agent_from_org(
             logger.info("No Reef repository for %s, left %s/%s behind", org_id, *placement)
             return None
 
-    def delete(db: Session) -> list[dict]:
+    def delete(db: Session) -> tuple[list[dict], list[dict]]:
+        # The games it's still playing end with it, read as ended before a full delete takes its
+        # DMs (and their games) along; the other players hear it once this commits.
+        ended_widgets = [
+            widget
+            for widget_id, _ in TableWrite.abort_mm_widgets_seating(db, reason="left", agent_id=agent_id)
+            if (widget := TableRead.get_mm_widget(db, widget_id))
+        ]
         departures = TableWrite.delete_agent(
             db, agent_id, keep_content=keep_content, actor_human_id=user["id"]
         )
         db.commit()
-        return departures
+        return departures, ended_widgets
 
     if target := await _in_db(request, locate):
         repo, host, name = target
         await _purge(repo, org_id, host, name, user)
-    departures = await _in_db(request, delete)
+    departures, ended_widgets = await _in_db(request, delete)
+    from clawbits.fastapi.widget_endpoints import publish_widget  # it imports this module
+
+    # Published as read before the delete: a game whose DM went with the agent can't be reloaded.
+    for widget in ended_widgets:
+        fire_and_forget(publish_widget(get_bus(), widget))
     for departure in departures:
         fire_and_forget(
             publish_channel_event(
@@ -686,6 +698,8 @@ class UpdateAgentSettingsRequest(BaseModel):
     lobstertalk_ollama_model: str | None = Field(default=None, max_length=100)
     lobstertalk_interval_seconds: int | None = Field(default=None, ge=15, le=3600)
     lobstertalk_message_limit: int | None = Field(default=None, ge=10, le=200)
+    # "Can play games". The one setting an org owner may change too; off ends the agent's games.
+    widgets_enabled: bool | None = None
 
 
 def _agent_settings(row: Agent) -> dict:
@@ -927,11 +941,15 @@ def update_agent_settings(
     request: Request,
     user: dict = Depends(get_current_human_user),
 ):
-    """Update an agent's operator-controlled settings. Operator-only. The Ollama
-    host and model clear on an explicit null or empty string, so a field's
-    presence in the body matters, not only a non-null value."""
+    """Update an agent's operator-controlled settings. Operator-only, except that an org owner may
+    also switch ``widgets_enabled`` ("Can play games") alone; switching it off ends the agent's
+    active games, and either way is audited. The Ollama host and model clear on an explicit null
+    or empty string, so a field's presence in the body matters, not only a non-null value."""
     with _get_db(request) as db:
-        _require_agent_operator(db, org_id, agent_id, user, "change these settings")
+        if body.model_fields_set == {"widgets_enabled"}:
+            _require_operator_or_admin(db, org_id, agent_id, user, "change whether it plays games")
+        else:
+            _require_agent_operator(db, org_id, agent_id, user, "change these settings")
         clears = {"lobstertalk_ollama_host", "lobstertalk_ollama_model"} & body.model_fields_set
         if not clears and not body.model_dump(exclude_none=True):
             raise HTTPException(status_code=400, detail="No settings provided")
@@ -951,11 +969,37 @@ def update_agent_settings(
             clear_lobstertalk_ollama_model="lobstertalk_ollama_model" in clears and ollama_model is None,
             lobstertalk_interval_seconds=body.lobstertalk_interval_seconds,
             lobstertalk_message_limit=body.lobstertalk_message_limit,
+            widgets_enabled=body.widgets_enabled,
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Agent not found")
+        ended: list[str] = []
+        if body.widgets_enabled is False:
+            # Its games end with its consent. The update above holds the agent row, so a game
+            # starting meanwhile waits for it and ends here too.
+            ended = [
+                widget_id
+                for widget_id, _ in TableWrite.abort_mm_widgets_seating(
+                    db, reason="games_off", agent_id=agent_id
+                )
+            ]
         db.commit()
-        return {"agent_id": agent_id, **_agent_settings(updated)}
+        settings = {"agent_id": agent_id, **_agent_settings(updated)}
+        org = TableRead.get_organization(db, org_id) if body.widgets_enabled is not None else None
+    if ended:
+        from clawbits.fastapi.widget_endpoints import publish_widgets  # it imports this module
+
+        fire_and_forget(publish_widgets(request.app._engine, ended))
+    if body.widgets_enabled is not None:
+        audit.agent_widgets_updated(
+            request,
+            actor_user=user,
+            workos_org_id=(org or {}).get("workos_org_id", ""),
+            agent_id=agent_id,
+            enabled=body.widgets_enabled,
+            ended=len(ended),
+        )
+    return settings
 
 
 @human_router.patch("/api/human/orgs/{org_id}/agents/{agent_id}/name")

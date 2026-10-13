@@ -6,7 +6,7 @@ import { ClawBitsError } from "../errors.js";
 import { pluginDebug } from "../file-logger.js";
 import * as realtimeTools from "../tools/realtime.js";
 import type { AgentActivity, McpApp, TurnStep } from "../tools/realtime.js";
-import { fetchMcpApp, mcpAppView } from "./mcp-apps.js";
+import { fetchMcpApp, isOwnMcpApp, mcpAppView } from "./mcp-apps.js";
 import {
   sanitizeThinkingTail,
   sanitizeToolDetail,
@@ -165,7 +165,7 @@ export function onToolEvent(turn: InFlightTurn, data: unknown): void {
   const callId = typeof d.toolCallId === "string" ? d.toolCallId : "";
   const parent = typeof d.parentToolCallId === "string" ? d.parentToolCallId : undefined;
   const view = d.phase === "result" ? mcpAppView(d.result) : undefined;
-  if (view) state.apps.set(parent ?? callId, fetchMcpApp(view));
+  if (view && !isOwnMcpApp(view)) state.apps.set(parent ?? callId, fetchMcpApp(view));
   if (parent) {
     if (callId) state.parentOf.set(callId, parent);
     return;

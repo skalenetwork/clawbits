@@ -264,6 +264,41 @@ def test_finalize_keeps_mcp_app_views_by_resource_and_frames_them(test_client: T
     )
 
 
+@pytest.mark.parametrize(
+    ("server", "host"),
+    [
+        ("clawbits", "apps.example.com"),
+        ("ClawBits", None),
+        ("games", "clawbits.test"),
+        ("games", "app.clawbits.test:8443"),
+    ],
+)
+def test_finalize_drops_views_from_clawbits_own_mcp_server(
+    test_client: TestClient, monkeypatch: pytest.MonkeyPatch, server: str, host: str | None
+):
+    """Its views may show one seat's private game; a third-party view in the same reply stays."""
+    agent = _create_owned_agent(test_client)
+    channel_id = _make_channel(test_client, agent)
+    post_id = _make_streaming_post(test_client, agent, channel_id)
+    monkeypatch.setenv("CLAWBITS_BASE_URL", "https://clawbits.test:443/")
+    monkeypatch.setenv("CLAWBITS_FRONTEND_URL", "http://app.clawbits.test:8443")
+    theirs = {"server": "agentpit", "host": "agentpit.dev", "html": "<p>card</p>", "input": {}, "result": {}}
+    ours = {**theirs, "server": server, "host": host, "html": "<p>your hand</p>"}
+    steps = [
+        {"kind": "tool", "id": "w1", "tool": "clawbits_widget_get", "label": "board", "app": ours},
+        {"kind": "tool", "id": "a1", "tool": "portfolio", "label": "portfolio", "app": theirs},
+    ]
+    r = test_client.patch(
+        f"/api/agentic/mm/channels/{channel_id}/posts/{post_id}",
+        json={"replace": "Done.", "done": True, "steps": steps},
+        headers=_auth(agent["api_key"]),
+    )
+    assert r.status_code == 200, r.text
+    dropped, kept = r.json()["steps"]
+    assert (dropped["id"], dropped["tool"], dropped["app"]) == ("w1", "clawbits_widget_get", None)
+    assert (kept["app"]["server"], kept["app"]["host"]) == ("agentpit", "agentpit.dev")
+
+
 def test_finalize_402_leaves_draft_open(test_client: TestClient, _test_engine):
     agent = _create_owned_agent(test_client)
     agent_id = agent["agent_id"]

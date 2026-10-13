@@ -3,7 +3,18 @@ import { QueryClient } from "@tanstack/react-query";
 
 import type { Widget } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
-import { applyWidget, boardsBySeat, endOf, notesOf, resultOf, seatOf } from "@/lib/widgets";
+import {
+  applyWidget,
+  boardsBySeat,
+  endOf,
+  notesOf,
+  panelGameOf,
+  resultOf,
+  seatOf,
+  statusOf,
+  waitingOn,
+  waitsOn,
+} from "@/lib/widgets";
 
 const widget = (over: Partial<Widget> = {}): Widget => ({
   widget_id: "w1",
@@ -99,5 +110,53 @@ describe("resultOf", () => {
     expect(resultOf(over, null)).toEqual({ end: "finished", headline: "Alice won" });
     expect(resultOf(widget({ status: "aborted", outcome: { reason: "idle" } }), "white")?.headline).toBe("Ended");
     expect(resultOf(widget(), "white")).toBeNull();
+  });
+});
+
+describe("waitingOn", () => {
+  it("waits on the seats the server lists, the turn alone where it lists none, and nobody once over", () => {
+    const setup = widget({ turn: "white", waiting_on: ["white", "black"] });
+    expect(waitingOn(setup)).toEqual(["white", "black"]);
+    expect(waitsOn(setup, "black")).toBe(true);
+    // An older server: the turn stands in.
+    expect(waitingOn(widget({ turn: "black" }))).toEqual(["black"]);
+    expect(waitsOn(widget({ turn: "black" }), "white")).toBe(false);
+    expect(waitsOn(widget({ turn: "black" }), null)).toBe(false);
+    expect(waitingOn(widget({ turn: null }))).toEqual([]);
+    expect(waitingOn(widget({ status: "finished", turn: "white", waiting_on: ["white"] }))).toEqual([]);
+  });
+});
+
+describe("statusOf", () => {
+  it("says the scene's status while the game runs, and how it ended and why once over", () => {
+    const scene = { v: 1, status: { text: "White to move", tone: "neutral" } };
+    expect(statusOf(widget({ scene }), "white")).toBe("White to move");
+    const stopped = { v: 1, status: { text: "A player ended it", tone: "neutral" } };
+    expect(statusOf(widget({ status: "aborted", outcome: { reason: "stopped" }, scene: stopped }), "white"))
+      .toBe("Ended · A player ended it");
+    // A reason that only repeats the headline is said once.
+    const drawn = { v: 1, status: { text: "Draw", tone: "neutral" } };
+    expect(statusOf(widget({ status: "finished", outcome: { winner: null }, scene: drawn }), "white")).toBe("Draw");
+    expect(statusOf(widget({ status: "aborted", outcome: { reason: "stopped" } }), "white")).toBe("Ended");
+    expect(statusOf(widget(), "white")).toBe("");
+  });
+});
+
+describe("panelGameOf", () => {
+  const none = { picked: null, active: null, posted: null, lastActive: null };
+  it("shows the running game, else the latest posted, else the one last seen running", () => {
+    expect(panelGameOf(none)).toBeNull();
+    expect(panelGameOf({ ...none, active: "w2", posted: "w2", lastActive: "w2" })).toBe("w2");
+    // Ended, its message loaded: it stays as its strip.
+    expect(panelGameOf({ ...none, posted: "w2", lastActive: "w2" })).toBe("w2");
+    // Ended with its message too far back to be loaded: the game last seen running keeps its result in view.
+    expect(panelGameOf({ ...none, lastActive: "w2" })).toBe("w2");
+  });
+
+  it("shows a game picked from the chat over the running one, until another game starts", () => {
+    const picked = { widgetId: "w1", over: "w2" };
+    expect(panelGameOf({ ...none, picked, active: "w2", posted: "w2" })).toBe("w1");
+    expect(panelGameOf({ ...none, picked, active: "w3", posted: "w3" })).toBe("w3");
+    expect(panelGameOf({ ...none, picked: { widgetId: "w1", over: null }, posted: "w2" })).toBe("w1");
   });
 });

@@ -297,6 +297,11 @@ class Blackjack:
         waiting = [seat for seat in SEATS if seat not in state["placed"]]
         return waiting[0] if len(waiting) == 1 else None
 
+    def waiting_on(self, state: dict[str, Any]) -> tuple[str, ...]:
+        if state["phase"] == "playing":
+            return (state["to_act"],) if state["to_act"] else ()
+        return tuple(seat for seat in SEATS if seat not in state["placed"])
+
     def act(self, state: dict[str, Any], seat: str, action: dict[str, Any]) -> Step:
         kind = action.get("type")
         args = action.get("args") or {}

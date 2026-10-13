@@ -6,7 +6,9 @@ from typing import Any, Literal, Protocol
 
 WidgetStatus = Literal["active", "finished", "aborted"]
 # Why the server ended a widget for its players; kinds render these in their scene.
-AbortReason = Literal["aborted", "idle", "left", "ended", "host_deleted"]
+AbortReason = Literal[
+    "aborted", "idle", "left", "ended", "host_deleted", "stopped", "agent_idle", "games_off"
+]
 
 ABORT_TEXT: dict[str, str] = {
     # Why a widget ended early, the reason alone: clients say that it ended.
@@ -15,6 +17,11 @@ ABORT_TEXT: dict[str, str] = {
     "left": "A player left",
     "ended": "An organization admin ended it",
     "host_deleted": "Its message was deleted",
+    "stopped": "A player ended it",
+    # The agent seat stopped answering: the idle reaper's own reason for agents.
+    "agent_idle": "The agent stopped responding",
+    # The agent's "Can play games" setting was switched off.
+    "games_off": "The agent's games were switched off",
 }
 
 
@@ -49,6 +56,11 @@ class WidgetKind(Protocol):
 
     def turn(self, state: dict[str, Any]) -> str | None:
         """The seat expected to act next while active, ``None`` when no one is."""
+        ...
+
+    def waiting_on(self, state: dict[str, Any]) -> tuple[str, ...]:
+        """Every seat the widget waits on while active, in seat order; ``turn`` is always one of
+        them. More than one while seats act at once (fleets placed, bets made)."""
         ...
 
     def act(self, state: dict[str, Any], seat: str, action: dict[str, Any]) -> Step:

@@ -318,6 +318,8 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `plugin_version` | `VARCHAR` | — |
 | `model` | `TEXT` | — |
 | `thinking` | `TEXT` | — |
+| `widgets_enabled` | `BOOLEAN` | NOT NULL, default `false` |
+| `capabilities` | `TEXT[]` | NOT NULL, default `{}` |
 
 ## automation_runs
 
@@ -639,7 +641,9 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `kind` | `VARCHAR` | NOT NULL |
 | `status` | `VARCHAR` | NOT NULL |
 | `turn` | `VARCHAR` | — |
+| `waiting_on` | `TEXT[]` | NOT NULL, default `{}` |
 | `rev` | `INTEGER` | NOT NULL |
+| `acted_revs` | `JSONB` | NOT NULL, default `'{}'::jsonb` |
 | `state` | `JSONB` | NOT NULL |
 | `outcome` | `JSONB` | — |
 | `created_by_human_id` | `INTEGER` | → `human_users.id` |

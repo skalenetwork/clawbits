@@ -403,10 +403,42 @@ async def publish_widget_updated(bus: EventBus, channel_id: str, widget: dict[st
     await bus.publish(channel_topic(channel_id), _envelope("widget.updated", channel_id, widget))
 
 
-async def publish_widget_turn(bus: EventBus, human_id: int, channel_id: str, my_turn: bool) -> None:
-    """Whether a widget in ``channel_id`` now waits on this human: the sidebar's quiet "your move"."""
+async def publish_widget_turn(
+    bus: EventBus, human_id: int, widget: dict[str, Any], my_turn: bool
+) -> None:
+    """Whether ``widget`` (its response dict) now waits on this human: the sidebar's quiet "your
+    move". Its id and ``rev`` ride along so a client can drop an event older than one it applied."""
     await bus.publish(
-        human_topic(human_id), _envelope("widget.turn", channel_id, {"my_turn": my_turn})
+        human_topic(human_id),
+        _envelope(
+            "widget.turn",
+            widget["channel_id"],
+            {"my_turn": my_turn, "widget_id": widget["widget_id"], "rev": widget["rev"]},
+        ),
+    )
+
+
+async def publish_agent_widget_turn(
+    bus: EventBus, agent_id: str, widget: dict[str, Any], seat: str, waiting: bool
+) -> int | None:
+    """Wake a live agent WebSocket: ``widget`` (its response dict) changed, and whether it now
+    waits on the agent's ``seat``. Ids only, never a scene: the agent reads its view over REST.
+    Returns the subscriber count (``None`` on failure): ``0`` means no live agent socket heard
+    it, and the agent catches up from its channel list's ``widget_waiting``."""
+    return await bus.publish(
+        agent_topic(agent_id),
+        _envelope(
+            "widget.turn",
+            widget["channel_id"],
+            {
+                "widget_id": widget["widget_id"],
+                "rev": widget["rev"],
+                "kind": widget["kind"],
+                "seat": seat,
+                "waiting": waiting,
+                "status": widget["status"],
+            },
+        ),
     )
 
 

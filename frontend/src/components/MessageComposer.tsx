@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
   type Ref,
   type RefObject,
 } from "react";
@@ -112,8 +111,6 @@ interface MessageComposerProps {
   agentDm: boolean;
   onTyping: () => void;
   placeholder?: string;
-  /** Sits above the input and moves with it: the chat's active widget. */
-  dock?: ReactNode;
   /** Starts a game; absent where widgets can't start. */
   onStartWidget?: (kind: WidgetKindName) => void;
 }
@@ -256,7 +253,6 @@ export function MessageComposer({
   agentDm,
   onTyping,
   placeholder,
-  dock,
   onStartWidget,
 }: MessageComposerProps) {
   const mentions = use(MentionsContext);
@@ -542,7 +538,6 @@ export function MessageComposer({
         {popover?.kind === "emoji" && (
           <EmojiShortcodePopover options={emojiOptions} activeIndex={activeIndex} onSelect={complete}/>
         )}
-        {dock}
         <TypingRow people={activityPeople}/>
         <form
           data-stacked={stacked ? "" : undefined}

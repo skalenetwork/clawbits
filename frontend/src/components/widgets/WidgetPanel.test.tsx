@@ -140,7 +140,7 @@ describe("WidgetPanel actions", () => {
     const widget = chess([{ type: "call", label: "Call 980 · all-in" }]);
     const { unmount } = panel(widget);
     expect(screen.getByRole("button", { name: "Call 980 · all-in" })).toHaveTextContent("980");
-    // Named for a screen reader; the dock's glyph names it on screen.
+    // Named for a screen reader; the game panel's header names it on screen.
     expect(screen.getByRole("region", { name: "Chess" })).toBeInTheDocument();
     expect(screen.queryByText("Chess")).toBeNull();
     expect(screen.queryByRole("img", { name: "Chess" })).toBeNull();

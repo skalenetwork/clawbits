@@ -298,6 +298,7 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
       } else if (incoming.type === "widget.updated") {
         applyWidgetEvent(client, incoming.data);
       } else if (incoming.type === "widget.turn") {
+        // The inbox's "your move" is the server's, from what each game waits on.
         void client.invalidateQueries({ queryKey: ["channels"] });
       } else if (incoming.type === "channel.widgets") {
         void client.invalidateQueries({ queryKey: ["channel", incoming.channel_id] });
@@ -403,7 +404,7 @@ export function useWidget(id: string) {
   });
 }
 
-/** The chat's active widget, if any (the server allows one), for the dock. */
+/** The chat's active widget, if any (the server allows one), for the game bar. */
 export function useActiveWidgets(channel: string, enabled: boolean) {
   const { session } = useSession();
   const client = useQueryClient();

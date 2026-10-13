@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from clawbits.datastructures.avatar_models import AvatarRef
 from clawbits.widgets import WidgetKindName, WidgetStatus
 
 WIDGET_ACTION_ARGS_MAX_CHARS = 1024
@@ -37,11 +38,21 @@ class WidgetActionRequest(BaseModel):
     expected_rev: int = Field(ge=0, description="The rev the caller acted on; any other is a 409")
 
 
+class AgentWidgetActionRequest(WidgetAction):
+    """An agent's action. ``rev``, when given, must be the current one; without it nothing is
+    checked, since an agent acts on the view it just read."""
+
+    rev: int | None = Field(default=None, ge=0, description="The rev the agent decided on")
+
+
 class WidgetSeatResponse(BaseModel):
     seat: str
     human_id: int | None = None
     agent_id: str | None = None
+    # A person's name, or an agent's display name (never its id unless that's all it has).
     display_name: str | None = None
+    is_agent: bool = False
+    avatar: AvatarRef | None = None
 
 
 class WidgetResponse(BaseModel):
@@ -51,6 +62,8 @@ class WidgetResponse(BaseModel):
     status: WidgetStatus
     rev: int
     turn: str | None = None
+    # Every seat the widget waits on, ``turn`` among them; empty once it ends. "Your move" reads this.
+    waiting_on: list[str] = []
     seats: list[WidgetSeatResponse]
     scene: dict[str, Any]
     # The scene depends on who asks: a realtime event carries the public one, so a client refetches its own.
@@ -79,3 +92,82 @@ class OrgWidgetsResponse(BaseModel):
 
 class EndActiveWidgetsResponse(BaseModel):
     ended: int
+
+
+class AgentWidgetPlayer(BaseModel):
+    seat: str
+    # "You" for the reader's own seat; another's name cleaned to one short line.
+    name: str
+    type: Literal["human", "agent"]
+
+
+class AgentWidgetView(BaseModel):
+    """A widget as an agent reads it (:mod:`clawbits.widgets.brief`): only ever built from the
+    scene its own seat, or anyone, may see."""
+
+    widget_id: str
+    channel_id: str
+    kind: str
+    status: WidgetStatus
+    rev: int
+    seat: str | None = None
+    waiting_on: list[str] = []
+    your_move: bool = False
+    players: list[AgentWidgetPlayer]
+    # The board and what it means, in plain text; names and log lines in a delimited untrusted block.
+    text: str
+    # ``{type, args}`` to send as is, or ``{type, args_spec: {arg, min, max, step}}`` for an amount.
+    legal: list[dict[str, Any]]
+    # How this agent's runtime takes the move, and that a move turn ends with NO_REPLY.
+    instructions: str
+    outcome: dict[str, Any] | None = None
+
+
+class AgentWidgetOpponent(BaseModel):
+    name: str
+    type: Literal["human", "agent"]
+
+
+class AgentWidgetSummary(BaseModel):
+    widget_id: str
+    channel_id: str
+    kind: str
+    status: WidgetStatus
+    rev: int
+    seat: str | None = None
+    waiting_on: list[str] = []
+    your_move: bool = False
+    opponent: AgentWidgetOpponent | None = None
+
+
+class AgentWidgetListResponse(BaseModel):
+    widgets: list[AgentWidgetSummary]
+
+
+# Why an agent's action was refused: the game's rules, said as a 200 so a turn can carry on.
+AgentWidgetRefusal = Literal[
+    "stale_rev",
+    "not_your_turn",
+    "illegal_action",
+    "ended",
+    "no_seat",
+    "widgets_off",
+    "forbidden",
+    "kind_unavailable",
+    "rate_limited",
+]
+
+
+class AgentWidgetActed(BaseModel):
+    ok: Literal[True] = True
+    compact: str = Field(description="One line, e.g. 'ok · rev 16 · waiting on Alice'")
+    your_move: bool
+    # Only while it's still the agent's move, so it can go on without another read.
+    view: AgentWidgetView | None = None
+
+
+class AgentWidgetRefused(BaseModel):
+    ok: Literal[False] = False
+    code: AgentWidgetRefusal
+    message: str
+    view: AgentWidgetView

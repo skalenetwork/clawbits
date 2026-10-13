@@ -458,3 +458,106 @@ def test_blackjack_keeps_the_hole_card_down_until_the_dealer_plays(test_client, 
     widget = _act(test_client, alice, as_alice, {"type": "stand"}).json()
     widget = _act(test_client, bob, widget, {"type": "stand"}).json()
     assert dealer(widget) == ["Td", "8c"] and widget["scene"]["log"][-1] == "Round 2."
+
+
+def _widget_turns(fake: _FakeBus, count: int) -> list[tuple[str, dict]]:
+    """The ``widget.turn`` events published, as (topic, event), once ``count`` of them have arrived."""
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        turns = [(topic, e) for topic, e in fake.published if e["type"] == "widget.turn"]
+        if len(turns) >= count:
+            return turns
+        time.sleep(0.01)
+    return turns
+
+
+def _start_battleship(tc: TestClient, who: dict, channel_id: str) -> dict:
+    """A battleship game, ``who`` playing Red, fleets still being placed."""
+    r = tc.post(
+        f"/api/human/mm/channels/{channel_id}/widgets",
+        json={"kind": "battleship", "seat": "red"},
+        headers=auth_headers(who["access_token"]),
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _switched_on(tc: TestClient, prefix: str) -> tuple[dict, dict, str, str]:
+    """:func:`_setup` with both switches on."""
+    alice, bob, org_id, channel_id = _setup(tc, prefix)
+    assert _switch_org(tc, alice, org_id, True).status_code == 200
+    assert _switch_chat(tc, alice, channel_id, True).status_code == 200
+    return alice, bob, org_id, channel_id
+
+
+def test_battleship_setup_is_both_players_move(test_client, monkeypatch):
+    from clawbits.realtime import bus as bus_module
+    from clawbits.realtime.bus import human_topic
+
+    alice, bob, _, channel_id = _switched_on(test_client, "wbsturn")
+    fake = _FakeBus()
+    monkeypatch.setattr(bus_module, "_bus", fake)
+    widget = _start_battleship(test_client, alice, channel_id)
+    red, blue = human_topic(alice["user"]["id"]), human_topic(bob["user"]["id"])
+    assert (widget["turn"], widget["waiting_on"]) == (None, ["red", "blue"])
+    turns = _widget_turns(fake, 2)
+    assert sorted((topic, e["data"]["my_turn"]) for topic, e in turns) == sorted([(red, True), (blue, True)])
+    fake.published.clear()
+    widget = _act(test_client, alice, widget, {"type": "ready"}).json()
+    assert (widget["turn"], widget["waiting_on"]) == (None, ["blue"])
+    turns = _widget_turns(fake, 2)
+    assert sorted((topic, e["data"]["my_turn"]) for topic, e in turns) == sorted([(red, False), (blue, True)])
+    fake.published.clear()
+    widget = _act(test_client, alice, widget, {"type": "abort"}).json()
+    assert (widget["status"], widget["turn"], widget["waiting_on"]) == ("aborted", None, [])
+    assert {e["data"]["my_turn"] for _, e in _widget_turns(fake, 2)} == {False}
+
+
+def test_sidebar_marks_both_players_during_setup(test_client):
+    alice, bob, org_id, channel_id = _switched_on(test_client, "wbsside")
+    widget = _start_battleship(test_client, alice, channel_id)
+
+    def waiting(who: dict) -> bool:
+        channels = test_client.get(
+            f"/api/human/mm/channels?org_id={org_id}", headers=auth_headers(who["access_token"])
+        ).json()["channels"]
+        return next(c for c in channels if c["channel_id"] == channel_id)["widget_turn"]
+
+    assert (waiting(alice), waiting(bob)) == (True, True)
+    widget = _act(test_client, bob, widget, {"type": "ready"}).json()
+    assert (waiting(alice), waiting(bob)) == (True, False)
+    widget = _act(test_client, alice, widget, {"type": "ready"}).json()
+    assert (widget["turn"], widget["waiting_on"]) == ("red", ["red"])
+    assert (waiting(alice), waiting(bob)) == (True, False)
+
+
+def test_widget_turn_names_the_widget_and_its_rev(test_client, monkeypatch):
+    from clawbits.realtime import bus as bus_module
+
+    alice, _, _, channel_id, widget = _game(test_client, "wturnrev")
+    fake = _FakeBus()
+    monkeypatch.setattr(bus_module, "_bus", fake)
+    _move(test_client, alice, widget, "e4")
+    turns = [e for _, e in _widget_turns(fake, 2)]
+    assert {e["channel_id"] for e in turns} == {channel_id}
+    assert sorted((e["data"] for e in turns), key=lambda data: data["my_turn"]) == [
+        {"my_turn": False, "widget_id": widget["widget_id"], "rev": 1},
+        {"my_turn": True, "widget_id": widget["widget_id"], "rev": 1},
+    ]
+
+
+def test_ending_a_widget_from_outside_clears_who_it_waits_on(test_client):
+    alice, bob, org_id, channel_id = _switched_on(test_client, "wbsend")
+    widget = _start_battleship(test_client, alice, channel_id)
+    r = test_client.post(
+        f"/api/human/orgs/{org_id}/widgets/end-active", headers=auth_headers(alice["access_token"])
+    )
+    assert r.json() == {"ended": 1}
+    ended = test_client.get(
+        f"/api/human/mm/widgets/{widget['widget_id']}", headers=auth_headers(bob["access_token"])
+    ).json()
+    assert (ended["status"], ended["turn"], ended["waiting_on"]) == ("aborted", None, [])
+    channels = test_client.get(
+        f"/api/human/mm/channels?org_id={org_id}", headers=auth_headers(bob["access_token"])
+    ).json()["channels"]
+    assert next(c for c in channels if c["channel_id"] == channel_id)["widget_turn"] is False

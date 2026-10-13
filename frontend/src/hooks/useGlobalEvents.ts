@@ -36,7 +36,8 @@ type GlobalEvent =
       data: { agent_id: string; status: AgentLivenessStatus; last_alive_at: string | null };
     }
   | { type: "server.hello"; channel_id: string; data: { version: string } }
-  | { type: "widget.turn"; channel_id: string; data: { my_turn: boolean } }
+  // Its id and rev come from servers since the turn list (`waiting_on`); older ones send `my_turn` alone.
+  | { type: "widget.turn"; channel_id: string; data: { my_turn: boolean; widget_id?: string; rev?: number } }
   | { type: "channel.widgets"; channel_id: string; data: { widgets_enabled: boolean } };
 
 const byRecency = (a: MmChannel, b: MmChannel) => {
@@ -85,6 +86,9 @@ export function useGlobalEvents(): void {
 
   useEffect(() => {
     if (!enabled) return;
+    // The last turn applied per chat, and the games it has moved on from, so a turn event that arrives after a newer
+    // one, a newer game's included, can't undo it.
+    const turnRevs = new Map<string, { widgetId: string; rev: number; past: Set<string> }>();
 
     const conn = openSseStream("/api/human/events", (raw) => {
       const evt = raw as GlobalEvent;
@@ -188,7 +192,15 @@ export function useGlobalEvents(): void {
       } else if (evt.type === "agent.status") {
         updateAgentPresence([{ agentId: evt.data.agent_id, lastAliveAt: evt.data.last_alive_at }]);
       } else if (evt.type === "widget.turn") {
-        patchChannel(qc, evt.channel_id, (c) => ({ ...c, widget_turn: evt.data.my_turn }));
+        const { my_turn, widget_id, rev } = evt.data;
+        if (widget_id != null && rev != null) {
+          const last = turnRevs.get(evt.channel_id);
+          if (last && (last.widgetId === widget_id ? last.rev > rev : last.past.has(widget_id))) return;
+          const past = last?.past ?? new Set<string>();
+          if (last && last.widgetId !== widget_id) past.add(last.widgetId);
+          turnRevs.set(evt.channel_id, { widgetId: widget_id, rev, past });
+        }
+        patchChannel(qc, evt.channel_id, (c) => ({ ...c, widget_turn: my_turn }));
       } else if (evt.type === "channel.widgets") {
         const { widgets_enabled } = evt.data;
         patchChannel(qc, evt.channel_id, (c) => ({ ...c, widgets_enabled }));

@@ -121,6 +121,8 @@ export interface Widget {
   status: WidgetStatus;
   rev: number;
   turn: string | null;
+  /** The seats it waits on, both at once in some phases (fleets, bets); empty once over. Older servers omit it. */
+  waiting_on?: string[];
   seats: WidgetSeat[];
   scene: WidgetScene;
   /** The scene is the viewer's own; a live event carries only the public one. */
@@ -241,17 +243,44 @@ export function boardsBySeat(scene: WidgetScene): boolean {
   return boards.length > 1 && boards.every((board) => board.seat != null);
 }
 
-/** Where among the chat's loaded messages the one that started `widget` is, or -1 while it isn't loaded. */
-export function widgetPostIndex(posts: { post_id: number; widget_id?: string | null }[], widget: Widget): number {
-  return posts.findIndex((post) =>
-    widget.post_id != null ? post.post_id === widget.post_id : post.widget_id === widget.widget_id,
-  );
+/** The game the chat's latest loaded game message started, or null: the bar's game once none is active. */
+export function lastWidgetId(posts: { widget_id?: string | null }[]): string | null {
+  return posts.findLast((post) => post.widget_id)?.widget_id ?? null;
 }
 
 /** The viewer's seat, or null for a spectator. */
 export function seatOf(widget: Widget, userId: number | null): string | null {
   return widget.seats.find((seat) => seat.human_id != null && seat.human_id === userId)?.seat ?? null;
 }
+
+/** The seats a widget waits on; none once over. An older server says only whose `turn` it is. */
+export function waitingOn(widget: Widget): string[] {
+  if (widget.status !== "active") return [];
+  return widget.waiting_on ?? (widget.turn ? [widget.turn] : []);
+}
+
+/** Whether it's `seat`'s move: a spectator (null) never has one. */
+export function waitsOn(widget: Widget, seat: string | null): boolean {
+  return seat != null && waitingOn(widget).includes(seat);
+}
+
+/** A game's name: its scene's title, else its kind's. */
+export function widgetTitle(widget: Widget): string {
+  return widget.scene.title ?? WIDGET_KINDS.find((item) => item.kind === widget.kind)?.label ?? widget.kind;
+}
+
+/** How a game stands, one line for the bar and its message: `Your move` while it waits on the viewer, else the
+ *  scene's status; once over, the result from the viewer's side and its reason (`You won · Checkmate`). */
+export function widgetLine(widget: Widget, seat: string | null): string {
+  const reason = widget.scene.status?.text;
+  const result = resultOf(widget, seat);
+  if (result) return reason && reason !== result.headline ? `${result.headline} · ${reason}` : result.headline;
+  return waitsOn(widget, seat) ? "Your move" : (reason ?? "Playing");
+}
+
+// What this phone keeps of each game's bar, a key per widget, set only off the default (folded, shown).
+export const widgetOpenKey = (widgetId: string) => `clawbits.widget-bar.open.${widgetId}`;
+export const widgetDismissedKey = (widgetId: string) => `clawbits.widget-bar.dismissed.${widgetId}`;
 
 /** Widgets run in one-to-one chats between people. */
 export function isWidgetChat(channel: Channel | undefined): boolean {

@@ -106,7 +106,7 @@ function CardRow({ row, edge }: { row: WidgetCardRow; edge: "top" | "middle" | "
 }
 
 /** A card table: rows of cards on felt, from the far side of the table to the viewer's own hand. Cards size to
- *  the table's width, five across, so it fits a message, the dock and a phone alike. */
+ *  the table's width, five across, so it fits the game column, a page and a phone alike. */
 export function CardTable({ rows }: { rows: WidgetCardRow[] }) {
   return (
     <div className="wgt-felt grid gap-[calc(var(--card-w)*0.12)] rounded-(--w-radius-inner) px-3 py-3.5">

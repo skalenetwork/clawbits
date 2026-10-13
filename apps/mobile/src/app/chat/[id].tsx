@@ -1,7 +1,6 @@
 import {
   LegendList,
   type LegendListRef,
-  type OnViewableItemsChangedInfo,
 } from "@legendapp/list/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
@@ -65,9 +64,8 @@ import {
   applyWidget,
   canPlay,
   isWidgetChat,
+  lastWidgetId,
   WIDGET_KINDS,
-  widgetPostIndex,
-  type Widget,
   type WidgetKindName,
 } from "@/lib/widgets";
 import {
@@ -82,8 +80,9 @@ import {
 } from "@/components/ui";
 import { McpConnectCard } from "@/components/mcp-connect-card";
 import { TurnTrace } from "@/components/turn-trace";
+import { GameBar } from "@/components/widgets/game-bar";
+import { setGameOpen } from "@/components/widgets/game-bar-state";
 import { WidgetCard } from "@/components/widgets/widget-card";
-import { WidgetDock } from "@/components/widgets/widget-dock";
 
 type Delivery = { uuid: string; text: string; state: "sending" | "uncertain" };
 
@@ -99,10 +98,6 @@ function itemsAreEqual(prev: Post, next: Post) {
     prev.files.every((file, index) => file.file_id === next.files[index]?.file_id)
   );
 }
-
-// A message counts as on screen while 40% of it shows: a game taller than the
-// screen still counts.
-const GAME_VIEWABILITY = { itemVisiblePercentThreshold: 40 };
 
 export default function ConversationRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -128,9 +123,13 @@ function Conversation({ id }: { id: string }) {
   const connected = useLiveEvents(id, focused);
   const insets = useSafeAreaInsets();
   const [composerHeight, setComposerHeight] = useState(0);
+  // The game bar's row under the header, which the first message keeps clear of.
+  const [gameBarHeight, setGameBarHeight] = useState(0);
+  // The game's open board covers the messages, so a screen reader skips them while it shows.
+  const [boardOpen, setBoardOpen] = useState(false);
   const listPad = useMemo(
-    () => ({ paddingTop: insets.top + 44, paddingBottom: composerHeight }),
-    [composerHeight, insets.top],
+    () => ({ paddingTop: insets.top + 44 + gameBarHeight, paddingBottom: composerHeight }),
+    [composerHeight, gameBarHeight, insets.top],
   );
   const list = useRef<LegendListRef>(null);
   const field = useRef<GlassComposerHandle>(null);
@@ -151,45 +150,7 @@ function Conversation({ id }: { id: string }) {
     };
   }, []);
   const posts = useMemo(() => historyPosts(history.data), [history.data]);
-  // The games whose message is on screen: the dock steps aside while its game
-  // is in view.
-  const [shownGames, setShownGames] = useState<string[]>([]);
-  const onViewableItemsChanged = useCallback(
-    ({ viewableItems }: OnViewableItemsChangedInfo<Post>) => {
-      setShownGames(
-        viewableItems.flatMap((token) =>
-          token.item.widget_id ? [token.item.widget_id] : [],
-        ),
-      );
-    },
-    [],
-  );
-  /** The dock's tap: the chat scrolls to the message that started the game,
-   *  loading older pages until it's in. */
-  const showWidget = async (widget: Widget) => {
-    let data = history.data;
-    let more = history.hasNextPage;
-    // A game many pages back stays there: past twenty, the chat keeps its place.
-    for (let page = 0; page <= 20; page++) {
-      const index = widgetPostIndex(historyPosts(data), widget);
-      if (index >= 0) {
-        // Once the list has a page just loaded; the game then sits in the
-        // middle of the screen.
-        requestAnimationFrame(() => {
-          void list.current?.scrollToIndex({
-            index,
-            animated: true,
-            viewPosition: 0.5,
-          });
-        });
-        return;
-      }
-      if (!more) return;
-      const next = await history.fetchNextPage();
-      data = next.data;
-      more = next.hasNextPage;
-    }
-  };
+  const lastGame = useMemo(() => lastWidgetId(posts), [posts]);
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [files, setFiles] = useState<PendingFile[]>([]);
@@ -402,7 +363,10 @@ function Conversation({ id }: { id: string }) {
         if (!allowed) return;
         client.setQueryData<Channel>(["channel", id], await api.setChatWidgets(token, id, true));
       }
-      applyWidget(client, await api.startWidget(token, id, kind));
+      const widget = await api.startWidget(token, id, kind);
+      applyWidget(client, widget);
+      // Its starter asked for it, so it opens for them; for the other player it waits folded.
+      setGameOpen(widget.widget_id, true);
     } catch (cause) {
       Alert.alert(
         "Could not start the game",
@@ -521,6 +485,8 @@ function Conversation({ id }: { id: string }) {
         <LegendList
           ref={list}
           style={StyleSheet.absoluteFill}
+          accessibilityElementsHidden={boardOpen}
+          importantForAccessibility={boardOpen ? "no-hide-descendants" : "auto"}
           data={posts}
           keyExtractor={keyExtractor}
           estimatedItemSize={64}
@@ -546,8 +512,6 @@ function Conversation({ id }: { id: string }) {
               void history.fetchNextPage();
           }}
           onStartReachedThreshold={1}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={GAME_VIEWABILITY}
           onMomentumScrollEnd={scheduleRead}
           onScrollEndDrag={scheduleRead}
           ListHeaderComponent={
@@ -600,14 +564,6 @@ function Conversation({ id }: { id: string }) {
             { paddingBottom: keyboardOpen ? 8 : insets.bottom + 8 },
           ]}
         >
-          <WidgetDock
-            channelId={id}
-            enabled={gameChat}
-            onScreen={shownGames}
-            onShow={(widget) => {
-              void showWidget(widget);
-            }}
-          />
           {error && !accepted && (
             <Text accessibilityLiveRegion="polite" style={styles.error}>
               {error}
@@ -636,6 +592,15 @@ function Conversation({ id }: { id: string }) {
           />
         </View>
         </View>
+        <GameBar
+          channelId={id}
+          enabled={gameChat}
+          lastGame={lastGame}
+          top={insets.top + 44}
+          bottom={composerHeight}
+          onHeight={setGameBarHeight}
+          onOpen={setBoardOpen}
+        />
         </View>
         </KeyboardAvoidingView>
       )}
@@ -1034,7 +999,7 @@ const chat = StyleSheet.create({
   ungrouped: { paddingTop: 6, paddingBottom: 6 },
   author: { fontSize: 11, color: color.muted, marginLeft: 16, marginBottom: 2 },
   bubbleWrap: { maxWidth: "75%" },
-  widget: { alignSelf: "stretch" },
+  widget: { maxWidth: "88%" },
   cardWrap: { width: "88%" },
   bubble: {
     paddingHorizontal: 12,

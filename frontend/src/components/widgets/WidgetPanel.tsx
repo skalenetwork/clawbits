@@ -3,7 +3,7 @@ import { Minus, Plus, ScrollText, Undo2 } from "lucide-react";
 import { useWidgetAction } from "@/hooks/useWidget";
 import type { Widget, WidgetSceneAction, WidgetSceneAmount, WidgetSeat } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { boardsBySeat, drawsChessPieces, notesOf, resultOf, seatOf, type WidgetEnd } from "@/lib/widgets";
+import { boardsBySeat, drawsChessPieces, notesOf, resultOf, seatOf, waitsOn, type WidgetEnd } from "@/lib/widgets";
 import { ActionFace, EndGlyph } from "./ActionGlyph";
 import { PieceSetSwitch } from "./PieceSetSwitch";
 import { SceneView } from "./SceneView";
@@ -17,8 +17,8 @@ const STATUS_TONE: Record<string, string> = {
 };
 // Narrow, everything stacks: opponent, board, the middle, you. Once the card is 32rem wide and holds one board, the
 // board takes the left and everything about it the right: the opponent at the top, you at the bottom, as on the
-// board, and the middle between you. No title row: the dock's glyph names the game, and the section's label does
-// for a screen reader.
+// board, and the middle between you. No title row: the game panel names the game (its header, or the bar's glyph),
+// and the section's label does for a screen reader.
 // The grid is a child of the card: an element's @lg: queries its ancestors' size, never its own.
 const STACK = "grid [grid-template-areas:'top'_'board'_'meta'_'bottom']";
 const SPLIT = cn(
@@ -212,7 +212,7 @@ function SeatBadge({ seat, widget, userId, mirrored = false }: {
 }) {
   const name = seat.display_name ?? "Player";
   const you = seat.human_id != null && seat.human_id === userId;
-  const toAct = widget.status === "active" && widget.turn === seat.seat;
+  const toAct = waitsOn(widget, seat.seat);
   return (
     <div className={cn("flex min-w-0 items-center gap-2", mirrored ? "flex-row-reverse justify-self-end" : "justify-self-start")}>
       <SeatAvatar
@@ -238,7 +238,7 @@ function SeatLine({ seat, widget, userId, className }: {
 }) {
   if (!seat) return null;
   const name = seat.display_name ?? "Player";
-  const toAct = widget.status === "active" && widget.turn === seat.seat;
+  const toAct = waitsOn(widget, seat.seat);
   const note = widget.scene.seat_notes?.[seat.seat];
   return (
     <div className={cn("flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 px-1.5 py-1", className)}>
@@ -264,14 +264,12 @@ function SeatLine({ seat, widget, userId, className }: {
   );
 }
 
-/** A widget with its players, status, recent log and the viewer's actions around the board. In a message it sits
- *  on tone like any content (`card`); docked above the composer it floats, so it takes the glass (`sheet`). Its
- *  own chunk: the board loads only where a widget shows. */
-export default function WidgetPanel({ widget, userId, compact, variant = "card", className }: {
+/** A widget with its players, status, recent log and the viewer's actions around the board. In a page or the chat's
+ *  game column it sits on tone like any content (`card`); in the phone's game bar it floats over the chat, so it takes
+ *  the glass (`sheet`). Its own chunk: the board loads only where a widget shows. */
+export default function WidgetPanel({ widget, userId, variant = "card", className }: {
   widget: Widget;
   userId: number | null;
-  /** Docked above the composer: a smaller board. */
-  compact?: boolean;
   variant?: "card" | "sheet";
   className?: string;
 }) {
@@ -285,7 +283,7 @@ export default function WidgetPanel({ widget, userId, compact, variant = "card",
   const bottom = widget.seats.find((s) => s.seat === mySeat) ?? widget.seats[0];
   const top = widget.seats.find((s) => s !== bottom);
   const single = (scene.boards?.length ?? 1) === 1;
-  const width = single ? (compact ? "max-w-[34rem]" : "max-w-[42rem]") : compact ? "max-w-[36rem]" : "max-w-[40rem]";
+  const width = single ? "max-w-[42rem]" : "max-w-[40rem]";
   const actions = (mySeat && scene.actions?.[mySeat]) || [];
   const log = notesOf(scene);
   const pending = actions.find((a) => actionKey(a) === confirming);

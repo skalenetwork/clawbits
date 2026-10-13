@@ -246,6 +246,11 @@ class Battleship:
     def turn(self, state: dict[str, Any]) -> str | None:
         return state["turn"] if state["phase"] == "battle" else None
 
+    def waiting_on(self, state: dict[str, Any]) -> tuple[str, ...]:
+        if state["phase"] == "setup":
+            return tuple(seat for seat in SEATS if seat not in state["ready"])
+        return (state["turn"],)
+
     def act(self, state: dict[str, Any], seat: str, action: dict[str, Any]) -> Step:
         kind = action.get("type")
         args = action.get("args") or {}

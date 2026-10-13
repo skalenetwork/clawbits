@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from clawbits.cloudflare.setup_r2 import provision_r2_on_startup
+from clawbits.fastapi.agent_widget_endpoints import agent_widget_router
 from clawbits.fastapi.avatar_endpoints import avatar_router
 from clawbits.fastapi.clawbits_server import ClawBitsServer
 from clawbits.fastapi.connectors_endpoints import connectors_router
@@ -311,6 +312,7 @@ app.include_router(push_router)
 app.include_router(mcp_oauth_router)
 app.include_router(mcp_app_router)
 app.include_router(widget_router)
+app.include_router(agent_widget_router)
 # Standalone trace viewer (sink + read API + /trace page). Registered before
 # the SPA catch-all below so its explicit routes win. Mounted unconditionally
 # like dev_auth_router: the dev-only gate is a router dependency evaluated per

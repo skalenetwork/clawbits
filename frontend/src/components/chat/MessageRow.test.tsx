@@ -34,6 +34,7 @@ function row(props: Partial<ComponentProps<typeof MessageRow>> & { post: MmChann
       onJumpToParent={noop}
       onToggleReaction={noop}
       onTogglePin={noop}
+      onOpenWidget={noop}
       isEditing={false}
       onEdit={noop}
       onSaveEdit={noop}

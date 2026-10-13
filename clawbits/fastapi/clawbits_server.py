@@ -188,6 +188,9 @@ class ClawBitsServer(FastAPI):
         # tax each reply 2x and make skipping the ack rational, which is
         # exactly the failure the pointer exists to prevent.
         ("POST", re.compile(r"^/api/agentic/mm/channels/[^/]+/read$")),
+        # A chat game's move: a poker match is 100-200 of them, so they are free and capped per
+        # minute in Redis instead (clawbits/widgets/limits.py).
+        ("POST", re.compile(r"^/api/agentic/mm/widgets/[^/]+/actions$")),
     )
     # A send carrying an Idempotency-Key bills inside the endpoint, once per new outbox record,
     # so a retried key is never charged twice.
@@ -2222,9 +2225,16 @@ class ClawBitsServer(FastAPI):
 
         with Session(self._engine) as db:
             self._require_mm_member(db, channel_id, agent.agent_id.value)
+            # Locked as starting a widget locks it: a game can't begin seating someone who is leaving.
+            TableWrite.lock_mm_channel(db, channel_id)
             TableWrite.remove_mm_channel_member(db, channel_id, member_agent_id)
+            # A player who left can't finish: the game here ends for the others.
+            ended = TableWrite.abort_mm_widgets_seating(
+                db, reason="left", channel_id=channel_id, agent_id=member_agent_id
+            )
             members = TableRead.get_mm_channel_members(db, channel_id)
             db.commit()
+        from clawbits.fastapi.widget_endpoints import publish_widgets
         from clawbits.realtime import (
             fire_and_forget,
             get_bus,
@@ -2237,6 +2247,8 @@ class ClawBitsServer(FastAPI):
             publish_member_removed(get_bus(), channel_id, agent_id=member_agent_id)
         )
         fire_and_forget(publish_agent_channel_removed(get_bus(), member_agent_id, channel_id))
+        if ended:
+            fire_and_forget(publish_widgets(self._engine, [widget_id for widget_id, _ in ended]))
         return MmChannelMembersListResponse(
             members=[MmChannelMemberResponse(**m) for m in members],
             total=len(members),
@@ -2817,6 +2829,15 @@ class ClawBitsServer(FastAPI):
                     "default_thinking": row.thinking if row else None,
                 }
 
+        def listed_channel_ids() -> list[str]:
+            """The chats :func:`read_snapshot` lists: memberships, less DMs it may no longer reach."""
+            with Session(self._engine) as db:
+                return [
+                    channel_id
+                    for channel_id in TableRead.get_mm_channel_ids_for_agent(db, agent_id)
+                    if TableRead.can_agent_access_dm(db, channel_id, agent_id)
+                ]
+
         def is_snoozed() -> bool:
             with Session(self._engine) as db:
                 row = db.get(_AgentRow, agent_id)
@@ -2826,9 +2847,6 @@ class ClawBitsServer(FastAPI):
         bus = get_bus()
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=512)
         stop = asyncio.Event()
-
-        snapshot = read_snapshot()
-        await websocket.send_json({"type": "snapshot", "data": snapshot})
 
         async def enqueue(event: dict) -> None:
             try:
@@ -2848,26 +2866,26 @@ class ClawBitsServer(FastAPI):
 
         channel_tasks: dict[str, asyncio.Task] = {}
 
-        def start_channel_pump(channel_id: str) -> None:
+        def start_channel_pump(channel_id: str, ready: asyncio.Event | None = None) -> None:
             if channel_id in channel_tasks:
                 return
-            channel_tasks[channel_id] = asyncio.create_task(channel_pump(channel_id))
+            channel_tasks[channel_id] = asyncio.create_task(channel_pump(channel_id, ready))
 
         def stop_channel_pump(channel_id: str) -> None:
             task = channel_tasks.pop(channel_id, None)
             if task is not None:
                 task.cancel()
 
-        async def channel_pump(channel_id: str) -> None:
-            async for event in bus.subscribe(channel_topic(channel_id)):
+        async def channel_pump(channel_id: str, ready: asyncio.Event | None) -> None:
+            async for event in bus.subscribe(channel_topic(channel_id), ready=ready):
                 if stop.is_set():
                     break
                 if event.get("type") == "post.created" and is_snoozed():
                     continue
                 await enqueue(event)
 
-        async def agent_control_pump() -> None:
-            async for event in bus.subscribe(agent_topic(agent_id)):
+        async def agent_control_pump(ready: asyncio.Event) -> None:
+            async for event in bus.subscribe(agent_topic(agent_id), ready=ready):
                 if stop.is_set():
                     break
                 event_type = event.get("type")
@@ -2899,13 +2917,41 @@ class ClawBitsServer(FastAPI):
                 if isinstance(raw, dict) and raw.get("type") == "ping":
                     await enqueue({"type": "pong"})
 
-        for c in snapshot["channels"]:
-            if c.get("channel_id"):
-                start_channel_pump(c["channel_id"])
-        control_task = asyncio.create_task(agent_control_pump())
-        writer_task = asyncio.create_task(writer())
-        reader_task = asyncio.create_task(reader())
+        async def subscribed(ready: list[asyncio.Event]) -> None:
+            """Wait until these pumps' subscriptions are live; past a bound, go on as before."""
+            try:
+                await asyncio.wait_for(asyncio.gather(*(e.wait() for e in ready)), timeout=5)
+            except TimeoutError:
+                logging.warning(
+                    "Agent websocket for %s: subscriptions not live in 5s; snapshot read anyway",
+                    agent_id,
+                )
+
+        # Subscribe first, then read the snapshot: whatever is published in between (a widget wake,
+        # a post) queues behind the snapshot, which stays first on the wire, instead of being lost.
+        # The control topic goes first, so a chat added from then on starts its own pump.
+        control_ready = asyncio.Event()
+        control_task = asyncio.create_task(agent_control_pump(control_ready))
+        io_tasks: list[asyncio.Task] = []
         try:
+            await subscribed([control_ready])
+            channels_ready: list[asyncio.Event] = []
+            for channel_id in listed_channel_ids():
+                if channel_id not in channel_tasks:  # a channel.added may have started it
+                    channels_ready.append(asyncio.Event())
+                    start_channel_pump(channel_id, channels_ready[-1])
+            await subscribed(channels_ready)
+            snapshot = read_snapshot()
+            # Pumps match the snapshot's chats, settled before anything else runs on this loop.
+            listed = {c["channel_id"] for c in snapshot["channels"] if c.get("channel_id")}
+            for channel_id in set(channel_tasks) - listed:
+                stop_channel_pump(channel_id)
+            for channel_id in listed:
+                start_channel_pump(channel_id)
+            await websocket.send_json({"type": "snapshot", "data": snapshot})
+            writer_task = asyncio.create_task(writer())
+            reader_task = asyncio.create_task(reader())
+            io_tasks = [writer_task, reader_task]
             done, _ = await asyncio.wait(
                 {writer_task, reader_task}, return_when=asyncio.FIRST_COMPLETED
             )
@@ -2917,7 +2963,7 @@ class ClawBitsServer(FastAPI):
             pass
         finally:
             stop.set()
-            tasks = [*channel_tasks.values(), control_task, writer_task, reader_task]
+            tasks = [*channel_tasks.values(), control_task, *io_tasks]
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -2983,6 +3029,7 @@ class ClawBitsServer(FastAPI):
         runtime kind from the optional body and the plugin version from the
         ``X-Clawbits-Plugin-Version`` header. Both are best-effort — an older
         plugin that pings with no body still works, leaving them unchanged.
+        Its ``capabilities`` replace the stored set (``widgets`` gates seats).
         """
         from clawbits.db.models import Agent as _AgentRow
         from clawbits.realtime import get_bus, publish_agent_status
@@ -3002,6 +3049,8 @@ class ClawBitsServer(FastAPI):
                 plugin_version=(
                     str(plugin_version) if plugin_version is not None else None
                 ),
+                # A ping restates every capability; one with no body has none.
+                capabilities=body.capabilities if body else [],
             )
             db.commit()
             # Fan-out targets, gathered while the session is open.
