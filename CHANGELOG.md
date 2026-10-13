@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/skalenetwork/clawbits/compare/v1.10.0...v1.10.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* add host baseline snapshot to deploy_prep for capacity planning ([79611db](https://github.com/skalenetwork/clawbits/commit/79611dbd1380b283fe0d889f2db5ce922fe6e947))
+
 ## [1.10.0](https://github.com/skalenetwork/clawbits/compare/v1.9.0...v1.10.0) (2026-10-09)
 
 
