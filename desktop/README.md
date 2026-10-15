@@ -55,21 +55,21 @@ Or right-click → Open → confirm once.
 Install the .deb and confirm:
 
 ```bash
-sudo dpkg -i clawbits-staging_<version>_amd64.deb   # or clawbits_<version>_amd64.deb for prod
+sudo dpkg -i clawbits_<version>_amd64.deb
 sudo apt-get install -f       # fixes missing libnotify4 etc. if dpkg complained
 ```
 
 Checks worth doing after install:
 
-- **App icon + description** in GNOME Software / app drawer search ("clawbits-staging"): the icon shows, `GenericName` shows "AI Agent Messaging (Staging)", search terms from `Keywords=` work.
+- **App icon + description** in GNOME Software / app drawer search ("clawbits"): the icon shows, `GenericName` shows "AI Agent Messaging", search terms from `Keywords=` work.
 - **Notifications**: **Settings → Notifications → Send a test**, or trigger one from another account. That panel also reports the notification daemon it found and whether a matching `.desktop` file is installed. If the icon is missing or notifications don't appear, follow the diagnostic flow in the next section.
-- **About dialog** (app menu → About clawbits-staging): name, version, icon, comment, website, copyright all populated.
-- **Deep link**: `xdg-open clawbits-staging://oauth-callback?token=foo` (or `clawbits://...` for prod) should focus the running app and trigger the auth flow.
+- **About dialog** (app menu → About clawbits): name, version, icon, comment, website, copyright all populated.
+- **Deep link**: `xdg-open clawbits://oauth-callback?token=foo` should focus the running app and trigger the auth flow.
 - **Window chrome**: solid window background (no see-through to desktop), menu bar (Edit/View/Window) has a proper background.
-- **Close hides, app keeps running**: the red X and `Cmd-W` hide the window but the process stays up (`pgrep clawbits-staging` still lists it), so notifications keep arriving. Reopen via the tray's Show, `Super+Shift+C`, GNOME's Background Apps menu, or relaunch.
+- **Close hides, app keeps running**: the red X and `Cmd-W` hide the window but the process stays up (`pgrep clawbits` still lists it), so notifications keep arriving. Reopen via the tray's Show, `Super+Shift+C`, GNOME's Background Apps menu, or relaunch.
 - **Clicking a notification** raises the window and lands on the channel the message came from. Needs the daemon to advertise the `actions` capability (Settings → Notifications lists what yours reports); without it the banner still shows, it just isn't clickable.
 - **A busy channel doesn't stack banners**: a second message in the same channel replaces the first rather than adding to the tray. The second `notify send (message)` log line carries `id: Some(N)`.
-- **Quit fully exits**: the tray's Quit, app-menu Quit (`Ctrl+Q`), or Background Apps → Quit terminate the process (`pgrep clawbits-staging` then returns nothing).
+- **Quit fully exits**: the tray's Quit, app-menu Quit (`Ctrl+Q`), or Background Apps → Quit terminate the process (`pgrep clawbits` then returns nothing).
 
 ### Diagnosing Linux notifications
 
@@ -78,19 +78,18 @@ Every run logs notification diagnostics to a file. The path is per channel:
 | Channel | Log file |
 | --- | --- |
 | Prod    | `~/.local/share/ai.clawbits.desktop/logs/clawbits.log` |
-| Staging | `~/.local/share/ai.clawbits.staging/logs/clawbits.log` |
 | Dev     | `~/.local/share/ai.clawbits.dev/logs/clawbits.log` |
 
 Reproduction recipe, run after installing the .deb:
 
 1. **Launch from a terminal** so stdout is also visible:
    ```bash
-   clawbits-staging
+   clawbits
    ```
 2. **Either** receive a real chat message **or** press **Send a test** in Settings → Notifications; both go through the same code path with full payload logging.
 3. **Grab the log** and share it back:
    ```bash
-   cat ~/.local/share/ai.clawbits.staging/logs/clawbits.log
+   cat ~/.local/share/ai.clawbits.desktop/logs/clawbits.log
    ```
 
 What to look for in the log:
@@ -102,7 +101,7 @@ What to look for in the log:
 
 Cross-checks that quickly localize the failure:
 
-- `notify-send -a clawbits-staging "test" "from notify-send"`: if this works but our app doesn't, our hint set is the problem; if neither works, the daemon or desktop env is.
+- `notify-send -a clawbits "test" "from notify-send"`: if this works but our app doesn't, our hint set is the problem; if neither works, the daemon or desktop env is.
 - `journalctl --user -f` while triggering: D-Bus errors from `org.freedesktop.Notifications` surface here.
 - `gsettings get org.gnome.desktop.notifications application-children` confirms our `.desktop` basename is registered with the Shell.
 - `update-desktop-database ~/.local/share/applications` is sometimes needed after install before the Shell sees the file.
@@ -116,7 +115,6 @@ The fix is to **never let those two names diverge per-platform.** On Linux, ever
 | Channel | macOS `.app` bundle | Linux slug (all surfaces) | GNOME notification slug |
 | --- | --- | --- | --- |
 | Prod    | `Clawbits.app`         | `clawbits`         | `clawbits` |
-| Staging | `clawbits-staging.app` | `clawbits-staging` | `clawbits-staging` |
 | Dev     | `clawbits-dev.app`     | `clawbits-dev`     | `clawbits-dev` |
 
 Trade-off: on Linux the slug appears verbatim in the GNOME app drawer, GNOME Settings → Notifications, and the window title, including for the prod channel, which shows `clawbits` rather than `Clawbits`. We accept that in exchange for a single source of truth on Linux: no two-name divergence inside `.deb`, no risk of the bundler-vs-hint mismatch returning. macOS gets the capitalized display via the base config; Linux is force-overridden via the platform conf so `mainBinaryName == productName == DesktopEntry hint` holds.

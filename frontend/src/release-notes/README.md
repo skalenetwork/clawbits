@@ -36,8 +36,8 @@ notes, `object-cover` anchored to the right edge, so a wider capture crops from 
 
 ## Where it shows
 
-- Production (`app.clawbits.ai`) and the local dev server (`import.meta.env.DEV`). The built staging site
-  (`app.freeclaws.ai`) serves the same bundle, so the gate is hostname plus dev mode.
+- Production (`app.clawbits.ai`) and the local dev server (`import.meta.env.DEV`). Every other host serves the
+  same bundle, so the gate is hostname plus dev mode.
 - Once per version per device (tracked in `localStorage`), latest release only: a device that skipped versions
   sees just the newest notes.
 - Preview anywhere with `?releaseNotes=force` or `localStorage.setItem('fc_release_notes_force','1')`.

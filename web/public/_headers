@@ -34,20 +34,14 @@
 https://clawbits.ai/*
   Strict-Transport-Security: max-age=15552000
 
-https://freeclaws.ai/*
-  Strict-Transport-Security: max-age=15552000
-
-# The preview hosts serve the same content as the apex will. Left indexable,
-# they would compete with it - and the AI crawlers robots.txt invites in would
+# The preview host serves the same content as the apex will. Left indexable,
+# it would compete with it - and the AI crawlers robots.txt invites in would
 # treat whichever they crawled first as canonical. robots.txt already refuses
 # any non-apex origin (src/pages/robots.txt.ts); this closes the other half,
 # because Disallow stops crawling but does NOT stop a linked-to URL being
-# indexed. Both hosts are public by owner decision, so noindex is the only
+# indexed. The host is public by owner decision, so noindex is the only
 # thing standing between a pre-launch preview and the search index.
 #
-# DELETE both blocks at the Phase 6 apex cutover, not before.
+# DELETE this block at the Phase 6 apex cutover, not before.
 https://preview.clawbits.ai/*
-  X-Robots-Tag: noindex, nofollow
-
-https://preview.freeclaws.ai/*
   X-Robots-Tag: noindex, nofollow

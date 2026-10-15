@@ -1,8 +1,8 @@
 """Centralised domain configuration.
 
 Set ``CLAWBITS_ENV=production`` to use **clawbits.ai** domains.
-Any other value (or unset) defaults to **freeclaws.ai** (staging /
-shared infra for development).
+Any other value (or unset) defaults to **freeclaws.ai** (shared infra for
+development).
 
 Domains
 -------
@@ -15,7 +15,7 @@ Domains
 
 Note: there is no ``clawbits.io`` zone — the previous default predated
 the project rename and pointed at a domain the project never owned.
-Local dev shares the staging share-domain unless ``CUSTOM_DOMAIN`` is
+Local dev uses the freeclaws.ai share-domain unless ``CUSTOM_DOMAIN`` is
 set to override.
 """
 

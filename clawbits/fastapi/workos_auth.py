@@ -973,7 +973,7 @@ def social_start(
 
     * ``?desktop=1`` — Tauri desktop client. The callback returns an
       HTML page that fires ``<env-suffixed-scheme>://oauth-callback?token=…``
-      so dev / staging / prod desktop binaries can be installed
+      so dev and prod desktop binaries can be installed
       side-by-side without one stealing another's OAuth tail.
     * ``?bridge=deeplink`` — mobile (Expo) client. Same HTML-bridge
       callback path, but always hands back the fixed ``clawbits://``
@@ -1064,8 +1064,8 @@ async def social_callback(
     error: str | None = None,
     # Read the env-suffixed cookie set by ``/social/{provider}/start``.
     # Without ``alias=`` FastAPI would read the literal parameter name
-    # ``fc_oauth_state``, which doesn't match ``fc_oauth_state_staging``
-    # / ``fc_oauth_state_dev`` in non-prod environments — breaking OAuth.
+    # ``fc_oauth_state``, which doesn't match ``fc_oauth_state_dev`` in
+    # non-prod environments — breaking OAuth.
     oauth_state_cookie: str | None = Cookie(default=None, alias=OAUTH_STATE_COOKIE),
     return_to_cookie: str | None = Cookie(default=None, alias=OAUTH_RETURN_TO_COOKIE),
 ):
@@ -1157,7 +1157,7 @@ async def social_callback(
     deep_link_scheme: str | None = None
     if native_kind == "desktop":
         # The desktop binary registers a channel-specific URL scheme so
-        # prod, staging, and dev installs can coexist without colliding
+        # prod and dev installs can coexist without colliding
         # on `xdg-mime` / Launch Services routing. Pick the scheme this
         # backend should hand back based on ``CLAWBITS_ENV``; the desktop
         # build for the matching channel is the only thing that can open
@@ -1605,7 +1605,7 @@ def _frontend_root() -> str:
 def _desktop_url_scheme() -> str:
     """URL scheme the channel-matched desktop build registers.
 
-    Prod, staging, and dev binaries each register a distinct scheme so
+    Prod and dev binaries each register a distinct scheme so
     they can be installed side-by-side without one stealing OAuth
     redirects meant for another. The mapping mirrors the channel set in
     ``desktop/src-tauri/tauri.<channel>.conf.json``.
@@ -1617,8 +1617,6 @@ def _desktop_url_scheme() -> str:
     env = (os.environ.get("CLAWBITS_ENV") or "").lower()
     if env == "production":
         return "clawbits"
-    if env == "staging":
-        return "clawbits-staging"
     return "clawbits-dev"
 
 

@@ -36,7 +36,6 @@ node_modules
 # nobody has run scripts/sync_env.sh — it holds no secrets, only defaults.
 !.env.example
 !.env.development
-!.env.staging
 !.env.production
 
 # Docs and local-only files

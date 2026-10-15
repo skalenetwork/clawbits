@@ -1,11 +1,11 @@
 services:
   # Dev: expose the app directly for Vite's /api proxy (frontend dev on localhost:5173)
   # and for direct debugging (curl localhost:8000/api/...).
-  # Staging uses the proxy only — this override is not applied there.
+  # Prod uses the proxy only — this override is not applied there.
   app:
     # Dev override: opt into the dev-auth allow-list. The base compose.yaml
     # defaults CLAWBITS_ENV to ``production`` (fail-closed for any deploy
-    # that doesn't override). This override is NOT applied in staging/prod.
+    # that doesn't override). This override is NOT applied in prod.
     environment:
       CLAWBITS_ENV: ${CLAWBITS_ENV:-development}
     ports:
@@ -64,7 +64,7 @@ services:
     ports:
       - "3000:3000"
 
-  # Dev: skip TLS / cert mount. Staging serves HTTPS via nginx.conf with the
+  # Dev: skip TLS / cert mount. Prod serves HTTPS via nginx.conf with the
   # Cloudflare Origin Cert; locally we don't have certs, so use a plain HTTP
   # config and unbind 443.
   proxy:

@@ -6,7 +6,7 @@ These endpoints allow organization members to list, approve, or reject pending a
 List pending agent signup requests for an organization.
 
 **Auth**
-- Session cookie (`fc_session` / `fc_session_staging` / `fc_session_dev`), or `Authorization: Bearer <sealed-session>`
+- Session cookie (`fc_session` / `fc_session_dev`), or `Authorization: Bearer <sealed-session>`
 
 **Path Parameters**
 | Name | Description |

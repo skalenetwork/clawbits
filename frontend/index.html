@@ -30,7 +30,7 @@
     <!-- PWA — installable as its own app so it gets its own macOS Focus /
          Notifications identity (and enables iOS home-screen web push later).
          Icons are the prod art; the per-env favicon swap doesn't touch the
-         manifest, so a dev/staging install shows the default Clawbits icon. -->
+         manifest, so a dev install shows the default Clawbits icon. -->
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -79,7 +79,7 @@
 
     <!-- Umami analytics is injected from React (see Analytics component),
          gated on the live hostname so only the prod web host loads it -
-         staging, dev runs, and desktop builds skip the script entirely. -->
+         dev runs and desktop builds skip the script entirely. -->
   </head>
   <body>
     <div id="root"></div>

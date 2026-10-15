@@ -36,7 +36,7 @@ def _empty_ring():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("env", [None, "", "   ", "production", "staging", "prod"])
+@pytest.mark.parametrize("env", [None, "", "   ", "production", "prod"])
 def test_add_span_noops_outside_dev(monkeypatch, env):
     """Fail-closed: unset, empty and unknown environments are NOT dev."""
     _set_env(monkeypatch, env)

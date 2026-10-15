@@ -63,8 +63,8 @@ next `uv lock` / `cargo build`. Only `uv lock --check` would object, and nothing
 | --- | --- |
 | ClawHub tools + channel packages, tarballs on the `openclaw-plugin-v*` release | the plugin release PR merging (`Release` workflow) |
 | CLI binaries on the `cli-v*` release | the CLI release PR merging (`Release` workflow) |
-| Marketing site | push to `main` (staging) / `prod` (production) |
-| Desktop app | push to `prod` when its version is not released yet, or `workflow_dispatch` for a staging build |
+| Marketing site | push to `prod` |
+| Desktop app | push to `prod` when its version is not released yet, or `workflow_dispatch` |
 | Agent images | `Images publish`, `workflow_dispatch` only (multi-gigabyte, versioned by engine + plugin + commit, not by release-please) |
 
 Running `Release` by hand republishes the plugin and CLI at their current versions; every step is
@@ -102,8 +102,6 @@ release right after it creates anything. If you add a workflow that cuts a relea
 
 Changing the endpoint only affects *future* builds; installs in the wild keep polling whatever URL
 they shipped with. Treat it as approximately permanent.
-
-Staging desktop builds are marked GitHub **prereleases**, so they can never take the pointer.
 
 ## Other version helpers
 

@@ -26,7 +26,7 @@ repo_root="$(pwd)"
 
 env_name="${1:-production}"
 case "${env_name}" in
-  development|staging|production) ;;
+  development|production) ;;
   *) echo "deploy_prep: unknown env '${env_name}'" >&2; exit 2 ;;
 esac
 
@@ -64,10 +64,10 @@ fi
 git -C "${internal}" reset --quiet --hard "origin/${branch}"
 echo "deploy_prep: clawbits-internal at $(git -C "${internal}" rev-parse --short HEAD)"
 
-# Remove any other env files first, so a prod image can never pick up staging
-# or development ciphertext left behind by an earlier deploy of a different
+# Remove any other env files first, so a prod image can never pick up
+# development ciphertext left behind by an earlier deploy of a different
 # environment on this host.
-for other in development staging production; do
+for other in development production; do
   [ "${other}" = "${env_name}" ] && continue
   rm -f "${repo_root}/.env.${other}"
 done
