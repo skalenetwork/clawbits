@@ -14,8 +14,8 @@ function isForced(): boolean {
   }
 }
 
-/** Latest release newer than this device's record. Shown on prod web and `vite dev`, never on the staging
- *  build, which serves the same bundle, so the gate is the hostname. `?releaseNotes=force` overrides. */
+/** Latest release newer than this device's record. Shown on prod web and `vite dev`; every other host serves
+ *  the same bundle, so the gate is the hostname. `?releaseNotes=force` overrides. */
 export function hasUnseenRelease(): boolean {
   if (!LATEST_RELEASE) return false;
   if (isForced()) return true;

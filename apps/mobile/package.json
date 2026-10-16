@@ -51,7 +51,6 @@
   },
   "scripts": {
     "start": "expo start",
-    "start:staging": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.freeclaws.ai expo start",
     "start:prod": "EXPO_PUBLIC_CLAWBITS_API_URL=https://app.clawbits.ai expo start",
     "ios": "expo run:ios",
     "ios:device": "expo run:ios --device",

@@ -3,13 +3,7 @@ name: Desktop release
 # Triggers:
 #   - push to `prod`      → PROD build, app.clawbits.ai API, normal release,
 #                           updater `latest.json` updated
-#   - workflow_dispatch   → manual override (version + channel via inputs).
-#                           This is how you get a staging build now.
-#
-# It used to also build on every push to `main`: a ~17 minute three-platform
-# signed build per merge, frequently cancelled by the next merge before it
-# finished, which left 73 `desktop-v*-staging.<sha>` tags against 12 real
-# releases. Staging builds are on demand now.
+#   - workflow_dispatch   → manual override (version via input).
 #
 # The `tags: ['desktop-v*']` trigger is gone too, because it could never fire.
 # Those tags are created by this workflow using GITHUB_TOKEN, and GitHub does
@@ -20,7 +14,7 @@ name: Desktop release
 # ALLOWED TO CREATE A RELEASE WITHOUT `--latest=false`: tauri.conf.json bakes
 # releases/latest/download/latest.json into every binary ever shipped, so
 # GitHub's "Latest" pointer is a production endpoint and must always resolve
-# here. Staging uses the `prerelease` flag so it never becomes Latest.
+# here.
 #
 # The version comes from desktop/src-tauri/tauri.conf.json, which release-please
 # writes (release-please-config.json, the `.` package). Nothing is bumped by hand.
@@ -34,12 +28,6 @@ on:
         description: 'Version override (e.g. 0.1.0). Empty = derive from ref.'
         required: false
         type: string
-      channel:
-        description: 'Channel — staging uses app.freeclaws.ai, prod uses app.clawbits.ai'
-        required: false
-        type: choice
-        default: prod
-        options: [prod, staging]
 
 permissions:
   contents: read
@@ -53,14 +41,11 @@ concurrency:
 
 jobs:
   setup:
-    name: resolve channel + version
+    name: resolve version
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.compute.outputs.version }}
-      api-url: ${{ steps.compute.outputs.api-url }}
       release-tag: ${{ steps.compute.outputs.release-tag }}
-      is-prerelease: ${{ steps.compute.outputs.is-prerelease }}
-      channel: ${{ steps.compute.outputs.channel }}
       build: ${{ steps.fresh.outputs.build }}
     steps:
       - uses: actions/checkout@v7
@@ -68,51 +53,18 @@ jobs:
       - name: Compute
         id: compute
         env:
-          SHA: ${{ github.sha }}
           INPUT_VERSION: ${{ inputs.version }}
-          INPUT_CHANNEL: ${{ inputs.channel }}
         run: |
           set -euo pipefail
-          BASE_VERSION=$(jq -r .version desktop/src-tauri/tauri.conf.json)
-          SHA7=${SHA:0:7}
-
-          # Only `prod` pushes and manual dispatches reach this workflow, and
-          # dispatch always supplies a channel (it defaults to prod), so there
-          # is nothing left to derive from the ref.
-          CHANNEL="${INPUT_CHANNEL:-prod}"
-
           # Version: input wins, otherwise tauri.conf.json (written by
           # release-please). The `refs/tags/desktop-v*` branch that used to live
           # here went with the trigger that could never fire.
-          if [[ -n "${INPUT_VERSION:-}" ]]; then
-            VERSION="$INPUT_VERSION"
-          elif [[ "$CHANNEL" == staging ]]; then
-            # Staging gets a per-commit suffix so each dispatch produces a
-            # unique release. Pre-release flag below keeps prod's
-            # `releases/latest/` redirect untouched.
-            VERSION="${BASE_VERSION}-staging.${SHA7}"
-          else
-            VERSION="$BASE_VERSION"
-          fi
+          VERSION="${INPUT_VERSION:-$(jq -r .version desktop/src-tauri/tauri.conf.json)}"
 
-          # app.* on BOTH channels - each apex now serves the marketing site
-          # and answers /api/* with the site's own HTML 404, so a build pointed
-          # at one fails as "logged out" rather than as a bad host.
-          if [[ "$CHANNEL" == staging ]]; then
-            API_URL="https://app.freeclaws.ai"
-            IS_PRE=true
-          else
-            API_URL="https://app.clawbits.ai"
-            IS_PRE=false
-          fi
-
-          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "api-url=$API_URL" >> "$GITHUB_OUTPUT"
           echo "release-tag=desktop-v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "is-prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
 
-          echo "::notice::Building $CHANNEL v$VERSION against $API_URL"
+          echo "::notice::Building v$VERSION"
 
       # Prod's version comes from tauri.conf.json, which only a product release bumps,
       # so a promotion without one finds that version already published: build
@@ -209,21 +161,6 @@ jobs:
         working-directory: desktop
         run: bun install --frozen-lockfile
 
-      - name: Resolve channel config overlay
-        id: channel-config
-        env:
-          CHANNEL: ${{ needs.setup.outputs.channel }}
-        run: |
-          # Staging gets its own productName / identifier / bundle-name /
-          # deep-link scheme via tauri.staging.conf.json. Prod uses the
-          # base tauri.conf.json unchanged. (No dev channel in CI — local
-          # only.) Resulting `args` is appended to the matrix args below.
-          if [[ "$CHANNEL" == "staging" ]]; then
-            echo "extra-args=--config src-tauri/tauri.staging.conf.json" >> "$GITHUB_OUTPUT"
-          else
-            echo "extra-args=" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Write ASC API key (macOS notarization)
         if: runner.os == 'macOS'
         run: echo "${{ secrets.APPLE_API_KEY_P8_BASE64 }}" | base64 --decode > "${{ runner.temp }}/asc_api_key.p8"
@@ -245,10 +182,13 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/asc_api_key.p8
           # --------------------------------------------------------------------
-          VITE_CLAWBITS_API_URL: ${{ needs.setup.outputs.api-url }}
+          # app.*, not the apex: the apex serves the marketing site and answers
+          # /api/* with its own HTML 404, so a build pointed at it fails as
+          # "logged out" rather than as a bad host.
+          VITE_CLAWBITS_API_URL: https://app.clawbits.ai
         with:
           projectPath: desktop
-          args: ${{ matrix.args }} ${{ steps.channel-config.outputs.extra-args }}
+          args: ${{ matrix.args }}
 
       - name: Notarize + staple DMG (macOS)
         # tauri-action notarizes/staples the .app but NOT the .dmg wrapper, so a
@@ -318,8 +258,7 @@ jobs:
             \) -print -exec mv {} bundles/ \;
           ls -la bundles/
 
-      - name: Build latest.json (prod only — leaves staging's update channel undisturbed)
-        if: needs.setup.outputs.is-prerelease != 'true'
+      - name: Build latest.json
         env:
           VERSION: ${{ needs.setup.outputs.version }}
           RELEASE_TAG: ${{ needs.setup.outputs.release-tag }}
@@ -396,8 +335,6 @@ jobs:
           # remote — it must be told explicitly or it exits "not a git repository".
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.setup.outputs.release-tag }}
-          CHANNEL: ${{ needs.setup.outputs.channel }}
-          IS_PRE: ${{ needs.setup.outputs.is-prerelease }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -415,16 +352,9 @@ jobs:
             echo "::error::No bundle files found to publish — check the build job's upload-artifact + Flatten steps"
             exit 1
           fi
-          # latest.json only exists on prod releases; include if present.
-          if [ -f bundles/latest.json ]; then
-            FILES+=( bundles/latest.json )
-          fi
+          FILES+=( bundles/latest.json )
 
-          NOTES="Built from ${GITHUB_REPOSITORY}@${SOURCE_SHA} on channel ${CHANNEL}."
-          EXTRA=()
-          if [ "$IS_PRE" = "true" ]; then
-            EXTRA+=( --prerelease )
-          fi
+          NOTES="Built from ${GITHUB_REPOSITORY}@${SOURCE_SHA} on channel prod."
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             # Only reachable when the release belongs to this same commit — the
@@ -439,6 +369,5 @@ jobs:
               --title "Clawbits $RELEASE_TAG" \
               --notes "$NOTES" \
               --target "$SOURCE_SHA" \
-              "${EXTRA[@]}" \
               "${FILES[@]}"
           fi

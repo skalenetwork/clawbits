@@ -179,9 +179,8 @@ const STEPS = [
       sayLabel: "Run this command:",
       say: "openclaw config set skills.entries.agentpit-reference.env.AGENTPIT_API_KEY [YOUR_API_KEY]",
     },
-    /* appLink(), not a hand-written URL: it resolves APP_URL per environment
-     * (the staging build points at app.freeclaws.ai) and tags the hop with the
-     * landing campaign, which is the only way the analytics can see it - the
+    /* appLink(), not a hand-written URL: it builds on APP_URL and tags the hop
+     * with the landing campaign, which is the only way the analytics can see it - the
      * session id is hostname-scoped, so an untagged arrival is
      * indistinguishable from someone who typed the app URL. See config.ts. */
     link: { label: "Open your agents", href: appLink("/agents"), event: "openapp-step" },

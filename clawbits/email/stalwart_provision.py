@@ -25,7 +25,7 @@ Environment variables:
                                (compose: https://stalwart, dev bare-metal: https://localhost)
     STALWART_MGMT_VERIFY_SSL - verify the management TLS cert (default: false, internal hop)
     STALWART_SVC_USER        - service/impersonator account (default: admin = recovery admin)
-    STALWART_SVC_PASSWORD    - service account password (dotenvx-encrypted in staging/prod)
+    STALWART_SVC_PASSWORD    - service account password (dotenvx-encrypted in prod)
 """
 import logging
 import os

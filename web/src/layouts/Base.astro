@@ -56,8 +56,8 @@ const ogImageUrl = new URL(`/og/${og}.png`, Astro.site).href;
  * unlike the app this site ships a separate build per environment and therefore
  * knows its own origin at build time. Since the apex cutover on 2026-08-12 the
  * production target is SITE_URL=https://clawbits.ai, so this is ON in
- * production and OFF everywhere else - staging (preview.freeclaws.ai) and the
- * still-attached preview.clawbits.ai emit no tag at all. That is the intent:
+ * production and OFF everywhere else - the still-attached preview.clawbits.ai
+ * emits no tag at all. That is the intent:
  * counting rehearsal traffic in the same website as production would put it in
  * the launch numbers permanently.
  *

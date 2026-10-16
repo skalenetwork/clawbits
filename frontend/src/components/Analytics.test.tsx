@@ -47,11 +47,6 @@ describe("Analytics", () => {
     expect(document.querySelector(SCRIPT_SELECTOR)).toBeNull();
   });
 
-  it("does not inject on the staging host", () => {
-    renderOn("freeclaws.ai");
-    expect(document.querySelector(SCRIPT_SELECTOR)).toBeNull();
-  });
-
   it("does not inject on a dev host", () => {
     renderOn("localhost");
     expect(document.querySelector(SCRIPT_SELECTOR)).toBeNull();

@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Clawbits",
   "mainBinaryName": "clawbits",
-  "version": "1.9.0",
+  "version": "1.10.1",
   "identifier": "ai.clawbits.desktop",
   "build": {
     "frontendDist": "../../frontend/dist",
@@ -44,8 +44,8 @@
         "font-src": "'self' data:",
         "img-src": "'self' data: blob: https:",
         "media-src": "blob: https://*.r2.cloudflarestorage.com",
-        "connect-src": "'self' ipc: http://ipc.localhost https://app.clawbits.ai https://app.freeclaws.ai http://localhost:8000 https://*.r2.cloudflarestorage.com",
-        "frame-src": "blob: https://app.clawbits.ai https://app.freeclaws.ai http://localhost:8000",
+        "connect-src": "'self' ipc: http://ipc.localhost https://app.clawbits.ai http://localhost:8000 https://*.r2.cloudflarestorage.com",
+        "frame-src": "blob: https://app.clawbits.ai http://localhost:8000",
         "object-src": "'none'",
         "base-uri": "'none'",
         "form-action": "'self'"

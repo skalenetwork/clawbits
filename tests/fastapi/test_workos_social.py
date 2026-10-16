@@ -93,7 +93,6 @@ def test_social_callback_mobile_bridge_emits_clawbits_deeplink(test_client):
     assert "clawbits://oauth-callback?token=" in body
     # Mobile path uses the bare scheme, never the env-suffixed one.
     assert "clawbits-dev://" not in body
-    assert "clawbits-staging://" not in body
 
 
 # --------------------------------------------------------------------------

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Boot the ClawBits backend. Defaults to production (fail-closed).
 #   Local dev:  APP_ENV=development scripts/start_server.sh   (single worker + --reload)
-#   Staging VM: APP_ENV=staging scripts/start_server.sh        (4 workers, no reload)
 #   Prod VM:    scripts/start_server.sh                        (4 workers, no reload)
 # The matching DOTENV_PRIVATE_KEY_<APP_ENV> must be exported by the systemd
 # unit / Komodo stack — secrets at rest live only in .env.<APP_ENV>
