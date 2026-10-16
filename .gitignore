@@ -28,6 +28,7 @@ node_modules/
 dist/
 build/
 .vite/
+.astro/
 *.tsbuildinfo
 *-debug.log*
 
