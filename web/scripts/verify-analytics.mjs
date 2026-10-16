@@ -38,10 +38,10 @@ if (!existsSync(INDEX)) {
 const html = readFileSync(INDEX, "utf8");
 
 /* The tag only exists on builds whose SITE_URL is a tracked host (Base.astro's
- * `trackAnalytics`). Staging ships without it, and that is not a failure. */
+ * `trackAnalytics`). Any other build ships without it, and that is not a failure. */
 const tag = html.match(/<script[^>]*\bdata-website-id=[^>]*>/i)?.[0];
 if (!tag) {
-  console.log("verify:analytics - no analytics tag in this build (staging); skipped");
+  console.log("verify:analytics - no analytics tag in this build (untracked host); skipped");
   process.exit(0);
 }
 

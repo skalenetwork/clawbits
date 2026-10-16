@@ -278,7 +278,7 @@ fn send_body(
 /// Pull a refreshed session token out of a `Set-Cookie` value.
 ///
 /// The cookie name is environment-dependent — the server suffixes it (`_dev`,
-/// `_staging`, …) so a developer's browser can hold sessions for two
+/// …) so a developer's browser can hold sessions for two
 /// deployments at once — so this matches on prefix rather than an exact name.
 /// An empty value means a deletion (that's how logout clears them) and must not
 /// be mistaken for a new token.
@@ -337,7 +337,7 @@ mod tests {
             Some("xyz".into())
         );
         assert_eq!(
-            rotated_session_from_cookie("fc_dev_session_staging=q; Path=/"),
+            rotated_session_from_cookie("fc_dev_session_dev=q; Path=/"),
             Some("q".into())
         );
     }

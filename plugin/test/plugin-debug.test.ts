@@ -45,7 +45,7 @@ describe("APP_ENV gates", () => {
   it("isHealthcheckEnvEnabled is false for production / unset / garbage", () => {
     assert.equal(withAppEnv("production", isHealthcheckEnvEnabled), false);
     assert.equal(withAppEnv(undefined, isHealthcheckEnvEnabled), false);
-    assert.equal(withAppEnv("staging", isHealthcheckEnvEnabled), false);
+    assert.equal(withAppEnv("preview", isHealthcheckEnvEnabled), false);
     assert.equal(withAppEnv("Development", isHealthcheckEnvEnabled), false); // case-sensitive
   });
 

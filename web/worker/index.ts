@@ -75,15 +75,12 @@ const APP_PATH_PREFIXES = [
   "/login",
 ];
 
-/** The app host for the zone this request arrived on, so the staging worker
- *  never bounces anyone into production. Unknown hosts get null - a preview or
- *  *.workers.dev deploy should keep 404ing rather than guess. */
+/** The app origin for a request on the clawbits.ai zone. Unknown hosts get
+ *  null - a *.workers.dev deploy should keep 404ing rather than guess. */
 function appOriginFor(hostname: string): string | null {
-  for (const zone of ["clawbits.ai", "freeclaws.ai"]) {
-    if (hostname === zone || hostname.endsWith(`.${zone}`))
-      return `https://app.${zone}`;
-  }
-  return null;
+  return hostname === "clawbits.ai" || hostname.endsWith(".clawbits.ai")
+    ? "https://app.clawbits.ai"
+    : null;
 }
 
 function legacyAppRedirect(url: URL): Response | null {

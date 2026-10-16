@@ -8,20 +8,6 @@
  * change here rather than a grep across the site.
  */
 
-/**
- * Where "Sign in" and "Get started" point, per environment.
- *
- * The default is the post-cutover production URL - see the note above; the
- * staging build overrides it because freeclaws is a different deployment, not
- * a different page of the same one. Set in .github/workflows/web.yaml.
- *
- * PUBLIC_ prefix: this is read from a module that .astro pages import, so it
- * has to be a value Vite inlines at build time. Un-prefixed vars are stripped
- * from `import.meta.env`, which would silently fall back to the default here
- * and ship staging with production links - the exact failure this replaces.
- */
-const APP_URL_ENV = import.meta.env.PUBLIC_APP_URL;
-
 export const SITE = {
   name: "Clawbits",
   domain: "clawbits.ai",
@@ -65,7 +51,8 @@ export const OG_CARDS = {
 
 export type OgCard = keyof typeof OG_CARDS;
 
-export const APP_URL = APP_URL_ENV ?? "https://app.clawbits.ai";
+/** Where "Sign in" and "Get started" point. */
+export const APP_URL = "https://app.clawbits.ai";
 
 /**
  * Hosts whose traffic is counted. ONE Umami website spans both.
@@ -109,7 +96,7 @@ const ANALYTICS_HOSTS: readonly string[] = ["clawbits.ai", "app.clawbits.ai"];
  *
  * `data-domains` is the belt: the tracker matches it against
  * `window.location.hostname` and does not run at all anywhere else. That is
- * what keeps preview.clawbits.ai, preview.freeclaws.ai, *.workers.dev and
+ * what keeps preview.clawbits.ai, *.workers.dev and
  * localhost out of the numbers even when the tag reaches them.
  */
 export const ANALYTICS = {

@@ -65,8 +65,7 @@ COPY --chown=app:app ironclaw-channel/Cargo.toml /app/ironclaw-channel/Cargo.tom
 COPY --chown=app:app pyproject.toml uv.lock alembic.ini /app/
 # Only the env files present in the build context land here. On a prod build
 # that is just .env.production, because scripts/sync_env.sh materialises one
-# env at a time — so a prod image no longer carries dev and staging ciphertext
-# the way it did when all three were committed and copied unconditionally.
+# env at a time — so a prod image never carries dev ciphertext.
 COPY --chown=app:app .env.* /app/
 
 USER app

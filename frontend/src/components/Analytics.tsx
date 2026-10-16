@@ -5,13 +5,13 @@ import { BEFORE_SEND, beforeSendPayload } from "../lib/analytics";
 /**
  * Loads the Umami analytics script on mount, exactly once per page load.
  *
- * The frontend ships ONE static build for every environment (prod, staging,
- * dev, desktop) — only the live hostname differs — so we gate on
+ * The frontend ships ONE static build for every environment (prod, dev,
+ * desktop) — only the live hostname differs — so we gate on
  * `location.hostname` at runtime rather than a build-time flag. A `VITE_*`
  * flag is baked identically into the shared bundle (it can't even tell
- * staging from prod) and silently disables tracking everywhere if it's ever
+ * dev from prod) and silently disables tracking everywhere if it's ever
  * unset, which is exactly what happened before. The hostname gate also keeps
- * the third-party script off staging, dev, and the desktop (Tauri) build,
+ * the third-party script off dev and the desktop (Tauri) build,
  * where its host isn't in the allowlist.
  *
  * `ANALYTICS_HOSTS` is the single source of truth: it drives both the load

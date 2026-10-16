@@ -28,12 +28,10 @@ def session_fingerprint(sealed: str | None) -> str:
 
 
 def _env_suffix() -> str:
-    """Suffix cookie names by env so dev/staging/prod never collide."""
+    """Suffix cookie names by env so dev and prod never collide."""
     env = (os.environ.get("CLAWBITS_ENV") or "").strip().lower()
     if env in ("", "production"):
         return ""
-    if env == "staging":
-        return "_staging"
     if env in ("development", "dev", "local", "test"):
         return "_dev"
     return f"_{env}"

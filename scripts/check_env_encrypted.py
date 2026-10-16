@@ -28,7 +28,7 @@ from pathlib import Path
 
 # A key whose name matches any of these must not carry a plaintext value.
 SECRET_NAME_RE = re.compile(
-    r"(TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|_KEY$|^OPENAI_KEY$|API_KEY)",
+    r"(TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|_KEY$|API_KEY)",
     re.IGNORECASE,
 )
 
@@ -36,7 +36,7 @@ SECRET_NAME_RE = re.compile(
 # and justify every entry — it is the only way a plaintext value gets through.
 PUBLIC_ALLOWLIST = {
     # dotenvx's own public half; the whole point is that it is committed.
-    *(f"DOTENV_PUBLIC_KEY_{env}" for env in ("DEVELOPMENT", "STAGING", "PRODUCTION")),
+    *(f"DOTENV_PUBLIC_KEY_{env}" for env in ("DEVELOPMENT", "PRODUCTION")),
     # VAPID's public half is handed to the browser at subscribe time.
     "CLAWBITS_VAPID_PUBLIC_KEY",
     # OAuth client IDs are public by specification; the secrets are separate keys.

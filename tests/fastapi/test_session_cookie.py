@@ -222,7 +222,7 @@ def test_session_cookie_has_security_attributes(client: TestClient) -> None:
 # Env-scoped cookie names. Defends against the "I'm logged in on prod
 # and dev simultaneously and DevTools just shows two ``fc_session`` rows"
 # footgun if anyone ever introduces a shared ``domain=`` attribute or
-# someone points a local dev frontend at staging.
+# someone points a local dev frontend at prod.
 # ---------------------------------------------------------------------------
 
 
@@ -231,7 +231,6 @@ def test_session_cookie_has_security_attributes(client: TestClient) -> None:
     [
         (None, ""),                  # unset → treated as prod
         ("production", ""),          # prod stays unsuffixed for migration safety
-        ("staging", "_staging"),
         ("development", "_dev"),
         ("dev", "_dev"),
         ("local", "_dev"),
@@ -268,7 +267,7 @@ def test_env_suffix_resolution(
 # Cookie-name resolution at the auth dependency. Pins the bug where
 # ``Cookie(default=None)`` alone defaults to the parameter name as the
 # cookie name — silently breaking auth when cookie names are env-suffixed
-# (``fc_session_staging`` etc.) because the dependency was looking for
+# (``fc_session_dev`` etc.) because the dependency was looking for
 # the literal string ``fc_session``. Caught only at deploy time without
 # this test.
 # ---------------------------------------------------------------------------
@@ -277,7 +276,7 @@ def test_env_suffix_resolution(
 def test_auth_dependency_reads_cookie_by_alias() -> None:
     """``get_current_human_user`` must use ``Cookie(alias=SESSION_COOKIE)``,
     not the bare parameter name. Without the alias, env-suffixed cookies
-    (``fc_session_staging``) wouldn't be found and every request 401s.
+    (``fc_session_dev``) wouldn't be found and every request 401s.
 
     This is a *contract test* on the dependency signature — if anyone
     drops the ``alias=`` argument, this test catches it before deploy.

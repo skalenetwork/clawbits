@@ -64,7 +64,7 @@ def test_gate_off_when_env_is_production(monkeypatch):
 
 
 def test_gate_off_when_env_is_unknown(monkeypatch):
-    _set_env(monkeypatch, dev_auth="1", env="staging", workos=None)
+    _set_env(monkeypatch, dev_auth="1", env="preview", workos=None)
     assert is_dev_auth_enabled() is False
 
 
@@ -84,7 +84,7 @@ def test_gate_on_when_all_signals_agree(monkeypatch, env_value):
 
 def test_gate_disabled_default_for_missing_flag(monkeypatch):
     """Belt-and-suspenders: if the flag isn't set, NOTHING enables dev auth."""
-    for env_value in ["development", "dev", "production", None, "staging"]:
+    for env_value in ["development", "dev", "production", None]:
         _set_env(monkeypatch, dev_auth=None, env=env_value, workos=None)
         assert is_dev_auth_enabled() is False, f"flag-unset env={env_value!r}"
 
