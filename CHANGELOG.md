@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.10.1](https://github.com/skalenetwork/clawbits/compare/v1.10.0...v1.10.1) (2026-10-16)
+
 ## [1.10.0](https://github.com/skalenetwork/clawbits/compare/v1.9.0...v1.10.0) (2026-10-09)
 
 
