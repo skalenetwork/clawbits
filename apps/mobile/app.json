@@ -22,6 +22,9 @@
       },
       "supportsTablet": false,
       "appleTeamId": "KNNT2S5R84",
+      "config": {
+        "usesNonExemptEncryption": false
+      },
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Clawbits attaches photos you choose to messages.",
         "NSCameraUsageDescription": "Clawbits uses the camera to take photos for messages."
