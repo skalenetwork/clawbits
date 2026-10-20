@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
+  Pressable,
   StyleSheet,
   Text,
   useColorScheme,
@@ -13,7 +14,10 @@ import * as WebBrowser from "expo-web-browser";
 import { apiUrl, request } from "@/lib/api";
 import type { User } from "@/lib/models";
 import { useSession } from "@/lib/session";
-import { GlassButton, GlassField, styles } from "@/components/ui";
+import { color, GlassButton, GlassField, styles } from "@/components/ui";
+
+const PRIVACY_URL = "https://clawbits.ai/privacy/";
+const TERMS_URL = "https://clawbits.ai/terms/";
 
 const providers = [
   ["google", "Google", require("../../assets/images/google.svg")],
@@ -75,10 +79,7 @@ export default function SignIn() {
     });
   return (
     <SafeAreaView style={styles.screen}>
-      <KeyboardAvoidingView
-        behavior="padding"
-        style={layout.screen}
-      >
+      <KeyboardAvoidingView behavior="padding" style={layout.screen}>
         <View style={layout.stack}>
           <Image
             source={require("../../assets/images/clawbits-long-current.svg")}
@@ -157,7 +158,25 @@ export default function SignIn() {
           )}
         </View>
       </KeyboardAvoidingView>
+      <View style={layout.legal}>
+        <LegalLink label="Privacy policy" url={PRIVACY_URL} />
+        <LegalLink label="Terms of service" url={TERMS_URL} />
+      </View>
     </SafeAreaView>
+  );
+}
+
+function LegalLink({ label, url }: { label: string; url: string }) {
+  return (
+    <Pressable
+      accessibilityRole="link"
+      hitSlop={8}
+      onPress={() => {
+        void WebBrowser.openBrowserAsync(url);
+      }}
+    >
+      <Text style={layout.legalLink}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -166,4 +185,11 @@ const layout = StyleSheet.create({
   stack: { gap: 28 },
   logo: { width: 132, height: 22, alignSelf: "center" },
   block: { gap: 10 },
+  legal: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 20,
+    paddingBottom: 8,
+  },
+  legalLink: { fontSize: 13, color: color.muted },
 });

@@ -14,7 +14,6 @@ import { useSession } from "@/lib/session";
 import { ChatFilter } from "@/components/chat-filter";
 import { ChatRow } from "@/components/chat-row";
 import { color, Empty, styles } from "@/components/ui";
-import { OrgMenu } from "@/components/org-menu";
 
 const emptyTitle: Record<ChatTab, string> = {
   all: "No conversations yet",
@@ -111,12 +110,7 @@ export default function Chats() {
           offline={failed && channels.length > 0}
         />
       </Animated.View>
-      <Stack.Screen
-        options={{
-          headerShadowVisible: false,
-          headerLeft: () => <OrgMenu />,
-        }}
-      />
+      <Stack.Screen options={{ headerShadowVisible: false }} />
     </>
   );
 }

@@ -5,6 +5,7 @@ import {
   Label,
   LabeledContent,
   Link,
+  Picker,
   Section,
   Text,
 } from "@expo/ui/swift-ui";
@@ -12,10 +13,12 @@ import {
   disabled as disabledModifier,
   foregroundStyle,
   lineLimit,
+  tag,
 } from "@expo/ui/swift-ui/modifiers";
 import { useState } from "react";
 import { Alert } from "react-native";
 import { api, ApiError } from "@/lib/api";
+import { useOrganizations } from "@/lib/data";
 import { useSession } from "@/lib/session";
 import { useHostColorScheme } from "@/components/ui";
 
@@ -23,11 +26,22 @@ const PRIVACY_URL = "https://clawbits.ai/privacy/";
 const TERMS_URL = "https://clawbits.ai/terms/";
 
 export default function Settings() {
-  const { session, signOut } = useSession();
+  const { session, signOut, selectOrg } = useSession();
+  const { organizations, selected } = useOrganizations();
   const [deleting, setDeleting] = useState(false);
   const colorScheme = useHostColorScheme();
   const name = session?.user.display_name?.trim() || "—";
   const email = session?.user.email ?? "";
+
+  const chooseOrg = (orgId: string | number | null) => {
+    if (typeof orgId !== "string" || orgId === selected?.org_id) return;
+    void selectOrg(orgId).catch((error: unknown) => {
+      Alert.alert(
+        "Could not switch workspace",
+        error instanceof Error ? error.message : "Please try again.",
+      );
+    });
+  };
 
   const confirmSignOut = () => {
     Alert.alert("Sign out?", undefined, [
@@ -84,6 +98,25 @@ export default function Settings() {
           <LabeledContent label="Email">
             <Text modifiers={[lineLimit(1)]}>{email}</Text>
           </LabeledContent>
+        </Section>
+        <Section title="Workspace">
+          {organizations.length > 0 ? (
+            <Picker
+              label="Workspace"
+              selection={selected?.org_id}
+              onSelectionChange={chooseOrg}
+            >
+              {organizations.map((org) => (
+                <Text key={org.org_id} modifiers={[tag(org.org_id)]}>
+                  {org.display_name || org.name}
+                </Text>
+              ))}
+            </Picker>
+          ) : (
+            <LabeledContent label="Workspace">
+              <Text>—</Text>
+            </LabeledContent>
+          )}
         </Section>
         <Section>
           <Button

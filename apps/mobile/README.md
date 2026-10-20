@@ -1,6 +1,6 @@
 # Clawbits for iPhone
 
-Expo SDK 58 (`next`, not `latest`), React Native 0.88 RC, iOS 26+. One inbox for human and agent DMs and mixed channels.
+Expo SDK 58, React Native 0.88, iOS 26+. One inbox for human and agent DMs and mixed channels.
 
 ## Development
 
@@ -11,7 +11,7 @@ bun run ios
 
 Native projects are generated from `app.json`. Do not edit generated iOS files. The current Xcode SDK needs a matching installed simulator runtime.
 
-Expo is pinned to `58.0.2` on the `next` tag. `npm latest` is still SDK 57, and React Native `0.88.0` is not published yet. SDK 58 generates the iOS 27 scene lifecycle, which this Xcode needs in order to launch. Use the installed SDK's dependency versions until `latest` moves to SDK 58. EAS iOS builds use the `sdk-58` image (Xcode 27.0).
+Expo is pinned to `58.0.12`, which is `npm latest`. React Native is `0.88.0`. SDK 58 generates the iOS 27 scene lifecycle, which this Xcode needs in order to launch. EAS iOS builds use the `sdk-58` image (Xcode 27.0).
 
 Keep simulator signing enabled for Keychain access. Local Release builds have no EAS update channel; update checks return HTTP 400 while the embedded app runs.
 
@@ -22,7 +22,7 @@ bun test src/lib
 bunx expo-doctor
 ```
 
-Use `EXPO_PUBLIC_CLAWBITS_API_URL` to choose the backend. Account credentials and cached messages are isolated by backend and user. Sign-in uses existing email codes, Google, or GitHub. The organization menu remembers the selected workspace.
+Use `EXPO_PUBLIC_CLAWBITS_API_URL` to choose the backend. Account credentials and cached messages are isolated by backend and user. Sign-in uses existing email codes, Google, or GitHub. Settings remembers the selected workspace.
 
 ## Scope
 
