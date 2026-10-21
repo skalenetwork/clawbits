@@ -11,15 +11,15 @@ export interface CapturedHttpExchange {
 
 export const capturedHttpExchanges: CapturedHttpExchange[] = [];
 
-// Test seam: when set, `captureHttpExchange` throws instead of recording — used
-// to prove a capture-store failure can't corrupt the surrounding request.
+// Test seam: when set, `captureHttpExchangeAsync` rejects instead of recording —
+// used to prove a capture-store failure can't corrupt the surrounding request.
 let captureThrows: Error | null = null;
 
 export function __setCaptureThrows(err: Error | null): void {
   captureThrows = err;
 }
 
-export function captureHttpExchange(params: CapturedHttpExchange): void {
+export async function captureHttpExchangeAsync(params: CapturedHttpExchange): Promise<void> {
   if (captureThrows) throw captureThrows;
   capturedHttpExchanges.push(params);
 }

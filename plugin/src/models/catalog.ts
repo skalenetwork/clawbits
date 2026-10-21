@@ -4,6 +4,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
 type PluginRuntime = OpenClawPluginApi["runtime"];
 type ThinkingPolicy = ReturnType<PluginRuntime["agent"]["resolveThinkingPolicy"]>;
+type ThinkingCatalog = Parameters<PluginRuntime["agent"]["resolveThinkingPolicy"]>[0]["catalog"];
 
 interface ModelOption {
   ref: string;
@@ -70,7 +71,7 @@ export async function readCatalog(
   await loadPreparedModelCatalog({ config, agentId, readOnly: true, refreshFullCatalog: true });
   const data = await buildPreparedModelsProviderData(config, agentId);
   const policyFor = (provider: string, model: string): ThinkingPolicy =>
-    agent.resolveThinkingPolicy({ provider, model, catalog: data.modelCatalog });
+    agent.resolveThinkingPolicy({ provider, model, catalog: data.modelCatalog as ThinkingCatalog });
   const defaults = config.agents?.defaults;
   const primary = typeof defaults?.model === "string" ? defaults.model : defaults?.model?.primary;
   const fallback = primary ? parseModelRef(primary, agent.defaults.provider) : null;

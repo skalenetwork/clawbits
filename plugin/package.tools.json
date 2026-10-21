@@ -14,7 +14,7 @@
     "node": ">=22"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.6.10"
+    "openclaw": ">=2026.9.7"
   },
   "peerDependenciesMeta": {
     "openclaw": {
@@ -36,12 +36,12 @@
       "./skills"
     ],
     "compat": {
-      "pluginApi": ">=2026.6.10",
-      "minGatewayVersion": "2026.6.10"
+      "pluginApi": ">=2026.9.7",
+      "minGatewayVersion": "2026.9.7"
     },
     "build": {
-      "openclawVersion": "2026.9.4",
-      "pluginSdkVersion": "2026.9.4"
+      "openclawVersion": "2026.9.7",
+      "pluginSdkVersion": "2026.9.7"
     },
     "configSchema": {
       "type": "object",
