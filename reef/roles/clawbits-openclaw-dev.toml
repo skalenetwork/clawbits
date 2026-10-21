@@ -16,7 +16,8 @@
 version = 1
 
 name  = "clawbits-openclaw-dev"
-image = "ghcr.io/skalenetwork/clawbits-openclaw:oc2026.9.8-pl0.22.0-g0dba825"
+image = "ghcr.io/skalenetwork/clawbits-openclaw:oc2026.10.5-pl0.23.0-g2aab82b"
+fleet-env = ["CLAWBITS_ORG_ID", "CLAWBITS_SIGNUP_TOKEN", "OPENCLAW_PUBLIC_HOST"]
 init  = ["/usr/bin/tini", "-s", "--", "/usr/local/bin/clawbits-start"]
 
 [resources]
@@ -64,4 +65,4 @@ egress = ["*"]
 host = [8000]
 
 [secrets]
-OPENROUTER_API_KEY = { ref = "reef://clawbits-openclaw/openrouter", host = "openrouter.ai" }
+OPENROUTER_API_KEY = { ref = "reef://clawbits-openclaw/openrouter", host = "openrouter.ai", headers = ["authorization"] }

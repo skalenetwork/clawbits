@@ -378,8 +378,14 @@ export async function getReef(orgId: string) {
   return request<Reef>(orgUrl(orgId, "/reef"), { detail: true });
 }
 
-export async function setReef(orgId: string, repo: string, token: string) {
-  return request<Reef>(orgUrl(orgId, "/reef"), { ...json("PUT", { repo, token }), detail: true });
+/** Where to send the browser: with `manifest`, POST it there to create the org's GitHub App. */
+export interface ReefConnect {
+  url: string;
+  manifest: string | null;
+}
+
+export async function connectReef(orgId: string, repo: string) {
+  return request<ReefConnect>(orgUrl(orgId, "/reef/connect"), { ...json("POST", { repo }), detail: true });
 }
 
 export async function deleteReef(orgId: string) {
@@ -410,6 +416,13 @@ export async function setReefRoleAccess(orgId: string, role: string, access: Ree
 
 export async function createReefAgent(orgId: string, body: { host: string; role: string }) {
   return request<ReefCreatedAgent>(orgUrl(orgId, "/reef/agents"), { ...json("POST", body), detail: true });
+}
+
+export async function moveReefAgent(orgId: string, host: string, name: string, to: string) {
+  return request<ReefDeclaredAgent>(
+    orgUrl(orgId, `/reef/agents/${encodeURIComponent(host)}/${encodeURIComponent(name)}/move`),
+    { ...json("POST", { host: to }), detail: true },
+  );
 }
 
 export async function deleteReefAgent(orgId: string, host: string, name: string) {

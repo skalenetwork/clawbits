@@ -67,13 +67,19 @@ function installFetchStub(
   };
 }
 
-function installMockWebSocket(events: unknown[]): { urls: string[]; restore: () => void } {
+function installMockWebSocket(events: unknown[]): {
+  urls: string[];
+  authorizations: (string | undefined)[];
+  restore: () => void;
+} {
   const original = globalThis.WebSocket;
   const urls: string[] = [];
+  const authorizations: (string | undefined)[] = [];
   class MockWebSocket {
     #listeners = new Map<string, Set<(event: unknown) => void>>();
-    constructor(url: string) {
+    constructor(url: string, init?: { headers?: Record<string, string> }) {
       urls.push(url);
+      authorizations.push(init?.headers?.Authorization);
       queueMicrotask(() => {
         this.emit("open", {});
         for (const event of events) this.emit("message", { data: JSON.stringify(event) });
@@ -95,7 +101,7 @@ function installMockWebSocket(events: unknown[]): { urls: string[]; restore: () 
     }
   }
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
-  return { urls, restore: () => { globalThis.WebSocket = original; } };
+  return { urls, authorizations, restore: () => { globalThis.WebSocket = original; } };
 }
 
 describe("parsePostsResponse", () => {
@@ -1835,8 +1841,8 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
     }
 
     assert.deepEqual(received.map((m) => m.postId), ["ws-1"]);
-    assert.equal(ws.urls.length, 1);
-    assert.ok(ws.urls[0]!.startsWith("ws://fc.example/base/api/agentic/mm/events/ws"));
+    assert.deepEqual(ws.urls, ["ws://fc.example/base/api/agentic/mm/events/ws"]);
+    assert.deepEqual(ws.authorizations, ["Bearer test-key"]);
     assert.equal(
       stub.calls.some((url) => url.includes("/api/agentic/mm/channels/chan-123/events")),
       false,

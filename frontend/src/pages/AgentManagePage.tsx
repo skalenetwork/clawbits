@@ -5,6 +5,7 @@ import { removeAgentFromOrg } from "@/lib/api";
 import { agentDisplay } from "@/lib/agentDisplay";
 import { queryKeys } from "@/lib/queryKeys";
 import { toast } from "@/lib/toast";
+import { useActiveOrg } from "@/hooks/useActiveOrg";
 import { useAgentDmExport } from "@/hooks/useAgentDmExport";
 import { useAgentTab } from "@/components/agent/agentTabContext";
 import { DeleteAgentDialog } from "@/components/agent/DeleteAgentDialog";
@@ -21,6 +22,7 @@ export default function AgentManagePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const { isOwner } = useActiveOrg();
   const exportAction = useAgentDmExport(orgId, agentId);
   const name = agentDisplay(profile);
 
@@ -42,7 +44,13 @@ export default function AgentManagePage() {
       {profile.is_operator && <ModelSection orgId={orgId} agentId={agentId} />}
       {profile.is_operator && <BehaviorSection orgId={orgId} profile={profile} />}
       {profile.reef_host && profile.reef_name ? (
-        <MachineSection orgId={orgId} host={profile.reef_host} name={profile.reef_name} />
+        <MachineSection
+          orgId={orgId}
+          agentId={agentId}
+          host={profile.reef_host}
+          name={profile.reef_name}
+          canMove={Boolean(profile.is_operator) || isOwner}
+        />
       ) : null}
       {profile.can_manage_contacts && (
         <AccessSection orgId={orgId} agentId={agentId} agentName={name} operator={profile.operator} />

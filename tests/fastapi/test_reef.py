@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import tomllib
 from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -27,6 +29,7 @@ from clawbits.db.models import Agent, Organization
 from clawbits.db.table_write import TableWrite
 from clawbits.reef_repo import (
     NAME_RE,
+    ReefApp,
     ReefRepo,
     ReefRepoError,
     fleet_name,
@@ -116,10 +119,13 @@ class FakeRepo:
     commits: list[tuple[str, str, str]] = []
     calls = 0
     unreachable = False
+    installations: dict[str, int] = {}
+    app_owner = "acme"
 
-    def __init__(self, repo: str, token: str):
+    def __init__(self, repo: str, app: ReefApp, installation: int):
         self.repo = repo
-        self.token = token
+        self.app = app
+        self.installation = installation
 
     @classmethod
     def reset(cls) -> None:
@@ -127,6 +133,20 @@ class FakeRepo:
         cls.commits = []
         cls.calls = 0
         cls.unreachable = False
+        cls.installations = {"acme/agents": 7}
+        cls.app_owner = "acme"
+
+    @staticmethod
+    async def is_organization(owner: str) -> bool:
+        return True
+
+    @staticmethod
+    async def create_app(code: str) -> tuple[ReefApp, str]:
+        return ReefApp(id=5, slug="clawbits-acme", key="PEM"), FakeRepo.app_owner
+
+    @staticmethod
+    async def installation_for(app: ReefApp, repo: str) -> int | None:
+        return FakeRepo.installations.get(repo)
 
     def _check(self) -> None:
         FakeRepo.calls += 1
@@ -135,8 +155,6 @@ class FakeRepo:
 
     async def probe(self) -> None:
         self._check()
-        if self.token != "ghp-good":
-            raise ReefRepoError(f"{self.repo} not found, or the token cannot see it")
 
     async def read(self, branch: str, path: str):
         self._check()
@@ -162,6 +180,9 @@ class FakeRepo:
 def fake_repo(monkeypatch):
     FakeRepo.reset()
     monkeypatch.setattr(he, "ReefRepo", FakeRepo)
+    monkeypatch.setattr(he, "is_organization", FakeRepo.is_organization)
+    monkeypatch.setattr(he, "create_app", FakeRepo.create_app)
+    monkeypatch.setattr(he, "installation_for", FakeRepo.installation_for)
     he._reef_status_cache.clear()
     yield FakeRepo
     he._reef_status_cache.clear()
@@ -175,12 +196,47 @@ def _bare_org(test_client, slug: str, owner_email: str) -> tuple[str, dict]:
     return org_id, owner
 
 
-def _connect(test_client, org_id: str, user: dict, repo: str = "acme/agents", token: str = "ghp-good"):
-    return test_client.put(
-        f"/api/human/orgs/{org_id}/reef",
-        json={"repo": repo, "token": token},
+def _start(test_client, org_id: str, user: dict, repo: str = "acme/agents"):
+    return test_client.post(
+        f"/api/human/orgs/{org_id}/reef/connect",
+        json={"repo": repo},
         headers=_auth(user["access_token"]),
     )
+
+
+def _return(test_client, user: dict, step: str, **params: str):
+    """GitHub sending the browser back to ``created`` or ``installed``."""
+    return test_client.get(
+        f"/api/auth/reef/github/{step}",
+        params=params,
+        headers=_auth(user["access_token"]),
+        follow_redirects=False,
+    )
+
+
+def _state(r) -> str:
+    return parse_qs(urlsplit(r.json()["url"]).query)["state"][0]
+
+
+def _connect(test_client, org_id: str, user: dict, repo: str = "acme/agents"):
+    """Connect through every GitHub round trip: the last redirect, or the
+    start's error when it never got that far."""
+    r = _start(test_client, org_id, user, repo)
+    if r.status_code != 200:
+        return r
+    state = _state(r)
+    if r.json()["manifest"]:
+        created = _return(test_client, user, "created", code="made", state=state)
+        if urlsplit(created.headers["location"]).netloc != "github.com":
+            return created
+    return _return(test_client, user, "installed", state=state, installation_id="999")
+
+
+def _landed(r) -> dict[str, list[str]]:
+    """Where the callback sent the browser: the setup page, and its query."""
+    target = urlsplit(r.headers["location"])
+    assert r.status_code == 302 and target.path == "/setup/reef", r.headers
+    return parse_qs(target.query)
 
 
 def _org(test_client, slug: str, owner_email: str, member_email: str | None = None):
@@ -196,8 +252,7 @@ def _org(test_client, slug: str, owner_email: str, member_email: str | None = No
             json={"email": member_email, "role": "member"},
             headers=_auth(owner["access_token"]),
         )
-    r = _connect(test_client, org_id, owner)
-    assert r.status_code == 200, r.text
+    assert _landed(_connect(test_client, org_id, owner)) == {}
     FakeRepo.files[("main", "roles/openclaw.toml")] = ROLE
     FakeRepo.files[("status", "status/prod-eu.json")] = _status()
     return org_id, owner, member
@@ -253,8 +308,8 @@ def _delete_agent(test_client, org_id: str, user: dict, agent_id: str):
 
 
 def test_connect_lifecycle(test_client, _test_engine):
-    """Owner connects, everyone reads, owner disconnects. The token is sealed
-    at rest and never leaves the server."""
+    """Owner connects, everyone reads, owner disconnects. The org keeps the
+    repository and the App installation covering it, never a token."""
     org_id, owner, member = _org(test_client, "reef-life", "rl-o@test.com", "rl-m@test.com")
     outsider = _register(test_client, "rl-x@test.com")
 
@@ -292,12 +347,11 @@ def test_connect_lifecycle(test_client, _test_engine):
         ],
         "declared": [],
     }
-    assert "ghp-good" not in r.text
 
     with Session(_test_engine) as db:
         stored = db.get(Organization, org_id)
-        assert stored.reef_repo == "acme/agents"
-        assert "ghp-good" not in stored.reef_repo_token
+        placed = (stored.reef_repo, stored.reef_app_id, stored.reef_installation_id)
+        assert placed == ("acme/agents", 5, 7)
 
     assert _reef(test_client, org_id, outsider).status_code == 403
 
@@ -313,7 +367,7 @@ def test_connect_lifecycle(test_client, _test_engine):
 
 def test_org_payload_carries_the_connected_bit(test_client):
     """The home tile gates on this, so it must ride the org payload and never
-    carry the repository or its token."""
+    carry the repository."""
     org_id, owner, _ = _org(test_client, "reef-bit", "rbit-o@test.com")
     headers = _auth(owner["access_token"])
 
@@ -324,7 +378,7 @@ def test_org_payload_carries_the_connected_bit(test_client):
 
     row = org_row()
     assert row["reef_connected"] is True
-    assert "reef_repo" not in row and "ghp-good" not in str(row)
+    assert "reef_repo" not in row and "reef_installation_id" not in row
 
     assert test_client.delete(f"/api/human/orgs/{org_id}/reef", headers=headers).status_code == 204
     assert org_row()["reef_connected"] is False
@@ -337,13 +391,69 @@ def test_connect_is_owner_only(test_client):
     assert r.status_code == 403
 
 
-def test_connect_rejects_a_repo_the_token_cannot_see(test_client):
-    """Nothing is stored unless GitHub confirms the token first."""
-    org_id, owner = _bare_org(test_client, "reef-bad", "rb-o@test.com")
+def test_connect_creates_the_orgs_own_app_then_installs_it(test_client, _test_engine):
+    """The org's App is private to the repository's account, reads and writes
+    contents and nothing else, has no webhook, and its key is kept sealed."""
+    org_id, owner = _bare_org(test_client, "reef-app", "rap-o@test.com")
+    start = _start(test_client, org_id, owner)
+    url = urlsplit(start.json()["url"])
+    assert (url.netloc, url.path) == ("github.com", "/organizations/acme/settings/apps/new")
+    form = json.loads(start.json()["manifest"])
+    assert form["public"] is False and form["hook_attributes"]["active"] is False
+    assert form["default_permissions"] == {"contents": "write", "metadata": "read"}
+    assert form["redirect_url"].endswith("/api/auth/reef/github/created")
+    assert form["setup_url"].endswith("/api/auth/reef/github/installed")
 
-    r = _connect(test_client, org_id, owner, token="ghp-wrong")
-    assert r.status_code == 502, r.text
-    assert _connect(test_client, org_id, owner, repo="not-a-repo").status_code == 422
+    created = _return(test_client, owner, "created", code="made", state=_state(start))
+    install = urlsplit(created.headers["location"])
+    assert (install.netloc, install.path) == ("github.com", "/apps/clawbits-acme/installations/new")
+    assert _landed(_return(test_client, owner, "installed", state=_state(start))) == {}
+    with Session(_test_engine) as db:
+        row = db.get(Organization, org_id)
+        assert (row.reef_app_slug, row.reef_installation_id) == ("clawbits-acme", 7)
+        assert "PEM" not in row.reef_app_key
+    assert _start(test_client, org_id, owner, repo="not-a-repo").status_code == 422
+
+
+def test_reconnecting_reinstalls_the_app_the_org_already_has(test_client):
+    org_id, owner, _ = _org(test_client, "reef-again", "rag-o@test.com")
+    again = _start(test_client, org_id, owner).json()
+    assert again["manifest"] is None
+    assert urlsplit(again["url"]).path == "/apps/clawbits-acme/installations/new"
+    assert _start(test_client, org_id, owner, repo="other/agents").json()["manifest"] is not None
+
+
+def test_an_app_owned_by_another_account_is_refused(test_client):
+    """A private App installs only on its own account, so one created anywhere
+    but the repository's account could never reach it."""
+    org_id, owner = _bare_org(test_client, "reef-mal", "rml-o@test.com")
+    FakeRepo.app_owner = "mallory"
+    assert _landed(_connect(test_client, org_id, owner))["error"] == [
+        "That app belongs to mallory, not acme. Delete it on GitHub and start again."
+    ]
+    assert _reef(test_client, org_id, owner).json()["connected"] is False
+
+
+def test_installing_needs_the_app_on_the_repository(test_client):
+    org_id, owner = _bare_org(test_client, "reef-inst", "ri-o@test.com")
+    FakeRepo.installations = {}
+    assert _landed(_connect(test_client, org_id, owner))["error"] == [
+        "The app is not installed on acme/agents."
+    ]
+
+
+def test_the_returns_trust_only_the_connect_this_browser_started(test_client):
+    """GitHub's redirects are forgeable, so the org, the repository and the
+    person come from the cookie connect set, and a mismatched state ends it."""
+    org_id, owner = _bare_org(test_client, "reef-csrf", "rc-o@test.com")
+    other = _register(test_client, "rc-x@test.com")
+
+    assert "error" in _landed(_return(test_client, owner, "created", code="made"))
+    _start(test_client, org_id, owner)
+    assert "error" in _landed(_return(test_client, owner, "created", code="made", state="forged"))
+    state = _state(_start(test_client, org_id, owner))
+    assert "error" in _landed(_return(test_client, other, "created", code="made", state=state))
+    assert "error" in _landed(_return(test_client, owner, "installed"))
     assert _reef(test_client, org_id, owner).json()["connected"] is False
 
 
@@ -667,18 +777,6 @@ def test_purge_replaces_the_fleet_file_with_its_tombstone(test_client):
     assert FakeRepo.commits[-1] == ("purge ana-bot from prod-eu", "rm-o", "rm-o@test.com")
 
 
-def test_declared_survives_an_unsealable_token(test_client, monkeypatch):
-    """A rotated secrets key disconnects the repository, not the agents already
-    declared on it."""
-    org_id, owner, _ = _org(test_client, "reef-sealed", "rs-o@test.com")
-    _declare(test_client, org_id, owner)
-    monkeypatch.setattr(he, "decrypt_secret", lambda _: None)
-
-    r = _reef(test_client, org_id, owner)
-    assert r.json()["connected"] is False
-    assert [(d["host"], d["name"]) for d in r.json()["declared"]] == [("prod-eu", "ana-bot")]
-
-
 def test_purge_before_enrolment_burns_the_token(test_client):
     """The tombstone replaces the file but its token stays in git history, so
     purging an agent that has not enrolled revokes that token too."""
@@ -778,6 +876,111 @@ def test_only_the_newest_placement_purges(test_client, _test_engine, deleted, pu
     assert r.status_code == 200, r.text
     assert _purged() is purged
 
+def _move(test_client, org_id: str, user: dict, to: str, host: str = "prod-eu"):
+    return test_client.post(
+        f"/api/human/orgs/{org_id}/reef/agents/{host}/ana-bot/move",
+        json={"host": to},
+        headers=_auth(user["access_token"]),
+    )
+
+
+def _declared_env(host: str) -> dict[str, str]:
+    raw = FakeRepo.files[("fleet", f"fleet/{host}/ana-bot.toml")]
+    return tomllib.loads(raw.decode())["agents"]["ana-bot"]["env"]
+
+
+def test_move_brings_the_same_agent_back_on_another_host(test_client, _test_engine):
+    """The new host's file carries a token that hands the enrolled agent a new
+    key: same id, same channel, and only the new key is valid."""
+    org_id, owner, _ = _org(test_client, "reef-move", "rmv-o@test.com")
+    FakeRepo.files[("status", "status/prod-us.json")] = _status("prod-us", agents=[])
+    first = _commit(test_client, _declare(test_client, org_id, owner)).json()
+
+    r = _move(test_client, org_id, owner, "prod-us")
+    assert r.status_code == 200, r.text
+    assert _purged()
+    assert _reef(test_client, org_id, owner).json()["declared"] == []
+
+    again = _commit(test_client, _declared_env("prod-us")["CLAWBITS_SIGNUP_TOKEN"]).json()
+    assert (again["agent_id"], again["channel_id"]) == (first["agent_id"], first["channel_id"])
+    with Session(_test_engine) as db:
+        row = db.get(Agent, first["agent_id"])
+        assert (row.reef_host, row.reef_name) == ("prod-us", "ana-bot")
+        assert row.api_key_hash == hashlib.sha256(again["api_key"].encode()).hexdigest()
+
+
+def test_move_to_its_own_host_redeclares_in_place(test_client):
+    org_id, owner, _ = _org(test_client, "reef-redo", "rdo-o@test.com")
+    spent = _declare(test_client, org_id, owner)
+    _commit(test_client, spent)
+
+    assert _move(test_client, org_id, owner, "prod-eu").status_code == 200
+    assert _declared_env("prod-eu")["CLAWBITS_SIGNUP_TOKEN"] != spent
+    assert FakeRepo.commits[-1][0] == "redeclare ana-bot on prod-eu"
+
+
+def test_move_is_operator_or_owner_only(test_client):
+    org_id, owner, member = _org(test_client, "reef-mvo", "mvo-o@test.com", "mvo-m@test.com")
+    _enrol(test_client, org_id, owner)
+    assert _move(test_client, org_id, member, "prod-eu").status_code == 403
+
+
+def test_move_needs_an_enrolled_agent_a_known_host_and_a_free_name(test_client):
+    org_id, owner, _ = _org(test_client, "reef-mvx", "mvx-o@test.com")
+    token = _declare(test_client, org_id, owner)
+    assert _move(test_client, org_id, owner, "prod-eu").status_code == 404
+    _commit(test_client, token)
+    assert _move(test_client, org_id, owner, "nowhere").status_code == 422
+
+    FakeRepo.files[("status", "status/prod-us.json")] = _status("prod-us", agents=[])
+    FakeRepo.files[("fleet", "fleet/prod-us/ana-bot.toml")] = purge_toml("ana-bot")
+    he._reef_status_cache.clear()
+    assert _move(test_client, org_id, owner, "prod-us").status_code == 409
+
+
+def test_a_moved_agents_token_dies_with_the_agent(test_client):
+    org_id, owner, _ = _org(test_client, "reef-mvd", "mvd-o@test.com")
+    FakeRepo.files[("status", "status/prod-us.json")] = _status("prod-us", agents=[])
+    agent_id = _enrol(test_client, org_id, owner)
+    _move(test_client, org_id, owner, "prod-us")
+    token = _declared_env("prod-us")["CLAWBITS_SIGNUP_TOKEN"]
+
+    assert _delete_agent(test_client, org_id, owner, agent_id).status_code == 200
+    assert _commit(test_client, token).status_code == 401
+
+
+def test_tokens_reach_the_one_repository_or_none_is_handed_out(monkeypatch):
+    """Reads get a read-only token and writes a write one, each reused until
+    shortly before it expires, and none at all while the installation reaches
+    more than the one repository: an org admin can widen it at any time."""
+    minted: list[dict] = []
+    reach = ["acme/store"]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            minted.append(json.loads(request.content))
+            expires = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+            return httpx.Response(201, json={"token": f"t{len(minted)}", "expires_at": expires})
+        return httpx.Response(200, json={"repositories": [{"full_name": n} for n in reach]})
+
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(reef_repo, "_client", httpx.AsyncClient(transport=transport))
+    monkeypatch.setattr(reef_repo, "_tokens", {})
+    monkeypatch.setattr(reef_repo, "_app_jwt", lambda app: "jwt")
+    app = ReefApp(id=1, slug="s", key="k")
+
+    async def mint(*writes: bool) -> list[str]:
+        return [await reef_repo._installation_token(app, 7, "acme/store", w) for w in writes]
+
+    assert asyncio.run(mint(False, False, True)) == ["t1", "t1", "t2"]
+    assert [m["permissions"]["contents"] for m in minted] == ["read", "write"]
+
+    reef_repo._tokens.clear()
+    reach.append("acme/other")
+    with pytest.raises(ReefRepoError, match="acme/store alone"):
+        asyncio.run(mint(False))
+
+
 @pytest.fixture
 def github(monkeypatch) -> list[str | None]:
     """GitHub answering every GET with one ETagged file, and 304 to any
@@ -791,14 +994,18 @@ def github(monkeypatch) -> list[str | None]:
         body = {"sha": "s1", "content": base64.b64encode(b"{}").decode()}
         return httpx.Response(200, json=body, headers={"ETag": '"v1"'})
 
+    async def token(app: ReefApp, installation: int, repo: str, write: bool) -> str:
+        return "t"
+
     transport = httpx.MockTransport(respond)
     monkeypatch.setattr(reef_repo, "_client", httpx.AsyncClient(transport=transport))
     monkeypatch.setattr(reef_repo, "_etags", OrderedDict())
+    monkeypatch.setattr(reef_repo, "_installation_token", token)
     return sent
 
 
 async def _read_all(*paths: str) -> list[tuple[str, bytes] | None]:
-    repo = ReefRepo(repo="acme/store", token="ghp-good")
+    repo = ReefRepo(repo="acme/store", app=ReefApp(id=1, slug="s", key="k"), installation=1)
     return [await repo.read("main", path) for path in paths]
 
 
@@ -830,9 +1037,9 @@ def test_the_etag_cache_skips_fleet_files_and_evicts_least_recent(github, monkey
     ],
 )
 def test_probe_refuses_a_repo_the_bus_cannot_run_on(monkeypatch, private, branches, expected):
-    """The connect form makes exactly one call, so probe carries every check
-    that has to happen before a token is stored: the repo is visible, it is
-    private, and all three branches exist. A missing branch answers 404 on the
+    """Connecting makes exactly one call, so probe carries every check that has
+    to happen before the repository is stored: it is visible, it is private,
+    and all three branches exist. A missing branch answers 404 on the
     Contents API just as a missing file does, so a write would otherwise fail
     much later with nothing useful to say."""
 
@@ -843,7 +1050,7 @@ def test_probe_refuses_a_repo_the_bus_cannot_run_on(monkeypatch, private, branch
         return {"name": tail} if tail in branches else None
 
     monkeypatch.setattr(ReefRepo, "_send", _send)
-    repo = ReefRepo(repo="acme/store", token="ghp-good")
+    repo = ReefRepo(repo="acme/store", app=ReefApp(id=1, slug="s", key="k"), installation=1)
 
     if expected is None:
         asyncio.run(repo.probe())

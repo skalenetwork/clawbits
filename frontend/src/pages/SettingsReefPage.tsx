@@ -352,12 +352,12 @@ export default function SettingsReefPage() {
                   }
                 />
                 <SettingsRow
-                  title="Token"
-                  description={reef.connected ? "Stored and readable" : "The stored token can't be read"}
+                  title="Access"
+                  description="Through your org's own GitHub App"
                   control={
                     isOwner ? (
                       <Button variant="outline" size="sm" onClick={go("/setup/reef?replace=1")}>
-                        Replace token
+                        Reconnect
                       </Button>
                     ) : undefined
                   }
