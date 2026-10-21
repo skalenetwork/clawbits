@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/skalenetwork/clawbits/compare/v1.11.0...v1.11.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* let reef connect post the app manifest to GitHub ([#236](https://github.com/skalenetwork/clawbits/issues/236)) ([ae66661](https://github.com/skalenetwork/clawbits/commit/ae6666141bc16e9421496356a966248c5268e537))
+
 ## [1.11.0](https://github.com/skalenetwork/clawbits/compare/v1.10.1...v1.11.0) (2026-10-21)
 
 
