@@ -1,5 +1,5 @@
-export async function dispatchInboundDirectDmWithRuntime(params: {
-  runtime?: { channel?: { reply?: { dispatchReplyWithBufferedBlockDispatcher?: (payload: unknown) => Promise<unknown> } } };
+export async function dispatchInboundDirectDm(params: {
+  channelRuntime?: { reply?: { dispatchReplyWithBufferedBlockDispatcher?: (payload: unknown) => Promise<unknown> } };
   channel: string;
   accountId: string;
   peer?: { kind: string; id: string };
@@ -10,11 +10,6 @@ export async function dispatchInboundDirectDmWithRuntime(params: {
   bodyForAgent?: string;
   commandBody?: string;
   commandAuthorized?: boolean;
-  // OpenClaw 2026.8 ("2.0"). Real direct-dm.ts stamps `InboundAccessAuthorized`
-  // (and `ConversationRouteContextObserved`) only when this is true; without it
-  // route-context recording, DM sender persistence, turn-reply capture and
-  // archived-session restore all skip silently.
-  inboundAccessAuthorized?: boolean;
   messageId: string;
   timestamp?: number;
   extraContext?: Record<string, unknown>;
@@ -22,7 +17,7 @@ export async function dispatchInboundDirectDmWithRuntime(params: {
   // does (it wires this into the buffered dispatcher's deliver callback).
   deliver?: (payload: unknown) => Promise<unknown>;
 }): Promise<unknown> {
-  const reply = params.runtime?.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher;
+  const reply = params.channelRuntime?.reply?.dispatchReplyWithBufferedBlockDispatcher;
   if (typeof reply !== "function") return undefined;
   const conversationId = String(params.extraContext?.ConversationId ?? "");
   const ctx = {
@@ -39,9 +34,11 @@ export async function dispatchInboundDirectDmWithRuntime(params: {
     ConversationId: conversationId,
     SessionKey: `clawbits:${params.accountId}:${conversationId}`,
     CommandAuthorized: params.commandAuthorized === true,
-    ...(params.inboundAccessAuthorized === true
-      ? { InboundAccessAuthorized: true, ConversationRouteContextObserved: true }
-      : {}),
+    // Mirror real channels/inbound-event/context.ts: the builder always stamps
+    // the admission attestation and spreads extra context last, so a channel
+    // without a sender guard can only opt out through extraContext.
+    InboundAccessAuthorized: true,
+    ConversationRouteContextObserved: true,
     MessageId: params.messageId,
     Timestamp: params.timestamp,
     ...(params.extraContext ?? {}),

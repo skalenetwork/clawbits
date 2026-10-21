@@ -1,4 +1,4 @@
-import { captureHttpExchange } from "openclaw/plugin-sdk/proxy-capture";
+import { captureHttpExchangeAsync } from "openclaw/plugin-sdk/proxy-capture";
 import { ClawBitsError } from "./errors.js";
 import { setTraceSink, type TraceSpan } from "./file-logger.js";
 import type { ClawBitsRequestMetric } from "./latency-metrics.js";
@@ -118,10 +118,10 @@ export class ClawBitsClient {
   /**
    * Best-effort debug capture that can never corrupt a request outcome.
    *
-   * `captureHttpExchange` is invoked from inside `request`'s fetch try/catch,
-   * immediately after a *successful* `fetch`. When the debug proxy is enabled
-   * it does a synchronous capture-store write that can throw (e.g. SQLite
-   * contention under the poller's sub-second cadence). An uncaught throw there
+   * `captureHttpExchangeAsync` is awaited from inside `request`'s fetch
+   * try/catch, immediately after a *successful* `fetch`. When the debug proxy
+   * is enabled it does a capture-store write that can reject (e.g. SQLite
+   * contention under the poller's sub-second cadence). An uncaught rejection there
    * would be swallowed by the network-error `catch` and reported as
    * `statusCode: 0` — i.e. a POST that the server already accepted would look
    * like a failed send, and the best-effort delivery layer would retry it,
@@ -129,9 +129,9 @@ export class ClawBitsClient {
    * surfaced once debug mode was wired into the client.) Capture is telemetry,
    * so any failure here is logged and dropped.
    */
-  private safeCapture(params: Parameters<typeof captureHttpExchange>[0]): void {
+  private async safeCapture(params: Parameters<typeof captureHttpExchangeAsync>[0]): Promise<void> {
     try {
-      captureHttpExchange(params);
+      await captureHttpExchangeAsync(params);
     } catch (err) {
       this.logger?.debug("clawbits debug-capture failed (ignored)", {
         error: err instanceof Error ? err.message : String(err),
@@ -210,7 +210,7 @@ export class ClawBitsClient {
       // (none today) would appear as ``null`` in capture dumps. Routed
       // through ``safeCapture`` so a capture-store error can't be mistaken
       // for a failed request (which would retry and duplicate this POST).
-      this.safeCapture({
+      await this.safeCapture({
         url,
         method: method.toUpperCase(),
         requestHeaders: reqHeaders,
@@ -232,7 +232,7 @@ export class ClawBitsClient {
       // Response to round-trip through the SDK's ``response.clone()``.
       const errMessage = err instanceof Error ? err.message : String(err);
       const errStatusText = errMessage.replace(/[\r\n\t\x00-\x1f\x7f]+/g, " ").slice(0, 200);
-      this.safeCapture({
+      await this.safeCapture({
         url,
         method: method.toUpperCase(),
         requestHeaders: reqHeaders,
