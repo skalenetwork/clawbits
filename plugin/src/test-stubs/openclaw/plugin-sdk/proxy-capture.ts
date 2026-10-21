@@ -2,7 +2,7 @@ export interface CapturedHttpExchange {
   url: string;
   method: string;
   requestHeaders?: Headers | Record<string, string> | undefined;
-  requestBody?: BodyInit | Buffer | string | null;
+  requestBody?: RequestInit["body"];
   response: Response;
   transport?: "http" | "sse";
   flowId?: string;

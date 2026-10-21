@@ -8,7 +8,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Checks,
   CommandBlock,
@@ -20,12 +20,11 @@ import {
 } from "@/components/setup/SetupShell";
 import { useAuth } from "@/context/AuthContext";
 import { useActiveOrg } from "@/hooks/useActiveOrg";
-import { getReef, setReef } from "@/lib/api";
+import { connectReef, getReef } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 
 const ICON = {
   repo: "/github.webp",
-  key: "/key.webp",
   host: "/server.webp",
   machine: "/computer.webp",
   reef: "/reef-dark.webp",
@@ -39,10 +38,9 @@ const ICON = {
 const HOST_RE = /^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const REPO_RE = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
 
-/** Served from the public repo, not from this app: the command is pasted into
- *  a shell on another machine, where this app's origin does not resolve. */
-const BOOTSTRAP =
-  "https://raw.githubusercontent.com/skalenetwork/clawbits/main/reef/bootstrap.sh";
+/** Served by reef, not by this app: the command is pasted into a shell on
+ *  another machine, where this app's origin does not resolve. */
+const BOOTSTRAP = "https://reef.clawbits.ai/gitops/bootstrap.sh";
 
 const REPO_NOTE = "A private repo to store Reef state.";
 
@@ -63,12 +61,11 @@ export default function ReefSetupPage() {
   const { activeOrgId } = useAuth();
   const { org, isOwner, isLoading } = useActiveOrg();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [params] = useSearchParams();
   const replacing = params.get("replace") === "1";
   const [step, setStep] = useState<Step>(0);
-  const [repo, setRepo] = useState("");
-  const [token, setToken] = useState("");
+  const returned = params.get("error");
+  const [repo, setRepo] = useState(params.get("repo") ?? "");
   const [host, setHost] = useState("");
   const [showWhy, setShowWhy] = useState(false);
 
@@ -81,40 +78,41 @@ export default function ReefSetupPage() {
     refetchInterval: step === 2 ? 15_000 : false,
   });
 
-  // The server's `connected` is the authority on resume and the org flag is
-  // not: a rotated secrets key leaves the flag true while the token can no
-  // longer be unsealed, and that case has to land on step 0 with the repo
-  // already filled in, because a new token is the only fix. `?replace=1` asks
-  // for that same screen on purpose.
+  // A connected org resumes at naming the machine; `?replace=1` and a failed
+  // round trip to GitHub, which comes back with `?error=`, stay here.
   const resumed = useRef(false);
   useEffect(() => {
     if (resumed.current || step !== 0 || !reef.data) return;
-    if (repo || token) return;
     resumed.current = true;
-    if (reef.data.connected && !replacing) setStep(1);
-    else if (reef.data.repo) setRepo(reef.data.repo);
-  }, [reef.data, step, repo, token, replacing]);
+    if (reef.data.connected && !replacing && !returned) setStep(1);
+    else if (!repo && reef.data.repo) setRepo(reef.data.repo);
+  }, [reef.data, step, repo, replacing, returned]);
 
   const trimmedRepo = repo.trim();
   const typed = normalizeRepo(repo);
   const repoOk = REPO_RE.test(typed);
-  const tokenOk = token.trim().length > 0;
   const hostName = host.trim();
   const hostOk = HOST_RE.test(hostName);
   /** For display only. Never used to decide whether the form may be submitted. */
   const repoPair = typed || (reef.data?.repo ?? "");
-  /** Stored, but its token cannot be read. Only a new token clears it. */
-  const needsToken = Boolean(reef.data && !reef.data.connected && reef.data.repo);
 
   const connect = useMutation({
-    mutationFn: () => setReef(activeOrgId ?? "", typed, token.trim()),
-    onSuccess: () => {
-      if (!replacing) {
-        setStep(1);
+    mutationFn: () => connectReef(activeOrgId ?? "", typed),
+    onSuccess: ({ url, manifest }) => {
+      if (!manifest) {
+        window.location.assign(url);
         return;
       }
-      if (activeOrgId) void queryClient.invalidateQueries({ queryKey: queryKeys.reef(activeOrgId) });
-      void navigate("/settings/reef", { replace: true });
+      const form = document.createElement("form");
+      form.method = "post";
+      form.action = url;
+      const field = document.createElement("input");
+      field.type = "hidden";
+      field.name = "manifest";
+      field.value = manifest;
+      form.append(field);
+      document.body.append(form);
+      form.submit();
     },
   });
 
@@ -159,7 +157,6 @@ export default function ReefSetupPage() {
   return (
     <SetupShell
       escExits={back === null}
-      unsaved={step === 0 && token.trim() ? "The token you entered isn't saved yet." : null}
       steps={steps}
       at={step}
       onExit={() => {
@@ -169,10 +166,8 @@ export default function ReefSetupPage() {
       {step === 0 && (
         <SetupPanel
           icon={<SetupMark src={ICON.reef} size={84} />}
-          title={needsToken || replacing ? "Reconnect Reef store repo" : "Connect Reef store repo"}
-          line={
-            needsToken ? "The stored token can no longer be read. Enter a new one." : undefined
-          }
+          title={replacing ? "Reconnect Reef store repo" : "Connect Reef store repo"}
+          line={returned ?? undefined}
         >
           <form
             className="flex w-full flex-col gap-5"
@@ -181,7 +176,7 @@ export default function ReefSetupPage() {
               // Never a disabled submit: the button always presses and the
               // field answers back, so a rejected value cannot be mistaken for
               // a broken page.
-              if (!repoOk || !tokenOk) {
+              if (!repoOk) {
                 setShowWhy(true);
                 return;
               }
@@ -200,28 +195,14 @@ export default function ReefSetupPage() {
                 "Clawbits writes one file per agent to fleet",
                 "Your machines report back on status",
                 "Must be private: fleet files carry one-time tokens",
+                "Connect creates a GitHub App for your org and installs it on this repository alone",
               ]}
               tone={(showWhy || trimmedRepo) && !repoOk ? "bad" : "muted"}
               autoFocus
             />
-            <SetupField
-              icon={ICON.key}
-              secret
-              note="A fine-grained token with Contents: read and write."
-              more={[
-                "Settings → Developer settings → Personal access tokens → Fine-grained",
-                "Scope it to this one repository",
-                "Grant Contents: read and write, nothing else",
-                "On an org-owned repo, an owner may need to approve it first",
-              ]}
-              tone={showWhy && !tokenOk ? "bad" : "muted"}
-              value={token}
-              onChange={setToken}
-              placeholder="github_pat_…"
-            />
             <div className="mt-1 w-full">
               <SetupButton type="submit" chip="Enter" disabled={connect.isPending}>
-                {connect.isPending ? "Checking…" : "Connect"}
+                {connect.isPending ? "Opening GitHub…" : "Connect on GitHub"}
               </SetupButton>
             </div>
           </form>
@@ -265,13 +246,11 @@ export default function ReefSetupPage() {
                     Run this on {hostName}:
                   </p>
                   <CommandBlock
-                    code={
-                      `curl -fsSL https://reef.clawbits.ai/install | sh\n` +
-                      `curl -fsSL ${BOOTSTRAP} |\n  REEF_HOST=${hostName} REEF_REPO=${repoPair} sh`
-                    }
+                    code={`curl -fsSL ${BOOTSTRAP} |\n  sudo REEF_HOST=${hostName} REEF_REPO=${repoPair} sh`}
                   />
                   <p className="mt-2 px-1 text-[13px] text-muted-foreground">
-                    The first run prints a deploy key to add to the repo.
+                    Prepare the machine with reef&apos;s host guide first. The first run prints a deploy
+                    key to add to the repo with write access.
                   </p>
                 </div>
               </div>

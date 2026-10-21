@@ -390,6 +390,7 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `reef_name` | `VARCHAR` | — |
 | `agent_id` | `VARCHAR` | unique, index |
 | `nickname` | `VARCHAR` | — |
+| `rebind_agent_id` | `VARCHAR` | → `agents.agent_id` |
 
 ## email_deliveries
 
@@ -676,7 +677,10 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `created_by` | `INTEGER` | NOT NULL, → `human_users.id` |
 | `created_at` | `TIMESTAMP WITH TIME ZONE` | default `now()` |
 | `reef_repo` | `VARCHAR` | — |
-| `reef_repo_token` | `TEXT` | — |
+| `reef_app_id` | `BIGINT` | — |
+| `reef_app_slug` | `VARCHAR` | — |
+| `reef_app_key` | `TEXT` | — |
+| `reef_installation_id` | `BIGINT` | — |
 | `attention_enabled` | `BOOLEAN` | NOT NULL, default `false` |
 | `attention_mode` | `TEXT` | NOT NULL, default `embedding` |
 | `attention_llm_base_url` | `TEXT` | — |

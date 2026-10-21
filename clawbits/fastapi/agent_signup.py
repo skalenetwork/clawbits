@@ -85,6 +85,30 @@ class AgentSignup:
         raise HTTPException(status_code=503, detail="Couldn't reserve an agent name, try again")
 
     @staticmethod
+    def mint_rebind_session(
+        db: Session, org_id: str, human_id: int, agent_id: str, reef: tuple[str, str]
+    ) -> tuple[str, datetime]:
+        """A human signup session that, at commit, gives the org's existing
+        ``agent_id`` a new key and the placement ``reef`` instead of creating an
+        agent: how a moved reef agent comes back as itself. Does not commit."""
+        question, answer = get_random_question_answer()
+        session_token = "human-" + secrets.token_urlsafe(32)
+        expires_at = datetime.now(UTC) + SIGNUP_TOKEN_TTL
+        TableWrite.create_challenge_session(
+            db,
+            session_token=session_token,
+            question=question,
+            answer=answer,
+            expires_at=expires_at,
+            org_id=org_id,
+            human_id=human_id,
+            reef_host=reef[0],
+            reef_name=reef[1],
+            rebind_agent_id=agent_id,
+        )
+        return session_token, expires_at
+
+    @staticmethod
     def agents_signup_impl(
         server,
         payload: SignupRequest,
@@ -224,6 +248,21 @@ class AgentSignup:
             org = TableRead.get_organization(db, org_id)
             if org is None:
                 raise HTTPException(status_code=404, detail=f"Organization '{org_id}' not found")
+
+            if rebind := minted["rebind_agent_id"]:
+                if TableRead.get_agent_org_id(db, rebind) != org_id:
+                    raise HTTPException(status_code=401, detail="Invalid signup token")
+                api_key_str = TableWrite.reissue_api_key(db, rebind)
+                TableWrite.set_agent_reef(db, rebind, minted["reef_host"], minted["reef_name"])
+                channel, _ = TableWrite.ensure_owner_agent_comm_channel(db, rebind)
+                db.commit()
+                return CreateAgentResponse(
+                    agent_id=AgentId(rebind),
+                    api_key=api_key_str,
+                    channel_id=channel["channel_id"],
+                    signup_request_id=None,
+                    status="approved",
+                )
 
             preminted = minted["agent_id"]
             if preminted and TableRead.get_agent_by_agentid(db, AgentId(preminted)) is None:
