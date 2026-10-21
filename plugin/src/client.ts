@@ -11,7 +11,7 @@ export interface ClientLogger {
 
 export interface RequestOptions {
   json?: unknown;
-  body?: BodyInit | Uint8Array;
+  body?: RequestInit["body"];
   headers?: Record<string, string>;
   challenge?: ChallengeAnswer;
   auth?: boolean;
@@ -185,14 +185,10 @@ export class ClawBitsClient {
         : undefined);
     if (traceId) reqHeaders["x-clawbits-trace-id"] = traceId;
 
-    let reqBody: BodyInit | undefined;
+    let reqBody = body;
     if (json !== undefined) {
       reqHeaders["Content-Type"] = "application/json";
       reqBody = JSON.stringify(json);
-    } else if (body !== undefined) {
-      // Uint8Array is a valid fetch body at runtime but newer TS lib.dom
-      // typings exclude it from BodyInit; the cast is safe.
-      reqBody = body instanceof Uint8Array ? (body as unknown as BodyInit) : body;
     }
 
     const url = `${this.baseUrl}${path}`;

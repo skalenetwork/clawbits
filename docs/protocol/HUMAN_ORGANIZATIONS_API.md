@@ -185,29 +185,55 @@ secrets key rotated): reconnecting is the fix in both cases.
 
 ---
 
-### PUT /api/human/orgs/{org_id}/reef
-Connect the org's reef repository. Caller must be an owner.
+### POST /api/human/orgs/{org_id}/reef/connect
+Start connecting the org's reef repository. Caller must be an owner.
 
-The token is proven against GitHub before anything is stored, and sealed at rest
-(Fernet). It is never returned by any endpoint.
+The org reaches the repository through a GitHub App of its own, so nothing is
+pasted. The response says where to send the browser: with `manifest`, POST it
+there as the form field `manifest`, which creates a private App owned by the
+repository's account (Contents read and write, Metadata read, no webhook);
+without, open `url` to install the App the org already has. An hour-long cookie
+remembers the org, the caller and the repository.
 
 **Request Body**
 ```json
-{ "repo": "acme/agents", "token": "github_pat_…" }
+{ "repo": "acme/agents" }
 ```
 
 **Field constraints**
 - `repo`: `owner/name` on github.com (required)
-- `token`: a fine-grained token scoped to that one repository, Contents read and
-  write, max 512 characters (required)
 
-**Response (200 OK)**: the same shape as `GET`, with `hosts` and `declared` empty.
+**Response (200 OK)**
+```json
+{
+  "url": "https://github.com/organizations/acme/settings/apps/new?state=…",
+  "manifest": "{\"name\": \"Clawbits acme\", …}"
+}
+```
 
 **Error Responses**
 - `403 Forbidden`: Only organization admins can change this setting.
-- `404 Not Found`: Organization not found.
 - `502 Bad Gateway`: GitHub refused the call; the detail is GitHub's own message.
-- `503 Service Unavailable`: The server has no durable secrets key configured.
+
+---
+
+### GET /api/auth/reef/github/created
+Where GitHub returns once the org's App exists. It trades GitHub's one-time
+`code` for the App's id, slug and private key, keeps them for the org with the
+key sealed, and redirects to the App's install page. The App counts only if the
+repository's own account owns it.
+
+### GET /api/auth/reef/github/installed
+Where GitHub returns once the App is installed. It ignores the installation id
+GitHub sends and asks the App for its installation on the repository, which
+must reach that repository alone; the repository must be private with all three
+branches. Then the org is connected.
+
+Both trust only the connect cookie, which must belong to the signed-in caller,
+and both redirect to `/setup/reef`, or to `/setup/reef?repo=…&error=…` with the
+reason it did not connect. After that, every token mint, about hourly, checks
+again that the installation reaches the one repository, and refuses while it
+reaches more.
 
 ---
 
@@ -308,7 +334,7 @@ stays in git history, so it has to die. Caller must be the agent's operator, the
 member who declared it, or an org owner.
 
 This is for an agent that has not enrolled. An enrolled agent is deleted
-through the endpoint below, which purges it too.
+through `DELETE /api/human/orgs/{org_id}/agents/{agent_id}`, which purges it too.
 
 **Response (204 No Content)**
 
@@ -317,6 +343,31 @@ through the endpoint below, which purges it too.
   organization admin, can remove it.
 - `409 Conflict`: No reef repository connected.
 - `422 Unprocessable Entity`: `host` or `name` breaks reef's name rule.
+
+---
+
+### POST /api/human/orgs/{org_id}/reef/agents/{host}/{name}/move
+Move an enrolled agent to another host, or redeclare it on its own host after
+that host was rebuilt. Caller must be the agent's operator or an org owner.
+
+The fleet file is copied to `fleet/<target>/<name>.toml` with a fresh signup
+token. At commit that token gives the same agent a new key and revokes the old
+one: its id, channel and history stay, whatever lived only in its VM does not.
+Moving to a different host replaces the old file with its tombstone, which
+deletes the VM and its volumes there.
+
+**Request Body**
+```json
+{ "host": "prod-us" }
+```
+
+**Response (200 OK)**: `{ "host", "name", "expires_at" }` of the new declaration.
+
+**Error Responses**
+- `403 Forbidden`: Only the agent's operator or an organization admin can move it.
+- `404 Not Found`: No agent enrolled under that host and name.
+- `409 Conflict`: The agent has no declaration to move, or the name is taken on the target.
+- `422 Unprocessable Entity`: No reef host by that name.
 
 ---
 

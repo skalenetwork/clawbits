@@ -43,6 +43,9 @@ OAUTH_STATE_COOKIE = f"fc_oauth_state{_env_suffix()}"
 # Connector link OAuth (GitHub App, etc.) — separate from WorkOS login state
 # so a Connectors flow never collides with Sign in with GitHub.
 CONNECTOR_OAUTH_STATE_COOKIE = f"fc_connector_oauth_state{_env_suffix()}"
+# Which org, person and repository a reef connect started for, across the
+# round trips to GitHub that create the org's App and install it.
+REEF_CONNECT_COOKIE = f"fc_reef_connect{_env_suffix()}"
 # Holds the WorkOS ``pending_authentication_token`` while the user types the
 # 6-digit email-verification code. Httponly so JS can't exfiltrate it; ~10 min
 # TTL matches WorkOS's own verification window.

@@ -156,10 +156,7 @@ export async function uploadOutboundMedia(params: {
   const putResponse = await fetch(reserved.upload_url, {
     method: "PUT",
     headers: reserved.upload_headers ?? {},
-    // Uint8Array is a valid fetch body at runtime but newer TS lib.dom
-    // typings exclude it from BodyInit; the cast is safe (same note as
-    // client.ts request()).
-    body: bytes as unknown as BodyInit,
+    body: bytes,
   });
   if (!putResponse.ok) {
     throw new ClawBitsError({
