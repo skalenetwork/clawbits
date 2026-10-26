@@ -112,7 +112,7 @@ class CloudflareR2Provisioner:
         from the user's origin, so the bucket must allow preflight from
         that origin. Origin is derived from ``CLAWBITS_BASE_URL`` so each
         env's bucket is locked to its own front-end (dev: localhost:5173;
-        staging: app.freeclaws.ai; prod: app.clawbits.ai). Re-applied on every
+        prod: app.clawbits.ai). Re-applied on every
         boot by ``provision_r2_on_startup``, so moving CLAWBITS_BASE_URL (the
         apex cutover) heals the bucket on the next deploy WITHOUT a manual step
         - except where ``CLAWBITS_SKIP_R2_PROVISION=1`` is set (dev), which then
@@ -129,7 +129,7 @@ class CloudflareR2Provisioner:
 
     async def _put_cors_for_bucket(self, bucket_name: str) -> dict[str, Any]:
         # Build the allowed-origin list from CLAWBITS_BASE_URL. We also
-        # add the production-style HTTPS form of staging/prod in case the
+        # add the production-style HTTPS form of prod in case the
         # browser ends up on a redirect chain — but keep it minimal.
         base_url = os.getenv("CLAWBITS_BASE_URL", "").rstrip("/")
         if base_url:

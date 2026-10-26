@@ -36,17 +36,27 @@ class UpdateOrgMemberRoleRequest(BaseModel):
     role: Literal["owner", "member"] = Field(description="New role in the organization")
 
 
-class SetReefRepoRequest(BaseModel):
+class ConnectReefRequest(BaseModel):
     """Connect the org's reef repository. Git is the only bus to a reef host."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     repo: str = Field(
         pattern=REPO_RE.pattern,
         description="The private repository on github.com, as ``owner/name``",
     )
-    token: str = Field(
-        min_length=1, max_length=512,
-        description="Fine-grained token scoped to that repository, Contents read and write",
-    )
+
+
+class ReefConnectResponse(BaseModel):
+    """Where to send the browser next. With ``manifest``, POST it there as the
+    form field ``manifest`` to create the org's App; without, open ``url`` to
+    install the App the org already has."""
+    url: str
+    manifest: str | None = None
+
+
+class MoveReefAgentRequest(BaseModel):
+    """Where an enrolled reef agent goes; its own host redeclares it there."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    host: str = Field(pattern=NAME_RE.pattern, description="A host that has written a status file")
 
 
 class CreateReefAgentRequest(BaseModel):
@@ -261,9 +271,8 @@ class CreateReefAgentResponse(ReefAgentResponse):
 
 class ReefResponse(BaseModel):
     """The org's reef repository, every host reporting into it by name, and
-    the agents declared but not yet enrolled. ``connected`` is false when no
-    repository is stored, or when its token cannot be unsealed (the secrets
-    key rotated)."""
+    the agents declared but not yet enrolled. ``connected`` is false until a
+    repository is connected through the clawbits App."""
     repo: str | None = None
     connected: bool
     hosts: list[ReefHostResponse] = []

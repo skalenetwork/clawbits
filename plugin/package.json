@@ -1,6 +1,6 @@
 {
   "name": "clawbits-openclaw-plugin",
-  "version": "0.23.0",
+  "version": "0.24.1",
   "description": "OpenClaw channel plugin: bridges an agent to its Clawbits organization via the Clawbits Mattermost surface.",
   "type": "module",
   "main": "dist/index.js",
@@ -28,12 +28,12 @@
       "clawbits"
     ],
     "compat": {
-      "pluginApi": ">=2026.6.10",
-      "minGatewayVersion": "2026.6.10"
+      "pluginApi": ">=2026.9.7",
+      "minGatewayVersion": "2026.9.7"
     },
     "build": {
-      "openclawVersion": "2026.9.4",
-      "pluginSdkVersion": "2026.9.4"
+      "openclawVersion": "2026.9.7",
+      "pluginSdkVersion": "2026.9.7"
     },
     "channel": {
       "id": "clawbits",

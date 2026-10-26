@@ -3,7 +3,6 @@
 Marketing site for the apex domain. The app lives on `app.<domain>`.
 
 - `clawbits.ai` - production (`prod` branch)
-- `preview.freeclaws.ai` - staging (`main` branch)
 
 Astro 7.1, Tailwind 4, fully static. **Ships 0 bytes of JavaScript.**
 
@@ -26,30 +25,23 @@ Automatic, via [`.github/workflows/web.yaml`](../.github/workflows/web.yaml):
 
 | Branch | Worker | URL |
 | --- | --- | --- |
-| `main` | `clawbits-web-staging` | `preview.freeclaws.ai` |
 | `prod` | `clawbits-web` | `clawbits.ai` |
 
-`prod` advances by manual merge from `main`. Pull requests build and verify but
-never deploy.
+`prod` advances by manual merge from `main`. `main` and pull requests build and
+verify but never deploy.
 
-Two build-time environment variables drive the difference, and getting either
-wrong ships a site that lies about where it lives:
-
-- `SITE_URL` - canonical URLs, sitemap, absolute OG images, and whether
-  `robots.txt` allows indexing at all (only the two apex hosts do; every
-  preview origin gets `Disallow: /`, backed by `X-Robots-Tag` in `_headers`).
-- `PUBLIC_APP_URL` - where every "Sign in" / "Get started" CTA points. Must be
-  `PUBLIC_`-prefixed or Vite strips it and the build silently falls back to the
-  production app URL.
+`SITE_URL` drives canonical URLs, the sitemap, absolute OG images, and whether
+`robots.txt` allows indexing at all (only the apex does; every preview origin
+gets `Disallow: /`, backed by `X-Robots-Tag` in `_headers`).
 
 To deploy by hand (rarely needed - CI is the normal path):
 
 ```bash
-cd web && SITE_URL=https://preview.freeclaws.ai PUBLIC_APP_URL=https://app.freeclaws.ai bun run build && bunx wrangler deploy --env staging
+cd web && bun run deploy:production
 ```
 
 `--env` is **mandatory**. Without it wrangler deploys the unnamed top-level
-config as a third Worker.
+config as another Worker.
 
 ## Layout
 

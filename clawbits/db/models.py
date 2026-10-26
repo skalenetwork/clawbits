@@ -192,6 +192,11 @@ class ChallengeSession(SQLModel, table=True):
     # boots. NULL on agentic sessions; unique, so two mints never hold one id.
     agent_id: str | None = Field(default=None, index=True, unique=True)
     nickname: str | None = None
+    # Set when an existing reef agent is moved: commit hands this agent a new
+    # key instead of creating one. Gone with the agent.
+    rebind_agent_id: str | None = Field(
+        default=None, foreign_key="agents.agent_id", ondelete="CASCADE"
+    )
 
 
 class HumanUser(SQLModel, table=True):
@@ -397,11 +402,17 @@ class Organization(SQLModel, table=True):
     is_personal: bool = Field(default=False, nullable=False)
     created_by: int = Field(nullable=False, foreign_key="human_users.id")
     created_at: datetime | None = Field(default=None, sa_column=_server_now_column())
-    # The org's reef repository, ``owner/name`` on github.com, and a
-    # Fernet-sealed fine-grained token scoped to it. Git is the only bus to a
-    # reef host: clawbits writes fleet files, hosts write status files.
+    # The org's reef repository, ``owner/name`` on github.com, the GitHub App
+    # the org created for it (id, slug and Fernet-sealed private key) and that
+    # App's installation on it. Git is the only bus to a reef host: clawbits
+    # writes fleet files, hosts write status files.
     reef_repo: str | None = None
-    reef_repo_token: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
+    reef_app_id: int | None = Field(default=None, sa_column=SAColumn(BigInteger, nullable=True))
+    reef_app_slug: str | None = None
+    reef_app_key: str | None = Field(default=None, sa_column=SAColumn(Text, nullable=True))
+    reef_installation_id: int | None = Field(
+        default=None, sa_column=SAColumn(BigInteger, nullable=True)
+    )
     # Org opt-in for the attention gate. It still fires only where the `router`
     # extra is installed and only for agents with `lobstertalk_enabled`.
     attention_enabled: bool = Field(

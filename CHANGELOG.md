@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.11.1](https://github.com/skalenetwork/clawbits/compare/v1.11.0...v1.11.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* let reef connect post the app manifest to GitHub ([#236](https://github.com/skalenetwork/clawbits/issues/236)) ([ae66661](https://github.com/skalenetwork/clawbits/commit/ae6666141bc16e9421496356a966248c5268e537))
+
+## [1.11.0](https://github.com/skalenetwork/clawbits/compare/v1.10.1...v1.11.0) (2026-10-21)
+
+
+### Features
+
+* connect reef through each org's own GitHub App and move agents between hosts ([#232](https://github.com/skalenetwork/clawbits/issues/232)) ([d202573](https://github.com/skalenetwork/clawbits/commit/d202573721eaea41f7a1b7a5377771e0ef980986))
+
+## [1.10.1](https://github.com/skalenetwork/clawbits/compare/v1.10.0...v1.10.1) (2026-10-16)
+
 ## [1.10.0](https://github.com/skalenetwork/clawbits/compare/v1.9.0...v1.10.0) (2026-10-09)
 
 

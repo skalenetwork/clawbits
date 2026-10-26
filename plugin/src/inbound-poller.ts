@@ -711,11 +711,10 @@ type AgentWebSocketEnvelope = SseEnvelope & {
   type?: string;
 };
 
-function agentEventsWebSocketUrl(endpoint: string, apiKey: string): string {
+function agentEventsWebSocketUrl(endpoint: string): string {
   const base = endpoint.replace(/\/+$/u, "");
   const url = new URL(`${base}/api/agentic/mm/events/ws`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("api_key", apiKey);
   return url.toString();
 }
 
@@ -729,7 +728,9 @@ async function consumeAgentWebSocketEvents(params: {
   if (typeof WebSocket === "undefined") {
     throw new Error("WebSocket is not available in this runtime");
   }
-  const ws = new WebSocket(agentEventsWebSocketUrl(params.client.getEndpoint(), params.apiKey));
+  const ws = new WebSocket(agentEventsWebSocketUrl(params.client.getEndpoint()), {
+    headers: { Authorization: `Bearer ${params.apiKey}` },
+  });
   await new Promise<void>((resolve, reject) => {
     let settled = false;
     const settle = (err?: unknown) => {

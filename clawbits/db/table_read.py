@@ -109,6 +109,17 @@ class SearchOperators(TypedDict, total=False):
     has_file: bool
 
 
+class OrgReef(NamedTuple):
+    """The org's reef repository and the GitHub App it created for it. The key is
+    sealed; ``installation_id`` is ``None`` until the App is installed."""
+
+    repo: str
+    app_id: int
+    app_slug: str
+    sealed_key: str
+    installation_id: int | None
+
+
 class SkillInstallCounts(NamedTuple):
     """Agents per skill in each install state. See ``TableRead._install_counts_by_skill``."""
 
@@ -189,6 +200,7 @@ class TableRead:
             "reef_name": row.reef_name,
             "agent_id": row.agent_id,
             "nickname": row.nickname,
+            "rebind_agent_id": row.rebind_agent_id,
         }
 
     @staticmethod
@@ -1183,7 +1195,7 @@ class TableRead:
             "widgets_enabled": bool(o.widgets_enabled),
             # Whether a reef repository is usable, never which one: the repo
             # and its token stay on the server.
-            "reef_connected": bool(o.reef_repo and o.reef_repo_token),
+            "reef_connected": o.reef_installation_id is not None,
         }
 
     @staticmethod
@@ -1209,14 +1221,19 @@ class TableRead:
         return TableRead._org_to_dict(row) if row else None
 
     @staticmethod
-    def get_org_reef(session: Session, org_id: str) -> tuple[str, str] | None:
-        """``(repo, sealed_token)`` for the org's reef repository, or ``None``
-        when the org has none. The token stays sealed here: only
-        :mod:`clawbits.reef_repo`'s caller unseals it, per request."""
+    def get_org_reef(session: Session, org_id: str) -> OrgReef | None:
+        """The org's reef repository and the App it created for it, the key
+        still sealed, or ``None`` before an App exists."""
         row = session.get(Organization, org_id)
-        if row is None or not row.reef_repo or not row.reef_repo_token:
+        if row is None or not row.reef_repo or row.reef_app_id is None:
             return None
-        return row.reef_repo, row.reef_repo_token
+        return OrgReef(
+            row.reef_repo,
+            row.reef_app_id,
+            row.reef_app_slug,
+            row.reef_app_key,
+            row.reef_installation_id,
+        )
 
     @staticmethod
     def get_reef_role_access(session: Session, org_id: str) -> defaultdict[str, ReefRoleAccess]:
@@ -1258,6 +1275,19 @@ class TableRead:
         return {human for human in (enrolled, *declared) if human is not None}
 
     @staticmethod
+    def get_reef_agent(
+        session: Session, org_id: str, host: str, name: str
+    ) -> tuple[str, int | None] | None:
+        """``(agent_id, operator_id)`` of the org's agent that enrolled as
+        ``host``/``name``, the newest when several did, or ``None``."""
+        row = session.exec(
+            select(Agent.agent_id, Agent.operator_id)
+            .where(Agent.org_id == org_id, Agent.reef_host == host, Agent.reef_name == name)
+            .order_by(Agent.creation_time.desc())
+        ).first()
+        return (row[0], row[1]) if row else None
+
+    @staticmethod
     def get_reef_placement(
         session: Session, org_id: str, agent_id: str
     ) -> tuple[str, str] | None:
@@ -1289,6 +1319,7 @@ class TableRead:
             select(ChallengeSession).where(
                 ChallengeSession.org_id == org_id,
                 ChallengeSession.reef_host.is_not(None),
+                ChallengeSession.rebind_agent_id.is_(None),
                 ChallengeSession.used == False,  # noqa: E712
                 ChallengeSession.expires_at > now,
             )

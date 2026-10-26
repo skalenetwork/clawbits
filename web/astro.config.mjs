@@ -79,7 +79,7 @@ export default defineConfig({
     // Astro 7.2 incremental static builds: pages whose module graph and data
     // are unchanged since the last build are copied from the cache in
     // node_modules/.astro instead of re-rendered. Deploys run from this
-    // machine (deploy:staging / deploy:production), so the cache persists
+    // machine (deploy:production), so the cache persists
     // between builds and this is a straight win - the Satori OG images are the
     // slow part and they rarely change. `astro build --force` bypasses it.
     incrementalBuild: true,

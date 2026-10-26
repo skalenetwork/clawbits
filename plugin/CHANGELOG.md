@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.24.1](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.24.0...openclaw-plugin-v0.24.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* move the plugin off OpenClaw SDK calls retiring Dec 31 ([#240](https://github.com/skalenetwork/clawbits/issues/240)) ([cea659e](https://github.com/skalenetwork/clawbits/commit/cea659e4e1675257bef388104fae027bf5d1d680))
+
+## [0.24.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.23.0...openclaw-plugin-v0.24.0) (2026-10-21)
+
+
+### Features
+
+* connect reef through each org's own GitHub App and move agents between hosts ([#232](https://github.com/skalenetwork/clawbits/issues/232)) ([d202573](https://github.com/skalenetwork/clawbits/commit/d202573721eaea41f7a1b7a5377771e0ef980986))
+
 ## [0.23.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.22.0...openclaw-plugin-v0.23.0) (2026-10-08)
 
 

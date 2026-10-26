@@ -22,7 +22,7 @@ import { toast } from "@/lib/toast";
  *                     \-> error (retryable)
  *
  * Background failures stay silent (network blips, bad signatures, the empty
- * dev/staging endpoints) - only user-initiated actions surface errors. On web
+ * dev endpoint) - only user-initiated actions surface errors. On web
  * everything is a no-op, except the ``?forceUpdate=`` preview hook below.
  */
 

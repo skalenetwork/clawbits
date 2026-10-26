@@ -3,15 +3,17 @@
 import asyncio
 import logging
 import os
+import secrets
 import time
 import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Path, Query, Request, Response
+from fastapi.responses import RedirectResponse
 from imapclient.exceptions import LoginError
 from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -50,9 +52,11 @@ from clawbits.datastructures.mm_models import (
 )
 from clawbits.datastructures.org_models import (
     AddOrgMemberRequest,
+    ConnectReefRequest,
     CreateOrgRequest,
     CreateReefAgentRequest,
     CreateReefAgentResponse,
+    MoveReefAgentRequest,
     OrgAttentionResponse,
     OrgListResponse,
     OrgLobstertalkChannelResponse,
@@ -62,6 +66,7 @@ from clawbits.datastructures.org_models import (
     OrgMembersListResponse,
     OrgResponse,
     ReefAgentResponse,
+    ReefConnectResponse,
     ReefHostResponse,
     ReefResponse,
     ReefRoleAccess,
@@ -70,7 +75,6 @@ from clawbits.datastructures.org_models import (
     SetOrgAttentionRequest,
     SetOrgLobstertalkChannelRequest,
     SetOrgLobstertalkRequest,
-    SetReefRepoRequest,
     UpdateOrgMemberRoleRequest,
     UpdateOrgRequest,
 )
@@ -84,7 +88,7 @@ from clawbits.db.models import (
     AgentSkillInstall,
     HumanUser,
 )
-from clawbits.db.table_read import TableRead
+from clawbits.db.table_read import OrgReef, TableRead
 from clawbits.db.table_write import TableWrite, UserDeletionBlocked
 from clawbits.email.imap_client import (
     STALWART_SVC_PASSWORD,
@@ -97,9 +101,14 @@ from clawbits.email.imap_client import (
 )
 from clawbits.email.stalwart_provision import deprovision_mailbox
 from clawbits.fastapi.agent_signup import AgentSignup, HumanSession
-from clawbits.fastapi.session_cookie import stage_session_clear
+from clawbits.fastapi.session_cookie import (
+    REEF_CONNECT_COOKIE,
+    cookie_kwargs,
+    stage_session_clear,
+)
 from clawbits.fastapi.workos_auth import (
     MeResponse,
+    _frontend_root,
     create_workos_organization,
     delete_workos_organization,
     delete_workos_user,
@@ -137,12 +146,20 @@ from clawbits.realtime import (
 from clawbits.reef_repo import (
     NAME_RE,
     OWNER_RE,
+    REPO_RE,
     Author,
+    ReefApp,
     ReefRepo,
     ReefRepoError,
     Role,
+    create_app,
+    fleet_entry,
     fleet_name,
     fleet_toml,
+    install_url,
+    installation_for,
+    is_organization,
+    manifest,
     parse_role,
     parse_status,
     purge_toml,
@@ -1596,16 +1613,31 @@ _REEF_STATUS_TTL = 5.0
 _reef_status_cache: dict[str, tuple[float, list[ReefHostResponse]]] = {}
 
 
+def _base_url() -> str:
+    return os.environ.get("CLAWBITS_BASE_URL", "http://localhost:8000").rstrip("/")
+
+
+def _reef_app(stored: OrgReef | None) -> ReefApp | None:
+    """The org's App with its key unsealed, or ``None`` when there is none or
+    a rotated secrets key left it unreadable; reconnecting fixes both."""
+    key = decrypt_secret(stored.sealed_key) if stored else None
+    return ReefApp(id=stored.app_id, slug=stored.app_slug, key=key) if key else None
+
+
+def _connected(stored: OrgReef | None) -> ReefRepo | None:
+    app = _reef_app(stored)
+    if app is None or stored.installation_id is None:
+        return None
+    return ReefRepo(repo=stored.repo, app=app, installation=stored.installation_id)
+
+
 def _reef_repo(db, org_id: str, user: dict) -> ReefRepo:
-    """The org's repository with its token unsealed, for a member only: no route
-    reaches the token without the check. 409 when none is connected, or when a
-    rotated secrets key left the token unreadable; reconnecting fixes both."""
+    """The org's repository, for a member only. 409 when none is connected."""
     _verify_org_membership(db, org_id, user)
-    stored = TableRead.get_org_reef(db, org_id)
-    token = decrypt_secret(stored[1]) if stored else None
-    if token is None:
+    repo = _connected(TableRead.get_org_reef(db, org_id))
+    if repo is None:
         raise HTTPException(status_code=409, detail="No Reef repository connected")
-    return ReefRepo(repo=stored[0], token=token)
+    return repo
 
 
 async def _reef_hosts(org_id: str, repo: ReefRepo) -> list[ReefHostResponse]:
@@ -1646,7 +1678,7 @@ async def _reef_roles(repo: ReefRepo) -> list[Role]:
     agents at a different clawbits: those would boot and enrol somewhere else."""
     names = [n for n in await repo.list("main", "roles") if n.endswith(".toml")]
     files = await asyncio.gather(*(repo.read("main", f"roles/{n}") for n in names))
-    endpoint = os.environ.get("CLAWBITS_BASE_URL", "http://localhost:8000")
+    endpoint = _base_url()
     roles = [
         parse_role(name.removesuffix(".toml"), found[1], endpoint)
         for name, found in zip(names, files, strict=True)
@@ -1689,9 +1721,9 @@ async def _purge(repo: ReefRepo, org_id: str, host: str, name: str, user: dict) 
     _reef_status_cache.pop(org_id, None)
 
 
-def _set_org_reef(db, org_id: str, user: dict, repo: str | None, sealed: str | None) -> None:
+def _set_org_reef(db, org_id: str, user: dict, **fields) -> None:
     _require_org_owner(db, org_id, user)
-    if not TableWrite.set_org_reef(db, org_id, repo, sealed):
+    if not TableWrite.set_org_reef(db, org_id, **fields):
         raise HTTPException(status_code=404, detail="Organization not found")
     db.commit()
 
@@ -1706,7 +1738,7 @@ async def get_reef(
     declared but not yet enrolled: an unspent signup token is exactly that
     state. Any member."""
 
-    def load(db: Session) -> tuple[tuple[str, str] | None, list[dict]]:
+    def load(db: Session) -> tuple[OrgReef | None, list[dict]]:
         _verify_org_membership(db, org_id, user)
         return (
             TableRead.get_org_reef(db, org_id),
@@ -1715,39 +1747,162 @@ async def get_reef(
 
     stored, rows = await _in_db(request, load)
     declared = [ReefAgentResponse(**row) for row in rows]
-    token = decrypt_secret(stored[1]) if stored else None
-    if token is None:
-        return ReefResponse(repo=stored[0] if stored else None, connected=False, declared=declared)
+    repo = _connected(stored)
+    if repo is None:
+        return ReefResponse(
+            repo=stored.repo if stored else None, connected=False, declared=declared
+        )
     return ReefResponse(
-        repo=stored[0],
-        connected=True,
-        hosts=await _reef_hosts(org_id, ReefRepo(repo=stored[0], token=token)),
-        declared=declared,
+        repo=repo.repo, connected=True, hosts=await _reef_hosts(org_id, repo), declared=declared
     )
 
 
-@human_router.put("/api/human/orgs/{org_id}/reef", response_model=ReefResponse)
-async def set_reef(
+@human_router.post("/api/human/orgs/{org_id}/reef/connect", response_model=ReefConnectResponse)
+async def connect_reef(
     org_id: str,
-    body: SetReefRepoRequest,
+    body: ConnectReefRequest,
     request: Request,
+    response: Response,
     user: dict = Depends(get_current_human_user),
 ):
-    """Connect the org's reef repository. Owner only. The token is proven
-    against GitHub before anything is stored, and sealed at rest."""
-    await _in_db(request, lambda db: _require_org_owner(db, org_id, user))
-    await ReefRepo(repo=body.repo, token=body.token).probe()
+    """Start connecting the org's reef repository. Owner only.
+
+    The org gets a GitHub App of its own: the answer is GitHub's page to create
+    it from ``manifest`` in the repository's account, or, when the org's App
+    already lives there, the page to install it. This request's cookie carries
+    the org, the person and the repository through every return from GitHub."""
+
+    def load(db: Session) -> OrgReef | None:
+        _require_org_owner(db, org_id, user)
+        return TableRead.get_org_reef(db, org_id)
+
+    stored = await _in_db(request, load)
+    owner = body.repo.split("/", 1)[0]
+    csrf = secrets.token_urlsafe(24)
+    app = _reef_app(stored)
+    if app and stored.repo.split("/", 1)[0].lower() == owner.lower():
+        answer = ReefConnectResponse(url=install_url(app, csrf))
+    else:
+        url, form = manifest(owner, await is_organization(owner), _base_url(), csrf)
+        answer = ReefConnectResponse(url=url, manifest=form)
+    response.set_cookie(
+        REEF_CONNECT_COOKIE,
+        f"{csrf}|{org_id}|{user['id']}|{body.repo}",
+        max_age=3600,
+        **cookie_kwargs(),
+    )
+    return answer
+
+
+def _reef_pending(
+    pending: str | None, state: str | None, user: dict
+) -> tuple[str, str, str] | None:
+    """``(csrf, org_id, repo)`` from the connect cookie, when it belongs to this
+    person and ``state``, if GitHub passed it back, matches."""
+    csrf, org_id, human_id, repo = ((pending or "").split("|") + [""] * 4)[:4]
+    if not csrf or human_id != str(user["id"]) or state not in (None, csrf):
+        return None
+    return (csrf, org_id, repo) if REPO_RE.match(repo) else None
+
+
+def _reef_done(repo: str = "", error: str | None = None) -> RedirectResponse:
+    query = "?" + urlencode({"repo": repo, "error": error}) if error else ""
+    redirect = RedirectResponse(f"{_frontend_root()}/setup/reef{query}", status_code=302)
+    redirect.delete_cookie(REEF_CONNECT_COOKIE, path="/")
+    return redirect
+
+
+_REEF_MISMATCH = "GitHub sent back a different connection than this browser started. Try again."
+
+
+@human_router.get("/api/auth/reef/github/created")
+async def reef_app_created(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    pending: str | None = Cookie(default=None, alias=REEF_CONNECT_COOKIE),
+    user: dict = Depends(get_current_human_user),
+) -> RedirectResponse:
+    """Where GitHub returns once the org's App exists: trade the code for the
+    App, keep it sealed for the org, and go on to install it. The App counts
+    only if the repository's own account owns it, since a private App can be
+    installed nowhere else."""
+    found = _reef_pending(pending, state, user)
+    if found is None or not code:
+        return _reef_done(error=_REEF_MISMATCH)
+    csrf, org_id, repo = found
+    owner = repo.split("/", 1)[0]
     try:
-        sealed = encrypt_secret(body.token)
-    except EphemeralSecretsKeyError:
-        raise HTTPException(
-            status_code=503,
-            detail="This server has no durable secrets key configured, so a Reef "
-            "token cannot be stored. Set CLAWBITS_ATTENTION_SECRETS_KEY.",
+        app, login = await create_app(code)
+    except ReefRepoError as e:
+        return _reef_done(repo, str(e))
+    if login.lower() != owner.lower():
+        return _reef_done(
+            repo, f"That app belongs to {login}, not {owner}. Delete it on GitHub and start again."
         )
-    await _in_db(request, lambda db: _set_org_reef(db, org_id, user, body.repo, sealed))
+    try:
+        sealed = encrypt_secret(app.key)
+    except EphemeralSecretsKeyError:
+        return _reef_done(
+            repo,
+            "This server has no durable secrets key, so it cannot keep the app's key. "
+            "Set CLAWBITS_ATTENTION_SECRETS_KEY.",
+        )
+    await _in_db(
+        request,
+        lambda db: _set_org_reef(
+            db, org_id, user, repo=repo, app_id=app.id, app_slug=app.slug, app_key=sealed
+        ),
+    )
+    return RedirectResponse(install_url(app, csrf), status_code=302)
+
+
+@human_router.get("/api/auth/reef/github/installed")
+async def reef_app_installed(
+    request: Request,
+    state: str | None = None,
+    pending: str | None = Cookie(default=None, alias=REEF_CONNECT_COOKIE),
+    user: dict = Depends(get_current_human_user),
+) -> RedirectResponse:
+    """Where GitHub returns once the org's App is installed. The installation id
+    it sends is ignored: the App itself names its installation on the
+    repository, which must reach that repository alone, and the repository must
+    be private with all three branches."""
+    found = _reef_pending(pending, state, user)
+    if found is None:
+        return _reef_done(error=_REEF_MISMATCH)
+    _, org_id, repo = found
+
+    def load(db: Session) -> OrgReef | None:
+        _require_org_owner(db, org_id, user)
+        return TableRead.get_org_reef(db, org_id)
+
+    stored = await _in_db(request, load)
+    app = _reef_app(stored)
+    if app is None or stored.repo != repo:
+        return _reef_done(repo, _REEF_MISMATCH)
+    try:
+        installation = await installation_for(app, repo)
+        if installation is None:
+            return _reef_done(repo, f"The app is not installed on {repo}.")
+        await ReefRepo(repo=repo, app=app, installation=installation).probe()
+    except ReefRepoError as e:
+        return _reef_done(repo, str(e))
+    await _in_db(
+        request,
+        lambda db: _set_org_reef(
+            db,
+            org_id,
+            user,
+            repo=repo,
+            app_id=app.id,
+            app_slug=app.slug,
+            app_key=stored.sealed_key,
+            installation_id=installation,
+        ),
+    )
     _reef_status_cache.pop(org_id, None)
-    return ReefResponse(repo=body.repo, connected=True)
+    return _reef_done()
 
 
 @human_router.delete("/api/human/orgs/{org_id}/reef", status_code=204)
@@ -1759,7 +1914,7 @@ def delete_reef(
     """Disconnect the repository. Owner only. Agents already declared keep
     running: their fleet files are still on the branch, untouched."""
     with _get_db(request) as db:
-        _set_org_reef(db, org_id, user, None, None)
+        _set_org_reef(db, org_id, user)
     _reef_status_cache.pop(org_id, None)
 
 
@@ -1921,6 +2076,92 @@ async def delete_reef_agent(
 
     await _purge(await _in_db(request, authorize), org_id, host, name, user)
     await _in_db(request, revoke)
+
+
+@human_router.post(
+    "/api/human/orgs/{org_id}/reef/agents/{host}/{name}/move", response_model=ReefAgentResponse
+)
+async def move_reef_agent(
+    org_id: str,
+    body: MoveReefAgentRequest,
+    request: Request,
+    host: str = Path(pattern=NAME_RE.pattern),
+    name: str = Path(pattern=NAME_RE.pattern),
+    user: dict = Depends(get_current_human_user),
+):
+    """Move an enrolled agent to ``body.host``, or redeclare it on its own host
+    after that host was rebuilt. Its operator or an org owner.
+
+    The fleet file is copied with a fresh token that, at commit, gives the same
+    agent a new key: its id, channel and history stay, whatever lived only in
+    its VM does not. A different host gets the old file's tombstone, which
+    deletes the VM and its volumes there."""
+
+    def authorize(db: Session) -> tuple[ReefRepo, str]:
+        repo = _reef_repo(db, org_id, user)
+        found = TableRead.get_reef_agent(db, org_id, host, name)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"No agent enrolled as {name} on {host}")
+        is_owner = TableRead.get_org_member_role(db, org_id, user["id"]) == "owner"
+        if found[1] != user["id"] and not is_owner:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the agent's operator or an organization admin can move it",
+            )
+        return repo, found[0]
+
+    repo, agent_id = await _in_db(request, authorize)
+    head, hosts, files = await asyncio.gather(
+        repo.read("fleet", f"fleet/{host}/{name}.toml"),
+        _reef_hosts(org_id, repo),
+        repo.list("fleet", f"fleet/{body.host}"),
+    )
+    entry = fleet_entry(name, head[1]) if head else None
+    if entry is None:
+        raise HTTPException(status_code=409, detail=f"{name} has no declaration on {host} to move")
+    target = next((h for h in hosts if h.host == body.host), None)
+    if target is None:
+        raise HTTPException(status_code=422, detail=f"No Reef host named '{body.host}'")
+    moving = body.host != host
+    if moving and (f"{name}.toml" in files or any(a.name == name for a in target.agents)):
+        raise HTTPException(status_code=409, detail=f"'{name}' is taken on {body.host}")
+
+    def mint(db: Session) -> tuple[str, datetime]:
+        minted = AgentSignup.mint_rebind_session(
+            db, org_id, user["id"], agent_id, (body.host, name)
+        )
+        db.commit()
+        return minted
+
+    def revoke(db: Session) -> None:
+        TableWrite.delete_challenge_session(db, token)
+        db.commit()
+
+    def place(db: Session) -> None:
+        TableWrite.set_agent_reef(db, agent_id, body.host, name)
+        db.commit()
+
+    token, expires_at = await _in_db(request, mint)
+    role, owner, env = entry
+    content = fleet_toml(name, role, owner, env | {"CLAWBITS_SIGNUP_TOKEN": token})
+    message = f"move {name} from {host} to {body.host}" if moving else f"redeclare {name} on {host}"
+    try:
+        await repo.write(
+            "fleet",
+            f"fleet/{body.host}/{name}.toml",
+            content,
+            message,
+            _reef_author(user),
+            None if moving else head[0],
+        )
+    except ReefRepoError:
+        await _in_db(request, revoke)
+        raise
+    await _in_db(request, place)
+    if moving:
+        await _purge(repo, org_id, host, name, user)
+    _reef_status_cache.pop(org_id, None)
+    return ReefAgentResponse(host=body.host, name=name, expires_at=expires_at)
 
 
 @human_router.get("/api/human/orgs/{org_id}/attention", response_model=OrgAttentionResponse)

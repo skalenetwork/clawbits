@@ -14,8 +14,8 @@ keys don't error and the subscribe UI stays hidden.
 
 Generate a keypair + the ready-to-run dotenvx commands to store it:
 
-    uv run python -m clawbits.realtime.web_push --generate-keys --env staging
-    # omit --env to emit a separate keypair (and command set) for all three
+    uv run python -m clawbits.realtime.web_push --generate-keys --env prod
+    # omit --env to emit a separate keypair (and command set) for both
 
 The post-created path enqueues via :func:`schedule_post_web_push` (non-blocking,
 thread-safe); a lifespan-owned worker (:func:`start_push_dispatcher`) drains the
@@ -233,7 +233,6 @@ def vapid_public_key() -> str | None:
 # Friendly env name → its dotenvx file. One keypair per env (they must differ).
 _ENV_FILES = {
     "dev": ".env.development",
-    "staging": ".env.staging",
     "prod": ".env.production",
 }
 
@@ -728,7 +727,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--env",
         choices=list(_ENV_FILES),
-        help="target env. Omit to emit a separate keypair for dev, staging, AND prod.",
+        help="target env. Omit to emit a separate keypair for dev AND prod.",
     )
     parser.add_argument(
         "--subject",

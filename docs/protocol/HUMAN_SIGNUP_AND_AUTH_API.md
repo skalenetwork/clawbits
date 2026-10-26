@@ -13,7 +13,7 @@ These endpoints allow human users to sign in and verify identity. Authentication
 
 All auth endpoints are prefixed with `/api/auth/`.
 
-Session state is kept in an `httpOnly` Fernet-sealed cookie (`fc_session` in prod, suffixed with `_staging` / `_dev` in other environments). Native clients (Tauri desktop, mobile) may alternatively pass the sealed token as `Authorization: Bearer <token>`.
+Session state is kept in an `httpOnly` Fernet-sealed cookie (`fc_session` in prod, suffixed with `_dev` in development). Native clients (Tauri desktop, mobile) may alternatively pass the sealed token as `Authorization: Bearer <token>`.
 
 ---
 
@@ -76,7 +76,7 @@ Redirect the browser to the provider's authorization page (via WorkOS).
 **Query Parameters**
 | Name | Required | Description |
 | :--- | :--- | :--- |
-| `desktop` | No | Set to `1` for the Tauri desktop client. The callback returns an HTML page that fires a custom URL-scheme deep link (`clawbits://` / `clawbits-staging://` / `clawbits-dev://`) instead of redirecting to the web frontend. |
+| `desktop` | No | Set to `1` for the Tauri desktop client. The callback returns an HTML page that fires a custom URL-scheme deep link (`clawbits://` / `clawbits-dev://`) instead of redirecting to the web frontend. |
 | `bridge` | No | Set to `deeplink` for mobile (Expo) clients. Same HTML-bridge callback as desktop but always uses the `clawbits://` scheme. |
 
 **Response (302 Redirect)**
@@ -135,7 +135,7 @@ The `code` must be exactly 6 decimal digits.
 Return the currently authenticated human user.
 
 **Auth**
-- Session cookie (`fc_session` / `fc_session_staging` / `fc_session_dev`), **or**
+- Session cookie (`fc_session` / `fc_session_dev`), **or**
 - `Authorization: Bearer <sealed-token>` header
 
 **Response (200 OK)**

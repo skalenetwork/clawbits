@@ -16,25 +16,18 @@ import { AI_CRAWLERS } from "../lib/crawlers";
 /**
  * The only hosts that may be indexed.
  *
- * Everything else this site is ever served from - preview.clawbits.ai,
- * preview.freeclaws.ai, the *.workers.dev URLs - is the SAME CONTENT on a
+ * Everything else this site is ever served from - preview.clawbits.ai and
+ * the *.workers.dev URLs - is the SAME CONTENT on a
  * different origin. Left crawlable, a preview host competes with the apex for
  * its own copy and the fourteen AI crawlers invited below ingest the wrong
  * origin as canonical. Derived from the build's SITE_URL rather than a
  * hand-kept host list, so a new preview target is closed by default.
  *
- * _headers carries the matching `X-Robots-Tag: noindex` for the two known
- * preview hosts: robots.txt stops the crawl, the header stops the indexing of
+ * _headers carries the matching `X-Robots-Tag: noindex` for the known
+ * preview host: robots.txt stops the crawl, the header stops the indexing of
  * a URL someone linked to anyway. Both are needed; neither is sufficient.
  */
-/*
- * Owner decision 2026-08-10: `clawbits.ai` is the ONLY indexable origin. Staging
- * serves byte-identical marketing content, so leaving `freeclaws.ai` in this list
- * would - the moment the apex cutover lands - publish a full duplicate of
- * production on a second origin with no cross-canonical, and invite the fourteen
- * crawlers below into it by name. Whichever origin a crawler reached first could
- * win as canonical. Staging stays `Disallow: /` permanently.
- */
+/* Owner decision 2026-08-10: `clawbits.ai` is the ONLY indexable origin. */
 const INDEXABLE_HOSTS = ["clawbits.ai"];
 
 export const GET: APIRoute = ({ site }) => {

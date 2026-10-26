@@ -9,7 +9,7 @@
 #
 #   scripts/sync_env.sh                      # development (the default)
 #   scripts/sync_env.sh production           # one env
-#   scripts/sync_env.sh --all                # all three
+#   scripts/sync_env.sh --all                # both
 #   scripts/sync_env.sh --check production   # exit 1 if the copy is stale
 #
 # Source repo resolution: $CLAWBITS_INTERNAL, else ../clawbits-internal.
@@ -29,7 +29,7 @@ envs=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --check)   check_only=1 ;;
-    --all)     envs+=(development staging production) ;;
+    --all)     envs+=(development production) ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)        echo "sync_env: unknown flag: $1" >&2; exit 2 ;;
     *)         envs+=("$1") ;;
@@ -70,8 +70,8 @@ fi
 status=0
 for env in "${envs[@]}"; do
   case "${env}" in
-    development|staging|production) ;;
-    *) echo "sync_env: unknown env '${env}' (development|staging|production)" >&2; exit 2 ;;
+    development|production) ;;
+    *) echo "sync_env: unknown env '${env}' (development|production)" >&2; exit 2 ;;
   esac
 
   src="${internal}/env/.env.${env}"

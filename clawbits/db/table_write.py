@@ -376,21 +376,12 @@ class TableWrite:
             session.flush()
 
     @staticmethod
-    def rotate_api_key(session: Session, old_api_key: str) -> tuple[str, str]:
-        old_api_key_hash = hashlib.sha256(old_api_key.encode()).hexdigest()
-
-        row = session.exec(
-            select(Agent).where(Agent.api_key_hash == old_api_key_hash)
-        ).first()
-        if row is None:
-            raise ValueError("Invalid API key")
-        agent_id = row.agent_id
-
+    def reissue_api_key(session: Session, agent_id: str) -> str:
+        """A new key for the agent; the old one stops working."""
         new_api_key = ApiKey.generate().value
-        new_api_key_hash = hashlib.sha256(new_api_key.encode()).hexdigest()
-        row.api_key_hash = new_api_key_hash
+        session.get(Agent, agent_id).api_key_hash = hashlib.sha256(new_api_key.encode()).hexdigest()
         session.flush()
-        return agent_id, new_api_key
+        return new_api_key
 
     # ---------------- share records ----------------
 
@@ -447,6 +438,7 @@ class TableWrite:
         reef_name: str | None = None,
         agent_id: str | None = None,
         nickname: str | None = None,
+        rebind_agent_id: str | None = None,
     ) -> None:
         session.add(
             ChallengeSession(
@@ -462,6 +454,7 @@ class TableWrite:
                 reef_name=reef_name,
                 agent_id=agent_id,
                 nickname=nickname,
+                rebind_agent_id=rebind_agent_id,
             )
         )
         session.flush()
@@ -2011,16 +2004,25 @@ class TableWrite:
 
     @staticmethod
     def set_org_reef(
-        session: Session, org_id: str, repo: str | None, sealed_token: str | None
+        session: Session,
+        org_id: str,
+        *,
+        repo: str | None = None,
+        app_id: int | None = None,
+        app_slug: str | None = None,
+        app_key: str | None = None,
+        installation_id: int | None = None,
     ) -> bool:
-        """Set (or clear, when both are ``None``) the org's reef repository and
-        its sealed token. Returns ``False`` if the org doesn't exist (caller
-        decides 404)."""
+        """Set every field of the org's reef connection at once; none disconnects.
+        Returns ``False`` if the org doesn't exist (caller decides 404)."""
         row = session.get(Organization, org_id)
         if row is None:
             return False
         row.reef_repo = repo
-        row.reef_repo_token = sealed_token
+        row.reef_app_id = app_id
+        row.reef_app_slug = app_slug
+        row.reef_app_key = app_key
+        row.reef_installation_id = installation_id
         session.flush()
         return True
 

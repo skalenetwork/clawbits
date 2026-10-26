@@ -62,26 +62,22 @@
     "enabled": true
   },
 
-  // Two deploy targets, both preview hosts. `main` ships to staging and `prod`
-  // ships to production - see .github/workflows/web.yaml. NEVER deploy without
+  // One deploy target: `prod` ships to production - see
+  // .github/workflows/web.yaml. NEVER deploy without
   // `--env`: the top-level config above exists only because wrangler requires a
-  // default, and deploying it would create a third, nameless Worker.
+  // default, and deploying it would create another, nameless Worker.
   //
   // `assets`, `compatibility_date` and `observability` are inheritable keys, so
   // they are deliberately NOT repeated here - one definition, no drift.
   //
   // ROUTES ARE STILL NOT DECLARED, on purpose. The apex cutover is Phase 6
   // (docs/protocol/LANDING_SITE_PLAN.md §8) and must never happen as a side
-  // effect of a deploy. The two preview.* custom domains are attached BY HAND
+  // effect of a deploy. The custom domains are attached BY HAND
   // in the Cloudflare dashboard, once, which is also what lets the CI token
   // stay scoped to "Workers Scripts: Edit" with no zone-level DNS write.
   //
-  //   clawbits-web-staging -> preview.freeclaws.ai
-  //   clawbits-web         -> preview.clawbits.ai
+  //   clawbits-web -> preview.clawbits.ai
   "env": {
-    "staging": {
-      "name": "clawbits-web-staging"
-    },
     "production": {
       "name": "clawbits-web"
     }

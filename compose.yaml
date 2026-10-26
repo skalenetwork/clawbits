@@ -27,16 +27,15 @@ services:
       DICEBEAR_BASE: ${DICEBEAR_BASE:-http://dicebear:3000/10.x}
       # dotenvx wiring — APP_ENV picks the env file the container's CMD
       # decrypts; the matching private key is supplied by Komodo / 1Password
-      # and never lives on disk. All three keys are forwarded so the same
-      # image can serve any env (dev runs flip APP_ENV=development).
+      # and never lives on disk. Both keys are forwarded so the same
+      # image can serve either env (dev runs flip APP_ENV=development).
       APP_ENV: ${APP_ENV:-production}
       DOTENV_PRIVATE_KEY_DEVELOPMENT: ${DOTENV_PRIVATE_KEY_DEVELOPMENT:-}
-      DOTENV_PRIVATE_KEY_STAGING:     ${DOTENV_PRIVATE_KEY_STAGING:-}
       DOTENV_PRIVATE_KEY_PRODUCTION:  ${DOTENV_PRIVATE_KEY_PRODUCTION:-}
       # Fail-closed default: any deploy that doesn't override CLAWBITS_ENV
       # is treated as production. compose.override.yaml flips this to
       # ``development`` for local Docker runs (override is not applied in
-      # staging/prod). Dev-auth (clawbits/fastapi/dev_auth.py) refuses to
+      # prod). Dev-auth (clawbits/fastapi/dev_auth.py) refuses to
       # enable unless this is one of {dev, development, local, test}.
       CLAWBITS_ENV: ${CLAWBITS_ENV:-production}
       # Hostnames cleared to serve the LobsterTalk triage LLM over plain http

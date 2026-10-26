@@ -1,7 +1,7 @@
 {
   "name": "clawbits-desktop",
   "private": true,
-  "version": "1.10.0",
+  "version": "1.11.1",
   "type": "module",
   "engines": {
     "node": ">=22.12.0"
@@ -9,11 +9,9 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
-    "dev:staging": "tauri dev --config src-tauri/tauri.staging.conf.json",
     "dev:prod": "tauri dev",
     "build": "tauri build",
     "build:dev": "tauri build --config src-tauri/tauri.dev.conf.json",
-    "build:staging": "tauri build --config src-tauri/tauri.staging.conf.json",
     "build:prod": "tauri build",
     "icons": "bun scripts/build-icons.mjs"
   },

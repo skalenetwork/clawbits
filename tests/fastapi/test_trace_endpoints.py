@@ -28,7 +28,7 @@ TRACE_ROUTES = [
 ]
 
 # Anything that is not in the dev allow-list, including the fail-closed cases.
-NON_DEV_ENVS = [None, "", "production", "staging"]
+NON_DEV_ENVS = [None, "", "production"]
 
 
 def _set_env(monkeypatch, env: str | None) -> None:

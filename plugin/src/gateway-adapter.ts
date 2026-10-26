@@ -1,6 +1,6 @@
 import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
-import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
+import { dispatchInboundDirectDm } from "openclaw/plugin-sdk/channel-inbound";
 import { CHANNEL_ID, listClawBitsAccountIds } from "./accounts.js";
 import { buildAgentBody, clawbitsSessionId } from "./agent-body.js";
 import { ChannelWatermarkStore } from "./channel-watermarks.js";
@@ -74,7 +74,8 @@ import { onCompanionToolsChanged } from "./service-handoff.js";
 type ChannelGatewayAdapter<ResolvedAccount> = NonNullable<
   ChannelPlugin<ResolvedAccount>["gateway"]
 >;
-type DirectDmRoutePeer = Parameters<typeof dispatchInboundDirectDmWithRuntime>[0]["peer"];
+type DirectDmRoutePeer = Parameters<typeof dispatchInboundDirectDm>[0]["peer"];
+type DirectDmChannelRuntime = Parameters<typeof dispatchInboundDirectDm>[0]["channelRuntime"];
 
 // Shared across every account started in this process: a single file-backed
 // watermark store so the catch-up backlog isn't re-injected after a restart.
@@ -417,7 +418,7 @@ export async function dispatchInboundMessage(
   // channels) route as a ``channel`` peer keyed by the channel id, so each chat
   // gets its own isolated session/context — a room's messages (visible to all
   // its members) never bleed into the owner's DM session or into other rooms.
-  // resolveAgentRoute (reached through dispatchInboundDirectDmWithRuntime) keys
+  // resolveAgentRoute (reached through dispatchInboundDirectDm) keys
   // a channel peer as ``agent:<agentId>:clawbits:channel:<channelId>``, while a
   // direct peer collapses to the agent's DM/main session per ``session.dmScope``.
   // A game move routes as the channel peer ``widget-<id>``: the game's own session
@@ -733,9 +734,17 @@ export async function dispatchInboundMessage(
 
   // The turn and a `/stop` aimed at it share one route: OpenClaw only aborts
   // the run on the session the stop resolves to.
+  //
+  // dispatchInboundDirectDm attests that the channel's own guard admitted the
+  // event, which unlocks route-context recording, DM sender identity, pending
+  // turn replies and archived-session restore. Clawbits admits inbound
+  // server-side — the agentic GET only returns posts the org already approved
+  // (see the note further down this file) — plus the allowFrom/mention gate in
+  // inbound-poller, so the attestation is truthful here. email-adapter.ts has
+  // no such guard and clears it.
   const route = {
     cfg: ctx.cfg,
-    runtime: { channel: runtime } as never,
+    channelRuntime: ctx.channelRuntime as DirectDmChannelRuntime,
     channel: CHANNEL_ID,
     channelLabel: CHANNEL_ID,
     accountId: ctx.accountId,
@@ -753,14 +762,6 @@ export async function dispatchInboundMessage(
       : isDirectChannel
         ? `Clawbits DM ${conversationId}`
         : `Clawbits channel ${conversationId}`,
-    // OpenClaw 2026.8 ("2.0") only records conversation-route context,
-    // persists DM sender identity, captures pending turn replies and
-    // restores archived sessions when the channel attests that its own
-    // guard admitted the event. Clawbits admits inbound server-side — the
-    // agentic GET only returns posts the org already approved (see the
-    // note further down this file) — plus the allowFrom/mention gate in
-    // inbound-poller, so the attestation is truthful here.
-    inboundAccessAuthorized: true,
     // Also the abort cutoff a stop persists: later posts still run.
     timestamp: msg.createAt || Date.now(),
     provider: CHANNEL_ID,
@@ -794,7 +795,7 @@ export async function dispatchInboundMessage(
     stopRequested = true;
     try {
       await runOutsideGatewayRootWork(() =>
-        dispatchInboundDirectDmWithRuntime({
+        dispatchInboundDirectDm({
           ...route,
           rawBody: "/stop",
           commandBody: "/stop",
@@ -824,7 +825,7 @@ export async function dispatchInboundMessage(
     game && dispatchGuardTarget ? holdGameSession(dispatchGuardTarget.sessionKey) : undefined;
   try {
     consoleErrorWithFile(
-      `[clawbits/${ctx.accountId}] dispatchInboundDirectDmWithRuntime start post=${msg.postId}`,
+      `[clawbits/${ctx.accountId}] dispatchInboundDirectDm start post=${msg.postId}`,
     );
     setStatus?.({
       accountId: ctx.accountId,
@@ -852,7 +853,7 @@ export async function dispatchInboundMessage(
           ctx.log,
         );
       }
-      return dispatchInboundDirectDmWithRuntime({
+      return dispatchInboundDirectDm({
         ...route,
         rawBody: msg.text,
         // `rawBody` stays untouched (audit trail); `bodyForAgent` carries the
@@ -935,7 +936,7 @@ export async function dispatchInboundMessage(
       });
     });
     consoleErrorWithFile(
-      `[clawbits/${ctx.accountId}] dispatchInboundDirectDmWithRuntime done post=${msg.postId}`,
+      `[clawbits/${ctx.accountId}] dispatchInboundDirectDm done post=${msg.postId}`,
     );
   } catch (err) {
     consoleErrorWithFile(

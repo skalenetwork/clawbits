@@ -1,91 +1,45 @@
-# Reef reconciler
+# Reef
 
-Git is the bus between clawbits and a reef host. This directory is the whole
-host side of it: a shell script and the service that runs it. There is no
-port, and nothing on the network reaches the host: it pulls.
+Clawbits drives [reef](https://reef.clawbits.ai) hosts through git, the
+reference setup in [Run hosts from git](https://reef.clawbits.ai/docs/setup/gitops):
+one private repository per org, `main` for roles, `fleet` for the agents
+Clawbits declares, `status` for what each host reports. Clawbits never connects
+to a host, and no host connects to Clawbits.
 
-```text
-main    roles/*.toml                platform team, by reviewed pull request
-fleet   fleet/<host>/<name>.toml    clawbits, one file per agent, then its tombstone
-status  status/<host>.json          each host, from this service
-```
+## Connect an org
 
-Every two seconds the host asks GitHub where `main` and `fleet` point, over
-one SSH connection it keeps open. When either has moved, or 30 seconds have
-passed, it runs a tick: it pulls what moved, and when that is not what it last
-applied it runs `reef role apply` and `reef fleet apply --prune`. Otherwise it
-runs `reef reconcile`, which starts any agent that died since, after a reboot or
-a crashed gateway, and prints only when that fails. Then it writes what
-`reef` observed to `status/<host>.json`, and only when the content changed does
-it commit, rebase onto `status` and push. Each host touches only its own file,
-so the rebase never conflicts, and a push that loses a race goes out on the
-next tick. Besides the rows of `reef role list`, `reef agent list` (never
-`agent get`, which prints env and with it the signup token) and the last 100 of
-`reef events`, the file carries:
-
-```text
-at       heartbeat: the current UTC time rounded down to ten minutes
-applied  {main, fleet}: the HEADs last applied in full, null until one lands
-result   ok, or failed when this tick's apply or reconcile failed
-error    the cause reef printed when it failed, else null
-```
-
-`at` is what keeps an idle host committing, about every ten minutes and never
-on every tick. clawbits calls a host live while its heartbeat is under 25
-minutes old, stale after that, and failing whenever `result` is `failed`.
-
-A host that cannot reach the repository changes nothing. An apply that fails
-leaves the recorded HEADs alone, so the next tick retries it, and the status
-file still goes out: a failed agent's state and reason are the only diagnosis
-the org gets. `journalctl -u reef-reconcile` has the rest.
+In Settings → Reef an owner names the repository. Clawbits has GitHub create a
+private App owned by the repository's account, from a manifest: Contents read
+and write, Metadata read, no webhook. The owner then installs it on that one
+repository. Clawbits keeps the App's key sealed for the org and hands out tokens
+only while the installation reaches that repository alone. Make the App the
+only bypass of the repository's `fleet writer` ruleset.
 
 ## Set up a host
 
-Prepare the machine first: [reef's host
-guide](https://reef.clawbits.ai/docs/setup/host) covers `msb`, KVM, the `reef`
-account and the state directory. Skip its boot unit: this service already brings
-agents back after a reboot. Then, as `reef`, put the provider secrets in
-`~/.local/state/reef/secrets.toml` (`chmod 600`) and check `reef doctor`.
-
-`jq` and `git` are the only extra packages this needs.
-
-Then run `bootstrap.sh`, naming this host. The name is the directory under
-`fleet/` and the file under `status/`, and it is what people pick in clawbits,
-so it follows reef's own rule: lowercase letters, digits and hyphens, starting
-with a letter.
+Prepare it with reef's [host guide](https://reef.clawbits.ai/docs/setup/host),
+then:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/skalenetwork/clawbits/main/reef/bootstrap.sh |
-  REEF_HOST=prod-eu REEF_REPO=acme/reef-store sh
+curl -fsSL https://reef.clawbits.ai/gitops/bootstrap.sh |
+  sudo REEF_HOST=prod-eu REEF_REPO=acme/reef-fleet sh
 ```
 
-It makes an ed25519 key, pins github.com's published host key, clones one tree
-per branch so the service only fast-forwards `main` and `fleet` and rebases
-its own commits onto `status`, and installs the script and the service with a
-drop-in carrying this machine's account, paths and host name. It also writes
-`empty.toml`, which declares no agents and is passed to every `fleet apply`:
-reef bails when handed no files, and a partial list with `--prune` deletes
-every agent it cannot see.
+The host appears in Settings → Reef once its first status file lands.
 
-The first run stops after the key: nothing else is possible until that key is
-on the repository. Add it under **Settings → Deploy keys** with **Allow write
-access**, which the host needs so it can push its status, then run the same
-line again. Protect `main` and `fleet` with a ruleset so the key can only ever
-push `status`.
+## Agents
 
-`REEF_DIR` (default `~/agents`) moves the trees and bootstrap writes it into
-the drop-in. `reconcile.sh` finds reef at `REEF`, default `~/.local/bin/reef`.
+Creating an agent writes its fleet file with a single-use signup token, which
+the agent spends at first boot; it keeps its key on its state volume. Roles
+here list the only env Clawbits writes:
 
-## Check it
-
-```sh
-systemctl status reef-reconcile
-journalctl -u reef-reconcile -n 50
-git -C ~/agents/status log -1 --format='%cr'
+```toml
+fleet-env = ["CLAWBITS_ORG_ID", "CLAWBITS_SIGNUP_TOKEN", "OPENCLAW_PUBLIC_HOST"]
 ```
 
-The last one is the liveness signal the org sees: while the service runs, the
-status commit advances at least every ten minutes.
+Move copies an enrolled agent's declaration to another host, or redeclares it
+on its own host after a rebuild, with a token that hands the same agent a new
+key. Its id, channel and history stay; whatever lived only in its VM does not.
 
-Once a status file lands, the host appears in clawbits under Settings → Reef and
-people can create agents on it. Nothing else on this host is ever contacted.
+`bench/` times one agent boot. `roles/clawbits-openclaw-dev.toml` targets a
+Clawbits running on the reef host itself.

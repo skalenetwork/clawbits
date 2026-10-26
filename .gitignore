@@ -7,7 +7,6 @@
 # Leading slash = repo root ONLY: unanchored, these also swallowed
 # apps/mobile/.env.production, which is a tracked public API URL, not a secret.
 /.env.development
-/.env.staging
 /.env.production
 .env.*.local
 .env.local
@@ -29,6 +28,7 @@ node_modules/
 dist/
 build/
 .vite/
+.astro/
 *.tsbuildinfo
 *-debug.log*
 
