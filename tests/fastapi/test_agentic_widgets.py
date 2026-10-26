@@ -90,7 +90,7 @@ def test_an_agent_lists_its_games_and_those_waiting_on_it(test_client):
         "seat": "black",
         "waiting_on": ["white"],
         "your_move": False,
-        "opponent": {"name": "Bob", "type": "human"},
+        "opponent": {"name": "Bob", "type": "human", "id": f"human:{bob['user']['id']}"},
     }
     assert _list(test_client, agent, waiting=1) == []
     _human_move(test_client, bob, widget_id, {"type": "move", "args": {"move": "e4"}})
@@ -103,20 +103,24 @@ def test_an_agent_lists_its_games_and_those_waiting_on_it(test_client):
 def test_an_agent_reads_chess_as_fen_and_san(test_client):
     bob, agent, _, widget_id = _chess(test_client, "agwchess")
     _human_move(test_client, bob, widget_id, {"type": "move", "args": {"move": "e4"}})
-    view = _view(test_client, agent, widget_id)
+    view = _view(test_client, agent, widget_id, private=1)
     assert (view["seat"], view["rev"], view["waiting_on"], view["your_move"]) == ("black", 1, ["black"], True)
+    bob_key = f"human:{bob['user']['id']}"
     assert view["players"] == [
-        {"seat": "white", "name": "Bob", "type": "human"},
-        {"seat": "black", "name": "You", "type": "agent"},
+        {"seat": "white", "name": "Bob", "type": "human", "id": bob_key},
+        {"seat": "black", "name": "You", "type": "agent", "id": None},
     ]
+    assert (view["started_by"], view["move_deadline"]) == (bob_key, None)
     fen = chess.position({"moves": ["e2e4"]}).fen()
     assert f"Position (FEN): {fen}" in view["text"]
     assert "Legal moves (SAN, as args.move): " in view["text"]
     assert {"type": "move", "args": {"move": "e5"}} in view["legal"]
     assert "call the clawbits_widget_act tool directly" in view["instructions"]  # it runs OpenClaw
     assert view["instructions"].endswith("NO_REPLY.")
-    # Chess keeps no secrets: the seat's own view is the public one.
-    assert _view(test_client, agent, widget_id, private=1) == view
+    # An ordinary chat turn sees the same position, but no moves and no rule against chatting.
+    public = _view(test_client, agent, widget_id)
+    assert f"Position (FEN): {fen}" in public["text"] and public["legal"] == []
+    assert "clawbits_widget_act" not in public["instructions"] and "NO_REPLY" not in public["instructions"]
 
 
 def test_a_hermes_agent_is_told_the_tool_call_shape(test_client):
@@ -125,7 +129,7 @@ def test_a_hermes_agent_is_told_the_tool_call_shape(test_client):
     bob, agent, _, widget_id = _chess(test_client, "agwhermes")
     _alive(test_client, agent, "hermes", ["widgets"])
     _human_move(test_client, bob, widget_id, {"type": "move", "args": {"move": "d4"}})
-    instructions = _view(test_client, agent, widget_id)["instructions"]
+    instructions = _view(test_client, agent, widget_id, private=1)["instructions"]
     assert 'tool_call {"calls":[{"name":"clawbits_widget_act","arguments":{"widget_id":"' + widget_id in instructions
 
 
@@ -151,7 +155,7 @@ def test_only_a_game_session_asks_for_the_seats_own_view(test_client):
 
 
 def test_nobody_outside_the_chat_reads_or_plays(test_client):
-    alice, bob, agent, _, dm = _setup(test_client, "agwout")
+    _, bob, agent, _, dm = _setup(test_client, "agwout")
     other = _create_agent(test_client, owner_email="agwout-alice@test.com")  # same org, not in the DM
     widget_id = _begin(test_client, bob, dm, "chess", "white").json()["widget_id"]
     r = _get(test_client, other, widget_id)
@@ -163,13 +167,56 @@ def test_nobody_outside_the_chat_reads_or_plays(test_client):
     assert (r.status_code, r.json()["detail"]) == _NOT_FOUND
     r = test_client.get(f"/api/agentic/mm/widgets/{widget_id}", headers=auth_headers("fc_not-a-key"))
     assert r.status_code == 401
-    # Bob may no longer write to the agent, so the agent's side of the DM shuts too.
-    r = _grant(test_client, alice["access_token"], agent["agent_id"], "human", bob["user"]["id"], can_dm=False)
+    assert _row(test_client, widget_id).rev == 0
+
+
+@pytest.mark.parametrize("how", ["put", "delete"])
+def test_revoking_a_persons_contact_ends_their_game_with_the_agent(test_client, monkeypatch, how):
+    from clawbits.realtime import bus as bus_module
+
+    alice, bob, agent, _, dm = _setup(test_client, f"agwrevoke-{how}")
+    agent_id, bob_id = agent["agent_id"], bob["user"]["id"]
+    widget_id = _begin(test_client, bob, dm, "chess", "white").json()["widget_id"]
+    _human_move(test_client, bob, widget_id, {"type": "move", "args": {"move": "e4"}})
+    fake = _FakeBus()
+    monkeypatch.setattr(bus_module, "_bus", fake)
+    if how == "put":  # tagging may stay; writing to it doesn't
+        r = _grant(test_client, alice["access_token"], agent_id, "human", bob_id, can_dm=False, can_tag=True)
+    else:
+        r = test_client.delete(
+            f"/api/human/agents/{agent_id}/contact-permissions/human/{bob_id}",
+            headers=auth_headers(alice["access_token"]),
+        )
     assert r.status_code == 200, r.text
+    row = _row(test_client, widget_id)
+    assert (row.status, row.outcome, row.waiting_on, row.rev) == ("aborted", {"reason": "left"}, [], 2)
+    # Published after commit: the chat, Bob, and the agent's last wake, which it can't read past.
+    assert [(u["widget_id"], u["status"]) for u in _widget_updates(fake)] == [(widget_id, "aborted")]
+    turns = {topic: e["data"] for topic, e in _widget_turns(fake, 2)}
+    assert turns[f"human:{bob_id}"]["my_turn"] is False
+    assert (turns[f"agent:{agent_id}"]["status"], turns[f"agent:{agent_id}"]["waiting"]) == ("aborted", False)
+    # Both sides of the DM shut: the agent's reads and moves are a 404 ...
     assert (_get(test_client, agent, widget_id).status_code, _list(test_client, agent)) == (404, [])
     r = _agent_act(test_client, agent, widget_id, {"type": "move", "args": {"move": "e5"}})
     assert (r.status_code, r.json()["detail"]) == _NOT_FOUND
-    assert _row(test_client, widget_id).rev == 0
+    # ... and so are Bob's, as everything else in that DM is; only End still answers him.
+    r = test_client.get(f"/api/human/mm/widgets/{widget_id}", headers=auth_headers(bob["access_token"]))
+    assert (r.status_code, r.json()["detail"]) == _NOT_FOUND
+    r = _act(test_client, bob, {"widget_id": widget_id, "rev": 2}, {"type": "move", "args": {"move": "d4"}})
+    assert (r.status_code, r.json()["detail"]) == _NOT_FOUND
+    r = _act(test_client, bob, {"widget_id": widget_id, "rev": 2}, {"type": "end"})
+    assert (r.status_code, r.json()["detail"]) == (409, "This widget has ended")
+
+
+def test_a_grant_that_keeps_the_dm_open_leaves_the_game_be(test_client):
+    alice, bob, agent, _, dm = _setup(test_client, "agwkeep")
+    widget_id = _begin(test_client, bob, dm, "chess", "white").json()["widget_id"]
+    r = _grant(test_client, alice["access_token"], agent["agent_id"], "human", bob["user"]["id"], can_dm=True, can_tag=True)
+    assert r.status_code == 200, r.text
+    other = _create_agent(test_client, owner_email="agwkeep-alice@test.com")
+    r = _grant(test_client, alice["access_token"], agent["agent_id"], "agent", other["agent_id"], can_dm=False, can_tag=True)
+    assert r.status_code == 200, r.text  # another principal's grant: Bob's DM is untouched
+    assert (_row(test_client, widget_id).status, _row(test_client, widget_id).rev) == ("active", 0)
 
 
 def test_an_agents_move_reaches_the_person_and_theirs_the_agent(test_client, monkeypatch):
@@ -180,7 +227,7 @@ def test_an_agents_move_reaches_the_person_and_theirs_the_agent(test_client, mon
     fake = _FakeBus()
     monkeypatch.setattr(bus_module, "_bus", fake)
     acted = _acted(test_client, agent, widget_id, {"type": "move", "args": {"move": "e5"}})
-    assert acted == {"ok": True, "compact": "ok · rev 2 · waiting on Bob", "your_move": False, "view": None}
+    assert acted == {"ok": True, "compact": "ok · rev 2 · waiting on white", "your_move": False, "view": None}
     # Published as a person's move is: the chat's scene, and Bob's turn.
     assert [(u["widget_id"], u["rev"]) for u in _widget_updates(fake)] == [(widget_id, 2)]
     turns = [(topic, e["data"]["my_turn"]) for topic, e in _widget_turns(fake, 1) if topic.startswith("human:")]
@@ -193,7 +240,14 @@ def test_an_agents_move_reaches_the_person_and_theirs_the_agent(test_client, mon
     assert "1. e4 / e5 / 2. Nf3" in view["text"]
     # With the current rev a move goes through too.
     acted = _acted(test_client, agent, widget_id, {"type": "move", "args": {"move": "Nc6"}, "rev": 3})
-    assert (acted["ok"], acted["compact"]) == (True, "ok · rev 4 · waiting on Bob")
+    assert (acted["ok"], acted["compact"]) == (True, "ok · rev 4 · waiting on white")
+    # The act tool's input passed on whole, its widget_id and a null args included, is taken too.
+    _human_move(test_client, bob, widget_id, {"type": "move", "args": {"move": "Bc4"}})
+    body = {"widget_id": widget_id, "type": "move", "args": {"move": "Nf6"}, "rev": 5}
+    assert _acted(test_client, agent, widget_id, body)["compact"] == "ok · rev 6 · waiting on white"
+    _human_move(test_client, bob, widget_id, {"type": "move", "args": {"move": "Ng5"}})
+    refused = _acted(test_client, agent, widget_id, {"widget_id": widget_id, "type": "move", "args": None})
+    assert (refused["ok"], refused["code"]) == (False, "illegal_action")
 
 
 def test_refusals_are_a_200_with_a_code_and_a_fresh_view(test_client):
@@ -205,7 +259,8 @@ def test_refusals_are_a_200_with_a_code_and_a_fresh_view(test_client):
     _human_move(test_client, bob, widget_id, {"type": "move", "args": {"move": "e4"}})
     refused = _acted(test_client, agent, widget_id, {**e5, "rev": 0})
     assert (refused["code"], refused["view"]["rev"], refused["view"]["your_move"]) == ("stale_rev", 1, True)
-    refused = _acted(test_client, agent, widget_id, {"type": "move", "args": {"move": "e4"}})
+    # From the game's own session the view comes back with the moves to pick from.
+    refused = _acted(test_client, agent, widget_id, {"type": "move", "args": {"move": "e4"}}, private=1)
     assert refused["code"] == "illegal_action" and "Legal moves" in refused["message"]
     assert {"type": "move", "args": {"move": "e5"}} in refused["view"]["legal"]
     refused = _acted(test_client, agent, widget_id, {"type": "end"})
@@ -227,7 +282,7 @@ def test_a_hit_keeps_the_move_and_the_view_comes_back(test_client):
     assert r.status_code == 201, r.text
     widget_id = r.json()["widget_id"]
     ready = _acted(test_client, agent, widget_id, {"type": "ready"}, private=1)
-    assert (ready["compact"], ready["your_move"], ready["view"]) == ("ok · rev 1 · waiting on Bob", False, None)
+    assert (ready["compact"], ready["your_move"], ready["view"]) == ("ok · rev 1 · waiting on blue", False, None)
     _human_move(test_client, bob, widget_id, {"type": "ready"})
     fleet = _row(test_client, widget_id).state["fleets"]["blue"]
     ship = next(ship for ship in fleet if len(ship) > 1)
@@ -243,7 +298,7 @@ def test_a_hit_keeps_the_move_and_the_view_comes_back(test_client):
     assert len(taps) == 99 and ship[0] not in taps
     assert "Your fleet" in hit["view"]["text"]  # its own seat's view, as asked
     miss = _acted(test_client, agent, widget_id, {"type": "fire", "args": {"at": water}}, private=1)
-    assert (miss["your_move"], miss["view"], miss["compact"]) == (False, None, "ok · rev 4 · waiting on Bob")
+    assert (miss["your_move"], miss["view"], miss["compact"]) == (False, None, "ok · rev 4 · waiting on blue")
 
 
 def test_agent_moves_cost_no_tokens(test_client, _test_engine):
@@ -292,9 +347,12 @@ def test_people_past_their_moves_or_starts_a_minute_get_a_429(test_client, monke
 
 
 def test_each_test_starts_with_no_limit_spent(test_client):
-    assert list(limits.client().scan_iter(f"{limits.KEY_PREFIX}*")) == []
+    # This test's own key only: a late wake from the test before, or a dev server on the same
+    # Redis, may hold others.
+    key = f"{limits.KEY_PREFIX}create:1"
+    assert limits.client().get(key) is None
     assert limits.retry_after(limits.CREATE, 1) is None
-    assert list(limits.client().scan_iter(f"{limits.KEY_PREFIX}*")) == [f"{limits.KEY_PREFIX}create:1"]
+    assert limits.client().get(key) == "1"
 
 
 def test_limits_fail_open_without_redis(test_client, monkeypatch, caplog):
@@ -318,4 +376,4 @@ def test_the_agent_bets_its_blackjack_seat(test_client, seat):
     bet = own["legal"][0]
     assert bet == {"type": "bet", "args_spec": {"arg": "amount", "min": 10, "max": 1000, "step": 10}}
     acted = _acted(test_client, agent, widget_id, {"type": "bet", "args": {"amount": 50}})
-    assert (acted["your_move"], acted["compact"]) == (False, "ok · rev 1 · waiting on Bob")
+    assert (acted["your_move"], acted["compact"]) == (False, f"ok · rev 1 · waiting on {other}")

@@ -26,7 +26,9 @@ from clawbits.datastructures.agent_id import AgentId
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import TableWrite
 from clawbits.fastapi.human_endpoints import _get_db
+from clawbits.fastapi.widget_endpoints import publish_widgets
 from clawbits.fastapi.workos_auth import get_current_human_user
+from clawbits.realtime import fire_and_forget
 
 contact_permissions_router = APIRouter(tags=["Agent Contact Permissions"])
 
@@ -61,6 +63,17 @@ def _require_manage_authority(db: Session, agent_id: str, human_id: int) -> None
             status_code=403,
             detail="Only the agent's operator or an org admin may manage its contacts",
         )
+
+
+def _end_games_out_of_reach(db: Session, agent_id: str) -> list[str]:
+    """A grant change that may have shut a chat with the agent ends its games there (``left``), in
+    this transaction; the caller publishes the ids once it commits."""
+    return [widget_id for widget_id, _ in TableWrite.abort_mm_widgets_out_of_reach(db, agent_id)]
+
+
+def _publish_ended(request: Request, widget_ids: list[str]) -> None:
+    if widget_ids:
+        fire_and_forget(publish_widgets(request.app._engine, widget_ids))
 
 
 def _principal_display_name(
@@ -182,10 +195,13 @@ def set_contact_permission(
                 can_tag=body.can_tag,
                 created_by=user["id"],
             )
+        # Without can_dm a DM with the agent shuts, and a game in it can't go on.
+        ended = [] if body.can_dm else _end_games_out_of_reach(db, agent_id)
         db.commit()
         display_name = _principal_display_name(
             db, body.principal_type, body.principal_id
         )
+    _publish_ended(request, ended)
     return ContactPermissionEntry(
         principal_type=body.principal_type,
         principal_id=body.principal_id,
@@ -222,5 +238,7 @@ def revoke_contact_permission(
             removed = TableWrite.revoke_agent_contact_permission(
                 db, agent_id, principal_agent_id=principal_id
             )
+        ended = _end_games_out_of_reach(db, agent_id) if removed else []
         db.commit()
+    _publish_ended(request, ended)
     return {"removed": removed}

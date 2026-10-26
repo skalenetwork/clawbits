@@ -90,6 +90,7 @@ def test_a_persons_move_wakes_the_agent_with_ids_only(test_client, monkeypatch):
                 "seat": "black",
                 "waiting": True,
                 "status": "active",
+                "move_deadline": None,  # agent-vs-agent games only
             },
         }
     ]
@@ -159,6 +160,22 @@ def test_the_daily_budget_stops_wakes_but_not_the_game(test_client, monkeypatch,
     # Bob still hears it's his move.
     humans = [e["data"] for t, e in fake.published if t.startswith("human:") and e["type"] == "widget.turn"]
     assert {"my_turn": True, "widget_id": widget_id, "rev": 2} in humans
+
+
+def test_a_spent_budget_also_hides_the_move_from_catch_up(test_client, monkeypatch):
+    """Catch-up would otherwise wake the agent past its cap: the waiting reads go quiet with it."""
+    monkeypatch.setattr(limits, "AGENT_DAILY_WAKES", 1)
+    bob, agent, dm, widget_id, fake = _game(test_client, monkeypatch, "wkbudgetcatch")
+    assert len(_wakes(fake, agent, 1)) == 1  # the start's wake spends the whole budget
+    _human_move(test_client, bob, widget_id, _E4)
+    headers = auth_headers(agent["api_key"])
+    waiting = test_client.get("/api/agentic/mm/widgets?waiting=1", headers=headers)
+    assert waiting.status_code == 200, waiting.text
+    assert waiting.json()["widgets"] == []
+    assert _channel_waiting(test_client, agent)[dm] is None
+    # The game itself stays readable: only the prompt to move is withheld.
+    listed = test_client.get("/api/agentic/mm/widgets", headers=headers).json()["widgets"]
+    assert [(w["widget_id"], w["your_move"]) for w in listed] == [(widget_id, True)]
 
 
 def test_a_wake_nobody_hears_is_logged(test_client, monkeypatch, caplog):
@@ -242,11 +259,11 @@ def test_the_agent_socket_subscribes_before_it_reads_the_snapshot(test_client, m
     seen: dict[str, set[str]] = {}
     read = TableRead.get_mm_channels_for_agent
 
-    def reading(session: Session, agent_id: str) -> list[dict]:
+    def reading(session: Session, agent_id: str, **options: bool) -> list[dict]:
         seen["subscribed"] = set(fake.subscribed)
         # Published while the snapshot is read: it still arrives, right after the snapshot.
         fake.publish_now(agent_topic(agent_id), wake)
-        return read(session, agent_id)
+        return read(session, agent_id, **options)
 
     monkeypatch.setattr(TableRead, "get_mm_channels_for_agent", staticmethod(reading))
     with test_client.websocket_connect(f"/api/agentic/mm/events/ws?api_key={agent['api_key']}") as ws:
@@ -255,6 +272,38 @@ def test_the_agent_socket_subscribes_before_it_reads_the_snapshot(test_client, m
     assert first["type"] == "snapshot" and dm in {c["channel_id"] for c in first["data"]["channels"]}
     assert second == wake
     assert {agent_topic(agent["agent_id"]), channel_topic(dm)} <= seen["subscribed"]
+
+
+def test_a_chat_added_while_the_snapshot_is_read_keeps_its_pump(test_client, monkeypatch):
+    """The snapshot is read off the event loop, so a chat can be added meanwhile: its newer event
+    wins over the snapshot that misses it, and the chat's events still come through."""
+    import clawbits.realtime as realtime
+
+    _, _, agent, _, _ = _setup(test_client, "wksteer")
+    fake = _QueueBus()
+    monkeypatch.setattr(realtime, "get_bus", lambda: fake)
+    added = {"type": "channel.added", "channel_id": "wksteer-new", "data": {}}
+    read = TableRead.get_mm_channels_for_agent
+
+    def reading(session: Session, agent_id: str, **options: bool) -> list[dict]:
+        fake.publish_now(agent_topic(agent_id), added)
+        deadline = time.monotonic() + 2  # until the loop, free meanwhile, starts the chat's pump
+        while channel_topic("wksteer-new") not in fake.subscribed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return read(session, agent_id, **options)
+
+    monkeypatch.setattr(TableRead, "get_mm_channels_for_agent", staticmethod(reading))
+    typing = {"type": "member.typing", "channel_id": "wksteer-new", "data": {}}
+    with test_client.websocket_connect(f"/api/agentic/mm/events/ws?api_key={agent['api_key']}") as ws:
+        snapshot, second = ws.receive_json(), ws.receive_json()
+        fake.publish_now(channel_topic("wksteer-new"), typing)
+        time.sleep(0.2)  # the pump's turn to forward it, before the pong below
+        ws.send_json({"type": "ping"})
+        third = ws.receive_json()
+        ws.close()
+    assert snapshot["type"] == "snapshot"
+    assert "wksteer-new" not in {c["channel_id"] for c in snapshot["data"]["channels"]}
+    assert (second, third) == (added, typing)
 
 
 def _age(tc: TestClient, widget_id: str, seconds: int) -> None:
@@ -277,6 +326,10 @@ def test_a_game_stalled_on_its_agent_ends_after_an_hour(test_client, monkeypatch
     _age(test_client, people["widget_id"], over)
     assert asyncio.run(reap_idle_widgets_once(engine)) == 0
     _human_move(test_client, bob, widget_id, _E4)
+    # Waiting on the agent, but not for an hour yet.
+    _age(test_client, widget_id, WIDGET_AGENT_IDLE_SECONDS - 60)
+    assert asyncio.run(reap_idle_widgets_once(engine)) == 0
+    assert _row(test_client, widget_id).status == "active"
     _age(test_client, widget_id, over)
     fake = _bus(monkeypatch)
     assert asyncio.run(reap_idle_widgets_once(engine)) == 1
@@ -288,3 +341,42 @@ def test_a_game_stalled_on_its_agent_ends_after_an_hour(test_client, monkeypatch
     # Published after commit, as every ending is: the chat, Bob, and the agent's last wake.
     assert [e["data"]["status"] for _, e in fake.published if e["type"] == "widget.updated"] == ["aborted"]
     assert _revs(_wakes(fake, agent, 1)) == [(2, False, "aborted")]
+
+
+@pytest.mark.parametrize(
+    ("kind", "done"),
+    [("battleship", {"type": "ready"}), ("blackjack", {"type": "bet", "args": {"amount": 50}})],
+    ids=["battleship-setup", "blackjack-bets"],
+)
+def test_a_game_also_waiting_on_a_person_is_not_the_agents_to_lose(test_client, monkeypatch, kind, done):
+    from clawbits.fastapi.mm_maintenance import (
+        WIDGET_AGENT_IDLE_SECONDS,
+        WIDGET_IDLE_SECONDS,
+        reap_idle_widgets_once,
+    )
+
+    engine = test_client.app._engine
+    bob, _, dm, widget_id, _ = _game(test_client, monkeypatch, f"wkboth-{kind}", kind, "red")
+    # Both seats owe a move: past the hour, the slow person mustn't get the agent blamed.
+    assert sorted(_row(test_client, widget_id).waiting_on) == ["blue", "red"]
+    _age(test_client, widget_id, WIDGET_AGENT_IDLE_SECONDS + 60)
+    assert asyncio.run(reap_idle_widgets_once(engine)) == 0
+    assert _row(test_client, widget_id).status == "active"
+    # Only the two-day rule ends it, as plain idle.
+    _age(test_client, widget_id, WIDGET_IDLE_SECONDS + 60)
+    assert asyncio.run(reap_idle_widgets_once(engine)) == 1
+    row = _row(test_client, widget_id)
+    assert (row.status, row.outcome) == ("aborted", {"reason": "idle"})
+    # Once Bob has done his part the agent alone holds the game up: an hour ends it as the agent's.
+    r = _begin(test_client, bob, dm, kind, "red")
+    assert r.status_code == 201, r.text
+    widget_id = r.json()["widget_id"]
+    _human_move(test_client, bob, widget_id, done)
+    assert _row(test_client, widget_id).waiting_on == ["blue"]
+    _age(test_client, widget_id, WIDGET_AGENT_IDLE_SECONDS - 60)
+    assert asyncio.run(reap_idle_widgets_once(engine)) == 0
+    assert _row(test_client, widget_id).status == "active"
+    _age(test_client, widget_id, WIDGET_AGENT_IDLE_SECONDS + 60)
+    assert asyncio.run(reap_idle_widgets_once(engine)) == 1
+    row = _row(test_client, widget_id)
+    assert (row.status, row.outcome) == ("aborted", {"reason": "agent_idle"})

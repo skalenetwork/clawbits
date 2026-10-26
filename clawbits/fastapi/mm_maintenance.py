@@ -2,8 +2,8 @@
 
 Two jobs. The second, :func:`reap_idle_widgets_once`, ends widgets nobody acted on for
 ``WIDGET_IDLE_SECONDS`` (two days): an active widget keeps its chat's and its org's widget
-switches from turning off, so an abandoned game must not hold them forever. One waiting on an
-agent ends after ``WIDGET_AGENT_IDLE_SECONDS`` (an hour) instead: a person is waiting on it.
+switches from turning off, so an abandoned game must not hold them forever. One waiting only on
+agents ends after ``WIDGET_AGENT_IDLE_SECONDS`` (an hour) instead: a person is waiting on them.
 
 The first is reaping abandoned ``streaming`` posts. A streaming post is
 a server placeholder the owning agent PATCHes text into and eventually
@@ -35,7 +35,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Engine, any_, exists
+from sqlalchemy import Engine, and_, any_, func, select
 from sqlmodel import Session
 
 from clawbits.db.table_read import TableRead
@@ -113,7 +113,9 @@ async def reap_idle_widgets_once(
     engine: Engine, *, idle_seconds: int | None = None, agent_idle_seconds: int | None = None
 ) -> int:
     """End active widgets idle past ``WIDGET_IDLE_SECONDS``, or past ``WIDGET_AGENT_IDLE_SECONDS``
-    while waiting on an agent's seat (reason ``agent_idle``), and publish them. Returns how many."""
+    while every seat they wait on is an agent's (reason ``agent_idle``), and publish them. Returns
+    how many. A game also waiting on a person (battleship setup, blackjack bets) is never the
+    agent's fault: only the two-day rule ends it."""
     from clawbits.db.models import MmWidget, MmWidgetSeat
     from clawbits.fastapi.widget_endpoints import publish_widgets
 
@@ -122,16 +124,23 @@ async def reap_idle_widgets_once(
 
     def end_idle() -> list[str]:
         now = datetime.now(UTC)
-        waits_on_agent = exists().where(
-            MmWidgetSeat.widget_id == MmWidget.widget_id,
-            MmWidgetSeat.agent_id.is_not(None),
-            MmWidgetSeat.seat == any_(MmWidget.waiting_on),
+        waited = func.cardinality(MmWidget.waiting_on)
+        agents_waited_on = (
+            select(func.count())
+            .select_from(MmWidgetSeat)
+            .where(
+                MmWidgetSeat.widget_id == MmWidget.widget_id,
+                MmWidgetSeat.agent_id.is_not(None),
+                MmWidgetSeat.seat == any_(MmWidget.waiting_on),
+            )
+            .scalar_subquery()
         )
+        waits_only_on_agents = and_(waited > 0, agents_waited_on == waited)
         with Session(engine) as db:
             ended = TableWrite.abort_mm_widgets(
                 db,
                 "agent_idle",
-                waits_on_agent,
+                waits_only_on_agents,
                 MmWidget.updated_at < now - timedelta(seconds=agent_idle),
             )
             ended += TableWrite.abort_mm_widgets(

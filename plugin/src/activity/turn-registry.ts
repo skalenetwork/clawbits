@@ -10,8 +10,8 @@
 //
 //   1. runId already bound → that turn.
 //   2. The event's sessionKey ends with ``:clawbits:channel:<channelId>``
-//      (how the SDK keys our channel-peer sessions) → the matching unbound
-//      turn.
+//      (how the SDK keys our channel-peer sessions), or with the turn's own
+//      ``peerId`` (a game move's ``widget-<id>``) → the matching unbound turn.
 //   3. Exactly ONE unbound turn exists → bind it. This is the DM case:
 //      direct chats collapse to the agent's main session (no channel id in
 //      the key), and core's per-session write lock means only one such turn
@@ -19,7 +19,9 @@
 //   4. Anything else (ambiguity) → no bind; the turn simply doesn't stream.
 //
 // Unmatched runs (cron ticks, heartbeats, subagents, email turns) never
-// bind — observers ignore them.
+// bind — observers ignore them. A game move registers MUTED (both lanes
+// off): it binds by rule 2 and reports nothing, and while it is registered
+// rule 3 can't mistake its run for a lone DM turn's.
 
 import type { ClawBitsClient } from "../client.js";
 import type { OpenDraftRef } from "../draft-registry.js";
@@ -39,6 +41,9 @@ export interface InFlightTurn {
   /** ``true`` for non-direct channels: the session key is deterministic and
    *  carries the channel id, enabling rule 2. DMs leave this unset. */
   channelKeyedSession: boolean;
+  /** The channel peer the session key ends with when it isn't ``channelId``:
+   *  a game move's own session (``widget-<id>``). */
+  peerId?: string;
   streaming: boolean;
   liveActivity: boolean;
   registeredAt: number;
@@ -98,7 +103,7 @@ export function claimTurnForRun(
   let match: InFlightTurn | undefined;
   if (sessionKey) {
     match = unbound.find(
-      (t) => t.channelKeyedSession && sessionKeyMatchesChannel(sessionKey, t.channelId),
+      (t) => t.channelKeyedSession && sessionKeyMatchesChannel(sessionKey, t.peerId ?? t.channelId),
     );
   }
   if (!match) {

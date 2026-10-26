@@ -397,9 +397,10 @@ async def publish_post_deleted(
 
 
 async def publish_widget_updated(bus: EventBus, channel_id: str, widget: dict[str, Any]) -> None:
-    """A widget changed: its full response, fresh scene included, to everyone viewing the chat.
-    Channel topic only, never push or unread: a move is silent. Whose turn it is reaches the
-    players' sidebars through :func:`publish_widget_turn`."""
+    """A widget changed: its full response, fresh scene and the chat's score included, to everyone
+    viewing the chat. Channel topic only, never unread. Whose turn it is reaches the players'
+    sidebars through :func:`publish_widget_turn`; a person who doesn't take a move handed to them
+    gets one ping later: :func:`publish_widget_notify` and push (``clawbits.widgets.turn_push``)."""
     await bus.publish(channel_topic(channel_id), _envelope("widget.updated", channel_id, widget))
 
 
@@ -407,7 +408,8 @@ async def publish_widget_turn(
     bus: EventBus, human_id: int, widget: dict[str, Any], my_turn: bool
 ) -> None:
     """Whether ``widget`` (its response dict) now waits on this human: the sidebar's quiet "your
-    move". Its id and ``rev`` ride along so a client can drop an event older than one it applied."""
+    move", sent at every change and never a banner itself. Its id and ``rev`` ride along so a
+    client can drop an event older than one it applied."""
     await bus.publish(
         human_topic(human_id),
         _envelope(
@@ -416,6 +418,16 @@ async def publish_widget_turn(
             {"my_turn": my_turn, "widget_id": widget["widget_id"], "rev": widget["rev"]},
         ),
     )
+
+
+async def publish_widget_notify(
+    bus: EventBus, human_id: int, channel_id: str, notice: dict[str, Any]
+) -> None:
+    """A game in ``channel_id`` still waits on this human after its grace: the one "your move"
+    ping per hand-off, decided by ``clawbits.widgets.turn_push`` as their web and iOS pushes are.
+    ``notice`` is ``{widget_id, rev, title, body}``, the copy already privacy-safe; the desktop app
+    shows it as a native banner while its window is unfocused, other clients may ignore it."""
+    await bus.publish(human_topic(human_id), _envelope("widget.notify", channel_id, notice))
 
 
 async def publish_agent_widget_turn(
@@ -437,6 +449,8 @@ async def publish_agent_widget_turn(
                 "seat": seat,
                 "waiting": waiting,
                 "status": widget["status"],
+                # Agent-vs-agent games only (a later phase): when the server plays the move.
+                "move_deadline": widget.get("move_deadline"),
             },
         ),
     )

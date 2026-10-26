@@ -20,6 +20,8 @@ Generate a keypair + the ready-to-run dotenvx commands to store it:
 The post-created path enqueues via :func:`schedule_post_web_push` (non-blocking,
 thread-safe); a lifespan-owned worker (:func:`start_push_dispatcher`) drains the
 queue and runs :func:`dispatch_post_web_push` off the request path. See below.
+A game's "your move" ping (``clawbits.widgets.turn_push``) rides the same queue
+via :func:`schedule_turn_push` and :func:`dispatch_turn_push`.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import functools
 import json
 import logging
 import os
+from dataclasses import dataclass
 
 from clawbits.domain import APP_URL
 
@@ -37,6 +40,13 @@ log = logging.getLogger(__name__)
 # Bound concurrent sends so a fan-out to a large channel doesn't open
 # hundreds of sockets at once. Each send is a short HTTP/2 POST.
 _MAX_CONCURRENCY = 8
+
+# How long the push service keeps a turn ping for a browser that isn't
+# connected (the ``TTL`` header). Message pushes send pywebpush's 0: delivered
+# now or dropped. A turn ping waits up to this long, so it can show after the
+# person moved from another device; the cost of reaching a browser that wakes
+# a few minutes later.
+TURN_PUSH_TTL_SECONDS = 600
 
 # base64url raw EC P-256, the format the browser's `applicationServerKey`
 # wants. Public half goes to the browser, private half signs our sends.
@@ -277,7 +287,24 @@ def _print_env_block(env: str, subject: str) -> None:
 # they reconcile on reconnect, so shedding the oldest job is acceptable.
 _MAX_QUEUE = 10_000
 
-_queue: asyncio.Queue[tuple[str, dict, list[int]]] | None = None
+
+@dataclass(frozen=True, slots=True)
+class _TurnJob:
+    """One person's "your move" ping, its copy decided already (``clawbits.widgets.turn_push``).
+    ``apns`` is off while they're online on web or desktop, whose own banners gate on focus."""
+
+    human_id: int
+    channel_id: str
+    widget_id: str
+    title: str
+    body: str
+    apns: bool = True
+
+
+# A post's fan-out ``(channel_id, post, member_human_ids)``, or one turn ping.
+_Job = tuple[str, dict, list[int]] | _TurnJob
+
+_queue: asyncio.Queue[_Job] | None = None
 _worker_task: asyncio.Task[None] | None = None
 _main_loop: asyncio.AbstractEventLoop | None = None
 
@@ -334,13 +361,30 @@ def schedule_post_web_push(
     loop.call_soon_threadsafe(_enqueue, channel_id, post, member_human_ids)
 
 
+def schedule_turn_push(
+    human_id: int, channel_id: str, widget_id: str, title: str, body: str, *, apns: bool = True
+) -> None:
+    """Enqueue one person's "your move" ping and return immediately: the same
+    thread-safe hop as :func:`schedule_post_web_push`, and the same no-op while
+    the dispatcher isn't running (no push transport configured)."""
+    loop = _main_loop
+    if loop is None or _queue is None:
+        return
+    job = _TurnJob(human_id, channel_id, widget_id, title, body, apns)
+    loop.call_soon_threadsafe(_put, job, channel_id)
+
+
 def _enqueue(channel_id: str, post: dict, member_human_ids: list[int]) -> None:
+    """Put one post's job on the queue (runs on the dispatcher loop)."""
+    _put((channel_id, post, member_human_ids), channel_id)
+
+
+def _put(job: _Job, channel_id: str) -> None:
     """Put one job on the queue (runs on the dispatcher loop, where Queue access
     is safe). Sheds the oldest job when the backlog is full rather than blocking
     the producer or growing memory."""
     if _queue is None:
         return
-    job = (channel_id, post, member_human_ids)
     try:
         _queue.put_nowait(job)
     except asyncio.QueueFull:
@@ -352,16 +396,20 @@ def _enqueue(channel_id: str, post: dict, member_human_ids: list[int]) -> None:
             log.warning("web push: queue full — dropped push for %s", channel_id)
 
 
-async def _dispatch_worker(queue: asyncio.Queue[tuple[str, dict, list[int]]]) -> None:
+async def _dispatch_worker(queue: asyncio.Queue[_Job]) -> None:
     """Drain the queue forever, one fan-out at a time. Each
     ``dispatch_post_web_push`` already bounds its own send concurrency, so
     serial draining keeps total in-flight sends bounded under load. A failure in
     one job is logged and never kills the worker."""
     log.info("web push: dispatch worker running")
     while True:
-        channel_id, post, member_human_ids = await queue.get()
+        job = await queue.get()
+        channel_id = job.channel_id if isinstance(job, _TurnJob) else job[0]
         try:
-            await dispatch_post_web_push(channel_id, post, member_human_ids)
+            if isinstance(job, _TurnJob):
+                await dispatch_turn_push(job)
+            else:
+                await dispatch_post_web_push(*job)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # pragma: no cover - defensive
@@ -470,8 +518,87 @@ def _collect_targets(
     return (channel_meta, web_devices, apns_devices)
 
 
-def _send_one(target: dict, data: str) -> str:
-    """Send one push (blocking; runs in a thread).
+async def dispatch_turn_push(job: _TurnJob) -> None:
+    """Send one person's "your move" ping to their devices: web push (the
+    service worker drops it while a Clawbits tab is focused) and, unless
+    ``job.apns`` is off, APNs. Mute, the grace and the once-per-game rule were
+    decided before it was queued. Its tag and collapse id are ``turn:{channel}``,
+    so it never replaces a message banner nor a message it; tapping it opens
+    the chat with the game. Its web push waits :data:`TURN_PUSH_TTL_SECONDS`
+    for a browser that isn't connected. Dead subscriptions are pruned as for
+    posts."""
+    from clawbits.realtime.apns_push import apns_configured
+
+    if not vapid_configured() and not apns_configured():
+        return
+    try:
+        web, apns = await asyncio.to_thread(_turn_targets, job.human_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("web push: turn targets failed for %s: %s", job.channel_id, exc)
+        return
+
+    dead_ids: list[int] = []
+    if web and vapid_configured():
+        data = json.dumps(_build_turn_payload(job))
+        results = await asyncio.gather(
+            *[asyncio.to_thread(_send_one, t, data, ttl=TURN_PUSH_TTL_SECONDS) for t in web]
+        )
+        dead_ids.extend(t["id"] for t, r in zip(web, results, strict=True) if r == "dead")
+
+    if job.apns and apns and apns_configured():
+        from clawbits.realtime.apns_push import fan_out as apns_fan_out
+
+        try:
+            dead_ids.extend(
+                await apns_fan_out(
+                    apns,
+                    job.title,
+                    job.body,
+                    job.channel_id,
+                    collapse_id=f"turn:{job.channel_id}",
+                    data={"widgetId": job.widget_id},
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("apns: turn ping failed for %s: %s", job.channel_id, exc)
+
+    if dead_ids:
+        try:
+            await asyncio.to_thread(_prune_devices, dead_ids)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("web push: prune failed: %s", exc)
+
+
+def _turn_targets(human_id: int) -> tuple[list[dict], list[dict]]:
+    """One person's web-push and APNs devices (blocking; runs in a thread)."""
+    from clawbits.db.engine import new_session
+    from clawbits.db.table_read import TableRead
+
+    with new_session() as session:
+        return (
+            TableRead.get_webpush_devices_for_humans(session, [human_id]),
+            TableRead.get_apns_devices_for_humans(session, [human_id]),
+        )
+
+
+def _build_turn_payload(job: _TurnJob) -> dict:
+    """Service-worker payload for a turn ping: an absolute URL on the app origin
+    as for posts (see :func:`_build_payload`), opening the chat with the game."""
+    return {
+        "title": job.title,
+        "body": job.body,
+        "channelId": job.channel_id,
+        "widgetId": job.widget_id,
+        "url": f"{APP_URL}/channels/{job.channel_id}?widget={job.widget_id}",
+        # Its own tag per chat: a newer game's ping replaces an older one, never a message's.
+        "tag": f"turn:{job.channel_id}",
+    }
+
+
+def _send_one(target: dict, data: str, ttl: int = 0) -> str:
+    """Send one push (blocking; runs in a thread). ``ttl`` is how many seconds
+    the push service keeps it for a browser that isn't connected; 0, pywebpush's
+    default, delivers now or drops it.
 
     Returns ``"ok"`` | ``"dead"`` (subscription gone — prune it) | ``"error"``.
     """
@@ -500,6 +627,7 @@ def _send_one(target: dict, data: str) -> str:
             vapid_claims={"sub": VAPID_SUBJECT},
             content_encoding="aes128gcm",
             timeout=10,
+            ttl=ttl,
             # Without this pywebpush uses the bare ``requests`` module, which
             # follows redirects by default. A 30x now surfaces as a >202 status
             # (an "error", not "dead"), so the row survives.

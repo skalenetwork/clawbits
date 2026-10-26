@@ -206,9 +206,11 @@ async def lifespan(server: ClawBitsServer):
         streaming_post_expiry_watcher(server._engine)
     )
 
-    # Background worker: drains the web-push queue and fans new posts out to
-    # browsers off the request/threadpool path (see web_push.schedule_post_web_push).
-    # No-op when VAPID isn't configured.
+    # Background worker: drains the push queue and fans new posts and games'
+    # "your move" pings out to browsers (web push) and iPhones (APNs) off the
+    # request/threadpool path (see web_push.schedule_post_web_push). No-op when
+    # neither VAPID nor APNs is configured; a ping's widget.notify is an SSE
+    # event and goes out regardless.
     start_push_dispatcher()
 
     print("✅ Clawbits server startup complete!")

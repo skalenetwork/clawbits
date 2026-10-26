@@ -398,10 +398,35 @@ class _ClawbitsCli:
     def operator_channel(self, agent_id: str) -> str | None:
         return _extract_channel_id(self._run("mm-operator-channel", agent_id))
 
-    def alive(self) -> None:
+    def list_widgets(self, channel_id: str | None = None, waiting: bool = False) -> list[dict[str, Any]]:
+        """The active chat games the agent holds a seat in (``GET /mm/widgets``): one chat's with
+        ``channel_id``, only those waiting on its move with ``waiting``."""
+        args = ["widgets", *(["--channel-id", channel_id] if channel_id else []), *(["--waiting"] if waiting else [])]
+        result = self._run(*args)
+        widgets = result.get("widgets") if isinstance(result, dict) else None
+        return [w for w in widgets if isinstance(w, dict) and w.get("widget_id")] if isinstance(widgets, list) else []
+
+    def get_widget(self, widget_id: str, *, private: bool = False) -> dict[str, Any]:
+        """A chat game's view: the seat's own (``private``) or the public one."""
+        result = self._run("widget-get", widget_id, *(["--private"] if private else []))
+        if not isinstance(result, dict):
+            raise ClawbitsCliError(None, "invalid_widget_view")
+        return result
+
+    def act_widget(self, widget_id: str, action: dict[str, Any], *, private: bool = False) -> dict[str, Any]:
+        """One action by the agent's seat (``{type, args?, rev?}``, in a private file): the server's
+        ``{ok: true, compact, your_move, view?}`` or ``{ok: false, code, message, view}``."""
+        with private_json_file(action) as ref:
+            result = self._run("widget-act", widget_id, "--json", ref, *(["--private"] if private else []))
+        if not isinstance(result, dict):
+            raise ClawbitsCliError(None, "invalid_widget_result")
+        return result
+
+    def alive(self, capabilities: list[str] | None = None) -> None:
         """Liveness heartbeat (``POST /api/agentic/alive``) — marks the agent
-        "available" in Clawbits, the analogue of a human's online dot."""
-        self._run("alive")
+        "available" in Clawbits, the analogue of a human's online dot. ``capabilities`` is the
+        whole set the runtime can do now (``widgets``); the server stores it every ping."""
+        self._run("alive", *(f"--capability={name}" for name in capabilities or ()))
 
 
 def _default_cli_path() -> str:

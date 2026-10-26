@@ -2,14 +2,15 @@
 
 Widgets run in one-to-one chats for now: between people, or a person and an agent that may play.
 An action is a row lock on the widget, a move validated by its kind (both in
-:mod:`clawbits.widgets.service`), and a ``widget.updated`` carrying the fresh scene. Nothing posts:
-only starting a widget writes a message, so a move never pings. A seated agent is woken instead,
-with ids only, on its own control topic.
+:mod:`clawbits.widgets.service`), and a ``widget.updated`` carrying the fresh scene and the chat's
+score. Nothing posts: only starting a widget writes a message. A move that hands a person the move
+pings them once if they haven't taken it within a grace (:mod:`clawbits.widgets.turn_push`); a
+seated agent is woken instead, with ids only, on its own control topic.
 The chat's own switch lives on ``PATCH /api/human/mm/channels/{id}``.
 """
 import asyncio
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import Engine
@@ -25,6 +26,7 @@ from clawbits.datastructures.widget_models import (
     WidgetCreateRequest,
     WidgetListResponse,
     WidgetResponse,
+    WidgetScoreResponse,
 )
 from clawbits.db.models import MmChannel, MmPost, MmWidget
 from clawbits.db.table_read import TableRead
@@ -47,7 +49,7 @@ from clawbits.realtime import (
     publish_widget_turn,
     publish_widget_updated,
 )
-from clawbits.widgets import KINDS, limits
+from clawbits.widgets import KINDS, limits, turn_push
 from clawbits.widgets import service as widget_service
 from clawbits.widgets.service import Participant, WidgetError
 
@@ -56,10 +58,14 @@ log = logging.getLogger(__name__)
 widget_router = APIRouter(tags=["Widgets"])
 
 
-async def publish_widget(bus: EventBus, widget: dict) -> None:
+async def publish_widget(
+    bus: EventBus, widget: dict, handed: Mapping[str, int] | None = None
+) -> None:
     """The widget's fresh public scene to its chat, to each seated human whether it waits on them,
-    and a wake to each seated agent, the one that just acted included, and when it ends.
-    ``widget`` must be the public view (no viewer): a private kind's event tells clients to refetch."""
+    and a wake to each seated agent, the one that just acted included, and when it ends. A move's
+    ``handed`` marks (:class:`~clawbits.widgets.service.Result`) arm each person's "your move"
+    ping. ``widget`` must be the public view (no viewer): a private kind's event tells clients to
+    refetch."""
     await publish_widget_updated(bus, widget["channel_id"], WidgetResponse(**widget).model_dump())
     for seat in widget["seats"]:
         waiting = widget["status"] == "active" and seat["seat"] in widget["waiting_on"]
@@ -67,6 +73,7 @@ async def publish_widget(bus: EventBus, widget: dict) -> None:
             await publish_widget_turn(bus, seat["human_id"], widget, waiting)
         elif seat["agent_id"] is not None:
             await _wake_agent(bus, seat["agent_id"], widget, seat["seat"], waiting)
+    turn_push.schedule(widget, handed or {})
 
 
 async def _wake_agent(bus: EventBus, agent_id: str, widget: dict, seat: str, waiting: bool) -> None:
@@ -91,7 +98,11 @@ async def publish_widgets(engine: Engine, widget_ids: Collection[str]) -> None:
 
     def load() -> list[dict]:
         with Session(engine) as db:
-            return [w for widget_id in widget_ids if (w := TableRead.get_mm_widget(db, widget_id))]
+            return [
+                w
+                for widget_id in widget_ids
+                if (w := TableRead.get_mm_widget(db, widget_id, with_scores=True))
+            ]
 
     bus = get_bus()
     for widget in await asyncio.to_thread(load):
@@ -158,18 +169,34 @@ def list_widgets(
     """The chat's widgets, newest first: the active one only, unless ``active=false``."""
     with _get_db(request) as db:
         _require_human_member(db, channel_id, user["id"])
-        widgets = TableRead.list_mm_widgets(db, channel_id, active_only=active, viewer_human_id=user["id"])
+        widgets = TableRead.list_mm_widgets(
+            db, channel_id, active_only=active, viewer_human_id=user["id"], with_scores=True
+        )
     return WidgetListResponse(widgets=[WidgetResponse(**w) for w in widgets])
+
+
+@widget_router.get(
+    "/api/human/mm/channels/{channel_id}/widgets/score", response_model=WidgetScoreResponse
+)
+def get_widget_score(
+    channel_id: str, request: Request, user: dict = Depends(get_current_human_user)
+):
+    """The chat's score over its finished games, every kind together: each player's wins, the
+    draws, and how many finished. Ended and aborted games don't count. Members only, as the list."""
+    with _get_db(request) as db:
+        _require_human_member(db, channel_id, user["id"])
+        return WidgetScoreResponse(**TableRead.mm_widget_score(db, channel_id))
 
 
 @widget_router.get("/api/human/mm/widgets/{widget_id}", response_model=WidgetResponse)
 def get_widget(widget_id: str, request: Request, user: dict = Depends(get_current_human_user)):
-    """A widget in a chat the caller belongs to; any other is the same 404."""
+    """A widget in a chat the caller belongs to and may still use (an agent's DM needs their
+    contact grant, as every route in it does); any other is the same 404."""
     with _get_db(request) as db:
-        widget = TableRead.get_mm_widget(db, widget_id, viewer_human_id=user["id"])
-        if widget is None or not TableRead.is_mm_channel_member_human(
-            db, widget["channel_id"], user["id"]
-        ):
+        widget = TableRead.get_mm_widget(
+            db, widget_id, viewer_human_id=user["id"], with_scores=True
+        )
+        if widget is None or not Participant.human(user["id"]).is_member(db, widget["channel_id"]):
             raise HTTPException(status_code=404, detail="Widget not found")
     return WidgetResponse(**widget)
 
@@ -197,7 +224,9 @@ def act_on_widget(
         except WidgetError as e:
             raise _http(e) from e
 
-    fire_and_forget(publish_widget(get_bus(), result.public))
+    # They acted: the next time a game hands them the move, it may ping them again.
+    limits.clear_turn_push(user["id"], widget_id)
+    fire_and_forget(publish_widget(get_bus(), result.public, result.handed))
     return WidgetResponse(**result.view)
 
 

@@ -11,6 +11,7 @@ import { pluginDebug } from "../file-logger.js";
 import { finishReporting, onCommandOutputEvent, onItemEvent, onThinkingEvent, onToolEvent } from "./reporter.js";
 import { finishStreaming, onAssistantEvent } from "./stream-patcher.js";
 import { claimTurnForRun, turnForRun } from "./turn-registry.js";
+import { trackGameRun } from "../widgets/session.js";
 
 /** The slice of the plugin API we need; the vendored SDK stub doesn't type
  *  the agent-events plane, so this narrows an ``unknown`` api object. */
@@ -47,6 +48,8 @@ export function routeAgentEvent(event: unknown): void {
       case "lifecycle": {
         const data = (e.data ?? {}) as Record<string, unknown>;
         const phase = typeof data.phase === "string" ? data.phase : "";
+        // A game's session isn't deleted while a run on it goes (widgets/session.ts).
+        trackGameRun(runId, sessionKey, phase);
         if (phase === "start") {
           claimTurnForRun(runId, sessionKey);
         } else if (phase === "end" || phase === "error") {

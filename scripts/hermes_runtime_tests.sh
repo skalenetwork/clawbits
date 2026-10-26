@@ -2,14 +2,14 @@
 #
 # Run tests/hermes_runtime against real, pinned Hermes revisions.
 #
-#   scripts/hermes_runtime_tests.sh [min|current|<commit>]... [-- <pytest args>]
+#   scripts/hermes_runtime_tests.sh [min|current|latest|<commit>]... [-- <pytest args>]
 #
 # Revisions default to every label in tests/hermes_runtime/HERMES_REVS. For each
-# one the source is extracted into a cache outside the repo, a Python 3.13 venv
-# is built from Hermes's own uv.lock, the plan's upstream regression files that
-# exist at that revision run from the extracted tree, the automation catch-up
-# tests run against that revision's real cron store, and then the Clawbits
-# suite runs once per plugin layout.
+# one the source is extracted into a cache outside the repo, a venv on the newest
+# Python its uv.lock allows is built from that lock, the plan's upstream
+# regression files that exist at that revision run from the extracted tree, the
+# automation catch-up tests run against that revision's real cron store, and
+# then the Clawbits suite runs once per plugin layout.
 #
 # Environment:
 #   HERMES_RUNTIME_LAYOUT  bundled | user | "bundled user" (default: both)
@@ -75,10 +75,19 @@ fetch() {  # commit -> $cache/src-<commit>
 }
 
 venv_for() {  # commit -> $cache/venv-<commit>, synced from the revision's uv.lock
-  local src=$cache/src-$1 venv=$cache/venv-$1
+  local src=$cache/src-$1 venv=$cache/venv-$1 below dev
   [[ -f $venv/.synced ]] && return
-  (cd "$src" && UV_PROJECT_ENVIRONMENT=$venv uv sync --frozen --no-dev --no-install-project \
-    --extra dev --extra messaging --python 3.13 --quiet)
+  # The newest Python the lock allows: 3.13 under "<3.14"; newer locks cover only 3.14.
+  below=$(awk -F'<3[.]' '/^requires-python/ {print $2 + 0; exit}' "$src/uv.lock")
+  ((below > 0)) || below=14
+  # Test tools: the `dev` extra, or the `dev` dependency group at newer revisions.
+  dev=(--no-dev --extra dev)
+  if awk '/^\[/ {section = $0} section == "[dependency-groups]" && /^dev *=/ {hit = 1}
+      END {exit !hit}' "$src/pyproject.toml"; then
+    dev=(--group dev)
+  fi
+  (cd "$src" && UV_PROJECT_ENVIRONMENT=$venv uv sync --frozen --no-install-project \
+    "${dev[@]}" --extra messaging --python "3.$((below - 1))" --quiet)
   uv pip install --python "$venv/bin/python" --no-deps --quiet -e "$src"
   touch "$venv/.synced"
 }
@@ -102,10 +111,10 @@ for want in "${wanted[@]}"; do
   done
   if ((${#present[@]})); then
     echo "-- upstream regression files (${#present[@]}/${#upstream[@]})"
-    home=$(mktemp -d)
-    (cd "$src" && HERMES_HOME=$home "$python" -m pytest -q -p no:cacheprovider "${present[@]}") \
+    # Hermes's conftest makes its own throwaway home when HERMES_HOME is unset; a preset
+    # one counts as a real custom home, which newer revisions' I/O guard refuses to touch.
+    (cd "$src" && env -u HERMES_HOME "$python" -m pytest -q -p no:cacheprovider "${present[@]}") \
       || status=1
-    rm -rf "$home"
   fi
 
   echo "-- tests/poc/test_hermes_automations_catchup.py (real Hermes cron)"

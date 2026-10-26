@@ -275,6 +275,18 @@ export async function notifyForPost(
   await command("notify_channel_message", { message });
 }
 
+/** A game waits on the viewer: the server waited out its grace, checked the chat isn't muted and sends it once until
+ *  they move. Its own kind, so the shell gives it a banner beside the chat's message banner, with no Reply, and a
+ *  click opens `?widget=<widgetId>`. Author and chat name match, so the shell shows no author. The shell bundles this
+ *  frontend (tauri.conf.json `frontendDist`), so the one running this code always knows `kind`. */
+export async function notifyForTurn(turn: { channelId: string; widgetId: string; title: string; body: string }): Promise<void> {
+  if (!isDesktop || (await isAppInForeground())) return;
+  const { channelId, widgetId, title, body } = turn;
+  await command("notify_channel_message", {
+    message: { channelId, channelName: title, authorName: title, body, kind: "turn", widgetId },
+  });
+}
+
 export async function sendTestNotification(): Promise<void> {
   if (!isDesktop) throw new Error("not running in the desktop app");
   await command("notify_debug_ping");

@@ -5147,10 +5147,12 @@ class TableWrite:
         turn: str | None,
         waiting_on: Sequence[str],
         seat: str | None = None,
-    ) -> None:
+    ) -> dict[str, int]:
         """Store what an action by ``seat`` did and bump ``rev``. ``turn`` and ``waiting_on``
         clear once the widget ends. ``acted_revs`` marks the new rev for the seat that acted and
-        for each seat the move just came to."""
+        for each seat the move just came to. Returns those marks for the seats the widget still
+        waits on (the move just came to them, or ``seat`` keeps it), taken under the caller's row
+        lock: a "your move" ping is due only while a seat's mark stands. Empty once it ends."""
         handed = set(waiting_on) - set(widget.waiting_on)
         widget.state = state
         widget.status = status
@@ -5164,6 +5166,7 @@ class TableWrite:
         widget.updated_at = _dt.datetime.now(_dt.UTC)
         session.add(widget)
         session.flush()
+        return {s: widget.rev for s in marked if s in widget.waiting_on}
 
     @staticmethod
     def abort_mm_widgets(session: Session, reason: str, *where) -> list[tuple[str, str]]:
@@ -5207,3 +5210,27 @@ class TableWrite:
         if channel_id is not None:
             where.append(MmWidget.channel_id == channel_id)
         return TableWrite.abort_mm_widgets(session, reason, *where)
+
+    @staticmethod
+    def abort_mm_widgets_out_of_reach(session: Session, agent_id: str) -> list[tuple[str, str]]:
+        """End (``left``) the active widgets seating ``agent_id`` in one-to-one chats it may no
+        longer reach, as after a contact grant is revoked: neither side of such a chat can play on.
+        Locks the agent row first, as switching its games off does: a game starting meanwhile
+        (which holds that row shared) is ended here, or starts after and sees the revoke."""
+        from clawbits.db.table_read import TableRead
+
+        TableWrite.lock_agent(session, agent_id)
+        seated = select(MmWidgetSeat.widget_id).where(MmWidgetSeat.agent_id == agent_id)
+        channel_ids = session.exec(
+            select(MmWidget.channel_id)
+            .join(MmChannel, MmChannel.channel_id == MmWidget.channel_id)
+            .where(MmWidget.status == "active")
+            .where(MmWidget.widget_id.in_(seated))
+            .where(MmChannel.channel_type.in_(PAIR_CHANNEL_TYPES))
+        ).all()
+        lost = [c for c in channel_ids if not TableRead.can_agent_access_dm(session, c, agent_id)]
+        if not lost:
+            return []
+        return TableWrite.abort_mm_widgets(
+            session, "left", MmWidget.widget_id.in_(seated), MmWidget.channel_id.in_(lost)
+        )

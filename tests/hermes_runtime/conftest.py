@@ -39,6 +39,11 @@ else:
     os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     import gateway.run  # noqa: F401
 
+    try:
+        import yaml
+    except ModuleNotFoundError:  # newer Hermes reads YAML with ruamel only, not PyYAML
+        import hermes_yaml as yaml
+
 from fake_clawbits import MODEL, OPERATOR_DM, FakeClawbits  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -126,7 +131,6 @@ class Gateway:
 
     def load_plugin(self) -> Any:
         """Write config.yaml and load the plugin through Hermes's loader; its package module."""
-        import yaml
         from gateway.platform_registry import platform_registry
         from hermes_cli.plugins import discover_plugins
 

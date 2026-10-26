@@ -1,3 +1,4 @@
 # Hermes revisions the runtime suite pins: <commit> <label>
 345cd2b057a452236de401d3534b8502a7465e8d min  # v2026.9.14, first 0.21.3 = requires_hermes floor
 0d0ccb88342e11fba13d0c53498f04f10a6ba137 current  # pinned candidate
+7cc3fb8cb55898747dd1dfa56fda3e16ebba028e latest  # main 2026-10-12, widgets plan decision 11; lock covers Python 3.14 only

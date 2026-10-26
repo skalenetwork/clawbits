@@ -41,7 +41,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, ApiError, mcpConnectLinkId } from "@/lib/api";
 import { BUBBLE_TAIL, bubblePath } from "@/lib/bubblePath";
 import { deleteChannelFile, uploadChannelFile, type LocalFile } from "@/lib/upload";
-import { historyKey, useActiveWidgets, useHistory, useLiveEvents, useOrganizations } from "@/lib/data";
+import {
+  historyKey,
+  useActiveWidgets,
+  useHistory,
+  useLiveEvents,
+  useOrganizations,
+  useWidgetScore,
+} from "@/lib/data";
 import { useLiveTurn, useLiveTurns, type LiveTurn } from "@/lib/liveTurn";
 import { glyphKind, isPairChannel } from "@/lib/chatFilters";
 import {
@@ -63,8 +70,10 @@ import { useSession } from "@/lib/session";
 import {
   applyWidget,
   canPlay,
+  chatScoreOf,
   isWidgetChat,
   lastWidgetId,
+  scoreLine,
   WIDGET_KINDS,
   type WidgetKindName,
 } from "@/lib/widgets";
@@ -172,6 +181,8 @@ function Conversation({ id }: { id: string }) {
   const activeWidgets = useActiveWidgets(id, gameChat);
   // One widget at a time in a chat: the + menu offers a game only while none is running.
   const playable = canPlay(active, organization) && activeWidgets.isSuccess && activeWidgets.data.length === 0;
+  // The chat's score, which the game menu shows between games.
+  const score = useWidgetScore(id, canPlay(active, organization));
   const forbidden =
     channel.error instanceof ApiError &&
     [403, 404].includes(channel.error.status);
@@ -376,8 +387,14 @@ function Conversation({ id }: { id: string }) {
   };
   const chooseGame = () => {
     const options = [...WIDGET_KINDS.map((item) => item.label), "Cancel"];
+    const standing = chatScoreOf(score.data, userId);
     ActionSheetIOS.showActionSheetWithOptions(
-      { title: "Play a game", options, cancelButtonIndex: options.length - 1 },
+      {
+        title: "Play a game",
+        message: standing ? scoreLine(standing) : undefined,
+        options,
+        cancelButtonIndex: options.length - 1,
+      },
       (index) => {
         const kind = WIDGET_KINDS[index]?.kind;
         if (kind) void startGame(kind);

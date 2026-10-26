@@ -24,7 +24,7 @@ record of what was built instead.
 ## A — Restore commands and protect control replies
 
 **Landed.** A real-Hermes test harness (`tests/hermes_runtime`,
-`scripts/hermes_runtime_tests.sh`, a CI job over min × current pins and bundled × user
+`scripts/hermes_runtime_tests.sh`, a CI job over min × current × latest pins and bundled × user
 layouts) that loads the plugin through the actual Hermes loader against a fake Clawbits
 service. `MessageEvent.text` is the raw trigger with only the agent's own `@mention`
 stripped, so Hermes's own parser sees slash commands and short prompt answers; the plugin
@@ -326,8 +326,8 @@ docker compose -f compose.yaml -f compose.override.yaml up -d --wait db redis st
 uv run pytest tests/fastapi/test_email.py tests/fastapi/test_email_incremental.py \
   tests/fastapi/test_email_outbox.py tests/fastapi/test_version_check.py -q
 
-# Real Hermes runtime matrix: both pins x both plugin layouts
-env -u INVOCATION_ID scripts/hermes_runtime_tests.sh min current
+# Real Hermes runtime matrix: every pin x both plugin layouts
+env -u INVOCATION_ID scripts/hermes_runtime_tests.sh min current latest
 
 # Lint and the generated schema doc (CI diffs the result; it must be unchanged)
 uv run ruff check .

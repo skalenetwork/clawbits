@@ -92,7 +92,7 @@ export default function SettingsWidgetsPage() {
                 )}
                 {settings && (
                     <SettingsSection
-                        footer="A chat runs widgets only when its own switch is on too, in Channel info. Moves never send notifications."
+                        footer="A chat runs widgets only when its own switch is on too, in Channel info. If a game waits on your move while you're away, you get one banner per game until you move. Muting the chat silences it, as it does the chat's messages."
                     >
                         <SettingsRow
                             title="Widgets in chats"

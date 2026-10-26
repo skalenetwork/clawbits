@@ -787,12 +787,19 @@ def remove_member(
         remaining_human_ids = [m["human_id"] for m in members if m["human_id"] is not None]
         channel_deleted = removed_human_id is not None and not remaining_human_ids
         orphaned_agent_ids: list[str] = []
+        # Read as ended before the channel takes them along: an agent seated there is still told.
+        gone_widgets: list[dict] = []
         event: dict | None = None
         if channel_deleted:
             orphaned_agent_ids = [m["agent_id"] for m in members if m["agent_id"] is not None]
+            gone_widgets = [
+                w
+                for i in ended_widget_ids
+                if (w := TableRead.get_mm_widget(db, i, with_scores=True))
+            ]
+            ended_widget_ids = []
             TableWrite.delete_mm_channel(db, channel_id)
             members = []
-            ended_widget_ids = []  # gone with the channel: no one is left to tell
         else:
             event = _record_channel_event(
                 db, channel_id, "member.removed",
@@ -818,10 +825,13 @@ def remove_member(
         fire_and_forget(
             publish_channel_event(bus, channel_id, event, member_human_ids=remaining_human_ids)
         )
-    if ended_widget_ids:
-        from clawbits.fastapi.widget_endpoints import publish_widgets  # it imports this module
+    if ended_widget_ids or gone_widgets:
+        # Imported here: it imports this module.
+        from clawbits.fastapi.widget_endpoints import publish_widget, publish_widgets
 
         fire_and_forget(publish_widgets(request.app._engine, ended_widget_ids))
+        for widget in gone_widgets:
+            fire_and_forget(publish_widget(bus, widget))
     return MmChannelMembersListResponse(
         members=[MmChannelMemberResponse(**m) for m in members],
         total=len(members),

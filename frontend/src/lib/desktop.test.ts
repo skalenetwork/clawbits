@@ -21,6 +21,21 @@ let deepLinkHandler: ((event: { payload: string }) => void) | null = null;
 const locationReplace = vi.fn();
 const locationAssign = vi.fn();
 
+/** The shell's commands, and the window it asks whether the app is in front. */
+const shell = vi.hoisted(() => ({
+  invoke: vi.fn((_name: string, _args?: unknown) => Promise.resolve()),
+  visible: true,
+  focused: false,
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: shell.invoke }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isVisible: () => Promise.resolve(shell.visible),
+    isFocused: () => Promise.resolve(shell.focused),
+  }),
+}));
+
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (_name: string, handler: (event: { payload: string }) => void) => {
     deepLinkHandler = handler;
@@ -219,5 +234,39 @@ describe("native MCP sign-in state", () => {
     expect(nativeScheme("clawbits.s1")).toBe("clawbits");
     expect(nativeScheme("evil.s1")).toBeUndefined();
     expect(nativeScheme("webstate")).toBeUndefined();
+  });
+});
+
+describe("desktop turn banner", () => {
+  const turn = { channelId: "c1", widgetId: "w1", title: "Your move", body: "Chess with Bob" };
+
+  async function load(desktop: boolean) {
+    vi.resetModules();
+    shell.invoke.mockClear();
+    const globals = window as unknown as Record<string, unknown>;
+    if (desktop) globals.__TAURI_INTERNALS__ = {};
+    else delete globals.__TAURI_INTERNALS__;
+    return import("@/lib/desktop");
+  }
+
+  it("shows a turn as its own kind of banner while the app is in the background, the game's id with it", async () => {
+    shell.focused = false;
+    const mod = await load(true);
+
+    await mod.notifyForTurn(turn);
+
+    expect(shell.invoke).toHaveBeenCalledOnce();
+    expect(shell.invoke).toHaveBeenCalledWith("notify_channel_message", {
+      message: { channelId: "c1", channelName: "Your move", authorName: "Your move", body: "Chess with Bob", kind: "turn", widgetId: "w1" },
+    });
+  });
+
+  it("stays quiet while the app is in front, and off the desktop app", async () => {
+    shell.focused = true;
+    await (await load(true)).notifyForTurn(turn);
+    shell.focused = false;
+    await (await load(false)).notifyForTurn(turn);
+
+    expect(shell.invoke).not.toHaveBeenCalled();
   });
 });

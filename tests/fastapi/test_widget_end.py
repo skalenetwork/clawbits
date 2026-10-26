@@ -4,7 +4,13 @@ import pytest
 from sqlmodel import Session, select
 from starlette.testclient import TestClient
 
-from clawbits.db.models import MmChannel, MmChannelMember, MmWidgetSeat, Organization
+from clawbits.db.models import (
+    AgentContactPermission,
+    MmChannel,
+    MmChannelMember,
+    MmWidgetSeat,
+    Organization,
+)
 from clawbits.widgets import service as widget_service
 from clawbits.widgets.service import Participant, WidgetError
 from tests.fastapi._auth_helpers import auth_headers, register_human
@@ -167,6 +173,9 @@ def test_an_agent_seat_acts_through_the_service(test_client, create_agent_and_ke
         seat.human_id, seat.agent_id = None, agent_id
         db.add(seat)
         db.add(MmChannelMember(channel_id=channel_id, agent_id=agent_id))
+        # Contact is closed by default and an agent's every call rechecks it: both people let it in.
+        for person in (alice, bob):
+            db.add(AgentContactPermission(agent_id=agent_id, human_id=person["user"]["id"], can_dm=True))
         db.commit()
     r = _act(test_client, bob, widget, {"type": "move", "args": {"move": "e5"}})
     assert (r.status_code, r.json()["detail"]) == (403, "You don't have a seat in this widget")

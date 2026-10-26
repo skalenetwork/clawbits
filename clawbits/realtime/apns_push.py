@@ -77,11 +77,24 @@ def _bearer_token() -> str:
     return _provider_token
 
 
-def send_apns(device_token: str, title: str, body: str, channel_id: str) -> str:
+def send_apns(
+    device_token: str,
+    title: str,
+    body: str,
+    channel_id: str,
+    collapse_id: str | None = None,
+    data: dict | None = None,
+) -> str:
     """Send one alert. Blocking; runs in a worker thread.
+
+    ``collapse_id`` (default ``channel_id``) is the banner a newer alert replaces; ``data`` adds
+    keys for the app beside ``channelId``. Those keys go both at the top level, where builds up to
+    now look, and under ``body``, the only place expo-notifications reads a remote push's ``data``
+    from. The alert groups by ``channel_id`` either way.
 
     Returns "ok" | "dead" (token gone — prune it) | "error".
     """
+    custom = {"channelId": channel_id, **(data or {})}
     payload = json.dumps(
         {
             "aps": {
@@ -89,7 +102,8 @@ def send_apns(device_token: str, title: str, body: str, channel_id: str) -> str:
                 "sound": "default",
                 "thread-id": channel_id,
             },
-            "channelId": channel_id,
+            **custom,
+            "body": custom,
         },
         separators=(",", ":"),
     )
@@ -102,7 +116,7 @@ def send_apns(device_token: str, title: str, body: str, channel_id: str) -> str:
                 "apns-topic": APNS_TOPIC,
                 "apns-push-type": "alert",
                 "apns-priority": "10",
-                "apns-collapse-id": channel_id[:64],
+                "apns-collapse-id": (collapse_id or channel_id)[:64],
             },
             timeout=10,
             http2=True,
@@ -128,9 +142,16 @@ def send_apns(device_token: str, title: str, body: str, channel_id: str) -> str:
 
 
 async def fan_out(
-    devices: list[dict], title: str, body: str, channel_id: str
+    devices: list[dict],
+    title: str,
+    body: str,
+    channel_id: str,
+    *,
+    collapse_id: str | None = None,
+    data: dict | None = None,
 ) -> list[int]:
-    """Alert every device concurrently; returns dead row ids for pruning."""
+    """Alert every device concurrently (``collapse_id`` and ``data`` as in :func:`send_apns`);
+    returns dead row ids for pruning."""
     if not devices or not apns_configured():
         return []
     sem = asyncio.Semaphore(_MAX_CONCURRENCY)
@@ -138,7 +159,7 @@ async def fan_out(
     async def one(device: dict) -> tuple[int | None, str]:
         async with sem:
             return device["id"], await asyncio.to_thread(
-                send_apns, device["token"], title, body, channel_id
+                send_apns, device["token"], title, body, channel_id, collapse_id, data
             )
 
     results = await asyncio.gather(*(one(d) for d in devices))

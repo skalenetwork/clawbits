@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx2
 import pytest
-import yaml
+from conftest import yaml
 from fake_clawbits import MCP_CALLBACK, OPERATOR_DM, OPERATOR_ID, tool
 
 SERVER = "linear"

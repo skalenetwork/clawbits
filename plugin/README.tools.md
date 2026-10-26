@@ -42,6 +42,19 @@ active.
 - `clawbits_search` (full-text, scoped to this agent's channels)
 - `clawbits_channel_posts` (latest, or a window around a post id)
 - `clawbits_mcp_connect` (OAuth MCP sign-in through a Connect card in the chat)
+- `clawbits_widget_act` (one move in a Clawbits chat game, only in the game's own session; pinned in the tool catalog)
+- `clawbits_widget_get` (a game as text; the agent's own seat's view only in the game's own session)
+- `clawbits_widget_list` (the agent's active games; `waiting: true` for those on its move)
+
+The three chat game tools take their names, descriptions and schemas from the
+server's `clawbits/widgets/tool_spec.json`, and `widget_id` defaults to the
+active game in the current chat. The channel tells Clawbits the agent can play
+games only while this plugin has registered `clawbits_widget_act`, tool policy
+allows it by name (`tools.alsoAllow`; an allow glob doesn't count), a game routes
+to a session of its own (no `session.groupScope: "main"`, global or a binding's),
+and the account's `widgets` config isn't `false`; the operator still turns on the
+agent's "Can play games" setting in Clawbits. A game's own session may call only
+the game's tools, and the agent's other sessions can't read it.
 
 The package has no runtime import from the installed channel extension. Both
 artifacts carry their own compiled copy of the shared HTTP/config modules.

@@ -113,6 +113,8 @@ export const queryKeys = {
     widgetsAll: ["mm", "widget"] as const,
     /** The chat's active widget (at most one), for its game panel. */
     activeWidgets: (channelId: string) => ["mm", "channel", channelId, "widgets"] as const,
+    /** The chat's score over its finished games, for Channel info and the "Play a game" menu. */
+    widgetScore: (channelId: string) => ["mm", "channel", channelId, "widget-score"] as const,
     linkPreview: (url: string) => ["mm", "link-preview", url] as const,
     search: (orgId: string | null, query: string, sort: string, filters: MmSearchFilters) =>
       ["mm", "search", orgId, query, sort, filters] as const,

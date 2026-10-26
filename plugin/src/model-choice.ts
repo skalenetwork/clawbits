@@ -34,6 +34,12 @@ export function setModelChoiceRuntime(next: PluginRuntime): void {
   runtime = next;
 }
 
+/** The host's config as it is now (the agent default this module writes lands there), or
+ *  undefined before the runtime is set. */
+export function currentConfig(): OpenClawConfig | undefined {
+  return typeof runtime?.config?.current === "function" ? (runtime.config.current() as OpenClawConfig) : undefined;
+}
+
 export function choiceOf(model: unknown, thinking: unknown): ModelChoice {
   return {
     model: typeof model === "string" ? model : null,

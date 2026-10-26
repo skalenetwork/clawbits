@@ -8,7 +8,7 @@ there, and this module imports ``table_read``.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy import ColumnElement
@@ -23,11 +23,12 @@ from clawbits.db.models import (
     MmWidget,
     MmWidgetSeat,
     Organization,
+    OrgMember,
 )
 from clawbits.db.table_read import TableRead
 from clawbits.db.table_write import DELETED_AGENT_ID, TableWrite
 from clawbits.fastapi.version_check import widgets_eligible
-from clawbits.widgets import KINDS, InvalidAction, NotYourTurn, WidgetKind, brief, chess
+from clawbits.widgets import KINDS, InvalidAction, NotYourTurn, WidgetKind, brief, chess, limits
 
 # The action every kind takes from a seated player in any phase: no winner, and no rev check, since
 # it's how a stalled game gets cleared.
@@ -107,11 +108,15 @@ class Participant:
             return MmWidgetSeat.human_id == self.human_id
         return MmWidgetSeat.agent_id == self.agent_id
 
-    def is_member(self, db: Session, channel_id: str) -> bool:
-        """In the chat, and for an agent still allowed in it: a revoked contact grant shuts it out of
-        a DM whose membership row lingers, as on every other agentic route."""
+    def is_member(self, db: Session, channel_id: str, *, ending: bool = False) -> bool:
+        """In the chat and still allowed in it, as on every other route: a revoked contact grant
+        shuts an agent's DM, whose membership rows linger, to the person and the agent alike. A
+        person ``ending`` a game needs only to be in the chat: the way out of a game never shuts."""
         if self.human_id is not None:
-            return TableRead.is_mm_channel_member_human(db, channel_id, self.human_id)
+            if not TableRead.is_mm_channel_member_human(db, channel_id, self.human_id):
+                return False
+            agent_id = None if ending else TableRead.dm_agent_peer(db, channel_id)
+            return agent_id is None or TableRead.can_dm_agent(db, agent_id, human_id=self.human_id)
         assert self.agent_id is not None
         return TableRead.is_mm_channel_member(
             db, channel_id, self.agent_id
@@ -125,23 +130,37 @@ class Participant:
 
 @dataclass(frozen=True, slots=True)
 class Result:
-    """A widget after a call: as the caller sees it, the public view its events carry, and for a
-    start the message that shows it."""
+    """A widget after a call: as the caller sees it, the public view its events carry, for a
+    start the message that shows it, and for a move ``{seat: rev}`` for each seat it left waiting
+    that the move came to or that keeps it, the rev taken under the row lock (a "your move" ping
+    is due only while it stands)."""
 
     view: dict[str, Any]
     public: dict[str, Any]
     post_id: int | None = None
+    handed: dict[str, int] = field(default_factory=dict)
 
 
 def _result(
-    db: Session, widget_id: str, participant: Participant, post_id: int | None = None
+    db: Session,
+    widget_id: str,
+    participant: Participant,
+    post_id: int | None = None,
+    handed: dict[str, int] | None = None,
 ) -> Result:
+    """Read back a committed call. Each player's score rides on people's views and on the public
+    one, the chat's ``widget.updated`` (an agent streaming the chat sees that too); an agent's own
+    view never carries it."""
     view = TableRead.get_mm_widget(
-        db, widget_id, viewer_human_id=participant.human_id, viewer_agent_id=participant.agent_id
+        db,
+        widget_id,
+        viewer_human_id=participant.human_id,
+        viewer_agent_id=participant.agent_id,
+        with_scores=participant.human_id is not None,
     )
-    public = TableRead.get_mm_widget(db, widget_id)
+    public = TableRead.get_mm_widget(db, widget_id, with_scores=True)
     assert view is not None and public is not None  # committed under our lock
-    return Result(view, public, post_id)
+    return Result(view, public, post_id, handed or {})
 
 
 def _require_switches(channel: MmChannel | None, org: Organization | None) -> None:
@@ -200,12 +219,15 @@ def _expected(
 
 
 def _operates_a_seat(db: Session, human_id: int, holders: dict[str, Participant]) -> bool:
-    """``human_id`` operates an agent holding one of these seats."""
+    """``human_id`` operates an agent holding one of these seats and is still in its org: removing
+    someone from an org leaves ``operator_id`` set but takes every power over its agents."""
     agent_ids = [holder.agent_id for holder in holders.values() if holder.agent_id is not None]
     return bool(agent_ids) and db.exec(
         select(Agent.agent_id)
+        .join(OrgMember, OrgMember.org_id == Agent.org_id)
         .where(Agent.agent_id.in_(agent_ids))
         .where(Agent.operator_id == human_id)
+        .where(OrgMember.human_id == human_id)
     ).first() is not None
 
 
@@ -273,9 +295,9 @@ def act(
     """Apply one action by the participant's seat and commit. ``expected_rev``, when given (people
     always give it), must be the current ``rev``, so a move on a stale board is refused rather than
     a surprise. A person's older board is still good while their seat neither acted nor got the
-    move since it, provided the kind takes the action now. :data:`END` skips that check and the
-    switches: it ends the game as ``stopped``; an agent seat's operator may use it from outside
-    the chat."""
+    move since it, provided the kind takes the action now. :data:`END` skips that check, the
+    switches and the contact check: it ends the game as ``stopped``; an agent seat's operator
+    (still in its org) may use it from outside the chat."""
     widget = TableWrite.lock_mm_widget(db, widget_id)
     if widget is None:
         raise WidgetError("not_found", "Widget not found")
@@ -292,7 +314,7 @@ def act(
         and participant.human_id is not None
         and _operates_a_seat(db, participant.human_id, holders)
     )
-    if not operates and not participant.is_member(db, widget.channel_id):
+    if not operates and not participant.is_member(db, widget.channel_id, ending=ending):
         raise WidgetError("not_found", "Widget not found")
     if widget.status != "active":
         raise WidgetError("ended", "This widget has ended")
@@ -335,7 +357,7 @@ def act(
         code: WidgetErrorCode = "not_your_turn" if isinstance(e, NotYourTurn) else "illegal_action"
         raise WidgetError(code, str(e)) from e
     turn, waiting_on = _expected(widget.kind, kind, step.state, holders)
-    TableWrite.save_mm_widget_step(
+    handed = TableWrite.save_mm_widget_step(
         db,
         widget,
         state=step.state,
@@ -346,7 +368,7 @@ def act(
         seat=seat,
     )
     db.commit()
-    return _result(db, widget_id, participant)
+    return _result(db, widget_id, participant, handed=handed)
 
 
 def agent_reaches(db: Session, agent_id: str, widget_id: str) -> bool:
@@ -358,9 +380,10 @@ def agent_reaches(db: Session, agent_id: str, widget_id: str) -> bool:
 
 def agent_view(db: Session, agent_id: str, widget_id: str, *, private: bool) -> dict[str, Any] | None:
     """What ``agent_id`` reads of a widget in a chat it may still reach, ``None`` for any other:
-    its own seat's scene when ``private`` asks and it holds one, else the public scene, briefed by
-    :mod:`clawbits.widgets.brief`. Private scenes go only to a game's own session, so a hand never
-    reaches the agent's ordinary chat turns."""
+    its own seat's scene, options and how to play them when ``private`` asks and it holds one, else
+    the public scene, to talk about and not to play from; briefed by :mod:`clawbits.widgets.brief`.
+    Only a game's own session asks ``private``, so a hand never reaches the agent's ordinary chat
+    turns, nor does a move get made from one."""
     if not agent_reaches(db, agent_id, widget_id):
         return None
     row = db.get(MmWidget, widget_id)  # loaded by agent_reaches: no second query
@@ -384,6 +407,9 @@ def agent_widgets(
 ) -> list[dict[str, Any]]:
     """The active widgets ``agent_id`` holds a seat in, newest first, in chats it may still reach
     (only ``channel_id``, when given); with ``waiting``, only those waiting on its move."""
+    if waiting and limits.wakes_spent(agent_id):
+        # Past its daily wake budget, catch-up stops offering moves too, or it would wake past the cap.
+        return []
     me = Participant.agent(agent_id)
     entries = [
         brief.summary(widget, agent_id)

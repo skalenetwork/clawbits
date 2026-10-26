@@ -147,6 +147,7 @@ from clawbits.fastapi.version_check import (
 )
 from clawbits.gas.cost_decorator import cost
 from clawbits.utils.parse import format_db_timestamp
+from clawbits.widgets import limits as widget_limits
 
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
@@ -2118,7 +2119,9 @@ class ClawBitsServer(FastAPI):
 
         agent = extract_agent(self._engine, api_key)
         with Session(self._engine) as db:
-            channels = TableRead.get_mm_channels_for_agent(db, agent.agent_id.value)
+            channels = TableRead.get_mm_channels_for_agent(
+                db, agent.agent_id.value, widgets_waiting=not widget_limits.wakes_spent(agent.agent_id.value)
+            )
             agent_row = db.get(_AgentRow, agent.agent_id.value)
             inter_agent_mode = bool(
                 agent_row.inter_agent_mode_enabled if agent_row else False
@@ -2813,7 +2816,9 @@ class ClawBitsServer(FastAPI):
 
         def read_snapshot() -> dict:
             with Session(self._engine) as db:
-                channels = TableRead.get_mm_channels_for_agent(db, agent_id)
+                channels = TableRead.get_mm_channels_for_agent(
+                    db, agent_id, widgets_waiting=not widget_limits.wakes_spent(agent_id)
+                )
                 row = db.get(_AgentRow, agent_id)
                 return {
                     "channels": channels,
@@ -2832,11 +2837,7 @@ class ClawBitsServer(FastAPI):
         def listed_channel_ids() -> list[str]:
             """The chats :func:`read_snapshot` lists: memberships, less DMs it may no longer reach."""
             with Session(self._engine) as db:
-                return [
-                    channel_id
-                    for channel_id in TableRead.get_mm_channel_ids_for_agent(db, agent_id)
-                    if TableRead.can_agent_access_dm(db, channel_id, agent_id)
-                ]
+                return TableRead.get_reachable_mm_channel_ids_for_agent(db, agent_id)
 
         def is_snoozed() -> bool:
             with Session(self._engine) as db:
@@ -2865,6 +2866,9 @@ class ClawBitsServer(FastAPI):
                     pass
 
         channel_tasks: dict[str, asyncio.Task] = {}
+        # Chats the control topic added or removed while the snapshot was read: their pumps are as
+        # its newer event left them, whichever side of the read the change fell.
+        steered: set[str] = set()
 
         def start_channel_pump(channel_id: str, ready: asyncio.Event | None = None) -> None:
             if channel_id in channel_tasks:
@@ -2896,8 +2900,10 @@ class ClawBitsServer(FastAPI):
                         channel_id = data["channel_id"]
                 if isinstance(channel_id, str) and channel_id:
                     if event_type == "channel.added":
+                        steered.add(channel_id)
                         start_channel_pump(channel_id)
                     elif event_type == "channel.removed":
+                        steered.add(channel_id)
                         stop_channel_pump(channel_id)
                 await enqueue(event)
 
@@ -2936,17 +2942,20 @@ class ClawBitsServer(FastAPI):
         try:
             await subscribed([control_ready])
             channels_ready: list[asyncio.Event] = []
-            for channel_id in listed_channel_ids():
+            # Reads on a worker thread, so a reconnect storm doesn't stall every socket's loop.
+            for channel_id in await asyncio.to_thread(listed_channel_ids):
                 if channel_id not in channel_tasks:  # a channel.added may have started it
                     channels_ready.append(asyncio.Event())
                     start_channel_pump(channel_id, channels_ready[-1])
             await subscribed(channels_ready)
-            snapshot = read_snapshot()
-            # Pumps match the snapshot's chats, settled before anything else runs on this loop.
+            steered.clear()
+            snapshot = await asyncio.to_thread(read_snapshot)
+            # Pumps match the snapshot's chats, settled before anything else runs on this loop,
+            # save those an event steered during the read.
             listed = {c["channel_id"] for c in snapshot["channels"] if c.get("channel_id")}
-            for channel_id in set(channel_tasks) - listed:
+            for channel_id in set(channel_tasks) - listed - steered:
                 stop_channel_pump(channel_id)
-            for channel_id in listed:
+            for channel_id in listed - steered:
                 start_channel_pump(channel_id)
             await websocket.send_json({"type": "snapshot", "data": snapshot})
             writer_task = asyncio.create_task(writer())

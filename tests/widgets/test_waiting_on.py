@@ -130,3 +130,52 @@ def test_an_ended_widget_waits_on_no_one(action):
         turn=BS.turn(step.state), waiting_on=BS.waiting_on(step.state),
     )
     assert (widget.status, widget.turn, widget.waiting_on, widget.rev) == (step.status, None, [], 1)
+
+
+def _step(kind: WidgetKind, widget: MmWidget, seat: str, action: str, **args) -> dict[str, int]:
+    """Apply one action to ``widget`` as the service does and return the hand-off marks."""
+    step = kind.act(widget.state, seat, {"type": action, "args": args})
+    return TableWrite.save_mm_widget_step(
+        _Session(), widget, state=step.state, status=step.status, outcome=step.outcome,
+        turn=kind.turn(step.state), waiting_on=kind.waiting_on(step.state), seat=seat,
+    )
+
+
+def _widget(kind: WidgetKind, state: dict | None = None) -> MmWidget:
+    state = kind.init() if state is None else state
+    return MmWidget(widget_id="w", channel_id="c", kind="k", state=state,
+                    waiting_on=list(kind.waiting_on(state)))
+
+
+def test_a_chess_move_hands_the_move_to_the_other_side():
+    widget = _widget(CHESS)
+    assert _step(CHESS, widget, "white", "move", move="e4") == {"black": 1}
+    assert widget.acted_revs == {"white": 1, "black": 1}
+    assert _step(CHESS, widget, "black", "offer_draw") == {"black": 2}  # it keeps the move
+
+
+def test_checkmate_hands_the_move_to_no_one():
+    widget = _widget(CHESS)
+    for seat, move in zip(("white", "black") * 3, ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), strict=True):
+        _step(CHESS, widget, seat, "move", move=move)
+    assert _step(CHESS, widget, "white", "move", move="Qxf7#") == {}
+    assert widget.status == "finished"
+
+
+def test_a_battleship_hit_keeps_the_move_with_the_shooter():
+    state = act(BS, act(BS, BS.init(), "red", "ready"), "blue", "ready")
+    widget = _widget(BS, state)
+    ship = next(ship for ship in state["fleets"]["blue"] if len(ship) > 1)
+    assert _step(BS, widget, "red", "fire", at=ship[0]) == {"red": 1}
+
+
+def test_a_blackjack_settle_hands_both_bets_out_the_settler_included(monkeypatch):
+    stack(monkeypatch, blackjack, "9c 5d Td 7h 6s 8c")
+    widget = _widget(BJ)
+    assert _step(BJ, widget, "red", "bet", amount=50) == {}  # Blue was waited on already
+    assert _step(BJ, widget, "blue", "bet", amount=100) == {"red": 2}
+    assert _step(BJ, widget, "red", "stand") == {"blue": 3}
+    # The dealer plays and round 2's bets open: Red gets the move, Blue (who settled) keeps it.
+    assert _step(BJ, widget, "blue", "stand") == {"red": 4, "blue": 4}
+    assert _step(BJ, widget, "red", "bet", amount=100) == {}  # Blue's mark stands at 4
+    assert widget.acted_revs["blue"] == 4

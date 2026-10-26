@@ -5,8 +5,10 @@ the turn lifecycle hooks, status heartbeats, and outbound sends (text and
 native images). Chat posts are admitted to the profile's durable journal
 (:mod:`.inbox_state`) before they are dispatched, one automatic turn at a time
 per chat. Mail is never a turn: :mod:`.mailroom`, started here once the journal
-is open, owns it end to end. Pure helpers live in :mod:`.messages`, network-fetch
-guarding in :mod:`.media`, and the CLI subprocess wrapper in :mod:`.cli_client`.
+is open, owns it end to end. A chat game's move is a turn of its own, in the game's
+own session and silent (:mod:`.widgets`, :mod:`.widget_wakes`, :mod:`.game_sessions`).
+Pure helpers live in :mod:`.messages`, network-fetch guarding in :mod:`.media`, and
+the CLI subprocess wrapper in :mod:`.cli_client`.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from .account import bind_account, resolve_account, scoped_setting, unbind_accou
 from .attachments import cache_post_attachments
 from .automations import hold_missed_slots, run_automations_reconciler
 from .cli_client import _ClawbitsCli, _default_cli_path, http_status
+from .game_sessions import GameSessions
 from .health import HealthStatus, profile_name, run_status_writer, suspension_opted_in
 from .inbox_state import (
     MAX_OPEN,
@@ -63,6 +66,7 @@ from .messages import (
     _extract_channels,
     _extract_control_settings,
     _extract_files,
+    _inert,
     _is_server_handled_command,
     _is_user_post,
     _message_id_from_response,
@@ -73,6 +77,23 @@ from .messages import (
     _trace_id_from_metadata,
 )
 from .read_cursors import load_read_cursors
+from .widget_wakes import (
+    CLEANUP_RETRY_S,
+    GameGone,
+    WidgetWakes,
+    summary_signal,
+    turn_signal,
+    waiting_signals,
+)
+from .widgets import (
+    GAME_TOOLSETS,
+    WIDGET_ID,
+    capability,
+    game_chat_id,
+    is_game_chat,
+    parse_game_chat,
+    view_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +185,32 @@ _turn_streams: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
 # Ids of the ``/stop`` events ``_stop_turns`` synthesizes; post ids are numeric.
 _STOP_PREFIX = "stop-"
 
+# --- Chat games ---------------------------------------------------------------------------------
+# MessageEvent.metadata key marking a game's move: its widget id.
+_GAME_KEY = "clawbits_game"
+# Moves running at once across the agent's games (each in its own session, beside chat turns).
+_GAME_TURNS_AT_ONCE = 2
+# How long a move waits for its game's session to be free (a turn Hermes resumed after a restart).
+_GAME_BUSY_WAIT_S = 300.0
+# A move's turn counts as over after this long even if its completion hook never came.
+_GAME_TURN_TIMEOUT_S = 900.0
+# A game's sessions are deleted at least this long after its last turn: Hermes's best-effort writers
+# (auto-title, token accounting) may still touch a run's rows just after it ends.
+GAME_END_GRACE_S = 45.0
+# A game history past either bound starts the next move in a fresh generation (a cost bound).
+_GAME_ROTATE_MESSAGES = 120
+_GAME_ROTATE_CHARS = 120_000
+# How often the sessions of games that ended while the agent was away are looked for.
+_GAME_SWEEP_INTERVAL_S = 600.0
+# Trusted and the same for every move of a game (Hermes keeps a session's system prompt stable).
+_GAME_SESSION_PROMPT = (
+    "[Clawbits chat game session]\n"
+    "This session plays one Clawbits chat game and only that game: every message in it is a move's\n"
+    "brief from Clawbits, sent when it is your move. Only the game's tools work here and nothing you\n"
+    "write is posted: take your move as the brief says, then finish with NO_REPLY.\n"
+    "[end Clawbits chat game session]"
+)
+
 
 @dataclass
 class _Turn:
@@ -226,6 +273,16 @@ def _env_float(raw: Any, default: float, label: str) -> float:
     except (ValueError, TypeError):
         logger.warning("clawbits: invalid %s=%r — using default %s", label, raw, default)
         return default
+
+
+def _estop_paused() -> bool:
+    """Hermes's global emergency stop (``hermes pause``) is on; an internal turn bypasses it."""
+    try:
+        from agent.estop import paused_reply
+
+        return paused_reply() is not None
+    except Exception:
+        return False
 
 
 def _is_native_command(text: str) -> bool:
@@ -390,6 +447,20 @@ class ClawbitsAdapter(BasePlatformAdapter):
         # The liveness loop waits on it, so "available" in Clawbits means ready,
         # not merely running. Survives a reconnect on this instance on purpose.
         self._ready = asyncio.Event()
+        # Chat games: the wake loop, the game sessions and the moves in flight by message id.
+        self._game_sessions = GameSessions(self.account.hermes_home, self)
+        self._widget_wakes = self._new_widget_wakes()
+        self._game_turns: dict[str, asyncio.Future[Any]] = {}
+        self._game_turn_ended: dict[str, float] = {}  # game chat id -> when its last turn ended
+        self._game_gens: dict[str, int] = {}  # widget id -> the generation its moves run in
+        self._game_slots = asyncio.Semaphore(_GAME_TURNS_AT_ONCE)
+        self._game_seq = itertools.count(1)
+        self._game_sweep_at = 0.0
+        self._game_sweep: asyncio.Task[None] | None = None
+        self._games_catch_up: asyncio.Task[None] | None = None
+        self._widget_routes = True  # False once the server answered 404 to the widget list
+        # The last ``capability()`` state (an alive ping's or a move's); None until one ran.
+        self._widgets_state: str | None = None
 
     @staticmethod
     def _policy(raw: Any) -> str:
@@ -436,6 +507,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         self._running = True
         self._stopping = False
         self._caught_up.clear()
+        self._widget_wakes = self._new_widget_wakes()
+        self._game_sweep_at = 0.0
         self._loop = asyncio.get_running_loop()
         bind_account(self.account)
         self._status_task = self._spawn(run_status_writer(self._health, lambda: self._running))
@@ -526,6 +599,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
+        self._widget_wakes.dispose()
         unbind_account(self.account)
         if self._mailroom is not None:
             unbind_mailroom(self._mailroom)
@@ -571,7 +645,10 @@ class ClawbitsAdapter(BasePlatformAdapter):
         ``{"kind": "generating"}`` payload for it would re-assert the pill the
         caller is trying to put down. Only the action reaches Clawbits (see
         ``_tool_activity``): the phrase preview can carry tool arguments.
+        A game's move shows nothing.
         """
+        if is_game_chat(chat_id):
+            return
         super().set_status_text(chat_id, text)
         loop = self._loop
         if loop is None or not loop.is_running():
@@ -586,6 +663,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
     async def _set_activity_best_effort(
         self, chat_id: str, activity: dict[str, Any] | None
     ) -> None:
+        if is_game_chat(chat_id):
+            return
         if activity:
             self._activities[chat_id] = activity
         else:
@@ -637,6 +716,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         reply_to: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
+        if is_game_chat(chat_id):
+            return self._game_send_result()
         metadata = metadata or {}
 
         # Hermes routes interim "thinking" chatter through an ordinary send,
@@ -734,6 +815,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         finalize: bool = False,
         **kwargs: Any,
     ) -> SendResult:
+        if is_game_chat(chat_id):
+            return SendResult(success=True, message_id=str(message_id))
         if finalize and self._published.get(str(message_id)) == content:
             # Hermes's repeat final edit of a post already published with this body.
             return SendResult(success=True, message_id=str(message_id))
@@ -788,6 +871,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
             self._open_streams.pop(str(message_id), None)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        if is_game_chat(chat_id):
+            return True
         try:
             await asyncio.to_thread(
                 self.client.patch_message, chat_id, message_id, cancel=True
@@ -854,6 +939,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         base class posts a "couldn't deliver" notice. Any failure falls back
         to that base behavior — which never echoes the host path into chat.
         """
+        if is_game_chat(chat_id):
+            return self._game_send_result()
         safe_path = self.validate_media_delivery_path(image_path)
         if safe_path is None:
             return await super().send_image_file(
@@ -883,6 +970,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         MIME even for extension-less URLs. Falls back to the base behavior
         (URL appended to the text) when download or upload fails — a public
         URL in chat is still useful, unlike a host path."""
+        if is_game_chat(chat_id):
+            return self._game_send_result()
         try:
             tmp_path, content_type = await asyncio.to_thread(
                 _download_to_tempfile, image_url
@@ -914,6 +1003,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         the channel up via the agent CLI; falls back to a minimal descriptor
         when it can't be resolved (e.g. CLI error, or the operator channel).
         """
+        if is_game_chat(chat_id):
+            return {"name": "Clawbits game", "type": "dm"}
         try:
             channels = await asyncio.to_thread(self.client.list_channels)
             for ch in channels:
@@ -987,7 +1078,7 @@ class ClawbitsAdapter(BasePlatformAdapter):
         await self._ready.wait()
         while self._running:
             try:
-                await asyncio.to_thread(self.client.alive)
+                await asyncio.to_thread(self._alive)
                 self._health.ok("liveness", interval_s=self.liveness_interval)
             except asyncio.CancelledError:
                 raise
@@ -996,9 +1087,18 @@ class ClawbitsAdapter(BasePlatformAdapter):
                 logger.warning("Clawbits liveness ping failed", exc_info=True)
             await asyncio.sleep(self.liveness_interval)
 
+    def _alive(self) -> None:
+        """One liveness ping with what the runtime can do now (the ``widgets`` capability)."""
+        capabilities, state = capability(self.account)
+        self._widgets_state = state
+        self._health.ok("widgets", state=state)
+        self.client.alive(capabilities)
+
     async def _set_status_best_effort(
         self, chat_id: str, status: str, *, activity: bool = True
     ) -> None:
+        if is_game_chat(chat_id):
+            return
         if status != "generating":
             self._activities.pop(chat_id, None)
         activity = self._activities.get(chat_id) if (activity and status == "generating") else None
@@ -1058,6 +1158,9 @@ class ClawbitsAdapter(BasePlatformAdapter):
             self._channels = {channel.id: channel for channel in channels}
         if prior_inter_agent and not self._inter_agent_mode:
             self._reset_inter_agent()
+        # The games waiting on this agent's move: the catch-up for a wake it missed.
+        for signal in waiting_signals(raw):
+            self._widget_wakes.offer(signal, "snapshot")
 
     def _reset_inter_agent(self) -> None:
         self._consecutive_agent_turns = 0
@@ -1088,7 +1191,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         them; without this socket the server-side attention gate is inert for
         Hermes agents (the nudge publishes to zero receivers and refunds its
         cooldown). It also carries ``snapshot`` (agent controls), ``post.created``,
-        ``automation.sync`` and ``mcp.oauth.code`` (a Connect card's sign-in). ``post.created`` only wakes the channel's
+        ``automation.sync``, ``mcp.oauth.code`` (a Connect card's sign-in), ``widget.turn`` (a chat
+        game's move) and ``resync_required`` (the server dropped events). ``post.created`` only wakes the channel's
         forward read, so posts are still admitted in order by the journal.
 
         Fail-soft: no ``websockets`` package → one warning, poll-only. Drops
@@ -1145,6 +1249,12 @@ class ClawbitsAdapter(BasePlatformAdapter):
                                 task = self._spawn(self._redeem_mcp_sign_in(relayed))
                                 self._handoffs.add(task)
                                 task.add_done_callback(self._handoffs.discard)
+                        elif event_type == "widget.turn":
+                            signal = turn_signal(event.get("channel_id"), event.get("data"))
+                            if signal is not None:
+                                self._widget_wakes.offer(signal, "ws")
+                        elif event_type == "resync_required":
+                            self._resync()
                         elif event_type in ("lobstertalk.consider", "mutualist.consider"):
                             await self._dispatch_attention(event)
             except asyncio.CancelledError:
@@ -1245,6 +1355,9 @@ class ClawbitsAdapter(BasePlatformAdapter):
             # when the wizard says "available".
             await self._greet_once()
             self._ready.set()
+            self._catch_up_games()
+        if only is None:
+            self._maybe_sweep_games()
 
     async def _refresh_channels(self) -> None:
         try:
@@ -1415,6 +1528,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
             return "own"
         if not _is_user_post(post):
             return "system"
+        if self._is_game_start(channel, post):
+            return "game_start"
         if not text.strip() and not _extract_files(post):
             return "empty"
         if not (self._is_pair_channel(channel) or self._mention_re.search(text)):
@@ -1820,6 +1935,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
             )
 
     async def on_processing_start(self, event: MessageEvent) -> None:
+        if is_game_chat(event.source.chat_id):
+            return  # a move shows no status, heartbeat or stream
         _turn_streams.set(set())
         chat_id = event.source.chat_id
         self._lane(chat_id).running += 1
@@ -1832,6 +1949,13 @@ class ClawbitsAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         chat_id = event.source.chat_id
+        if is_game_chat(chat_id):
+            # A move: no lane, status or stream close; its wake waits for this.
+            self._game_turn_ended[chat_id] = time.monotonic()
+            done = self._game_turns.get(str(event.message_id))
+            if done is not None and not done.done():
+                done.set_result(outcome)
+            return
         lane = self._lane(chat_id)
         lane.running = max(0, lane.running - 1)
         # Only this token's hooks settle its items. A delivered dispatch with no start
@@ -1859,3 +1983,277 @@ class ClawbitsAdapter(BasePlatformAdapter):
                 await self._close_stream_best_effort(self._open_streams[message_id], message_id, **close)
         if not lane.running:
             await self._set_status_best_effort(chat_id, "online")
+
+    # --- Chat games -------------------------------------------------------------------------
+    # A move is an internal turn in the game's own session (widgets.py): it never interrupts,
+    # merges with or waits on a chat turn, a bare NO_REPLY stays silent at every Hermes revision,
+    # and everything the gateway sends for it addresses the game's synthetic chat, which send,
+    # edit, status and activity drop above.
+
+    def toolsets_for_source(self, source: Any) -> list[str] | None:
+        """A game's run gets the plugin's toolset alone; every other chat the platform's own."""
+        return list(GAME_TOOLSETS) if is_game_chat(getattr(source, "chat_id", None)) else None
+
+    def _new_widget_wakes(self) -> WidgetWakes:
+        return WidgetWakes(
+            read=self._read_game,
+            dispatch=self._play_game_turn,
+            ended=self._end_game,
+            spawn=self._spawn_handoff,
+            enabled=self._games_on,
+            snoozed=lambda: self._snoozed,
+            paused=_estop_paused,
+            end_grace_s=lambda: GAME_END_GRACE_S,
+        )
+
+    def _games_on(self) -> bool:
+        """Moves may be played here: running, games on in the setting, and the last capability check
+        (an alive ping's, or a move's) found a move safe to play: no external memory provider, the
+        game toolset kept. The server seats an agent by its capability, then keeps waking it."""
+        return self._running and self.account.widgets and self._widgets_state in (None, "on")
+
+    def _spawn_handoff(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        """A task in the owner's context that disconnect cancels."""
+        task = self._spawn(coro)
+        self._handoffs.add(task)
+        task.add_done_callback(self._handoffs.discard)
+        return task
+
+    def _game_send_result(self) -> SendResult:
+        """Success, so Hermes neither retries nor records a failed delivery: a move posts nothing."""
+        return SendResult(success=True, message_id=f"game-{next(self._game_seq)}")
+
+    def _is_game_start(self, channel: _Channel, post: dict[str, Any]) -> bool:
+        """A person's post that started a game this agent plays: the game's wake takes the move, so
+        a chat turn here would only race it, in the chat's session. Acked like an answered post."""
+        widget_id = post.get("widget_id")
+        return bool(widget_id) and not post.get("agent_id") and (
+            self._is_pair_channel(channel) or self._widget_wakes.seated(str(widget_id))
+        )
+
+    def _resync(self) -> None:
+        """The server dropped events for this agent (``resync_required``): read everything again
+        now, the games waiting on its move included."""
+        self._full_pass_at = 0.0
+        self._wake_event.set()
+        self._automations_wake.set()
+        self._catch_up_games()
+
+    def _catch_up_games(self) -> None:
+        """Offer every game waiting on the agent's move (``GET /widgets?waiting=1``), single-flight."""
+        if not (self.account.widgets and self._widget_routes) or self._games_catch_up is not None:
+            return
+        self._games_catch_up = self._spawn_handoff(self._read_waiting_games())
+
+    async def _read_waiting_games(self) -> None:
+        try:
+            listed = await asyncio.to_thread(self.client.list_widgets, waiting=True)
+        except Exception as exc:
+            if http_status(exc) == 404:
+                self._widget_routes = False
+                logger.info("clawbits: server has no agent widget routes; game catch-up off")
+            else:
+                logger.warning("clawbits: waiting games read failed (%s)", exc)
+            listed = []
+        finally:
+            self._games_catch_up = None
+        for summary in listed:
+            if (signal := summary_signal(summary)) is not None:
+                self._widget_wakes.offer(signal, "list")
+
+    async def _read_game(self, widget_id: str) -> dict[str, Any]:
+        """The game's private view, read at dispatch; :class:`GameGone` on a 404."""
+        try:
+            return await asyncio.to_thread(self.client.get_widget, widget_id, private=True)
+        except Exception as exc:
+            if http_status(exc) == 404:
+                raise GameGone(widget_id) from None
+            raise
+
+    def _game_source(self, chat_id: str, widget_id: str, message_id: str | None = None) -> SessionSource:
+        return SessionSource(
+            platform=Platform("clawbits"),
+            chat_id=chat_id,
+            chat_name="Clawbits game",
+            chat_type="dm",
+            user_id=f"widget:{widget_id}",
+            user_name="Clawbits game",
+            message_id=message_id,
+        )
+
+    def _game_key(self, chat_id: str) -> str:
+        """Hermes's session key for a game chat: ``agent:<ns>:clawbits:dm:<chat>``."""
+        key_of = getattr(self, "_source_session_key", None)
+        if callable(key_of):
+            with contextlib.suppress(Exception):
+                return key_of(self._game_source(chat_id, ""))
+        return f"agent:main:clawbits:dm:{chat_id}"
+
+    def _game_busy(self, key: str) -> bool:
+        """A turn runs on, or waits for, this session: the adapter's guard or the runner's slot."""
+        if key in (getattr(self, "_active_sessions", None) or {}):
+            return True
+        if key in (getattr(self, "_pending_messages", None) or {}):
+            return True
+        running = getattr(getattr(self, "gateway_runner", None), "_is_session_running", None)
+        try:
+            return bool(running(key)) if callable(running) else False
+        except Exception:
+            return False
+
+    async def _game_idle(self, key: str) -> bool:
+        """Wait for the game's session to be free; a move is never queued behind a turn there,
+        where Hermes would merge it into, or drop it beside, the pending one."""
+        deadline = time.monotonic() + _GAME_BUSY_WAIT_S
+        while self._game_busy(key):
+            if not self._running or time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.5)
+        return True
+
+    async def _game_chat_for_move(self, widget_id: str) -> str:
+        """The game chat the next move runs in: its current generation, or the next once the current
+        one's history grew past a bound; the old one is deleted after its last turn."""
+        gen = self._game_gens.get(widget_id)
+        if gen is None:
+            games = await asyncio.to_thread(self._game_sessions.games)
+            gen = max(games.get(widget_id) or {0})
+        chat_id = game_chat_id(widget_id, gen)
+        messages, chars = await asyncio.to_thread(self._game_sessions.size, chat_id)
+        if (messages >= _GAME_ROTATE_MESSAGES or chars >= _GAME_ROTATE_CHARS) and not self._game_busy(
+            self._game_key(chat_id)
+        ):
+            logger.info("clawbits: game %s moves on to session generation %d", widget_id, gen + 1)
+            self._spawn_handoff(self._retire_game_generation(widget_id, gen))
+            gen += 1
+        self._game_gens[widget_id] = gen
+        return game_chat_id(widget_id, gen)
+
+    async def _retire_game_generation(self, widget_id: str, gen: int) -> None:
+        for wait in (GAME_END_GRACE_S, *CLEANUP_RETRY_S):
+            await asyncio.sleep(wait)
+            if await self._delete_game_sessions(widget_id, [gen]) != "busy":
+                return
+
+    async def _play_game_turn(self, view: dict[str, Any], attempt: int) -> bool:
+        """Hand one move to Hermes in the game's own session and wait for its turn to end; False
+        when it never started (its session stayed busy, the move was no longer due, or Hermes
+        refused it)."""
+        widget_id = str(view.get("widget_id") or "")
+        if not WIDGET_ID.fullmatch(widget_id):
+            logger.warning("clawbits: game id %r can't name a session; not played", widget_id)
+            return False
+        await self._ready.wait()
+        async with self._game_slots:
+            if not self._running:
+                return False
+            chat_id = await self._game_chat_for_move(widget_id)
+            # Its own id per attempt: a retry of the same rev must not look like a duplicate.
+            message_id = f"{chat_id}-r{view.get('rev')}-a{attempt}-{self._boot}"
+            if not await self._game_idle(self._game_key(chat_id)):
+                logger.warning("clawbits: game %s session stayed busy; move not dispatched", widget_id)
+                return False
+            # The waits above (a slot, a free session) can outlast the move: read it again.
+            view = await self._move_still_due(view)
+            if view is None:
+                return False
+            done: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+            event = MessageEvent(
+                # Hermes expands ``@file:``/``@url:`` references in every inbound text, an internal
+                # one included: a player's name or a log line must not read a file or fetch a URL.
+                text=_inert(view_text(view)),
+                message_type=MessageType.TEXT,
+                source=self._game_source(chat_id, widget_id, message_id),
+                raw_message=None,
+                message_id=message_id,
+                channel_prompt=(
+                    _clawbits_channel_prompt(str(view.get("channel_id") or ""), self.agent_id)
+                    + "\n" + _GAME_SESSION_PROMPT
+                ),
+                # Machinery: never interrupts or steers, keeps NO_REPLY silent, no activity clock.
+                internal=True,
+                allow_gateway_control=False,
+                metadata={_GAME_KEY: widget_id},
+            )
+            self._game_turns[message_id] = done
+            try:
+                await self.handle_message(event)
+                if getattr(event, "_gateway_accepted", True) is False:
+                    logger.warning("clawbits: Hermes did not take game %s's move", widget_id)
+                    return False
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(done), _GAME_TURN_TIMEOUT_S)
+                return True
+            finally:
+                self._game_turns.pop(message_id, None)
+
+    async def _move_still_due(self, view: dict[str, Any]) -> dict[str, Any] | None:
+        """The move's private view read again at dispatch: None unless moves may still be played
+        here (capability checked afresh, not snoozed or paused) and it is still this agent's move at
+        the woken rev (a newer rev gets its own wake); :class:`GameGone` once the game is over."""
+        widget_id = str(view.get("widget_id"))
+        if not self._games_on() or self._snoozed or _estop_paused():
+            return None
+        _, state = await asyncio.to_thread(capability, self.account)
+        self._widgets_state = state
+        if state != "on":
+            logger.warning("clawbits: game %s move not played: games can't be played here (%s)", widget_id, state)
+            return None
+        fresh = await self._read_game(widget_id)
+        if fresh.get("status") != "active":
+            raise GameGone(widget_id)
+        if not (fresh.get("your_move") and fresh.get("seat")) or fresh.get("rev") != view.get("rev"):
+            logger.info("clawbits: game %s rev %s not played: no longer this agent's move", widget_id, view.get("rev"))
+            return None
+        return fresh
+
+    async def _end_game(self, widget_id: str) -> str:
+        """An ended game: delete every session it had."""
+        return await self._delete_game_sessions(widget_id, None)
+
+    def _game_chats(self, widget_id: str, gens: list[int] | None) -> list[str]:
+        """The game chats whose last turn this adapter saw: all of a game's, or only ``gens``'."""
+        return [
+            chat for chat in self._game_turn_ended
+            if (game := parse_game_chat(chat)) is not None and game[0] == widget_id
+            and (gens is None or game[1] in gens)
+        ]
+
+    async def _delete_game_sessions(self, widget_id: str, gens: list[int] | None) -> str:
+        # The grace counts per chat: a retired generation goes while the current one keeps playing.
+        chats = self._game_chats(widget_id, gens)
+        if any(time.monotonic() - self._game_turn_ended[chat] < GAME_END_GRACE_S for chat in chats):
+            return "busy"
+        outcome = await asyncio.to_thread(self._game_sessions.delete, widget_id, gens, self._game_busy)
+        if outcome in ("deleted", "none"):
+            for chat in chats:
+                self._game_turn_ended.pop(chat, None)
+            if gens is None:
+                self._game_gens.pop(widget_id, None)
+        return outcome
+
+    def _maybe_sweep_games(self) -> None:
+        """Sweep the sessions of games that ended while the agent was away: on the first full pass,
+        then every ``_GAME_SWEEP_INTERVAL_S``; single-flight."""
+        if self._game_sweep is not None or time.monotonic() < self._game_sweep_at:
+            return
+        self._game_sweep_at = time.monotonic() + _GAME_SWEEP_INTERVAL_S
+        self._game_sweep = self._spawn_handoff(self._sweep_game_sessions())
+
+    async def _sweep_game_sessions(self) -> None:
+        try:
+            games = await asyncio.to_thread(self._game_sessions.games)
+            if not games:
+                return
+            active = {str(w["widget_id"]) for w in await asyncio.to_thread(self.client.list_widgets)}
+            for widget_id, gens in games.items():
+                if widget_id in active:
+                    current = self._game_gens.get(widget_id, max(gens))
+                    if old := sorted(gen for gen in gens if gen < current):
+                        await self._delete_game_sessions(widget_id, old)
+                elif not self._game_busy(self._game_key(game_chat_id(widget_id, max(gens)))):
+                    await self._delete_game_sessions(widget_id, None)
+        except Exception:
+            logger.warning("clawbits: game session sweep failed", exc_info=True)
+        finally:
+            self._game_sweep = None

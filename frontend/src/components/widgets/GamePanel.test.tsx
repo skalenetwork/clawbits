@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { GameBar, GameColumn } from "./GamePanel";
@@ -317,6 +317,66 @@ describe("GameBar", () => {
     expect(screen.queryByRole("button", { name: /^Chess/ })).toBeNull();
     expect(onDismiss).toHaveBeenCalledOnce();
     expect(storage.setItem).toHaveBeenLastCalledWith(`fc_widget_view_${over.widget_id}`, "dismissed");
+  });
+});
+
+describe("score chip", () => {
+  const scored = (alice: number, bob: number, draws: number, over: Partial<Widget> = {}) => chess({
+    seats: [
+      { seat: "white", human_id: 1, agent_id: null, display_name: "Alice", wins: alice },
+      { seat: "black", human_id: 2, agent_id: null, display_name: "Bob", wins: bob },
+    ],
+    draws,
+    ...over,
+  });
+  const chip = () => document.querySelector<HTMLElement>("[data-score]");
+
+  it("shows the chat's score beside an open game's title, the viewer's wins first, and says it", () => {
+    stubStorage();
+    column(scored(2, 1, 1));
+    expect(chip()?.textContent).toMatch(/^2–1/);
+    expect(chip()).toHaveAttribute("title", "You 2 – 1 Bob · 1 draw");
+    expect(screen.getByRole("heading", { name: "Chess, score you 2, Bob 1, 1 draw" })).toBeInTheDocument();
+  });
+
+  it("shows it on the strip and the bar, from each player's side, and in their names", () => {
+    const strip = scored(2, 1, 0);
+    stubStorage({ [`fc_widget_view_${strip.widget_id}`]: "collapsed" });
+    column(strip, { userId: 2 });
+    expect(screen.getByRole("button", { name: "Chess, White to move, score you 1, Alice 2" })).toContainElement(chip());
+    expect(chip()?.textContent).toMatch(/^1–2/);
+    cleanup();
+    const bar = scored(2, 1, 0);
+    const { wrapper } = withCache(bar);
+    render(<GameBar widgetId={bar.widget_id} channelId="c1" userId={1} picked={false} onDismiss={vi.fn()} />, { wrapper });
+    expect(screen.getByRole("button", { name: "Chess, White to move, your move, score you 2, Bob 1" })).toContainElement(chip());
+    expect(chip()?.textContent).toMatch(/^2–1/);
+  });
+
+  it("is hidden until a game in the chat has finished, and for a spectator", () => {
+    stubStorage();
+    column(scored(0, 0, 0));
+    expect(chip()).toBeNull();
+    expect(screen.getByRole("heading", { name: "Chess" })).toBeInTheDocument();
+    cleanup();
+    column(scored(2, 1, 0), { userId: 3 });
+    expect(chip()).toBeNull();
+  });
+
+  it("follows a finished game's new score", () => {
+    stubStorage();
+    const game = scored(2, 1, 0);
+    const { client } = column(game);
+    act(() => {
+      applyWidget(client, scored(3, 1, 0, {
+        widget_id: game.widget_id,
+        rev: 4,
+        status: "finished",
+        turn: null,
+        outcome: { winner: "white" },
+      }));
+    });
+    expect(chip()?.textContent).toMatch(/^3–1/);
   });
 });
 

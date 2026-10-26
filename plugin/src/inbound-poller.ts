@@ -26,6 +26,17 @@ import { choiceOf, INHERIT, type ModelSelection } from "./model-choice.js";
 import { wakeCompanion } from "./service-handoff.js";
 import * as mmTools from "./tools/mattermost.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
+import { getWidget, listWidgets } from "./widgets/api.js";
+import type { GameSessionDeletion } from "./widgets/session.js";
+import {
+  summarySignal,
+  waitingSignals,
+  widgetTurnSignal,
+  WidgetWakes,
+  type WidgetSignal,
+  type WidgetSignalSource,
+  type WidgetTurn,
+} from "./widgets/wake.js";
 
 /** Subset of `MmFileResponse` we surface to the agent. The server returns
  *  more fields (status, sha256, dimensions, etc.); the poller keeps only
@@ -104,6 +115,9 @@ export interface InboundMessage {
    *  Flips the history block off its "do not reply to these" framing — without
    *  it the model is told to ignore exactly what we recovered. */
   catchUp?: boolean;
+  /** Set on a game wake (widgets/wake.ts): the turn is the agent's move in this game. It runs in
+   *  the game's own session and is silent: no draft, no status, no chat text, no sends. */
+  widget?: WidgetTurn;
 }
 
 /** Subset of the Mattermost post shape the poller actually reads. */
@@ -131,6 +145,8 @@ export interface MattermostPost {
   /** Inline attachments as returned by the agent posts endpoint. Shape
    *  follows `MmFileResponse` server-side. */
   files?: InboundFile[];
+  /** Set on the message that started a chat game, which its wake plays instead. */
+  widget_id?: string;
 }
 
 export interface InboundPollerLog {
@@ -178,6 +194,19 @@ export interface InboundPollerOptions {
    * restart).
    */
   watermarkStore?: WatermarkStore;
+  /** A chat game the agent sat in ended: drop the game's own session. Runs on the inbound queue,
+   *  after any move still in flight; "busy" runs it again later (widgets/wake.ts). */
+  onWidgetEnded?: (widget: {
+    widgetId: string;
+    channelId: string;
+  }) => Promise<GameSessionDeletion | void> | GameSessionDeletion | void;
+  /** Sweep the sessions of games that ended while the agent was away: after boot catch-up, then
+   *  hourly. `serial` runs a deletion on the inbound queue, after any move; `seated` tells a game
+   *  this account sat in since it started. */
+  onGameSessionSweep?: (
+    serial: (run: () => Promise<void>) => Promise<void>,
+    seated: (widgetId: string) => boolean,
+  ) => Promise<void>;
 }
 
 interface MmPostsResponse {
@@ -295,6 +324,9 @@ function normalizePost(raw: Record<string, unknown>): MattermostPost | undefined
       ? { created_at_raw: raw["created_at"] as string }
       : {}),
     ...(typeof raw["trace_id"] === "string" ? { trace_id: raw["trace_id"] as string } : {}),
+    ...(typeof raw["widget_id"] === "string" && raw["widget_id"]
+      ? { widget_id: raw["widget_id"] as string }
+      : {}),
     ...(files ? { files } : {}),
   };
 }
@@ -302,6 +334,8 @@ function normalizePost(raw: Record<string, unknown>): MattermostPost | undefined
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_WEBSOCKET_RECONCILE_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_WEBSOCKET_CONTROL_REFRESH_INTERVAL_MS = 5 * 60_000;
+/** How often ended games' sessions are swept (with up to a minute of jitter). */
+const GAME_SESSION_SWEEP_INTERVAL_MS = 60 * 60_000;
 const DEFAULT_INBOUND_QUEUE_TTL_MS = 10 * 60_000;
 const SEEN_RING_LIMIT = 1000;
 const DEFAULT_CONSECUTIVE_AGENT_TURNS = 10;
@@ -901,6 +935,100 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
   nextWebSocketControlRefreshAt =
     startedAt + websocketControlRefreshIntervalMs + websocketControlRefreshJitter();
   const inboundQueue = new ExpiringInboundQueue(now);
+  // Chat games: "your move" signals become one silent turn per move (widgets/wake.ts), on the
+  // same queue as chat turns so a move never runs beside one.
+  const widgetWakes = new WidgetWakes({
+    accountId: account.accountId,
+    now,
+    snoozed: () => agentSnoozed,
+    allowed: (key) => allowFromSet.size === 0 || allowFromWildcard || allowFromSet.has(key),
+    read: (widgetId) => getWidget(client, widgetId, { private: true }, { signal: abortSignal }),
+    enqueue: (id, run, expire) => {
+      const enqueuedAt = now();
+      void inboundQueue
+        .enqueue({ id, enqueuedAt, expiresAt: enqueuedAt + inboundQueueTtlMs, run, expire })
+        .catch((err) =>
+          logWarn(
+            log,
+            `[clawbits/${account.accountId}] queued ${id} failed: ${String((err as Error)?.message ?? err)}`,
+          ),
+        );
+    },
+    dispatch: (msg) => dispatchMessage(msg),
+    channelType: (channelId) => channelTypes.get(channelId) ?? null,
+    ...(opts.onWidgetEnded
+      ? {
+          ended: async (widget: { widgetId: string; channelId: string }) =>
+            await opts.onWidgetEnded?.(widget),
+        }
+      : {}),
+    log,
+  });
+  // An account with games turned off (`widgets: false`) never plays a move, even in a game it
+  // was seated in before.
+  const widgetsOn = account.widgets !== false;
+  const offerGame = (signal: WidgetSignal, source: WidgetSignalSource): void => {
+    if (widgetsOn) widgetWakes.offer(signal, source);
+  };
+  // The games a control payload read during boot catch-up named, offered once it is done.
+  let heldGameSignals: WidgetSignal[] = [];
+  // Ended games' sessions: swept once boot catch-up is done, then hourly. Single-flight.
+  let nextGameSessionSweepAt = 0;
+  let gameSessionSweep: Promise<void> | undefined;
+  const startGameSessionSweep = (): void => {
+    const sweep = opts.onGameSessionSweep;
+    if (!sweep || gameSessionSweep || abortSignal.aborted || now() < nextGameSessionSweepAt) return;
+    nextGameSessionSweepAt =
+      now() + GAME_SESSION_SWEEP_INTERVAL_MS + Math.floor(Math.random() * 60_000);
+    const serial = (run: () => Promise<void>): Promise<void> => {
+      const enqueuedAt = now();
+      return inboundQueue.enqueue({
+        id: "widget-session-sweep",
+        enqueuedAt,
+        expiresAt: enqueuedAt + inboundQueueTtlMs,
+        run,
+      });
+    };
+    gameSessionSweep = sweep(serial, (widgetId) => widgetWakes.seated(widgetId))
+      .catch((err) =>
+        logWarn(
+          log,
+          `[clawbits/${account.accountId}] game session sweep failed: ${String((err as Error)?.message ?? err)}`,
+        ),
+      )
+      .finally(() => {
+        gameSessionSweep = undefined;
+      });
+  };
+  // `GET /widgets?waiting=1`: catch-up for wakes the WebSocket missed (the reconcile) or never
+  // carried (the SSE fallback, on a tick whose channel list didn't name them). Single-flight; a
+  // server without the route answers 404 once and is not asked again.
+  let waitingWidgetsSupported = true;
+  let waitingWidgetsRead: Promise<void> | undefined;
+  const readWaitingWidgets = (): Promise<void> => {
+    if (!widgetsOn || !waitingWidgetsSupported || agentSnoozed || abortSignal.aborted) {
+      return Promise.resolve();
+    }
+    waitingWidgetsRead ??= (async () => {
+      try {
+        const listed = await listWidgets(client, { waiting: true }, { signal: abortSignal });
+        for (const summary of listed?.widgets ?? []) offerGame(summarySignal(summary), "list");
+      } catch (err) {
+        if (err instanceof ClawBitsError && err.statusCode === 404) {
+          waitingWidgetsSupported = false;
+          logInfo(log, `[clawbits/${account.accountId}] server has no agent widget routes; game catch-up off`);
+          return;
+        }
+        logWarn(
+          log,
+          `[clawbits/${account.accountId}] waiting games read failed: ${String((err as Error)?.message ?? err)}`,
+        );
+      } finally {
+        waitingWidgetsRead = undefined;
+      }
+    })();
+    return waitingWidgetsRead;
+  };
 
   if (watermarks?.load) {
     try {
@@ -1083,6 +1211,13 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     agentSnoozed = extractAgentSnoozed(raw) ?? false;
     const selection = extractModelSelection(raw);
     if (selection) publishModelSelection(selection);
+    // The snapshot and every channel list name the game waiting on the agent in each chat. While
+    // boot catch-up is pending they are held until it is done: a move queued now would run ahead
+    // of every replayed chat turn, spend catch-up's budget and the queue TTL, and hold realtime
+    // back.
+    const waiting = waitingSignals(raw);
+    if (catchUpPending) heldGameSignals = waiting;
+    else for (const signal of waiting) offerGame(signal, "snapshot");
     return channels;
   };
 
@@ -1200,7 +1335,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     try {
       logInfo(
         log,
-        `[clawbits/${account.accountId}] inbound dispatch ${msg.postId} from ${msg.senderId || "unknown"} on ${msg.channelId}: ${JSON.stringify(msg.text)}`,
+        `[clawbits/${account.accountId}] inbound dispatch ${msg.postId} from ${msg.senderId || "unknown"} on ${msg.channelId}: ${msg.widget ? "(game move: brief not logged)" : JSON.stringify(msg.text)}`,
       );
       await opts.onInboundMessage(msg);
       return true;
@@ -1312,6 +1447,24 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     // `/cb-usage` is a DM-only command answered server-side; elsewhere it's a
     // normal message and must still reach the model.
     const isServerCommand = isDirectChannel && isServerHandledCommand(post.message);
+    // The message that started a game this agent plays: the game's wake takes the move, so a chat
+    // turn here would only race it (and run in the chat's session). Acked like an answered post.
+    const isGameStart =
+      Boolean(post.widget_id) &&
+      isUserPost &&
+      !isSelfAuthored &&
+      !isAgentAuthored &&
+      (pairChat || widgetWakes.seated(post.widget_id as string));
+    if (isGameStart && !isSeen) {
+      rememberSeen(seen, post.id);
+      advanceCursor(channelId, postCreateAt);
+      ackRead(channelId, postSerialOf(post));
+      logDebug(
+        log,
+        `[clawbits/${account.accountId}] inbound skip ${post.id}: starts game ${String(post.widget_id)}, played by its wake`,
+      );
+      return;
+    }
     const wouldDispatchWithoutAllowFrom =
       !isSeen &&
       isUserPost &&
@@ -1581,6 +1734,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
           return;
         }
         if (event.type === "resync_required") {
+          // The forced reconcile reads the games waiting on a move too.
           forceReconcilePoll = true;
           return;
         }
@@ -1603,6 +1757,11 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         }
         if (event.type === "turn.stop") {
           if (event.channel_id) void stopTurn(account.accountId, event.channel_id);
+          return;
+        }
+        if (event.type === "widget.turn") {
+          const signal = widgetTurnSignal(event.channel_id, event.data);
+          if (signal) offerGame(signal, "ws");
           return;
         }
         if (event.type === "mcp.oauth.code") {
@@ -1830,7 +1989,9 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
             // agent traffic would reset every agent's inter-agent throttle at
             // the same instant across a fleet roll.
             !p.agent_id &&
-            p.user_id !== account.agentId,
+            p.user_id !== account.agentId &&
+            // A game's start post is played by the game's own wake, never answered.
+            !p.widget_id,
         );
         if (pending.length === 0) {
           // Examined, nothing pending: a permanent classification, so the
@@ -1944,6 +2105,8 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     while (!abortSignal.aborted) {
       let discovered: DiscoveredChannel[] = discoveredFromChannelTypes();
       const wasSnoozed = agentSnoozed;
+      // Whether this tick's channel list named each chat's waiting game (`widget_waiting`).
+      let waitingGamesListed = false;
       const shouldRefreshControl =
         !agentWsConnected ||
         channelTypes.size === 0 ||
@@ -1953,6 +2116,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
           const listed = await mmTools.listChannels(client);
           const beforeIds = channelSetKey(discovered);
           discovered = applyControlPayload(listed);
+          waitingGamesListed = true;
           controlPayloadOk = true;
           const afterIds = channelSetKey(discovered);
           if (agentWsConnected) {
@@ -2060,8 +2224,11 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
           for (const channel of discovered) clampChannelFloors(channel.id, now());
         }
         if (abortSignal.aborted) break;
+        // The boot payload's games, now behind the replayed chat turns.
+        for (const signal of heldGameSignals.splice(0)) offerGame(signal, "snapshot");
       }
 
+      startGameSessionSweep();
       startAgentWebSocket();
 
       if (websocketEnabled && agentWsTask && !agentWsConnected && agentWsDisabledUntil <= now()) {
@@ -2086,15 +2253,20 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
           forceReconcilePoll = false;
           scheduleNextWebSocketReconcile();
           await pollDiscoveredChannels(discovered, "reconcile");
+          await readWaitingWidgets();
         }
       } else {
         await pollDiscoveredChannels(discovered, "poll");
+        // No agent WebSocket, so no `widget.turn`: this tick's channel list named the games waiting
+        // on a move; ask for them only when it didn't (it failed).
+        if (!waitingGamesListed) await readWaitingWidgets();
       }
 
       if (abortSignal.aborted) break;
       await sleepInterruptible(pollMs, abortSignal);
     }
   } finally {
+    widgetWakes.dispose();
     stopAgentWebSocket("poller stopped");
     for (const { task, abort } of sseChannels.values()) {
       abort.abort();

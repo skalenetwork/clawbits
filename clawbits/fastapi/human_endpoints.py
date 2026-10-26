@@ -623,7 +623,7 @@ async def remove_agent_from_org(
         ended_widgets = [
             widget
             for widget_id, _ in TableWrite.abort_mm_widgets_seating(db, reason="left", agent_id=agent_id)
-            if (widget := TableRead.get_mm_widget(db, widget_id))
+            if (widget := TableRead.get_mm_widget(db, widget_id, with_scores=True))
         ]
         departures = TableWrite.delete_agent(
             db, agent_id, keep_content=keep_content, actor_human_id=user["id"]

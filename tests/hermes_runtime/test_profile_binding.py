@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -18,6 +19,7 @@ import pytest
 from fake_clawbits import OPERATOR_DM, FakeClawbits
 
 KEY_A, KEY_B = "cb-test-key", "cb-key-b"  # A's key comes from the gateway fixture's environment
+LABEL = os.getenv("HERMES_RUNTIME_LABEL", "unpinned")
 MAIL = {"subject": "status", "message": "all good"}
 GREETED = ".clawbits_greeted"
 OPAQUE = "Zq7Xw2Lp9Rt4" * 4  # synthetic, no vendor shape: only its key name marks it secret
@@ -217,8 +219,9 @@ def test_missing_b_credentials_never_fall_back_to_a(profiles, mode):
     profiles.env_b(OTHER_SETTING="x")
     with _multiplexed(mode == "multiplex"), profiles.scope_b():
         if mode == "routed_standalone":
-            # Hermes's own scoped read falls through to the launch env here; the plugin must not.
-            assert get_scoped_secret("CLAWBITS_API_KEY") == KEY_A
+            # Hermes's own scoped read falls through to the launch env here up to current; latest
+            # (3833773f7f) returns the default instead. The plugin never does.
+            assert get_scoped_secret("CLAWBITS_API_KEY") == (None if LABEL == "latest" else KEY_A)
         assert plugin._env_enablement() is None
         assert not plugin.resolve_account().usable
         adapter = profiles.adapter()

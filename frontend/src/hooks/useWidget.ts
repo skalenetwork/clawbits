@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   actOnWidget,
   getWidget,
+  getWidgetScore,
   listActiveWidgets,
   type Widget,
   type WidgetAction,
@@ -10,7 +11,7 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { openSseStream } from "@/lib/sse";
 import { errMsg, toast } from "@/lib/toast";
-import { applyWidget, applyWidgetEvent, freshActiveWidgets, freshWidget } from "@/lib/widgets";
+import { applyWidget, applyWidgetEvent, freshActiveWidgets, freshWidget, scoreLine } from "@/lib/widgets";
 
 /** One widget; `widget.updated` keeps it live, so no polling. A slow answer never undoes a newer rev an event brought
  *  while it was out. */
@@ -55,6 +56,23 @@ export function useActiveWidgets(channelId: string, enabled: boolean) {
     enabled,
     staleTime: 60_000,
   });
+}
+
+/** The chat's score over its finished games, for Channel info and the "Play a game" menu. A game that finishes here
+ *  refetches it (`applyWidgetEvent`), so no polling. */
+export function useWidgetScore(channelId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.mm.widgetScore(channelId),
+    queryFn: () => getWidgetScore(channelId),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+/** The chat's score in one line for the viewer, "You 3 – 2 Bob · 1 draw"; null until a game here has finished.
+ *  `enabled` only gates the fetch: a score already cached still shows. */
+export function useScoreLine(channelId: string, userId: number | null, enabled: boolean): string | null {
+  return scoreLine(useWidgetScore(channelId, enabled).data, userId);
 }
 
 /** Act as the viewer's seat. A rejected action refetches, since the board it was taken on may be stale. */

@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 
-import type { Widget } from "@/lib/api";
+import type { Widget, WidgetScore } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   applyWidget,
+  applyWidgetEvent,
   boardsBySeat,
   endOf,
+  linkedGameOf,
   notesOf,
   panelGameOf,
   resultOf,
+  scoreLabel,
+  scoreLine,
+  scoreOf,
+  scoreTitle,
   seatOf,
   statusOf,
   waitingOn,
@@ -158,5 +164,88 @@ describe("panelGameOf", () => {
     expect(panelGameOf({ ...none, picked, active: "w2", posted: "w2" })).toBe("w1");
     expect(panelGameOf({ ...none, picked, active: "w3", posted: "w3" })).toBe("w3");
     expect(panelGameOf({ ...none, picked: { widgetId: "w1", over: null }, posted: "w2" })).toBe("w1");
+  });
+});
+
+describe("linkedGameOf", () => {
+  it("opens the running game, which is the one waiting, even from an older game's ping", () => {
+    expect(linkedGameOf("w1", "w1")).toBe("w1");
+    expect(linkedGameOf("w1", "w2")).toBe("w2");
+  });
+
+  it("opens the linked game while none runs, to show how it ended", () => {
+    expect(linkedGameOf("w1", null)).toBe("w1");
+  });
+});
+
+describe("scoreOf", () => {
+  const scored = (white: number | undefined, black: number | undefined, draws: number | undefined) => widget({
+    seats: [
+      { seat: "white", human_id: 1, agent_id: null, display_name: "Alice", wins: white },
+      { seat: "black", human_id: 2, agent_id: null, display_name: "Bob", wins: black },
+    ],
+    draws,
+  });
+
+  it("reads the chat's score from each player's seat", () => {
+    expect(scoreOf(scored(3, 2, 1), 1)).toEqual({ mine: 3, theirs: 2, draws: 1, them: "Bob" });
+    expect(scoreOf(scored(3, 2, 1), 2)).toEqual({ mine: 2, theirs: 3, draws: 1, them: "Alice" });
+    // Draws alone are a score too.
+    expect(scoreOf(scored(0, 0, 2), 1)).toEqual({ mine: 0, theirs: 0, draws: 2, them: "Bob" });
+  });
+
+  it("has none for a spectator, a game short of a seat, a chat with nothing finished, or an older server", () => {
+    expect(scoreOf(scored(3, 2, 1), 3)).toBeNull();
+    expect(scoreOf(scored(3, 2, 1), null)).toBeNull();
+    const alone = widget({ seats: [{ seat: "white", human_id: 1, agent_id: null, display_name: "Alice", wins: 3 }], draws: 1 });
+    expect(scoreOf(alone, 1)).toBeNull();
+    expect(scoreOf(scored(0, 0, 0), 1)).toBeNull();
+    expect(scoreOf(scored(undefined, undefined, undefined), 1)).toBeNull();
+    expect(scoreOf(widget(), 1)).toBeNull();
+  });
+
+  it("says the score in words, the draws only when there are some", () => {
+    expect(scoreLabel({ mine: 3, theirs: 2, draws: 1, them: "Bob" })).toBe("score you 3, Bob 2, 1 draw");
+    expect(scoreLabel({ mine: 1, theirs: 0, draws: 0, them: null })).toBe("score you 1, opponent 0");
+    expect(scoreTitle({ mine: 3, theirs: 2, draws: 2, them: "Bob" })).toBe("You 3 – 2 Bob · 2 draws");
+    expect(scoreTitle({ mine: 0, theirs: 1, draws: 0, them: "" })).toBe("You 0 – 1 Opponent");
+  });
+});
+
+describe("scoreLine", () => {
+  const player = (human_id: number | null, display_name: string | null, wins: number, agent_id: string | null = null) =>
+    ({ human_id, agent_id, display_name, wins });
+  const score = (over: Partial<WidgetScore> = {}): WidgetScore =>
+    ({ channel_id: "c1", players: [player(2, "Bob", 3), player(1, "Alice", 2)], draws: 1, finished: 6, ...over });
+
+  it("puts the viewer first, whoever leads", () => {
+    expect(scoreLine(score(), 1)).toBe("You 2 – 3 Bob · 1 draw");
+    expect(scoreLine(score({ draws: 0 }), 2)).toBe("You 3 – 2 Alice");
+    expect(scoreLine(score({ draws: 3 }), 2)).toBe("You 3 – 2 Alice · 3 draws");
+  });
+
+  it("names both players for someone not among them, and each player's wins where more have played", () => {
+    expect(scoreLine(score(), 9)).toBe("Bob 3 – 2 Alice · 1 draw");
+    const three = score({ players: [player(2, "Bob", 3), player(1, "Alice", 2), player(null, null, 1, "helper")], draws: 0 });
+    expect(scoreLine(three, 1)).toBe("You 2, Bob 3, helper 1");
+  });
+
+  it("has none before a game here has finished, nor once fewer than two players are left", () => {
+    expect(scoreLine(undefined, 1)).toBeNull();
+    expect(scoreLine(score({ players: [], draws: 0, finished: 0 }), 1)).toBeNull();
+    expect(scoreLine(score({ players: [player(1, "Alice", 2)] }), 1)).toBeNull();
+  });
+});
+
+describe("applyWidgetEvent", () => {
+  it("refetches the chat's score when a game finishes there, not on a move or an early end", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(queryKeys.mm.widgetScore("c1"), { channel_id: "c1", players: [], draws: 0, finished: 0 });
+    const stale = () => qc.getQueryState(queryKeys.mm.widgetScore("c1"))?.isInvalidated;
+    applyWidgetEvent(qc, widget({ rev: 2 }));
+    applyWidgetEvent(qc, widget({ rev: 3, status: "aborted", outcome: { reason: "stopped" } }));
+    expect(stale()).toBe(false);
+    applyWidgetEvent(qc, widget({ rev: 4, status: "finished", outcome: { winner: "white" } }));
+    expect(stale()).toBe(true);
   });
 });

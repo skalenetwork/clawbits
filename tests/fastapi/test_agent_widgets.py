@@ -21,12 +21,14 @@ from tests.fastapi.test_human_mattermost import _create_agent, _open_dm
 from tests.fastapi.test_widgets import (
     _act,
     _FakeBus,
+    _move,
     _start,
     _switch_chat,
     _switch_org,
     _widget_turns,
     _widget_updates,
 )
+from tests.fastapi.test_widgets import _game as _people_game
 
 _CANT_PLAY = "This agent can't play games"
 _END = {"type": "end", "args": {}}
@@ -77,7 +79,8 @@ def _begin(tc: TestClient, who: dict, channel_id: str, kind: str, seat: str):
 
 
 def _agent_act(tc: TestClient, agent: dict, widget_id: str, kind: str, **args) -> dict:
-    """An agent's move, through the service: its own routes come later."""
+    """An agent's move through the service itself, past its REST route (``test_agentic_widgets``
+    covers that), so these tests read the service's own answers."""
     with Session(tc.app._engine) as db:
         action = {"type": kind, "args": args}
         return widget_service.act(db, Participant.agent(agent["agent_id"]), widget_id, action, None).view
@@ -176,8 +179,8 @@ def test_an_agent_that_cant_play_is_refused(test_client, why):
         assert _settings(test_client, alice, org_id, agent_id, snoozed=True).status_code == 200
     r = _start(test_client, bob, dm)
     assert (r.status_code, r.json()["detail"]) == (422, _CANT_PLAY)
-    # Snoozing is for now, so the chat still offers games; the rest don't.
-    assert _channels(test_client, bob, org_id)[dm]["widgets_supported"] is (why == "snoozed")
+    # The chat offers a game only where one could start now: a snoozed agent's no more than the rest.
+    assert _channels(test_client, bob, org_id)[dm]["widgets_supported"] is False
     with Session(test_client.app._engine) as db:
         assert db.exec(select(MmWidget).where(MmWidget.channel_id == dm)).all() == []
 
@@ -292,6 +295,26 @@ def test_the_agents_operator_ends_its_game_from_outside_the_chat(test_client, mo
     assert (r.status_code, r.json()["detail"]) == (409, "This widget has ended")
 
 
+def test_an_operator_removed_from_the_org_can_no_longer_end_its_game(test_client):
+    alice, bob, agent, org_id, dm = _setup(test_client, "awopgone")
+    carol = register_human(test_client, "awopgone-carol@test.com", "Carol")
+    add_human_to_org(test_client, alice["access_token"], org_id, carol["user"]["email"])
+    with Session(test_client.app._engine) as db:  # Carol operates the agent
+        row = db.get(Agent, agent["agent_id"])
+        row.operator_id = carol["user"]["id"]
+        db.add(row)
+        db.commit()
+    widget = _start(test_client, bob, dm).json()
+    r = test_client.delete(
+        f"/api/human/orgs/{org_id}/members/{carol['user']['id']}", headers=auth_headers(alice["access_token"])
+    )
+    assert r.status_code == 200, r.text
+    # Still the agent's operator_id, but out of its org: no power over it, nor a look at the game.
+    r = _act(test_client, carol, widget, _END)
+    assert (r.status_code, r.json()["detail"]) == (404, "Widget not found")
+    assert _row(test_client, widget["widget_id"]).status == "active"
+
+
 def test_at_a_poker_showdown_against_an_agent_the_person_deals(test_client):
     _, bob, agent, org_id, dm = _setup(test_client, "awdeal")
     r = _begin(test_client, bob, dm, "poker", "red")  # Bob has the button in hand 1
@@ -351,6 +374,32 @@ def test_a_person_may_act_on_a_board_only_the_other_seat_changed(test_client):
     r = _act(test_client, bob, shuffled, {"type": "ready"})
     assert r.status_code == 200, r.text
     assert (r.json()["rev"], r.json()["turn"]) == (3, "red")
+
+
+def test_an_older_board_is_too_old_once_the_move_came_back(test_client):
+    """Bob's board from before his last move came round again: what it shows isn't his position."""
+    alice, bob, _, _, at_start = _people_game(test_client, "awstalehanded")
+    after_e4 = _move(test_client, alice, at_start, "e4")
+    after_e5 = _move(test_client, bob, after_e4, "e5")
+    _move(test_client, alice, after_e5, "Nf3")  # rev 3: the move is Bob's again
+    r = _act(test_client, bob, after_e5, {"type": "move", "args": {"move": "Nc6"}})
+    assert (r.status_code, r.json()["detail"]) == (409, "The widget changed meanwhile; try again")
+
+
+def test_a_malformed_capability_list_never_costs_the_ping(test_client):
+    alice, _, agent, org_id, _ = _setup(test_client, "awcaps")
+    for capabilities in (None, "widgets", [1, {"x": 1}]):
+        r = test_client.post(
+            "/api/agentic/alive",
+            json={"agent_type": "openclaw", "capabilities": capabilities},
+            headers=auth_headers(agent["api_key"]),
+        )
+        assert (r.status_code, r.json()["status"]) == (200, "available"), r.text
+        with Session(test_client.app._engine) as db:
+            assert db.get(Agent, agent["agent_id"]).capabilities == []
+    _alive(test_client, agent, "openclaw", [7, "widgets"])  # the strings in it still count
+    with Session(test_client.app._engine) as db:
+        assert db.get(Agent, agent["agent_id"]).capabilities == ["widgets"]
 
 
 def test_two_people_placing_fleets_dont_trip_each_other(test_client):

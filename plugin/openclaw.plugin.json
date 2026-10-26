@@ -89,6 +89,11 @@
             "minimum": 0,
             "default": 600000
           },
+          "widgets": {
+            "type": "boolean",
+            "default": true,
+            "description": "Chat games. Set false to keep this agent out of them: it then never reports the widgets capability. Even when true it also needs the clawbits-tools plugin's clawbits_widget_act tool (listed in tools.alsoAllow) and the agent's Can play games setting in Clawbits."
+          },
           "catchUpEnabled": {
             "type": "boolean",
             "description": "On gateway start, answer messages that arrived while the agent was down (VM restart, image upgrade, crash) instead of silently skipping them. One turn per channel: newest unanswered addressed message is the trigger, older ones ride along as context.",
@@ -192,6 +197,11 @@
                   "type": "integer",
                   "minimum": 0,
                   "default": 100
+                },
+                "widgets": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Chat games. Set false to keep this agent out of them: it then never reports the widgets capability. Even when true it also needs the clawbits-tools plugin's clawbits_widget_act tool (listed in tools.alsoAllow) and the agent's Can play games setting in Clawbits."
                 },
                 "knownAnswers": {
                   "type": "object",

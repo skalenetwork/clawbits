@@ -31,6 +31,12 @@ export interface LivenessPingerOptions {
   /** Account id, used only for log prefixes. */
   accountId: string;
   log?: BasicLogger;
+  /** What the agent can do here (`widgets`, ...), read at each ping. The server replaces its stored
+   *  set with every ping's, so each restates them all; none leaves the body as it always was. */
+  capabilities?: () => readonly string[];
+  /** Subscribe to "the capabilities may have changed": the next ping then goes at once instead of
+   *  at the interval, when the set did change. Returns the unsubscribe. */
+  onCapabilitiesChanged?: (listener: () => void) => () => void;
 }
 
 /**
@@ -45,6 +51,7 @@ export interface LivenessPingerOptions {
  */
 export async function runLivenessPinger(opts: LivenessPingerOptions): Promise<void> {
   const { client, intervalMs, abortSignal, accountId, log } = opts;
+  const capabilities = (): string[] => [...new Set(opts.capabilities?.() ?? [])].sort();
   if (intervalMs <= 0) {
     logInfo(log, `[clawbits/${accountId}] liveness pinger disabled (alive.every=0)`);
     return;
@@ -59,37 +66,56 @@ export async function runLivenessPinger(opts: LivenessPingerOptions): Promise<vo
       Math.round(intervalMs / 1000),
     )}s)`,
   );
-  while (!abortSignal.aborted) {
-    try {
-      await client.request<unknown>("POST", ALIVE_PATH, {
-        json: { agent_type: AGENT_TYPE },
+  // A change of capabilities cuts the wait short, but only once they differ from those last sent.
+  let sent: string | undefined;
+  let wake: (() => void) | undefined;
+  const unsubscribe = opts.onCapabilitiesChanged?.(() => {
+    if (JSON.stringify(capabilities()) !== sent) wake?.();
+  });
+  try {
+    while (!abortSignal.aborted) {
+      const reported = capabilities();
+      let ok = false;
+      try {
+        await client.request<unknown>("POST", ALIVE_PATH, {
+          json: { agent_type: AGENT_TYPE, ...(reported.length ? { capabilities: reported } : {}) },
+        });
+        sent = JSON.stringify(reported);
+        ok = true;
+      } catch (err) {
+        log?.warn?.(
+          `[clawbits/${accountId}] liveness ping failed (will retry): ${String(
+            (err as Error)?.message ?? err,
+          )}`,
+        );
+      }
+      // A change that landed while that ping was in flight goes out now.
+      if (ok && JSON.stringify(capabilities()) !== sent) continue;
+      await sleep(intervalMs, abortSignal, (resolve) => {
+        wake = resolve;
       });
-    } catch (err) {
-      log?.warn?.(
-        `[clawbits/${accountId}] liveness ping failed (will retry): ${String(
-          (err as Error)?.message ?? err,
-        )}`,
-      );
+      wake = undefined;
     }
-    await sleep(intervalMs, abortSignal);
+  } finally {
+    unsubscribe?.();
   }
 }
 
-/** Abortable sleep — resolves after `ms`, or immediately when `signal` aborts. */
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
+/** Abortable sleep — resolves after `ms`, immediately when `signal` aborts, or when the function
+ *  handed to `onWake` is called. */
+function sleep(ms: number, signal: AbortSignal, onWake?: (wake: () => void) => void): Promise<void> {
   return new Promise<void>((resolve) => {
     if (signal.aborted) {
       resolve();
       return;
     }
-    const onAbort = () => {
+    const done = () => {
       clearTimeout(timer);
+      signal.removeEventListener("abort", done);
       resolve();
     };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+    onWake?.(done);
   });
 }

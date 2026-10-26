@@ -109,6 +109,7 @@ RealtimeEventType = Literal[
     "server.hello",
     "widget.updated",
     "widget.turn",
+    "widget.notify",
     "channel.widgets",
 ]
 MmPostStatus = Literal["streaming", "draft", "published", "rejected"]
@@ -705,6 +706,12 @@ class MmAgentAliveRequest(BaseModel):
     # Everything the runtime can do now (``widgets``: it plays chat games). The whole set every
     # ping: one without it (an older plugin) reports none.
     capabilities: list[str] = Field(default_factory=list)
+
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _lenient_capabilities(cls, value: object) -> list[str]:
+        """A malformed set reports none rather than failing the ping, which would cost liveness."""
+        return [c for c in value if isinstance(c, str)] if isinstance(value, list) else []
 
 
 class MmAgentAliveResponse(BaseModel):

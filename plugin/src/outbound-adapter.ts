@@ -13,6 +13,7 @@ import { consoleErrorWithFile, pluginDebug } from "./file-logger.js";
 import { uploadOutboundMedia } from "./outbound-media.js";
 import * as mmTools from "./tools/mattermost.js";
 import * as realtimeTools from "./tools/realtime.js";
+import { isGamePeerId } from "./widgets/session.js";
 
 // The host's OutboundDeliveryResult declares no `channelId`, but our sends
 // resolve one and hand it back alongside the published fields (a superset the
@@ -138,6 +139,13 @@ function resolveSendTarget(ctx: ChannelOutboundContext): ResolvedSendTarget {
       detail: "No channelId configured and no explicit target supplied.",
       path: "/",
     });
+  }
+  // A game move's own conversation is its game (``widget-<id>``), never a chat:
+  // a send defaulting to it is the move's run speaking, which it must not. The
+  // per-run hooks (widgets/session.ts) stop the sends that name a chat.
+  if (isGamePeerId(channelId)) {
+    const detail = "A Clawbits chat game turn posts nothing to chat.";
+    throw new ClawBitsError({ statusCode: 0, detail, path: "/", message: detail });
   }
   return { account, client, answers, channelId, rawTo, looksLikePeer };
 }

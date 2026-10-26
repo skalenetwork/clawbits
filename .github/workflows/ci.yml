@@ -51,6 +51,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
       plugin: ${{ steps.filter.outputs.plugin }}
+      mobile: ${{ steps.filter.outputs.mobile }}
       hermes: ${{ steps.filter.outputs.hermes }}
       locks: ${{ steps.filter.outputs.locks }}
       rust: ${{ steps.rust.outputs.matrix }}
@@ -95,6 +96,13 @@ jobs:
             plugin:
               - '.github/workflows/ci.yml'
               - 'plugin/**'
+              # Read by plugin tests that keep the plugin's copies in sync with them.
+              - 'clawbits/widgets/tool_spec.json'
+              - 'images/openclaw/defaults.json'
+              - 'frontend/src/lib/agentPrompts.ts'
+            mobile:
+              - '.github/workflows/ci.yml'
+              - 'apps/mobile/**'
             hermes:
               - '.github/workflows/ci.yml'
               - 'extensions/hermes/**'
@@ -261,9 +269,48 @@ jobs:
       - name: Test
         run: bun run test
 
+  # The iOS app's unit tests: pure modules only, so no simulator. Not the
+  # shared setup-bun action, whose bun is `latest`: liveTurn's tests need the
+  # jest fake timers of the bun the app pins (package.json packageManager).
+  mobile:
+    name: Mobile
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: apps/mobile/package.json
+
+      # Same cache layout and key as .github/actions/setup-bun.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            apps/mobile/node_modules
+          key: ${{ runner.os }}-bun-apps/mobile-${{ hashFiles('apps/mobile/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-apps/mobile-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test src
+
   # The Hermes plugin under Hermes's real loader and GatewayRunner at each pinned
   # revision (tests/hermes_runtime/HERMES_REVS), in the Reef image layout (bundled)
-  # and the self-hosted one (user). The script builds each revision's own venv.
+  # and the self-hosted one (user). The script builds each revision's own venv on
+  # the newest Python its uv.lock allows, which uv downloads: 3.13 for min and
+  # current, 3.14 for latest (its lock covers 3.14 only).
   hermes-runtime:
     name: Hermes runtime (${{ matrix.hermes }}, ${{ matrix.layout }})
     needs: changes
@@ -273,7 +320,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        hermes: [min, current]
+        hermes: [min, current, latest]
         layout: [bundled, user]
     steps:
       - uses: actions/checkout@v7
@@ -417,7 +464,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, pr-title, backend, frontend, plugin, hermes-runtime, rust, locks]
+    needs: [changes, pr-title, backend, frontend, plugin, mobile, hermes-runtime, rust, locks]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

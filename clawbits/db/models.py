@@ -1832,6 +1832,8 @@ class MmWidget(SQLModel, table=True):
             unique=True,
             postgresql_where=text("status = 'active'"),
         ),
+        # A chat's score (its finished games) is read with every widget people see.
+        Index("ix_mm_widgets_channel_id_status", "channel_id", "status"),
     )
 
     widget_id: str = Field(primary_key=True)

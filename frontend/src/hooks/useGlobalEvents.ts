@@ -8,7 +8,7 @@ import { updateAgentPresence } from "@/hooks/useAgentPresence";
 import { updateUserPresence } from "@/hooks/useUserPresence";
 import { useLatestRef } from "@/hooks/useLatestRef";
 import type { AgentLivenessStatus, GlobalUserStatus, MmChannel, MmChannelPost, Org } from "@/lib/api";
-import { isDesktop, notifyForPost } from "@/lib/desktop";
+import { isDesktop, notifyForPost, notifyForTurn } from "@/lib/desktop";
 import { channelLabel, isPairChannel } from "@/lib/chatFilters";
 import { messageMentionsViewer, selfMentionTokens } from "@/lib/mentions";
 import { toast } from "@/lib/toast";
@@ -38,6 +38,8 @@ type GlobalEvent =
   | { type: "server.hello"; channel_id: string; data: { version: string } }
   // Its id and rev come from servers since the turn list (`waiting_on`); older ones send `my_turn` alone.
   | { type: "widget.turn"; channel_id: string; data: { my_turn: boolean; widget_id?: string; rev?: number } }
+  // A game has waited on the viewer past its grace: the server's one ping until they move, for the desktop banner.
+  | { type: "widget.notify"; channel_id: string; data: { widget_id: string; rev: number; title: string; body: string } }
   | { type: "channel.widgets"; channel_id: string; data: { widgets_enabled: boolean } };
 
 const byRecency = (a: MmChannel, b: MmChannel) => {
@@ -201,6 +203,11 @@ export function useGlobalEvents(): void {
           turnRevs.set(evt.channel_id, { widgetId: widget_id, rev, past });
         }
         patchChannel(qc, evt.channel_id, (c) => ({ ...c, widget_turn: my_turn }));
+      } else if (evt.type === "widget.notify") {
+        // The server checked the mute when it sent this; a mute since then still silences it.
+        if (cachedChannels(qc).find((c) => c.channel_id === evt.channel_id)?.muted) return;
+        const { widget_id, title, body } = evt.data;
+        void notifyForTurn({ channelId: evt.channel_id, widgetId: widget_id, title, body });
       } else if (evt.type === "channel.widgets") {
         const { widgets_enabled } = evt.data;
         patchChannel(qc, evt.channel_id, (c) => ({ ...c, widgets_enabled }));

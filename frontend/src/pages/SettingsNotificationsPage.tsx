@@ -18,9 +18,16 @@ import {
 } from "@/lib/desktop";
 import { toast } from "@/lib/toast";
 
+// What banners are for, shown under every state, desktop included, so it says "with notifications on": a blocked,
+// unsupported or not-yet-installed row above it mustn't read as contradicted. The server sends a turn banner once
+// per game until its player moves, and mute is its only off switch.
+const BANNER_SCOPE =
+    "With notifications on, you get a banner for new messages, and one per game when it waits on your move while"
+    + " you're away, until you move. Muting a chat silences both.";
+
 const PUSH_DESCRIPTION: Record<Exclude<PushUiStatus, "install-required">, string> = {
-    loading: "Get a banner for new messages here",
-    prompt: "Get a banner for new messages here",
+    loading: "Get notifications on this device",
+    prompt: "Get notifications on this device",
     enabled: "You'll be notified on this device",
     denied: "Blocked in your browser. Allow notifications for this site, then reload",
     unsupported: "This browser doesn't support push notifications",
@@ -30,6 +37,7 @@ const PUSH_DESCRIPTION: Record<Exclude<PushUiStatus, "install-required">, string
 export default function SettingsNotificationsPage() {
     const push = usePushSubscription();
     const diagnostics = useNotificationDiagnostics();
+    const report = deliveryReport(diagnostics);
     const [testing, setTesting] = useState(false);
 
     const handleTest = async () => {
@@ -68,7 +76,12 @@ export default function SettingsNotificationsPage() {
             <PageHeader icon={Bell} title="Notifications" />
             <SettingsSection
                 label="Push notifications"
-                footer={deliveryReport(diagnostics)}
+                footer={
+                    <>
+                        <p className="leading-relaxed">{BANNER_SCOPE}</p>
+                        {report != null && <div className="mt-3">{report}</div>}
+                    </>
+                }
             >
                 {isDesktop ? (
                     <SettingsRow

@@ -1,7 +1,7 @@
 import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
-import { CHANNEL_ID } from "./accounts.js";
+import { CHANNEL_ID, listClawBitsAccountIds } from "./accounts.js";
 import { buildAgentBody, clawbitsSessionId } from "./agent-body.js";
 import { ChannelWatermarkStore } from "./channel-watermarks.js";
 import { saveInboundAttachmentsForAgent } from "./attachments.js";
@@ -53,6 +53,20 @@ import * as versionTools from "./tools/version.js";
 import type { VersionCheckResponse } from "./tools/version.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
 import { runOutsideGatewayRootWork } from "./gateway-root-work.js";
+import { getWidget, listWidgets } from "./widgets/api.js";
+import { agentCapabilities, GAME_ROUTE_PROBE, type GameRoute } from "./widgets/capability.js";
+import {
+  deleteGameSessions,
+  type GameSessionDeletion,
+  gameGenerationForMove,
+  gamePeerId,
+  holdGameSession,
+  isOwnGameSession,
+  listGameSessionGenerations,
+  noteGameMove,
+  sessionAgentId,
+} from "./widgets/session.js";
+import { onCompanionToolsChanged } from "./service-handoff.js";
 
 // Slot types of the host's real ChannelPlugin. Neither is re-exported by name
 // from a plugin-sdk subpath, so deriving them keeps an upstream rename a
@@ -276,8 +290,11 @@ export async function dispatchInboundMessage(
   deps: DispatchInboundDeps = {},
 ): Promise<void> {
   const fileCount = msg.files?.length ?? 0;
+  // A game move (widgets/wake.ts): the agent's turn in a chat game, run in the game's own session
+  // and silent. Its brief holds the seat's private cards, so it never reaches the log either.
+  const game = msg.widget;
   consoleErrorWithFile(
-    `[clawbits/${ctx.accountId}] dispatchInboundMessage post=${msg.postId} sender=${msg.senderId} channel=${msg.channelId} files=${fileCount} text=${JSON.stringify(msg.text)}`,
+    `[clawbits/${ctx.accountId}] dispatchInboundMessage post=${msg.postId} sender=${msg.senderId} channel=${msg.channelId} files=${fileCount} text=${game ? "(game move)" : JSON.stringify(msg.text)}`,
   );
   pluginDebug(
     `Received. Clawbits inbound dispatch is working — post=${msg.postId} sender=${msg.senderId} channel=${msg.channelId} files=${fileCount}.`,
@@ -309,11 +326,12 @@ export async function dispatchInboundMessage(
   // non-direct (``"public"`` / ``"private"`` / ``"group"`` / …) takes the
   // channel path.
   const isDirectChannel =
-    msg.channelType === undefined ||
-    msg.channelType === null ||
-    msg.channelType === "direct";
+    !game &&
+    (msg.channelType === undefined ||
+      msg.channelType === null ||
+      msg.channelType === "direct");
   const isOperatorDm =
-    msg.channelType === "direct" && msg.channelId === ctx.account.channelId;
+    !game && msg.channelType === "direct" && msg.channelId === ctx.account.channelId;
   // Let only the configured operator DM run session admin commands.
   // Private/group/public channels — and other direct chats — stay ordinary text.
   const operatorDmSessionCommand = isOperatorDm ? normalizeSessionCommand(msg.text) : null;
@@ -402,20 +420,54 @@ export async function dispatchInboundMessage(
   // resolveAgentRoute (reached through dispatchInboundDirectDmWithRuntime) keys
   // a channel peer as ``agent:<agentId>:clawbits:channel:<channelId>``, while a
   // direct peer collapses to the agent's DM/main session per ``session.dmScope``.
-  const routePeer: { kind: "direct" | "channel"; id: string } = isDirectChannel
-    ? { kind: "direct", id: senderId }
-    : { kind: "channel", id: conversationId };
-  const dispatchGuardTarget = resolveInboundDispatchGuardTarget({
-    cfg: ctx.cfg,
-    runtime,
-    channel: CHANNEL_ID,
-    accountId: ctx.accountId,
-    peer: routePeer,
-  });
+  // A game move routes as the channel peer ``widget-<id>``: the game's own session
+  // (widgets/session.ts), apart from the chat's, so the seat's hand stays there.
+  let routePeer: { kind: "direct" | "channel"; id: string } = game
+    ? { kind: "channel", id: gamePeerId(game.id) }
+    : isDirectChannel
+      ? { kind: "direct", id: senderId }
+      : { kind: "channel", id: conversationId };
+  const resolveTarget = () =>
+    resolveInboundDispatchGuardTarget({
+      cfg: ctx.cfg,
+      runtime,
+      channel: CHANNEL_ID,
+      accountId: ctx.accountId,
+      peer: routePeer,
+    });
+  let dispatchGuardTarget = resolveTarget();
+  let gen = 0;
+  if (game && dispatchGuardTarget && isOwnGameSession(dispatchGuardTarget.sessionKey, game.id)) {
+    // The session's current generation, or a fresh one before it grows into OpenClaw's memory flush.
+    // The chat's model choice is applied to it below, before the move runs (convergeSession).
+    const choice =
+      deps.modelSelection && dispatchGuardTarget.agentId
+        ? (deps.modelSelection.channels.get(conversationId) ?? INHERIT)
+        : undefined;
+    gen = await gameGeneration(ctx, dispatchGuardTarget, game.id, msg.text.length, choice);
+    if (gen > 0) {
+      routePeer = { kind: "channel", id: gamePeerId(game.id, gen) };
+      dispatchGuardTarget = resolveTarget();
+    }
+  }
+  if (game && !isOwnGameSession(dispatchGuardTarget?.sessionKey, game.id, gen)) {
+    // Never play in a shared session: `session.groupScope: "main"` (or a binding override)
+    // folds channel peers into the main session, where the hand would outlive the move.
+    logWarn(
+      ctx.log,
+      `[clawbits/${ctx.accountId}] game ${game.id} not played: it has no session of its own (route ${dispatchGuardTarget?.sessionKey ?? "unresolved"}); unset session.groupScope "main" to play games`,
+    );
+    return;
+  }
+  if (game && dispatchGuardTarget) noteGameMove(dispatchGuardTarget.sessionKey);
   // ``From`` always identifies the human who spoke (attribution survives in
   // shared rooms); ``To`` is the surface the post landed on — the channel for
-  // rooms, the peer for DMs.
-  const recipientAddr = isDirectChannel ? senderAddr : `clawbits:${conversationId}`;
+  // rooms, the peer for DMs, the game for a move.
+  const recipientAddr = game
+    ? `clawbits:${routePeer.id}`
+    : isDirectChannel
+      ? senderAddr
+      : `clawbits:${conversationId}`;
 
   // Non-direct channels share the same streaming-draft flow as DMs by
   // default. Safety relies on the ``ChatType: "channel"`` override below
@@ -431,7 +483,9 @@ export async function dispatchInboundMessage(
   // pre-open for it so there's no phantom shimmer. (`/usage <args>` too; not
   // `/new <msg>` / `/reset <msg>`, which do run a model turn.)
   const isInstantHostCommand = /^\/usage(?:\s|$)/iu.test(effectiveText.trim());
-  const usePreOpenShimmer = (isDirectChannel || groupChannelShimmer) && !isInstantHostCommand;
+  // A move shows nothing in chat while it runs: no shimmer, no "generating" pill.
+  const usePreOpenShimmer =
+    !game && (isDirectChannel || groupChannelShimmer) && !isInstantHostCommand;
 
   // Routing decision (dev-only): DM vs channel, route peer, recipient. Useful
   // when diagnosing "agent doesn't reply in a channel"; gated behind
@@ -503,16 +557,20 @@ export async function dispatchInboundMessage(
     | undefined;
   const accountStreaming = accountFlags?.streaming !== false;
   const accountLiveActivity = accountFlags?.liveActivity !== false;
+  // A move registers MUTED (both lanes off) rather than not at all: an unregistered
+  // run can still be bound to a lone DM turn (turn-registry rule 3) and stream its
+  // thinking there; registered, it binds to this turn by its session key and says nothing.
   const activityTurn: InFlightTurn | undefined =
-    client && (accountStreaming || accountLiveActivity)
+    client && (game || accountStreaming || accountLiveActivity)
       ? registerInFlightTurn({
           accountId: ctx.accountId,
           channelId: conversationId,
           draftRef,
           client,
           channelKeyedSession: !isDirectChannel,
-          streaming: accountStreaming,
-          liveActivity: accountLiveActivity,
+          ...(game ? { peerId: routePeer.id } : {}),
+          streaming: !game && accountStreaming,
+          liveActivity: !game && accountLiveActivity,
         })
       : undefined;
   const finish = async (): Promise<Pick<DraftPatch, "steps">> => {
@@ -550,6 +608,11 @@ export async function dispatchInboundMessage(
   let lastDeliveredBody: string | undefined;
 
   const deliver = async (payload: { text?: string; body?: string; [key: string]: unknown }) => {
+    if (game) {
+      // A move says nothing in chat, NO_REPLY or not: the board shows it.
+      pluginDebug(`deliver dropped the text of game move ${msg.postId}`);
+      return;
+    }
     consoleErrorWithFile(
       `[clawbits/${ctx.accountId}] deliver invoked for ${msg.postId}: ${JSON.stringify(payload)}`,
     );
@@ -685,9 +748,11 @@ export async function dispatchInboundMessage(
     senderId,
     senderAddress: senderAddr,
     recipientAddress: recipientAddr,
-    conversationLabel: isDirectChannel
-      ? `Clawbits DM ${conversationId}`
-      : `Clawbits channel ${conversationId}`,
+    conversationLabel: game
+      ? `Clawbits game ${game.id}`
+      : isDirectChannel
+        ? `Clawbits DM ${conversationId}`
+        : `Clawbits channel ${conversationId}`,
     // OpenClaw 2026.8 ("2.0") only records conversation-route context,
     // persists DM sender identity, captures pending turn replies and
     // restores archived sessions when the channel attests that its own
@@ -704,7 +769,9 @@ export async function dispatchInboundMessage(
     originatingTo: recipientAddr,
   };
   const routeContext = {
-    ConversationId: conversationId,
+    // A move's conversation is its game; the chat stays its native channel, so a
+    // tool defaulting to "the game in this chat" finds it.
+    ConversationId: game ? routePeer.id : conversationId,
     NativeChannelId: conversationId,
     SenderId: msg.senderId,
     // Override the default ``"direct"`` ChatType for non-DM inbound so
@@ -744,12 +811,17 @@ export async function dispatchInboundMessage(
       warnStop(err);
     }
   };
-  registerOpenDraft(ctx.accountId, conversationId, draftRef);
+  // Not for a move: it has no draft, and `turn.stop` / an outbound send in the chat
+  // must keep reaching the chat's own turn.
+  if (!game) registerOpenDraft(ctx.accountId, conversationId, draftRef);
 
   // Set right before the runtime dispatch; read in ``finally`` so the
   // ``agent_turn`` span fires on success and error alike. 0 until set.
   let dispatchSpanStart = 0;
   let failed = false;
+  // Held until the move settles: the game's session is never deleted under it.
+  const releaseGameSession =
+    game && dispatchGuardTarget ? holdGameSession(dispatchGuardTarget.sessionKey) : undefined;
   try {
     consoleErrorWithFile(
       `[clawbits/${ctx.accountId}] dispatchInboundDirectDmWithRuntime start post=${msg.postId}`,
@@ -791,7 +863,7 @@ export async function dispatchInboundMessage(
         bodyForAgent: buildAgentBody(effectiveText, {
           files: msg.files,
           savedByFileId,
-          sessionId: clawbitsSessionId(conversationId),
+          sessionId: game ? undefined : clawbitsSessionId(conversationId),
           // The only way the agent learns the id of the message it is answering,
           // and so the only way it can react to it (clawbits_react takes one).
           postId: realPostId,
@@ -842,7 +914,7 @@ export async function dispatchInboundMessage(
             `[clawbits/${ctx.accountId}] reply dispatch error for ${msg.postId}: ${reason}${detail} (${JSON.stringify(info)})`,
           );
           setStatus?.({ accountId: ctx.accountId, lastError: reason });
-          if (!client || !answers) return;
+          if (!client || !answers || game) return;
           void withChallenge(client, answers, (ans) =>
             mmTools.postToChannel(
               client,
@@ -881,6 +953,7 @@ export async function dispatchInboundMessage(
     );
     failed = true;
   } finally {
+    releaseGameSession?.();
     unregisterOpenDraft(ctx.accountId, conversationId, draftRef);
     // Stop the live-activity lanes FIRST: the patcher must not race the
     // draft cancel below, and the reporter must not land a late
@@ -944,7 +1017,152 @@ export async function dispatchInboundMessage(
         );
       }
     }
-    await clearGenerating();
+    // A move never flipped the status, so it doesn't flip it back either.
+    if (!game) await clearGenerating();
+  }
+}
+
+/** Where a game would run: OpenClaw's route for a game peer, bindings and `groupScope` applied, as
+ *  a move's dispatch resolves it. None when the host routes nothing, where no move could run. */
+export function gameRoute(
+  ctx: Pick<ChannelGatewayContext<ResolvedClawBitsAccount>, "cfg" | "accountId" | "channelRuntime">,
+): GameRoute | undefined {
+  const target = resolveInboundDispatchGuardTarget({
+    cfg: ctx.cfg,
+    runtime: ctx.channelRuntime,
+    channel: CHANNEL_ID,
+    accountId: ctx.accountId,
+    peer: { kind: "channel", id: gamePeerId(GAME_ROUTE_PROBE) },
+  });
+  if (!target) return undefined;
+  return { sessionKey: target.sessionKey, ...(target.agentId ? { agentId: target.agentId } : {}) };
+}
+
+type GameSessionContext = Pick<
+  ChannelGatewayContext<ResolvedClawBitsAccount>,
+  "cfg" | "accountId" | "channelRuntime" | "log"
+>;
+
+/** The generation a game's move runs in (widgets/session.ts, Rotation): `target` is its
+ *  generation-0 route. */
+async function gameGeneration(
+  ctx: GameSessionContext,
+  target: { sessionKey: string; agentId?: string },
+  widgetId: string,
+  briefChars: number,
+  choice: ModelChoice | undefined,
+): Promise<number> {
+  const next = await gameGenerationForMove({
+    sessionKey: target.sessionKey,
+    ...(target.agentId ? { agentId: target.agentId } : {}),
+    widgetId,
+    briefChars,
+    ...(choice ? { choice } : {}),
+    cfg: ctx.cfg,
+    log: ctx.log,
+  });
+  if (next.rotated) {
+    logInfo(
+      ctx.log,
+      `[clawbits/${ctx.accountId}] game ${widgetId} moves to a fresh session, generation ${String(next.gen)} (${next.rotated}); the last one was ${next.deleted ?? "kept"}`,
+    );
+  }
+  return next.gen;
+}
+
+/** The agent a game's sessions belong to: its route's. */
+function gameAgentId(ctx: GameSessionContext, widgetId: string): string | undefined {
+  const target = resolveInboundDispatchGuardTarget({
+    cfg: ctx.cfg,
+    runtime: ctx.channelRuntime,
+    channel: CHANNEL_ID,
+    accountId: ctx.accountId,
+    peer: { kind: "channel", id: gamePeerId(widgetId) },
+  });
+  return target ? (target.agentId ?? sessionAgentId(target.sessionKey)) : undefined;
+}
+
+/** A game ended: delete its own sessions, every generation, transcripts included
+ *  (widgets/session.ts). "busy" while a run on one still goes: the caller tries again. */
+export async function endGameSession(ctx: GameSessionContext, widgetId: string): Promise<GameSessionDeletion> {
+  const agentId = gameAgentId(ctx, widgetId);
+  if (!agentId) return "none";
+  const outcome = await deleteGameSessions({ agentId, widgetId, cfg: ctx.cfg, log: ctx.log });
+  if (outcome !== "none") {
+    logInfo(
+      ctx.log,
+      `[clawbits/${ctx.accountId}] game ${widgetId} ended; its sessions ${outcome === "busy" ? "wait for a run to end" : `were ${outcome}`}`,
+    );
+  }
+  return outcome;
+}
+
+/** Games a sweep reads at most: those not in the agent's active list cost one read each. */
+const GAME_SWEEP_READS = 20;
+
+/**
+ * The sessions of games that ended while the agent was away (it hears only of active games when
+ * it comes back), and generations a rotation couldn't delete: deleted as a finished game's are.
+ * A game is over when the server says so or no longer lets the agent reach it (404); a game the
+ * server can't answer for now is left for the next sweep. Game session keys carry no account, so
+ * where another Clawbits account routes its games to the same agent a 404 may be that account's
+ * game: then only a game this account sat in (`seated`) counts as over on one. Reads run outside
+ * the inbound queue, deletions on it (`serial`), after any move.
+ */
+export async function sweepGameSessions(
+  ctx: GameSessionContext,
+  client: ClawBitsClient,
+  serial: (run: () => Promise<void>) => Promise<void> = (run) => run(),
+  signal?: AbortSignal,
+  seated: (widgetId: string) => boolean = () => false,
+): Promise<void> {
+  const agentId = gameAgentId(ctx, GAME_ROUTE_PROBE);
+  const games = agentId ? await listGameSessionGenerations(agentId, ctx.cfg) : undefined;
+  if (!agentId || !games?.size) return;
+  const shared = listClawBitsAccountIds(ctx.cfg).some(
+    (accountId) => accountId !== ctx.accountId && gameAgentId({ ...ctx, accountId }, GAME_ROUTE_PROBE) === agentId,
+  );
+  let active: Set<string>;
+  try {
+    const listed = await listWidgets(client, {}, { signal });
+    active = new Set(listed.widgets.map((widget) => widget.widget_id.toLowerCase()));
+  } catch (err) {
+    // A server without the agent widget routes answers 404 for every game: it can't tell ended.
+    pluginDebug(`game session sweep skipped: ${String((err as Error)?.message ?? err)}`);
+    return;
+  }
+  let reads = 0;
+  for (const [widgetId, gens] of games) {
+    if (signal?.aborted) return;
+    let live = active.has(widgetId.toLowerCase());
+    if (!live) {
+      if (reads >= GAME_SWEEP_READS) continue;
+      reads += 1;
+      try {
+        live = (await getWidget(client, widgetId, {}, { signal })).status === "active";
+      } catch (err) {
+        if (!(err instanceof ClawBitsError && err.statusCode === 404)) continue;
+        if (shared && !seated(widgetId)) continue;
+      }
+    }
+    const newest = Math.max(...gens);
+    const stale = live ? gens.filter((gen) => gen < newest) : undefined;
+    if (stale && !stale.length) continue;
+    await serial(async () => {
+      const outcome = await deleteGameSessions({
+        agentId,
+        widgetId,
+        // One a key prefix can't single out takes the rest with it: else it would wait (and
+        // hold the hand) until the game ends.
+        ...(stale ? { gens: stale, orWhole: true } : {}),
+        cfg: ctx.cfg,
+        log: ctx.log,
+      });
+      const message = `[clawbits/${ctx.accountId}] game ${widgetId} ${live ? "had sessions of earlier generations" : "ended while the agent was away"}; they were ${outcome}`;
+      // A deletion the store refused is logged once by deleteGameSessions; retries stay quiet.
+      if (outcome === "deleted") logInfo(ctx.log, message);
+      else pluginDebug(message);
+    });
   }
 }
 
@@ -1035,6 +1253,8 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
       abortSignal: ctx.abortSignal,
       accountId: ctx.accountId,
       log: ctx.log,
+      capabilities: () => agentCapabilities(ctx.cfg, account, gameRoute(ctx)),
+      onCapabilitiesChanged: onCompanionToolsChanged,
     });
 
 
@@ -1067,6 +1287,8 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
           );
         }
       },
+      onWidgetEnded: ({ widgetId }) => endGameSession(ctx, widgetId),
+      onGameSessionSweep: (serial, seated) => sweepGameSessions(ctx, client, serial, ctx.abortSignal, seated),
       onInboundMessage: (msg) =>
         runOutsideGatewayRootWork(() =>
           dispatchInboundMessage(ctx, msg, {

@@ -10,6 +10,7 @@ import {
   boardsBySeat,
   canPlay,
   cardLabel,
+  chatScoreOf,
   drawsChessPieces,
   endOf,
   displayOf,
@@ -22,6 +23,9 @@ import {
   notesOf,
   parseCard,
   resultOf,
+  scoreLabel,
+  scoreLine,
+  scoreOf,
   seatOf,
   snapAmount,
   spriteLabel,
@@ -31,9 +35,11 @@ import {
   widgetKey,
   widgetLine,
   widgetOpenKey,
+  widgetScoreKey,
   widgetTitle,
   type Widget,
   type WidgetBoardLayout,
+  type WidgetChatScore,
 } from "./widgets";
 
 const widget = (rev: number, status: Widget["status"] = "active", hidden = false): Widget => ({
@@ -84,6 +90,18 @@ describe("widget caches", () => {
     applyWidgetEvent(client, { ...widget(4, "active", true), scene: { v: 1, title: "public" } });
     expect(client.getQueryData<Widget>(widgetKey("w1"))?.rev).toBe(3);
     expect(client.getQueryState(widgetKey("w1"))?.isInvalidated).toBe(true);
+  });
+
+  test("a game that finishes refetches its chat's score; a move or an end early doesn't", () => {
+    const client = new QueryClient();
+    const stale = () => client.getQueryState(widgetScoreKey("c1"))?.isInvalidated;
+    const none: WidgetChatScore = { channel_id: "c1", players: [], draws: 0, finished: 0 };
+    client.setQueryData(widgetScoreKey("c1"), none);
+    applyWidgetEvent(client, widget(2));
+    applyWidgetEvent(client, { ...widget(3, "aborted"), widget_id: "w2" });
+    expect(stale()).toBe(false);
+    applyWidgetEvent(client, widget(4, "finished", true));
+    expect(stale()).toBe(true);
   });
 });
 
@@ -292,5 +310,57 @@ describe("answers that arrive late", () => {
     const other = { ...widget(5), widget_id: "w2" };
     expect(freshActiveWidgets(client, [other])).toEqual([other]);
     expect(client.getQueryData<Widget>(widgetKey("w2"))?.rev).toBe(5);
+  });
+});
+
+describe("the chat's score", () => {
+  const seats = (white?: number, black?: number) => [
+    { seat: "white", human_id: 1, agent_id: null, display_name: "Alice", wins: white },
+    { seat: "black", human_id: 2, agent_id: null, display_name: "Bob", wins: black },
+  ];
+  const scoring = { ...widget(1), seats: seats(3, 2), draws: 1 };
+
+  test("is the viewer's wins against the other seat's, from either seat", () => {
+    expect(scoreOf(scoring, 1)).toEqual({ mine: 3, theirs: 2, draws: 1, them: "Bob" });
+    expect(scoreOf(scoring, 2)).toEqual({ mine: 2, theirs: 3, draws: 1, them: "Alice" });
+  });
+
+  test("is hidden for a spectator, a game short of two seats, or before any game here finished", () => {
+    expect(scoreOf(scoring, 9)).toBeNull();
+    expect(scoreOf({ ...scoring, seats: seats(3, 2).slice(0, 1) }, 1)).toBeNull();
+    expect(scoreOf({ ...scoring, seats: seats(0, 0), draws: 0 }, 1)).toBeNull();
+    // An older server sends no score at all.
+    expect(scoreOf(widget(1), 1)).toBeNull();
+    // Draws alone are a score.
+    expect(scoreOf({ ...scoring, seats: seats(), draws: 2 }, 1)).toEqual({ mine: 0, theirs: 0, draws: 2, them: "Bob" });
+  });
+
+  test("between games, comes from the score route the same way", () => {
+    const player = (human_id: number, display_name: string, wins: number) => ({
+      human_id,
+      agent_id: null,
+      display_name,
+      is_agent: false,
+      wins,
+    });
+    const score: WidgetChatScore = {
+      channel_id: "c1",
+      players: [player(2, "Bob", 4), player(1, "Alice", 1)],
+      draws: 0,
+      finished: 5,
+    };
+    expect(chatScoreOf(score, 1)).toEqual({ mine: 1, theirs: 4, draws: 0, them: "Bob" });
+    expect(chatScoreOf(score, 2)).toEqual({ mine: 4, theirs: 1, draws: 0, them: "Alice" });
+    expect(chatScoreOf(score, 9)).toBeNull();
+    expect(chatScoreOf(undefined, 1)).toBeNull();
+    expect(chatScoreOf({ ...score, players: [player(1, "Alice", 0)], finished: 1 }, 1)).toBeNull();
+    expect(chatScoreOf({ ...score, players: [player(2, "Bob", 0), player(1, "Alice", 0)] }, 1)).toBeNull();
+  });
+
+  test("reads in words for the menu and a screen reader", () => {
+    expect(scoreLine({ mine: 3, theirs: 2, draws: 1, them: "Bob" })).toBe("You 3 – 2 Bob · 1 draw");
+    expect(scoreLine({ mine: 0, theirs: 1, draws: 0, them: null })).toBe("You 0 – 1 your opponent");
+    expect(scoreLabel({ mine: 3, theirs: 2, draws: 2, them: "Bob" })).toBe("score you 3, Bob 2, 2 draws");
+    expect(scoreLabel({ mine: 3, theirs: 2, draws: 0, them: "Bob" })).toBe("score you 3, Bob 2");
   });
 });

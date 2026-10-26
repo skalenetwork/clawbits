@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useActiveWidgets, useWidget } from "@/lib/data";
 import { useSession } from "@/lib/session";
-import { seatOf, waitsOn, widgetLine, widgetTitle, type Widget } from "@/lib/widgets";
+import { scoreLabel, scoreOf, seatOf, waitsOn, widgetLine, widgetTitle, type Widget } from "@/lib/widgets";
 import {
   dismissGame,
   seeGameStatus,
@@ -19,9 +19,10 @@ import { useWidgetPalette } from "./palette";
 import { WidgetPanel } from "./widget-panel";
 
 /** The chat's game, pinned under its header: moves post nothing, so its message scrolls away, and this slim bar keeps
- *  it in reach: its glyph, how it stands, and a dot when it's the viewer's move. A tap opens the board in place and
- *  another folds it; each game stays as its player left it on this phone, and never opens by itself. Once over, the
- *  result shows until put away, or until a new game takes the bar; one seen ending while open folds after a moment. */
+ *  it in reach: its glyph, how it stands, a dot when it's the viewer's move, and the chat's score once a game here
+ *  has finished. A tap opens the board in place and another folds it; each game stays as its player left it on this
+ *  phone, and never opens by itself. Once over, the result shows until put away, or until a new game takes the bar;
+ *  one seen ending while open folds after a moment. */
 export function GameBar({
   channelId,
   enabled,
@@ -108,6 +109,7 @@ function Bar({
   const yourMove = waitsOn(widget, seat);
   const line = widgetLine(widget, seat);
   const opponent = widget.seats.find((item) => item.seat !== seat)?.display_name;
+  const score = scoreOf(widget, userId);
   const toggle = () => {
     setGameOpen(widgetId, !kept.open);
     if (kept.open) unshowGame(channelId);
@@ -117,7 +119,9 @@ function Bar({
       <Strip onHeight={onHeight}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={[widgetTitle(widget), opponent && `with ${opponent}`, line].filter(Boolean).join(", ")}
+          accessibilityLabel={[widgetTitle(widget), opponent && `with ${opponent}`, line, score && scoreLabel(score)]
+            .filter(Boolean)
+            .join(", ")}
           accessibilityState={{ expanded: kept.open }}
           accessibilityHint={kept.open ? "Folds the game away" : "Opens the game"}
           onPress={toggle}
@@ -129,6 +133,11 @@ function Bar({
           </Text>
           {/* The turn, said by the line too, not only by this dot. */}
           {yourMove ? <View style={[s.dot, { backgroundColor: palette.primary }]} /> : null}
+          {score ? (
+            <Text style={[s.score, { color: palette.onSurfaceVariant, backgroundColor: palette.surfaceHigh }]}>
+              {`${score.mine}–${score.theirs}`}
+            </Text>
+          ) : null}
           <View style={s.spacer} />
           <SymbolView
             name={kept.open ? "chevron.up" : "chevron.down"}
@@ -200,6 +209,16 @@ const s = StyleSheet.create({
   line: { flexShrink: 1, fontSize: 15, lineHeight: 20, fontWeight: "500" },
   strong: { fontWeight: "600" },
   dot: { width: 8, height: 8, borderRadius: 4 },
+  score: {
+    overflow: "hidden",
+    borderRadius: 9,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "500",
+    fontVariant: ["tabular-nums"],
+  },
   spacer: { flex: 1 },
   dismiss: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   // As tall as the board, up to the room there is.

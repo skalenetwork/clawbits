@@ -17,6 +17,7 @@ import { useEffect, useEffectEvent, useState, type ReactNode } from "react";
 import { Alert, AppState } from "react-native";
 import { api, apiUrl, ApiError, channelPath } from "./api";
 import { endChannelTurns, memberStatus, presenceSnapshot, replyPublished } from "./liveTurn";
+import { askAfresh } from "./push-target";
 import {
   historyPosts,
   mergePost,
@@ -35,6 +36,7 @@ import {
   freshActiveWidgets,
   freshWidget,
   widgetKey,
+  widgetScoreKey,
   type Widget,
   type WidgetAction,
 } from "./widgets";
@@ -229,6 +231,7 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
         // The bus keeps no history: a widget may have moved while the stream was down.
         void client.invalidateQueries({ queryKey: activeWidgetsKey(channel) });
         void client.invalidateQueries({ queryKey: ["widget"] });
+        void client.invalidateQueries({ queryKey: widgetScoreKey(channel) });
       }
     };
     const streamed = (post: Post) =>
@@ -416,6 +419,27 @@ export function useActiveWidgets(channel: string, enabled: boolean) {
       const { widgets } = await api.activeWidgets(session!.token, channel, signal);
       return freshActiveWidgets(client, widgets);
     },
+  });
+}
+
+/** The chat's running game, asked afresh for a tapped push, which can come long after the cache last heard of the
+ *  chat; what the cache holds if the ask fails. The answer fills the bar's own query. */
+export async function activeGameOf(client: QueryClient, token: string, channel: string): Promise<string | null> {
+  const widgets: Widget[] | undefined = await askAfresh(client, activeWidgetsKey(channel), async ({ signal }) => {
+    const { widgets } = await api.activeWidgets(token, channel, signal);
+    return freshActiveWidgets(client, widgets);
+  });
+  return widgets?.[0]?.widget_id ?? null;
+}
+
+/** The chat's score over its finished games, for the game menu between games; a game finishing refetches it. */
+export function useWidgetScore(channel: string, enabled: boolean) {
+  const { session } = useSession();
+  return useQuery({
+    queryKey: widgetScoreKey(channel),
+    enabled,
+    staleTime: 60_000,
+    queryFn: ({ signal }) => api.widgetScore(session!.token, channel, signal),
   });
 }
 

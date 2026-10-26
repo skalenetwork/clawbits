@@ -27,7 +27,14 @@ import {
 import { AttachmentChip } from "@/components/AttachmentChip";
 import { MENTION_TOKEN_RE, MentionsContext, type MessageMentions } from "@/components/mentionsContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { extractAdminCommandQuery, getAdminCommandOptions } from "@/lib/adminCommands";
 import { extractClipboardFiles } from "@/lib/clipboardFiles";
 import { extractShortcodeQuery } from "@/lib/emoji";
@@ -113,6 +120,8 @@ interface MessageComposerProps {
   placeholder?: string;
   /** Starts a game; absent where widgets can't start. */
   onStartWidget?: (kind: WidgetKindName) => void;
+  /** The chat's score over its finished games, atop the games menu; none before a game here has finished. */
+  gameScore?: string | null;
 }
 
 function ComposerHighlightedText({ text, mentions }: { text: string; mentions: MessageMentions | null }) {
@@ -254,6 +263,7 @@ export function MessageComposer({
   onTyping,
   placeholder,
   onStartWidget,
+  gameScore,
 }: MessageComposerProps) {
   const mentions = use(MentionsContext);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -613,18 +623,21 @@ export function MessageComposer({
                 <Gamepad2 className="size-4"/>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="top" align="start" className="w-48">
-                <DropdownMenuItem onClick={() => { onStartWidget("chess"); }}>
-                  <ChessPawn/> Chess
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { onStartWidget("battleship"); }}>
-                  <Ship/> Battleship
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { onStartWidget("poker"); }}>
-                  <Spade/> Poker
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { onStartWidget("blackjack"); }}>
-                  <Club/> Blackjack
-                </DropdownMenuItem>
+                <DropdownMenuGroup>
+                  {gameScore && <DropdownMenuLabel>{gameScore}</DropdownMenuLabel>}
+                  <DropdownMenuItem onClick={() => { onStartWidget("chess"); }}>
+                    <ChessPawn/> Chess
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { onStartWidget("battleship"); }}>
+                    <Ship/> Battleship
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { onStartWidget("poker"); }}>
+                    <Spade/> Poker
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { onStartWidget("blackjack"); }}>
+                    <Club/> Blackjack
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
           )}

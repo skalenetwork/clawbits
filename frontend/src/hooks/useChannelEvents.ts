@@ -309,6 +309,8 @@ export function useChannelEvents(channelId: string) {
             queryKey: queryKeys.mm.widgetsAll,
             predicate: (query) => (query.state.data as Widget | undefined)?.channel_id === channelId,
           });
+          // So does its score, which a game finished meanwhile has moved.
+          void qc.invalidateQueries({ queryKey: queryKeys.mm.widgetScore(channelId) });
           reconnected = true;
         });
       } else if (evt.type === "user.status") {

@@ -79,8 +79,11 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             notifications::set_activation_handler(move |activation| match activation {
-                Activation::Open(channel_id) if channel_id.is_empty() => focus_main(&handle),
-                Activation::Open(channel_id) => navigate(&handle, &format!("/channels/{channel_id}")),
+                Activation::Open { channel_id, .. } if channel_id.is_empty() => focus_main(&handle),
+                Activation::Open { channel_id, widget_id } => {
+                    let game = widget_id.map(|id| format!("?widget={id}")).unwrap_or_default();
+                    navigate(&handle, &format!("/channels/{channel_id}{game}"));
+                }
                 Activation::Reply(reply) => {
                     let _ = handle.emit("desktop://reply", reply);
                 }

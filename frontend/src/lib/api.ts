@@ -476,6 +476,8 @@ export interface WidgetSeat {
   human_id: number | null;
   agent_id: string | null;
   display_name: string | null;
+  /** This player's wins over the chat's finished games, every kind together; an older server sends none. */
+  wins?: number;
 }
 
 export interface WidgetSceneInput {
@@ -609,6 +611,27 @@ export interface Widget {
   created_by_human_id: number | null;
   created_at: string;
   updated_at: string;
+  /** The chat's finished games that ended in a draw, beside each seat's `wins`; an older server sends none. */
+  draws?: number;
+}
+
+/** A player in a chat's score: a person (`human_id`) or an agent (`agent_id`). */
+export interface WidgetScorePlayer {
+  human_id: number | null;
+  agent_id: string | null;
+  display_name: string | null;
+  is_agent?: boolean;
+  wins: number;
+}
+
+/** A chat's score over its finished games, every kind together; ended games never count. */
+export interface WidgetScore {
+  channel_id: string;
+  /** Everyone seated in one of those games, most wins first. */
+  players: WidgetScorePlayer[];
+  draws: number;
+  /** Finished games, draws included. */
+  finished: number;
 }
 
 export interface WidgetAction {
@@ -626,6 +649,10 @@ export async function getWidget(widgetId: string) {
 
 export async function listActiveWidgets(channelId: string) {
   return (await request<{ widgets: Widget[] }>(channelUrl(channelId, "/widgets"), { detail: true })).widgets;
+}
+
+export async function getWidgetScore(channelId: string) {
+  return request<WidgetScore>(channelUrl(channelId, "/widgets/score"), { detail: true });
 }
 
 export type WidgetKindName = "chess" | "battleship" | "poker" | "blackjack";

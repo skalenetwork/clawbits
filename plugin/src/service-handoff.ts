@@ -15,6 +15,10 @@ export interface ClawBitsServiceHandoff {
   modelSelection?: true;
   /** Absent on older channels, where the companion's own polls are the only path. */
   onCompanionWake?: (waker: CompanionWaker) => () => void;
+  /** The agent tools the companion registered, restated whole on each call. Absent on older
+   *  channels. The channel claims a capability that rests on a tool (`widgets` on
+   *  `clawbits_widget_act`) only once the companion said it registered it. */
+  reportCompanionTools?: (names: readonly string[]) => void;
 }
 
 interface RuntimeContextRegistry {
@@ -87,6 +91,29 @@ export function wakeCompanion(nudge: CompanionNudge, accountId: string): void {
   for (const waker of companionWakers) waker(nudge, accountId);
 }
 
+// Same arrangement in the other direction: the tools plugin reports what it registered.
+const companionTools = new Set<string>();
+const companionToolListeners = new Set<() => void>();
+
+function reportCompanionTools(names: readonly string[]): void {
+  const next = new Set(names.filter((name): name is string => typeof name === "string"));
+  if (next.size === companionTools.size && [...next].every((name) => companionTools.has(name))) return;
+  companionTools.clear();
+  for (const name of next) companionTools.add(name);
+  for (const listener of companionToolListeners) listener();
+}
+
+/** Whether the companion registered this agent tool in this gateway. */
+export function companionToolRegistered(name: string): boolean {
+  return companionTools.has(name);
+}
+
+/** Call `listener` whenever the companion's tool set changes; returns the unsubscribe. */
+export function onCompanionToolsChanged(listener: () => void): () => void {
+  companionToolListeners.add(listener);
+  return () => companionToolListeners.delete(listener);
+}
+
 export function registerSlimChannelHandoff(
   runtime: RuntimeWithContexts | undefined,
   channelVersion: string,
@@ -94,7 +121,13 @@ export function registerSlimChannelHandoff(
   return runtime?.channel?.runtimeContexts?.register({
     channelId: "clawbits",
     capability: CLAWBITS_SERVICE_HANDOFF_CAPABILITY,
-    context: { channelVersion, servicesMovedTo: "clawbits-tools", modelSelection: true, onCompanionWake },
+    context: {
+      channelVersion,
+      servicesMovedTo: "clawbits-tools",
+      modelSelection: true,
+      onCompanionWake,
+      reportCompanionTools,
+    },
   });
 }
 

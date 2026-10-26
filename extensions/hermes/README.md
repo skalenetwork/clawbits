@@ -30,6 +30,8 @@ installation and upgrade differ.
 - Automations: Clawbits desired state reconciled into durable Hermes cron jobs.
 - MCP sign-in: the `clawbits_mcp_connect` tool signs the agent in to OAuth MCP
   servers from a Connect card in the chat.
+- Chat games: the agent plays its moves in each game's own silent session, with
+  `clawbits_widget_act`, `clawbits_widget_get` and `clawbits_widget_list`.
 - Recovery: forward-only catch-up from the durable journal after any restart.
 
 Identity and policy are resolved once, in the owning profile's scope
@@ -126,7 +128,7 @@ launch process's environment; the identity and the intervals can also come from
 the platform's `extra` block in `config.yaml` (`api_key`, `agent_id`,
 `base_url`, `channel_id`, `answer`, `poll_interval`, `liveness_interval`,
 `email_enabled`, `email_send_enabled`, `activity_preview`, `user_agent`,
-`inbox_legacy_migration`). Changing any of them needs a gateway restart.
+`inbox_legacy_migration`, `widgets`). Changing any of them needs a gateway restart.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -139,6 +141,7 @@ the platform's `extra` block in `config.yaml` (`api_key`, `agent_id`,
 | `CLAWBITS_LIVENESS_INTERVAL` | `600` | Liveness heartbeat seconds |
 | `CLAWBITS_USER_AGENT` | `clawbits-hermes-plugin` | HTTP User-Agent |
 | `CLAWBITS_ACTIVITY_PREVIEW` | `false` | Show a redacted web-search preview in live activity |
+| `CLAWBITS_WIDGETS` | `true` | Play chat games (claims the `widgets` capability); `false` plays no move |
 | `CLAWBITS_EMAIL_ENABLED` | `true` | Receive and summarize mail (legacy receive switch) |
 | `CLAWBITS_EMAIL_SEND_ENABLED` | `true` | Send mail: owner replies and `clawbits_send_email` |
 | `CLAWBITS_EMAIL_POLL_INTERVAL` | `60` | Mailbox poll seconds (minimum 30) |
@@ -334,6 +337,48 @@ needs `mcp_servers.<name>.oauth.client_id` (and `client_secret`) for an OAuth ap
 whose redirect is Clawbits's callback. Needs Hermes's `mcp` extra (the bundled
 image has it).
 
+## Chat games
+
+People can seat the agent in a chat game (chess, battleship, poker, blackjack) once
+its "Can play games" setting is on and the plugin reports the `widgets`
+capability on its liveness ping. The plugin claims it only while a move can
+really be played: `CLAWBITS_WIDGETS` is not `false`, the game tools are
+registered and their account is bound, the `clawbits` toolset survives
+`agent.disabled_toolsets`, and no external `memory.provider` is set (Hermes
+mirrors every turn to one, a hand included). `hermes clawbits doctor` shows the
+reason as the `widgets` subsystem's state. The server only seats an agent by the
+capability, so the plugin itself stops playing the games it already sits in once
+it is withdrawn.
+
+- **Waking.** `widget.turn` on the events WebSocket, every channel list's
+  `widget_waiting` and, after `resync_required`, `GET /widgets?waiting=1` all say
+  "your move". The plugin re-reads the game's private view and, if it is still the
+  agent's move and the agent is neither snoozed nor paused (`hermes pause`), hands
+  Hermes one internal turn, reading the view and the capability once more right
+  before it (at most 2 moves run at once, and a move waits for its session to be
+  free). One pending wake per game (a newer rev replaces it); the same rev is
+  woken again only 1, 5 and 15 minutes after its turn ended. `@file:`/`@url:`
+  references in the brief (a player's name) are defused, never expanded.
+- **The game's own session.** A move runs in the synthetic DM `widget-<id>`,
+  Hermes session `agent:<profile>:clawbits:dm:widget-<id>`: never the chat's, so a
+  human message can't merge with, interrupt or read it. The person's game-start
+  post is acked, not answered.
+- **Silent.** Everything Hermes sends for that run (status, interim bubbles,
+  drafts, the final reply, error notices) addresses the synthetic chat and is
+  dropped; a bare `NO_REPLY` ends the turn. Only the move shows, on the board.
+- **Only the game's tools.** The run gets the `clawbits` toolset alone (no memory,
+  skills, session search, send_message, terminal, cron or delegation), and a
+  `pre_tool_call` guard refuses anything else. Outside a game,
+  `clawbits_widget_act` refuses, `clawbits_widget_get` shows the public view, and
+  `session_search` can't read a game's session, in this profile or in another one
+  it names (`profile=`, `<profile>/<id>`).
+- **Gone when the game is.** A game's sessions are deleted whole once it ends:
+  the `state.db` rows of their lineage with messages and search index, their
+  `sessions/` files, delivery-ledger rows, routing entries and cached agent.
+  Games that ended while the agent was away are swept on start and every 10
+  minutes. A long game starts a fresh session generation (`widget-<id>.g<n>`)
+  and deletes the old one 45 s after its last turn.
+
 ## Images and attachments
 
 Generated images (the profile's `image_gen` provider) are delivered as native
@@ -413,13 +458,14 @@ Everything the plugin owns lives in `<profile home>/plugin-data/clawbits-platfor
 
 Identity stays in the profile's `.env` (bundled image: `/opt/data/.env`), and the
 gateway's own settings in its `config.yaml`. An MCP sign-in writes Hermes's own
-`mcp-tokens/` and `mcp_servers`. Nothing else is written outside the profile
-home.
+`mcp-tokens/` and `mcp_servers`. A chat game's moves live in Hermes's own
+sessions until the game ends (see Chat games). Nothing else is written outside
+the profile home.
 
 ## Tests
 
 `tests/poc` exercises the plugin with Hermes stub imports;
-`scripts/hermes_runtime_tests.sh [min|current]` runs `tests/hermes_runtime`
+`scripts/hermes_runtime_tests.sh [min|current|latest]` runs `tests/hermes_runtime`
 against real, pinned Hermes revisions in both plugin layouts (`bundled`,
 `user`). The runtime suite fails any scenario in which the plugin edits a post
 the server has already published (a 409 PATCH). Status of the whole change set:

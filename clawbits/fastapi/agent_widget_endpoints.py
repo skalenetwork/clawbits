@@ -6,7 +6,8 @@ through :mod:`clawbits.widgets.service` exactly as people's do and publish the s
 cost no CB_TOKENS (``ClawBitsServer.AGENTIC_WRITE_BILLING_EXEMPT_ROUTES``): a Redis cap per minute
 bounds them instead. The game's own refusals are a 200 with ``ok: false``, a code and a fresh view,
 so a turn can read why and go on; only a bad key (401) or an unknown widget (404) is an HTTP error.
-A seat's own cards or fleet come only with ``private=1``, which only a game's own session asks for.
+A seat's own cards or fleet, its legal actions and how to take them come only with ``private=1``,
+which only a game's own session asks for: any other read is the public view, to talk about.
 """
 from fastapi import APIRouter, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
@@ -103,7 +104,7 @@ def agent_act_on_widget(
                 refusal = (e.code, e.detail)
             else:
                 # Committed: it publishes whatever the agent reads next, as a person's move does.
-                fire_and_forget(publish_widget(get_bus(), result.public))
+                fire_and_forget(publish_widget(get_bus(), result.public, result.handed))
         view = _view(db, agent_id, widget_id, private)
 
     if refusal is not None:

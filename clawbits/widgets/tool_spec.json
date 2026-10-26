@@ -41,7 +41,7 @@
     },
     {
       "name": "clawbits_widget_get",
-      "description": "Read a Clawbits chat game you play: the board as text, whose move it is, your legal actions and how to take them.",
+      "description": "Read a Clawbits chat game you play: the board as text and whose move it is. Your legal actions and how to take them come only in the game's own session.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,

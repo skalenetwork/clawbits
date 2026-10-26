@@ -74,6 +74,8 @@ class ClawbitsAccount:
     send_email: bool = True
     activity_preview: bool = False
     user_agent: str | None = None
+    # Plays Clawbits chat games (the ``widgets`` capability); the agent's own setting still gates it.
+    widgets: bool = True
 
     @property
     def key(self) -> str:
@@ -106,6 +108,7 @@ def resolve_account(config: Any = None) -> ClawbitsAccount:
         send_email=_flag(pick("email_send_enabled", "CLAWBITS_EMAIL_SEND_ENABLED"), True),
         activity_preview=_flag(pick("activity_preview", "CLAWBITS_ACTIVITY_PREVIEW"), False),
         user_agent=str(pick("user_agent", "CLAWBITS_USER_AGENT") or "") or None,
+        widgets=_flag(pick("widgets", "CLAWBITS_WIDGETS"), True),
     )
 
 

@@ -15,7 +15,7 @@ import {
 import { useWidget, useWidgetAction } from "@/hooks/useWidget";
 import type { Widget } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { seatOf, statusOf, waitsOn } from "@/lib/widgets";
+import { scoreLabel, scoreOf, scoreTitle, seatOf, statusOf, waitsOn, type SeatScore } from "@/lib/widgets";
 import { setWidgetView, useWidgetView } from "@/lib/widgetView";
 import { KindGlyph } from "./KindGlyph";
 import { WidgetSkeleton } from "./WidgetCard";
@@ -101,13 +101,30 @@ function useGameView(
   };
 }
 
-/** The game in a few words for its strip and its bar, and their name for a screen reader, which says the turn too. */
+/** The game in a few words for its strip and its bar, and their name for a screen reader, which says the turn and
+ *  the chat's score too. */
 function summaryOf(widget: Widget, userId: number | null) {
   const seat = seatOf(widget, userId);
   const title = widget.scene.title ?? widget.kind;
   const status = statusOf(widget, seat);
   const myMove = waitsOn(widget, seat);
-  return { seat, title, status, myMove, label: [title, status, myMove && "your move"].filter(Boolean).join(", ") };
+  const score = scoreOf(widget, userId);
+  const label = [title, status, myMove && "your move", score && scoreLabel(score)].filter(Boolean).join(", ");
+  return { seat, title, status, myMove, score, label };
+}
+
+/** The chat's score beside the game, the viewer's wins first; the draws are in its tooltip and its words. */
+function ScoreChip({ score }: { score: SeatScore }) {
+  return (
+    <span
+      data-score=""
+      title={scoreTitle(score)}
+      className="shrink-0 rounded-full bg-foreground/6 px-1.5 py-0.5 text-[11px] leading-none font-normal tabular-nums text-muted-foreground"
+    >
+      <span aria-hidden>{`${String(score.mine)}–${String(score.theirs)}`}</span>
+      <span className="sr-only">{`, ${scoreLabel(score)}`}</span>
+    </span>
+  );
 }
 
 /** End game, for a player while it runs: it ends for both, with no winner, once confirmed. */
@@ -178,7 +195,7 @@ function Column({ widget, userId, picked, covered, onDismiss }: {
   const besidePanels = useMinWidth(BESIDE_PANELS_PX, false);
   const hidden = covered && !besidePanels;
   const game = useGameView(widget, { narrow: !roomy, paused: hidden, picked }, onDismiss);
-  const { seat, title, status, myMove, label } = summaryOf(widget, userId);
+  const { seat, title, status, myMove, score, label } = summaryOf(widget, userId);
   const active = widget.status === "active";
   const shown = hidden ? "none" : game.shown;
   // A click that swaps the open column for its strip, or back, hands focus to the control that takes its place.
@@ -210,6 +227,7 @@ function Column({ widget, userId, picked, covered, onDismiss }: {
               <h2 className="flex min-w-0 flex-1 items-center gap-2 text-[13px] font-medium">
                 <KindGlyph kind={widget.kind} aria-hidden className="size-4 shrink-0" />
                 <span className="truncate">{title}</span>
+                {score && <ScoreChip score={score} />}
               </h2>
               {active && seat && <EndGame widget={widget} className={PANEL_ICON_BUTTON} />}
               {!active && (
@@ -260,6 +278,7 @@ function Column({ widget, userId, picked, covered, onDismiss }: {
                 <span aria-hidden className="absolute top-[calc(50%-0.875rem)] -right-1.5 size-2.5 rounded-full bg-(--w-primary) ring-2 ring-sidebar" />
               )}
             </span>
+            {score && <ScoreChip score={score} />}
             <span className="min-h-0 truncate text-[13px] text-(--w-on-surface-variant) [writing-mode:vertical-rl]">{status}</span>
           </button>
           {!active && (
@@ -290,7 +309,7 @@ function Bar({ widget, userId, picked, onDismiss }: {
   onDismiss: () => void;
 }) {
   const game = useGameView(widget, { narrow: true, paused: false, picked }, onDismiss);
-  const { seat, status, myMove, label } = summaryOf(widget, userId);
+  const { seat, status, myMove, score, label } = summaryOf(widget, userId);
   const active = widget.status === "active";
   if (game.shown === "none") return null;
   const open = game.shown === "open";
@@ -315,6 +334,7 @@ function Bar({ widget, userId, picked, onDismiss }: {
             )}
           </span>
           <span className="min-w-0 flex-1 truncate text-left text-[0.875rem] font-medium">{status}</span>
+          {score && <ScoreChip score={score} />}
           {open ? (
             <ChevronUp aria-hidden className="size-4 shrink-0 text-(--w-on-surface-variant)" />
           ) : (

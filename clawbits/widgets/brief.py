@@ -6,7 +6,9 @@ person in that seat. Chess is the one addition: it keeps no secrets, so its move
 as FEN and the legal moves in SAN. Names people chose and the kind's log lines go in a delimited
 untrusted block, on one line each and cut short, so they read as data and never as instructions.
 How to act is written per runtime (as :mod:`clawbits.skills.render` writes skills), so an adapter
-relays it without knowing any game.
+relays it without knowing any game. Moves are made only in the game's own session, which alone reads
+a seat's own scene, options and how to take them; an ordinary chat turn gets the public view, to
+talk about and never to play from.
 """
 from __future__ import annotations
 
@@ -191,9 +193,13 @@ def _openclaw_call(arguments: dict[str, Any]) -> str:
 
 
 def _hermes_call(arguments: dict[str, Any]) -> str:
-    # Hermes keeps every plugin tool behind tool_search, so the model needs the exact bridge call.
+    # Hermes keeps plugin tools behind tool_search unless its operator turned that off, and the
+    # server can't tell which: name the tool, and the exact bridge call for when it isn't listed.
     call = _json({"calls": [{"name": ACT_TOOL, "arguments": arguments}]})
-    return f"run tool_call with your action, for example: tool_call {call}"
+    return (
+        f"call {ACT_TOOL} with your action, or if it isn't in your tool list run tool_call, "
+        f"for example: tool_call {call}"
+    )
 
 
 # How each runtime calls the act tool, keyed by ``agents.agent_type`` as skills are
@@ -210,27 +216,34 @@ def instructions(
     agent_type: str | None,
     widget_id: str,
     *,
+    session: bool,
     seated: bool,
     active: bool,
     your_move: bool,
     example: dict[str, Any] | None,
     amounts: bool = False,
 ) -> str:
-    """How this agent's runtime takes its move, and that a move turn posts nothing. ``amounts``
-    when ``legal`` has an ``args_spec`` entry to explain."""
+    """How this agent's runtime takes its move. Only the game's own ``session`` plays, and a turn
+    there posts nothing: it ends with NO_REPLY. Anywhere else (an ordinary chat turn) the game is
+    there to talk about from the public view, and nothing is played. ``amounts`` when ``legal`` has
+    an ``args_spec`` entry to explain."""
+    if not (session and seated):
+        talk = "You may talk about the game in chat, from what this view shows."
+        if not seated:
+            return f"You don't play in this game: take no action. {talk}"
+        if not active:
+            return f"This game is over: take no action. {talk}"
+        return (
+            "Your moves are played in this game's own session, where you're woken when it's your "
+            f"move, so take no action here. {talk}"
+        )
     quiet = "Never post chat text about the game: the board shows your moves. Finish your turn with NO_REPLY."
-    if not seated:
-        return f"You don't play in this game: take no action. {quiet}"
     if not active:
         return f"This game is over: take no action. {quiet}"
     if not your_move:
         return f"Not your move: take no action now; you'll be woken when it is. {quiet}"
     if example is None:
-        # The public view of a private kind: the move is played in the game's own session.
-        return (
-            "It's your move, but this view hides your seat's cards or fleet: you'll be woken in this "
-            f"game's own session to play it, so take no action here. {quiet}"
-        )
+        return f"Nothing is offered to your seat right now: take no action. {quiet}"
     call = _ACT_CALLS.get(agent_type or DEFAULT_RUNTIME, _ACT_CALLS[DEFAULT_RUNTIME])
     spec = (
         " An args_spec entry takes args.<arg> as a number from min to max in steps of step."
@@ -244,12 +257,28 @@ def instructions(
     )
 
 
-def _players(widget: dict[str, Any], seat: str | None) -> list[dict[str, str]]:
+def sender_key(human_id: int | None, agent_id: str | None) -> str | None:
+    """A participant as runtimes key a message's sender (``allowFrom``): ``human:<id>`` or
+    ``agent:<id>``."""
+    if human_id is not None:
+        return f"human:{human_id}"
+    return f"agent:{agent_id}" if agent_id else None
+
+
+def _name(s: dict[str, Any]) -> str:
+    """A seat's player's name, cleaned; never just "You", which marks the reader's own seat."""
+    name = clean(s.get("display_name") or s["seat"], NAME_MAX_CHARS)
+    return f"{name} ({s['seat']})" if name.casefold() == "you" else name
+
+
+def _players(widget: dict[str, Any], seat: str | None) -> list[dict[str, str | None]]:
+    """Each seat's player: the reader's own as "You", another by name and sender key."""
     return [
         {
             "seat": s["seat"],
-            "name": "You" if s["seat"] == seat else clean(s.get("display_name") or s["seat"], NAME_MAX_CHARS),
+            "name": "You" if s["seat"] == seat else _name(s),
             "type": "agent" if s.get("is_agent") else "human",
+            "id": None if s["seat"] == seat else sender_key(s.get("human_id"), s.get("agent_id")),
         }
         for s in widget["seats"]
     ]
@@ -263,16 +292,17 @@ def agent_view(
     own_scene: bool,
     position: tuple[str, list[str]] | None = None,
 ) -> dict[str, Any]:
-    """The view of ``widget`` (a response dict) that ``agent_id`` reads: ``own_scene`` when its scene
-    is the agent's own seat's, else it's the public one. ``position`` is chess's (FEN, legal moves in
-    SAN), for kinds that keep no secrets only."""
+    """The view of ``widget`` (a response dict) that ``agent_id`` reads: ``own_scene`` when the game's
+    own session reads it, its scene the agent's own seat's, with the seat's options and how to take
+    them; else it's the public scene an ordinary chat turn reads, to talk about and not to play
+    from. ``position`` is chess's (FEN, legal moves in SAN), for kinds that keep no secrets only."""
     seat = next((s["seat"] for s in widget["seats"] if s.get("agent_id") == agent_id), None)
     scene = widget["scene"]
     active = widget["status"] == "active"
     your_move = active and seat is not None and seat in widget["waiting_on"]
-    # A private kind's public scene shows no seat's options, and a seat acts only on its own.
-    sees_options = own_scene or not widget.get("private")
-    sans = position[1] if position and your_move else None
+    # Moves are made in the game's own session alone; a private kind's public scene hides them too.
+    sees_options = own_scene
+    sans = position[1] if position and your_move and sees_options else None
     legal: list[dict[str, Any]] = []
     given_count = 0
     if your_move and sees_options:
@@ -296,12 +326,16 @@ def agent_view(
         "seat": seat,
         "waiting_on": list(widget["waiting_on"]),
         "your_move": your_move,
+        # Set in agent-vs-agent games (a later phase): when the server plays this seat's move for it.
+        "move_deadline": widget.get("move_deadline"),
         "players": players,
+        "started_by": sender_key(widget.get("created_by_human_id"), None),
         "text": text,
         "legal": legal,
         "instructions": instructions(
             agent_type,
             widget["widget_id"],
+            session=own_scene,
             seated=seat is not None,
             active=active,
             your_move=your_move,
@@ -331,7 +365,8 @@ def _text(
     else:
         lines.append(f"You play {seat}." + ((" Your move." if your_move else " Not your move.") if active else ""))
         if active and not sees_options:
-            lines.append("This is the public view: it hides your seat's cards or fleet and its moves.")
+            hides = "it hides your seat's cards or fleet, and " if widget.get("private") else ""
+            lines.append(f"This is the public view: {hides}your moves are played in the game's own session.")
     if status := (scene.get("status") or {}).get("text"):
         lines.append(f"Status: {status}")
     if active and widget["waiting_on"]:
@@ -378,8 +413,9 @@ def summary(widget: dict[str, Any], agent_id: str) -> dict[str, Any]:
         "waiting_on": list(widget["waiting_on"]),
         "your_move": active and seat is not None and seat in widget["waiting_on"],
         "opponent": {
-            "name": clean(other.get("display_name") or other["seat"], NAME_MAX_CHARS),
+            "name": _name(other),
             "type": "agent" if other.get("is_agent") else "human",
+            "id": sender_key(other.get("human_id"), other.get("agent_id")),
         }
         if other
         else None,
@@ -387,14 +423,19 @@ def summary(widget: dict[str, Any], agent_id: str) -> dict[str, Any]:
 
 
 def compact(view: dict[str, Any]) -> str:
-    """One line on an accepted action: ``ok · rev 16 · waiting on Alice``, or how the game ended."""
+    """One line on an accepted action: ``ok · rev 16 · waiting on white``, or how the game ended.
+    Seats, never names: this line reads as the tool's own words, and a name is whatever a player
+    chose, so names stay in the view's untrusted block."""
     head = f"ok · rev {view['rev']}"
-    names = {p["seat"]: "you" if p["seat"] == view["seat"] else p["name"] for p in view["players"]}
+
+    def who(seat: str) -> str:
+        return "you" if seat == view["seat"] else seat
+
     if view["status"] != "active":
         outcome = view.get("outcome") or {}
         if "winner" not in outcome:
             return f"{head} · game over ({view['status']})"
         winner = outcome["winner"]
-        return f"{head} · game over: " + (f"{names.get(winner, winner)} won" if winner else "a draw")
-    waiting = [names.get(seat, seat) for seat in view["waiting_on"]]
+        return f"{head} · game over: " + (f"{who(winner)} won" if winner else "a draw")
+    waiting = [who(seat) for seat in view["waiting_on"]]
     return f"{head} · waiting on {' and '.join(waiting)}" if waiting else head

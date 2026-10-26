@@ -34,8 +34,9 @@ import { channelLabel, isPairChannel } from "@/lib/chatFilters";
 import { draftStore } from "@/lib/messageDrafts";
 import { viewRowStore } from "@/lib/viewRow";
 import { trackRecentChannel } from "@/lib/desktop";
+import { withoutHandledLinks } from "@/lib/push";
 import { errMsg, toast } from "@/lib/toast";
-import { applyWidget, isWidgetChat, panelGameOf, widgetsAvailable } from "@/lib/widgets";
+import { applyWidget, isWidgetChat, linkedGameOf, panelGameOf, widgetsAvailable } from "@/lib/widgets";
 import { setWidgetView } from "@/lib/widgetView";
 import { computePendingAutoMention } from "@/lib/autoMention";
 import { mentionHandle, mentionLabel } from "@/lib/messageHelpers";
@@ -53,7 +54,7 @@ import { useChannelDragDrop } from "@/hooks/useChannelDragDrop";
 import { memberKey, useChannelEvents } from "@/hooks/useChannelEvents";
 import { useChannelHistory } from "@/hooks/useChannelHistory";
 import { useChannelPresence } from "@/hooks/useChannelPresence";
-import { useActiveWidgets } from "@/hooks/useWidget";
+import { useActiveWidgets, useScoreLine } from "@/hooks/useWidget";
 import { useLatestRef } from "@/hooks/useLatestRef";
 import { usePinToggle, usePinnedPosts } from "@/hooks/usePinnedPosts";
 import { Icon } from "@/components/Icon";
@@ -195,6 +196,7 @@ function ChannelView({ channelId }: { channelId: string }) {
   const pendingJumpRef = useRef<number | null>(null);
   const lastMarkedRef = useRef(0);
   const handledMsgRef = useRef<string | null>(null);
+  const handledWidgetRef = useRef<string | null>(null);
   const messageListRef = useRef<MessageListHandle>(null);
   const [viewRow] = useState(viewRowStore);
   const composerRef = useRef<ComposerHandle>(null);
@@ -257,6 +259,8 @@ function ChannelView({ channelId }: { channelId: string }) {
   const widgetChat = isWidgetChat(channel);
   const activeWidgets = useActiveWidgets(channelId, widgetChat);
   const canStartWidget = widgetsAvailable(channel, channelOrg) && activeWidgets.data?.length === 0;
+  // The chat's score, atop the menu that starts the next game.
+  const gameScore = useScoreLine(channelId, user?.id ?? null, canStartWidget);
   const activeWidgetId = activeWidgets.data?.[0]?.widget_id ?? null;
   // A game picked from the chat, which shows in the panel until another game starts.
   const [pickedWidget, setPickedWidget] = useState<{ widgetId: string; over: string | null } | null>(null);
@@ -593,12 +597,9 @@ function ChannelView({ channelId }: { channelId: string }) {
     const postId = Number(raw);
     if (!postsQuery.data || handledMsgRef.current === raw || !Number.isFinite(postId)) return;
     handledMsgRef.current = raw;
+    // Strips `?widget=` too once acted on: a link handled in this same commit strips from the same render's params.
     setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.delete("msg");
-        return next;
-      },
+      (prev) => withoutHandledLinks(prev, { msg: handledMsgRef.current, widget: handledWidgetRef.current }),
       { replace: true },
     );
     jumpToDeepLink(postId);
@@ -736,6 +737,28 @@ function ChannelView({ channelId }: { channelId: string }) {
     setWidgetView(widgetId, "open");
     if (panels?.panel) panels.togglePanel(panels.panel);
   };
+
+  // `?widget=` (a "your move" ping's link) opens a game, as a click on its line would, once the chat's running game is
+  // known: that one, which is the one waiting, else the link's ended game. A chat that runs no games drops the param.
+  const openLinkedWidget = useEffectEvent((widgetId: string) => {
+    if (widgetChat) openWidget(linkedGameOf(widgetId, activeWidgetId));
+  });
+  const widgetsKnown = activeWidgets.data !== undefined || activeWidgets.isError || (channel !== undefined && !widgetChat);
+  useEffect(() => {
+    const widgetId = searchParams.get("widget");
+    if (!widgetId) {
+      handledWidgetRef.current = null;
+      return;
+    }
+    if (!widgetsKnown || handledWidgetRef.current === widgetId) return;
+    handledWidgetRef.current = widgetId;
+    // Strips `?msg=` too once acted on, as the `?msg=` effect strips this one.
+    setSearchParams(
+      (prev) => withoutHandledLinks(prev, { msg: handledMsgRef.current, widget: handledWidgetRef.current }),
+      { replace: true },
+    );
+    openLinkedWidget(widgetId);
+  }, [searchParams, setSearchParams, widgetsKnown]);
 
   const renameChat = useMutation({
     mutationFn: (displayName: string) => patchMmChannel(channelId, displayName),
@@ -1024,6 +1047,7 @@ function ChannelView({ channelId }: { channelId: string }) {
         agentDm={channel?.channel_type === "direct" && members.some((m) => m.agent_id != null)}
         onTyping={signalTyping}
         onStartWidget={canStartWidget && !startGame.isPending ? (kind) => { startGame.mutate(kind); } : undefined}
+        gameScore={gameScore}
         placeholder={
           channel &&
           (!isPair

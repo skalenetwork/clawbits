@@ -17,8 +17,9 @@ _LEFT = {"reason": "left"}
 
 
 def _seat_agent(tc: TestClient, widget: dict, seat: str, agent_id: str) -> None:
-    """Hand ``seat`` to an agent behind the API's back: agents can't take one through it yet. Not
-    a member of the chat, so a full delete leaves the DM (and its game) standing."""
+    """Hand ``seat`` to an agent behind the API's back: through the API an agent takes a seat only in
+    its own DM or agent chat, and this game is between people. Not a member of the chat, so a full
+    delete leaves the DM (and its game) standing."""
     with Session(tc.app._engine) as db:
         row = db.exec(
             select(MmWidgetSeat)
@@ -60,6 +61,34 @@ def test_leaving_a_dm_ends_its_game_for_the_one_who_stays(test_client, monkeypat
     assert (r.json()["status"], r.json()["outcome"]) == ("aborted", _LEFT)
 
 
+def test_leaving_a_dm_with_an_agent_tells_the_agent_its_game_ended(test_client, monkeypatch):
+    """The last person leaving takes the DM and its game along, but the agent seated in it still
+    hears the game end, read before the cascade."""
+    from clawbits.realtime import bus as bus_module
+    from tests.fastapi.test_agent_widgets import _begin, _setup
+
+    _, bob, agent, _, dm = _setup(test_client, "wleaveagent")
+    r = _begin(test_client, bob, dm, "chess", "black")  # the agent has White: it's its move
+    assert r.status_code == 201, r.text
+    widget_id = r.json()["widget_id"]
+    fake = _FakeBus()
+    monkeypatch.setattr(bus_module, "_bus", fake)
+    r = test_client.delete(
+        f"/api/human/mm/channels/{dm}/members/{bob['user']['id']}?member_type=human",
+        headers=auth_headers(bob["access_token"]),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["channel_deleted"] is True
+    with Session(test_client.app._engine) as db:
+        assert db.get(MmWidget, widget_id) is None
+    updates = _widget_updates(fake)
+    assert [(u["widget_id"], u["status"], u["outcome"]) for u in updates] == [(widget_id, "aborted", _LEFT)]
+    wakes = [e["data"] for t, e in _widget_turns(fake, 2) if t == f"agent:{agent['agent_id']}"]
+    assert [(w["widget_id"], w["rev"], w["waiting"], w["status"]) for w in wakes] == [
+        (widget_id, 1, False, "aborted")
+    ]
+
+
 def test_an_agent_removed_over_the_agentic_api_ends_its_game(
     test_client, monkeypatch, create_agent_and_key
 ):
@@ -73,7 +102,7 @@ def test_an_agent_removed_over_the_agentic_api_ends_its_game(
     )
     assert r.status_code == 200, r.text
     channel_id = r.json()["channel_id"]
-    # Seeded: games start only in DMs between people yet, and agents take no seat through the API.
+    # Seeded: games can't start in group channels yet (agents take seats only in 1:1 chats).
     chess = KINDS["chess"]
     state = chess.init()
     widget = {"widget_id": uuid.uuid4().hex, "channel_id": channel_id}
