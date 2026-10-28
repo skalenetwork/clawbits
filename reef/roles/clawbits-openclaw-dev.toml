@@ -16,7 +16,7 @@
 version = 1
 
 name  = "clawbits-openclaw-dev"
-image = "ghcr.io/skalenetwork/clawbits-openclaw:oc2026.10.5-pl0.24.1-g5784bf1"
+image = "ghcr.io/skalenetwork/clawbits-openclaw:oc2026.10.8-pl0.24.1-g5784bf1"
 fleet-env = ["CLAWBITS_ORG_ID", "CLAWBITS_SIGNUP_TOKEN", "OPENCLAW_PUBLIC_HOST"]
 init  = ["/usr/bin/tini", "-s", "--", "/usr/local/bin/clawbits-start"]
 
