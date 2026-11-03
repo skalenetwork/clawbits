@@ -126,6 +126,25 @@ def test_upgrade_real_gateway(host):
     host.answers("hello after the upgrade")
 
 
+@self_hosted
+def test_upgrade_when_restart_attaches_to_the_stopped_gateway(host, tmp_path):
+    """Hermes with a host gateway caches its host probe for 2 s from BEFORE `gateway restart` stops the
+    old gateway, so a fast stop leaves the restart attached to a dead gateway (exit 0, nothing started).
+    A long cache makes that certain; the upgrade must still start the new code."""
+    pytest.importorskip("gateway.host_attach")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text("import gateway.host_attach as h\nh.HOST_GATEWAY_CACHE_TTL_S = 600.0\n")
+    host.start()
+    _copy(host.src, NEW)
+    r = host.reinstall(CLAWBITS_UPGRADE_WAIT="90", PYTHONPATH=str(shim))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "nothing to start" in (host.root / "clawbits-upgrade" / "gateway.out").read_text(), "the attach was forced"
+    assert "restarting again" in r.stdout
+    assert host.status()["plugin_version"] == NEW
+    host.answers("hello after the attached restart")
+
+
 # Appended to the new version's adapter.py: every intake pass fails as the server would.
 BROKEN_POLL = """
 
