@@ -273,7 +273,8 @@ def manifest(owner: str, organization: bool, base: str, state: str) -> tuple[str
     body = {
         "name": f"Clawbits {owner}"[:34],
         "url": base,
-        "hook_attributes": {"url": base, "active": False},
+        # GitHub validates even inactive webhook URLs and rejects loopback hosts.
+        "hook_attributes": {"url": "", "active": False},
         "redirect_url": f"{base}/api/auth/reef/github/created",
         "setup_url": f"{base}/api/auth/reef/github/installed",
         "public": False,

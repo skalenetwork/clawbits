@@ -1678,7 +1678,7 @@ async def _reef_roles(repo: ReefRepo) -> list[Role]:
     agents at a different clawbits: those would boot and enrol somewhere else."""
     names = [n for n in await repo.list("main", "roles") if n.endswith(".toml")]
     files = await asyncio.gather(*(repo.read("main", f"roles/{n}") for n in names))
-    endpoint = _base_url()
+    endpoint = os.environ.get("CLAWBITS_REEF_ENDPOINT") or _base_url()
     roles = [
         parse_role(name.removesuffix(".toml"), found[1], endpoint)
         for name, found in zip(names, files, strict=True)

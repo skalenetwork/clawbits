@@ -109,8 +109,10 @@ describe("widgets capability", () => {
       optionalToolAllowed(cfg({ tools, ...(agents ? { agents } : {}) }), "clawbits_widget_act", "clawbits-tools", agentId);
     assert.equal(allowed({ alsoAllow: ["clawbits_widget_act"] }), true);
     assert.equal(allowed({ allow: ["CLAWBITS_WIDGET_ACT"] }), true, "names compare case-insensitively");
-    // OpenClaw honours an allow glob for optional tools only from 2026.9.1, past the floor.
-    assert.equal(allowed({ alsoAllow: ["clawbits_*"] }), false, "an allow glob doesn't claim");
+    // OpenClaw honours an allow glob for optional tools from 2026.9.1, below the 2026.9.7 floor.
+    assert.equal(allowed({ alsoAllow: ["clawbits_*"] }), true, "an allow glob");
+    assert.equal(allowed({ alsoAllow: ["clawbits_widget_*"], deny: ["clawbits_widget_act"] }), false, "deny still wins");
+    assert.equal(allowed({ alsoAllow: ["clawbits_email_*"] }), false, "a glob that misses");
     assert.equal(allowed({ alsoAllow: ["clawbits-tools"] }), true, "the plugin id");
     assert.equal(allowed({ alsoAllow: ["group:plugins"] }), true);
     assert.equal(allowed({ allow: ["*"] }), true);

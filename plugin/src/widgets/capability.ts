@@ -67,10 +67,9 @@ function agentToolPolicy(cfg: OpenClawConfig | undefined, agentId: string | unde
 /**
  * Whether OpenClaw shows an optional plugin tool to the agent. Optional tools are never part of
  * the default surface (src/plugins/tools.ts, createPluginToolAllowlist): an explicit
- * `tools.allow` / `tools.alsoAllow` entry, global or the agent's own, must name the tool, its
- * plugin, `group:plugins` or `*`; and no `tools.deny` entry (a glob included) may take it away.
- * An allow glob counts only from OpenClaw 2026.9.1, past the plugin's floor, so it never claims
- * here: under-claiming hides games from one agent, over-claiming stalls every game it is seated in.
+ * `tools.allow` / `tools.alsoAllow` entry, global or the agent's own, must name the tool (a glob
+ * included: OpenClaw honours one from 2026.9.1, below the plugin's 2026.9.7 floor), its plugin,
+ * `group:plugins` or `*`; and no `tools.deny` entry (a glob included) may take it away.
  */
 export function optionalToolAllowed(
   cfg: OpenClawConfig | undefined,
@@ -86,7 +85,8 @@ export function optionalToolAllowed(
     entry === "*" || entry === "group:plugins" || entry === plugin || entry === name;
   const allow = [global?.allow, global?.alsoAllow, own?.allow, own?.alsoAllow].flatMap(entries);
   const deny = [global?.deny, own?.deny].flatMap(entries);
-  return allow.some(names) && !deny.some((entry) => names(entry) || globMatches(entry, name));
+  const matches = (entry: string): boolean => names(entry) || globMatches(entry, name);
+  return allow.some(matches) && !deny.some(matches);
 }
 
 /** Whether this account may claim `widgets` (see the head of this file). `route` is where a game

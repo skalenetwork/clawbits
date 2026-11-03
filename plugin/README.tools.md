@@ -50,7 +50,7 @@ The three chat game tools take their names, descriptions and schemas from the
 server's `clawbits/widgets/tool_spec.json`, and `widget_id` defaults to the
 active game in the current chat. The channel tells Clawbits the agent can play
 games only while this plugin has registered `clawbits_widget_act`, tool policy
-allows it by name (`tools.alsoAllow`; an allow glob doesn't count), a game routes
+allows it (`tools.alsoAllow`, by name or glob), a game routes
 to a session of its own (no `session.groupScope: "main"`, global or a binding's),
 and the account's `widgets` config isn't `false`; the operator still turns on the
 agent's "Can play games" setting in Clawbits. A game's own session may call only
