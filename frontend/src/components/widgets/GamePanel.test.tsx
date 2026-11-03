@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -91,6 +91,12 @@ function column(widget: Widget, { userId = 1, covered = false, picked = false, o
   const aside = () => document.querySelector<HTMLElement>('aside[aria-label="Game"]');
   return { client, aside, rerender: (next: { covered: boolean }) => { view.rerender(<GameColumn {...props} {...next} />); } };
 }
+
+// The panel loads its board lazily, and a busy runner can take longer than findBy's one second to
+// compile that module the first time: load it once here, so a test waits on React, not the compiler.
+beforeAll(async () => {
+  await import("./WidgetPanel");
+}, 30_000);
 
 afterEach(() => {
   vi.useRealTimers();
