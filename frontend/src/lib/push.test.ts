@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pushTargetToPath } from "./push";
+import { pushTargetToPath, withoutHandledLinks } from "./push";
 
 // The function reads window.location.origin; jsdom's own origin stands in for
 // the app host, so the cases below are about origin *identity*, not the literal
@@ -40,5 +40,25 @@ describe("pushTargetToPath", () => {
   // against the app origin - which is the right answer for it, not an error.
   it("resolves a relative target against the app origin", () => {
     expect(pushTargetToPath("channels/abc")).toBe("/channels/abc");
+  });
+});
+
+describe("withoutHandledLinks", () => {
+  const params = new URLSearchParams("msg=42&widget=w1&tab=files");
+
+  // A `?msg=` and a `?widget=` handled in one commit: each strip starts from the same render's params, so each
+  // must drop both, or the second navigation brings the first one's param back.
+  it("drops every param already acted on, whichever link strips", () => {
+    expect(withoutHandledLinks(params, { msg: "42", widget: "w1" }).toString()).toBe("tab=files");
+  });
+
+  it("keeps a param not acted on yet, or since changed to another value", () => {
+    expect(withoutHandledLinks(params, { msg: "42", widget: null }).toString()).toBe("widget=w1&tab=files");
+    expect(withoutHandledLinks(params, { msg: "7", widget: "w1" }).toString()).toBe("msg=42&tab=files");
+  });
+
+  it("leaves the params it was given alone", () => {
+    withoutHandledLinks(params, { msg: "42", widget: "w1" });
+    expect(params.toString()).toBe("msg=42&widget=w1&tab=files");
   });
 });

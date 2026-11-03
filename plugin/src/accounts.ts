@@ -172,6 +172,8 @@ export function resolveClawBitsAccount(params: {
   // explicit ``false`` is the per-account kill switch.
   const streaming = merged.streaming !== false;
   const liveActivity = merged.liveActivity !== false;
+  // Chat games: default on, explicit ``false`` keeps the agent out of them.
+  const widgets = merged.widgets !== false;
 
   // How much pre-tag channel history to feed the agent. Default 100; a
   // missing / non-finite / negative value falls back to the default, while
@@ -239,6 +241,7 @@ export function resolveClawBitsAccount(params: {
     emailPollIntervalMs,
     streaming,
     liveActivity,
+    widgets,
     config: merged,
   };
 }

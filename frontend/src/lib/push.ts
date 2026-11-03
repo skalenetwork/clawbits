@@ -167,6 +167,18 @@ export function pushTargetToPath(raw: string): string | null {
   }
 }
 
+/** ``params`` without the deep-link params a page already acted on, ``{msg: "42", widget: "w1"}`` (a value
+ *  only strips its param while the param still holds it). Each link's effect strips them all: two links handled in
+ *  one commit both strip from that render's params, and the later navigation would otherwise put back the param
+ *  the earlier one removed. */
+export function withoutHandledLinks(params: URLSearchParams, handled: Record<string, string | null>): URLSearchParams {
+  const next = new URLSearchParams(params);
+  for (const [name, value] of Object.entries(handled)) {
+    if (value != null && next.get(name) === value) next.delete(name);
+  }
+  return next;
+}
+
 /** Soft-navigate when the service worker reports a notification click. The SW
  *  posts ``{type:"push-navigate", url}`` to the focused client. Returns a
  *  cleanup fn. No-op on desktop / unsupported. */

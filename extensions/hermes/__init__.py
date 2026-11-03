@@ -22,6 +22,9 @@ rest for compatibility:
 - :mod:`.read_cursors` — the pre-journal per-channel cursor file, read for migration
 - :mod:`.mailroom`   — email intake, the reader worker and the outbox
 - :mod:`.mcp_connect` — MCP OAuth sign-in through Clawbits Connect cards
+- :mod:`.widgets`    — chat game tools, the game session guard and the ``widgets`` capability
+- :mod:`.widget_wakes` — the wake loop: one silent turn per move, in the game's own session
+- :mod:`.game_sessions` — a game's Hermes sessions: rotation and complete deletion
 - :mod:`.health`     — per-subsystem status written for the doctor
 - :mod:`.doctor`     — ``hermes clawbits doctor`` diagnostics
 - :mod:`.signup`     — ``hermes clawbits signup`` flow + CB_TOKENS minting
@@ -50,6 +53,7 @@ from . import (
     doctor,
     email_integration,
     email_reader,
+    game_sessions,
     health,
     inbox_state,
     mailroom,
@@ -60,6 +64,8 @@ from . import (
     pinned_http,
     read_cursors,
     signup,
+    widget_wakes,
+    widgets,
 )
 from .account import ClawbitsAccount, active_account, resolve_account, scoped_setting
 from .adapter import (
@@ -122,6 +128,7 @@ __all__ = [
     "email_integration",
     "email_reader",
     "endpoint",
+    "game_sessions",
     "health",
     "inbox_state",
     "is_connected",
@@ -136,6 +143,8 @@ __all__ = [
     "scoped_setting",
     "signup",
     "validate_config",
+    "widget_wakes",
+    "widgets",
     "_ALLOW_PRIVATE_HOSTS_ENV",
     "_ATTENTION_PREAMBLE",
     "_Channel",
@@ -205,6 +214,7 @@ def register(ctx: Any) -> None:
 
         no_cache_check_fn(_email_tool_available)
         no_cache_check_fn(mcp_connect.available)
+        no_cache_check_fn(widgets.available)
     except ImportError:
         pass
     ctx.register_tool(
@@ -227,7 +237,21 @@ def register(ctx: Any) -> None:
         description="Sign in to an OAuth MCP server from a Clawbits Connect card.",
         emoji="🔌",
     )
+    # Chat games: names, descriptions and schemas are the server's (widget_tool_spec.json).
+    for name, handler, emoji in widgets.TOOLS:
+        schema = widgets.tool_schema(name)
+        ctx.register_tool(
+            name=name,
+            toolset=widgets.TOOLSET,
+            schema=schema,
+            handler=handler,
+            check_fn=widgets.available,
+            requires_env=["CLAWBITS_API_KEY", "CLAWBITS_AGENT_ID"],
+            description=schema["description"],
+            emoji=emoji,
+        )
     ctx.register_hook("pre_tool_call", mcp_connect.guard_sign_in)
+    ctx.register_hook("pre_tool_call", widgets.guard_game_tools)
     ctx.register_cli_command(
         name="clawbits",
         help="Clawbits setup and diagnostics",

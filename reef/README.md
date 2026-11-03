@@ -43,3 +43,10 @@ key. Its id, channel and history stay; whatever lived only in its VM does not.
 
 `bench/` times one agent boot. `roles/clawbits-openclaw-dev.toml` targets a
 Clawbits running on the reef host itself.
+
+For local guests, set the backend's
+`CLAWBITS_REEF_ENDPOINT=http://host.microsandbox.internal:8000` to match the
+role's `CLAWBITS_ENDPOINT`. Keep `CLAWBITS_BASE_URL` at the browser-accessible
+origin for GitHub callbacks. The role picker reads `roles/*.toml` on the
+connected repository's `main` branch; applying a role locally does not add it
+to that catalog.

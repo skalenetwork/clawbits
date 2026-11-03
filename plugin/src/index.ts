@@ -11,6 +11,7 @@ import {
   resolveClawBitsServiceOwner,
 } from "./service-handoff.js";
 import { PLUGIN_VERSION } from "./version.js";
+import { registerGameTurnGuards } from "./widgets/session.js";
 
 export default defineChannelPluginEntry({
   id: "clawbits",
@@ -50,6 +51,8 @@ export default defineChannelPluginEntry({
     // events feed the streaming reply and ephemeral channel status lanes.
     registerActivitySubscription(api);
     registerMcpApps(api);
+    // A chat game move speaks to nobody: its run's sends are refused (widgets/session.ts).
+    registerGameTurnGuards(api);
   },
 });
 

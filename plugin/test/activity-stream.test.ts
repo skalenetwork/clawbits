@@ -412,6 +412,72 @@ describe("activity reporter (status lane)", () => {
     assert.deepEqual(requests[0], ["mcp.app.view", { sessionKey: "agent:main:clawbits", viewId: "v1" }]);
   });
 
+  /** A clawbits account on chat.example.test, its MCP server `games` on that origin, and a third-party server.
+   *  Returns the view ids the gateway was asked for. */
+  function withOwnServers(): string[] {
+    const fetched: string[] = [];
+    __setGatewayCall(async (_method, _opts, params) => {
+      fetched.push((params as { viewId: string }).viewId);
+      return { html: "<p>board</p>", toolInput: {}, toolResult: {} };
+    });
+    const cfg = {
+      channels: { clawbits: { accounts: { work: { endpoint: "https://chat.example.test" } } } },
+      mcp: {
+        servers: {
+          games: { url: "https://Chat.Example.test:443/api/mcp" },
+          agentpit: { url: "https://agentpit.dev/mcp" },
+        },
+      },
+    };
+    registerMcpApps({ runtime: { config: { current: () => cfg } } } as unknown as Parameters<typeof registerMcpApps>[0]);
+    return fetched;
+  }
+
+  function renderView(turn: InFlightTurn, callId: string, app: Record<string, unknown>): void {
+    onToolEvent(turn, { phase: "start", name: "widget_view", toolCallId: callId, args: {} });
+    onToolEvent(turn, {
+      phase: "result",
+      name: "widget_view",
+      toolCallId: callId,
+      result: { details: { mcpAppPreview: { mcpApp: { viewId: callId, originSessionKey: "agent:main:clawbits", ...app } } } },
+    });
+  }
+
+  it("never captures a view from the MCP server named clawbits, or one serving a ui://clawbits/ resource", async () => {
+    const fetched = withOwnServers();
+    const turn = makeTurn(new FakeClient());
+    renderView(turn, "named", { serverName: "clawbits" });
+    renderView(turn, "resource", { serverName: "board", uiResourceUri: "ui://clawbits/widget" });
+    const steps = (await turnSteps(turn)) ?? [];
+    assert.deepEqual(steps.map((s) => [s.id, s.app]), [["named", undefined], ["resource", undefined]]);
+    assert.deepEqual(fetched, []);
+  });
+
+  it("never captures a view from an MCP server on a clawbits account endpoint's origin", async () => {
+    const fetched = withOwnServers();
+    const turn = makeTurn(new FakeClient());
+    renderView(turn, "origin", { serverName: "games" });
+    const [step] = (await turnSteps(turn)) ?? [];
+    assert.equal(step?.id, "origin");
+    assert.equal(step?.app, undefined);
+    assert.deepEqual(fetched, []);
+  });
+
+  it("still captures a third-party view when clawbits' own servers are configured", async () => {
+    const fetched = withOwnServers();
+    const turn = makeTurn(new FakeClient());
+    renderView(turn, "third", { serverName: "agentpit", uiResourceUri: "ui://agentpit/portfolio" });
+    const [step] = (await turnSteps(turn)) ?? [];
+    assert.deepEqual(step?.app, {
+      server: "agentpit",
+      host: "agentpit.dev",
+      html: "<p>board</p>",
+      input: {},
+      result: {},
+    });
+    assert.deepEqual(fetched, ["third"]);
+  });
+
   it("latches off process-wide when the server rejects activity (422)", async () => {
     const client = new FakeClient();
     const turn = makeTurn(client);

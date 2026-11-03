@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Channel, Organization } from "./models";
+import type { Avatar, Channel, Organization } from "./models";
 
 /** Chat widgets: games the server runs inside a chat. Each change arrives as a declarative scene (boards, cards,
  *  what the viewer may pick, which buttons it has); nothing here knows a rule, so a new kind needs no release. */
@@ -19,6 +19,9 @@ export interface WidgetSeat {
   human_id: number | null;
   agent_id: string | null;
   display_name: string | null;
+  /** This player's wins over the chat's finished games, every kind together: it follows the person, not the seat.
+   *  Older servers omit it. */
+  wins?: number;
 }
 
 export interface WidgetSceneInput {
@@ -121,6 +124,8 @@ export interface Widget {
   status: WidgetStatus;
   rev: number;
   turn: string | null;
+  /** The seats it waits on, both at once in some phases (fleets, bets); empty once over. Older servers omit it. */
+  waiting_on?: string[];
   seats: WidgetSeat[];
   scene: WidgetScene;
   /** The scene is the viewer's own; a live event carries only the public one. */
@@ -131,6 +136,8 @@ export interface Widget {
   created_by_human_id: number | null;
   created_at: string;
   updated_at: string;
+  /** The chat's finished games that ended in a draw, beside each seat's `wins`. Older servers omit it. */
+  draws?: number;
 }
 
 export interface WidgetAction {
@@ -138,8 +145,29 @@ export interface WidgetAction {
   args?: Record<string, unknown>;
 }
 
+/** A player in a chat's score: everyone seated in one of its finished games, most wins first. */
+export interface WidgetScorePlayer {
+  human_id: number | null;
+  agent_id: string | null;
+  display_name: string | null;
+  is_agent: boolean;
+  avatar?: Avatar | null;
+  wins: number;
+}
+
+/** A chat's score over its finished games, every kind together, as its score route answers; the same totals each
+ *  game's seats carry, there between games too. */
+export interface WidgetChatScore {
+  channel_id: string;
+  players: WidgetScorePlayer[];
+  draws: number;
+  /** Finished games, draws among them. */
+  finished: number;
+}
+
 export const widgetKey = (id: string) => ["widget", id] as const;
 export const activeWidgetsKey = (channel: string) => ["widgets", channel] as const;
+export const widgetScoreKey = (channel: string) => ["widget-score", channel] as const;
 
 /** Folds a fresh widget into its caches; an older rev never overwrites a newer one. The widget's own entry keeps
  *  its newest rev, so a late event for a game that has since ended can't put it back in the chat's active list
@@ -177,6 +205,8 @@ export function freshActiveWidgets(client: QueryClient, listed: Widget[]): Widge
 /** A live `widget.updated`. A private widget's event carries only the public scene, so the viewer's own view is
  *  fetched instead, unless this rev is already here (the viewer's own action answered with it). */
 export function applyWidgetEvent(client: QueryClient, widget: Widget): void {
+  // A game that finished moves its chat's score.
+  if (widget.status === "finished") void client.invalidateQueries({ queryKey: widgetScoreKey(widget.channel_id) });
   if (!widget.private) {
     applyWidget(client, widget);
     return;
@@ -241,17 +271,88 @@ export function boardsBySeat(scene: WidgetScene): boolean {
   return boards.length > 1 && boards.every((board) => board.seat != null);
 }
 
-/** Where among the chat's loaded messages the one that started `widget` is, or -1 while it isn't loaded. */
-export function widgetPostIndex(posts: { post_id: number; widget_id?: string | null }[], widget: Widget): number {
-  return posts.findIndex((post) =>
-    widget.post_id != null ? post.post_id === widget.post_id : post.widget_id === widget.widget_id,
-  );
+/** The game the chat's latest loaded game message started, or null: the bar's game once none is active. */
+export function lastWidgetId(posts: { widget_id?: string | null }[]): string | null {
+  return posts.findLast((post) => post.widget_id)?.widget_id ?? null;
 }
 
 /** The viewer's seat, or null for a spectator. */
 export function seatOf(widget: Widget, userId: number | null): string | null {
   return widget.seats.find((seat) => seat.human_id != null && seat.human_id === userId)?.seat ?? null;
 }
+
+/** The seats a widget waits on; none once over. An older server says only whose `turn` it is. */
+export function waitingOn(widget: Widget): string[] {
+  if (widget.status !== "active") return [];
+  return widget.waiting_on ?? (widget.turn ? [widget.turn] : []);
+}
+
+/** Whether it's `seat`'s move: a spectator (null) never has one. */
+export function waitsOn(widget: Widget, seat: string | null): boolean {
+  return seat != null && waitingOn(widget).includes(seat);
+}
+
+/** A game's name: its scene's title, else its kind's. */
+export function widgetTitle(widget: Widget): string {
+  return widget.scene.title ?? WIDGET_KINDS.find((item) => item.kind === widget.kind)?.label ?? widget.kind;
+}
+
+/** How a game stands, one line for the bar and its message: `Your move` while it waits on the viewer, else the
+ *  scene's status; once over, the result from the viewer's side and its reason (`You won · Checkmate`). */
+export function widgetLine(widget: Widget, seat: string | null): string {
+  const reason = widget.scene.status?.text;
+  const result = resultOf(widget, seat);
+  if (result) return reason && reason !== result.headline ? `${result.headline} · ${reason}` : result.headline;
+  return waitsOn(widget, seat) ? "Your move" : (reason ?? "Playing");
+}
+
+/** A chat's score from the viewer's side: their wins, their opponent's, and the draws. */
+export interface Score {
+  mine: number;
+  theirs: number;
+  draws: number;
+  them: string | null;
+}
+
+// Nothing to show until a game here has finished with a winner or a draw.
+const scored = (score: Score): Score | null => (score.mine + score.theirs + score.draws > 0 ? score : null);
+
+/** The chat's score as a game's seats carry it; null for a spectator, a game short of two seats, or a chat with no
+ *  finished game yet. An older server sends no score, which reads as none. */
+export function scoreOf(widget: Widget, userId: number | null): Score | null {
+  const seat = seatOf(widget, userId);
+  const mine = widget.seats.find((item) => item.seat === seat);
+  const other = widget.seats.find((item) => item.seat !== seat);
+  if (!mine || !other) return null;
+  return scored({ mine: mine.wins ?? 0, theirs: other.wins ?? 0, draws: widget.draws ?? 0, them: other.display_name });
+}
+
+/** The same from the chat's score route, which holds it between games: the viewer against the first other player
+ *  (a chat between two has one). Null under the same rules. */
+export function chatScoreOf(score: WidgetChatScore | undefined, userId: number): Score | null {
+  const mine = score?.players.find((player) => player.human_id === userId);
+  const other = score?.players.find((player) => player !== mine);
+  if (!score || !mine || !other) return null;
+  return scored({ mine: mine.wins, theirs: other.wins, draws: score.draws, them: other.display_name });
+}
+
+const drawsText = (draws: number): string => `${draws} ${draws === 1 ? "draw" : "draws"}`;
+
+/** A score in words, `You 3 – 2 Bob · 1 draw`, for the game menu. */
+export function scoreLine(score: Score): string {
+  const line = `You ${score.mine} – ${score.theirs} ${score.them ?? "your opponent"}`;
+  return score.draws ? `${line} · ${drawsText(score.draws)}` : line;
+}
+
+/** A score as a screen reader says it, `score you 3, Bob 2, 1 draw`; the bar shows only `3–2`. */
+export function scoreLabel(score: Score): string {
+  const parts = [`score you ${score.mine}`, `${score.them ?? "your opponent"} ${score.theirs}`];
+  return (score.draws ? [...parts, drawsText(score.draws)] : parts).join(", ");
+}
+
+// What this phone keeps of each game's bar, a key per widget, set only off the default (folded, shown).
+export const widgetOpenKey = (widgetId: string) => `clawbits.widget-bar.open.${widgetId}`;
+export const widgetDismissedKey = (widgetId: string) => `clawbits.widget-bar.dismissed.${widgetId}`;
 
 /** Widgets run in one-to-one chats between people. */
 export function isWidgetChat(channel: Channel | undefined): boolean {

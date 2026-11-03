@@ -28,6 +28,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DIST = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
+const LOOPBACK = new Set(["localhost", "127.0.0.1"]);
 const INDEX = join(DIST, "index.html");
 
 if (!existsSync(INDEX)) {
@@ -84,7 +85,10 @@ try {
  * the collector default. Checking all of them rather than grepping for the
  * known host is the point: a new one appearing is precisely the change that
  * would otherwise go unnoticed. */
-const hosts = [...new Set([...tracker.matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map((m) => m[1]))];
+const hosts = [...new Set([...tracker.matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map((m) => m[1]))]
+  /* Loopback names are the tracker's own local-run checks, never its collector: a visitor's
+   * events can't reach their own machine from our pages, and connect-src must not allow it. */
+  .filter((h) => !LOOPBACK.has(h.toLowerCase()));
 const blocked = hosts.filter((h) => !allowed.has(h) && !allowed.has(`*.${h.split(".").slice(1).join(".")}`));
 
 if (blocked.length) {

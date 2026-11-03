@@ -95,13 +95,22 @@ restart_gateway() {  # $1 profile; 0 restarted (or running detached), 78 served 
   # no service it stops this profile's gateway and runs the new one in the foreground,
   # so it is detached and only an early exit is judged. That gateway is unsupervised:
   # a caller's systemd INVOCATION_ID would make Hermes treat it as supervised.
-  nohup env -u INVOCATION_ID HERMES_HOME="$ROOT" hermes -p "$1" gateway restart >"$WORK/gateway.out" 2>&1 </dev/null &
-  local pid=$! i
-  for ((i = 0; i < SETTLE; i++)); do
-    sleep 1
-    if ! kill -0 "$pid" 2>/dev/null; then wait "$pid"; return $?; fi
+  local pid rc i try
+  : >"$WORK/gateway.out"
+  for try in 1 2; do
+    nohup env -u INVOCATION_ID HERMES_HOME="$ROOT" hermes -p "$1" gateway restart >>"$WORK/gateway.out" 2>&1 </dev/null &
+    pid=$! rc=0
+    for ((i = 0; i < SETTLE; i++)); do
+      sleep 1
+      if ! kill -0 "$pid" 2>/dev/null; then wait "$pid" || rc=$?; break; fi
+    done
+    ((i < SETTLE)) || return 0
+    # A foreground run ("Starting gateway...") that exits 0 started nothing: Hermes with a host
+    # gateway caches its host probe for 2 s from BEFORE the stop, so a fast restart attaches to
+    # the gateway it just stopped. Nothing serves the profile now; a second restart starts it.
+    [[ $rc -eq 0 && $try -eq 1 ]] && grep -qF 'Starting gateway...' "$WORK/gateway.out" || return "$rc"
+    echo "   the restart started nothing (Hermes attached to the gateway it stopped); restarting again"
   done
-  return 0
 }
 
 healthy() {  # doctor exit: 0 healthy, 1 degraded but receiving, 3 not ready; anything else fails

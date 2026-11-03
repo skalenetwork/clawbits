@@ -10,6 +10,7 @@ import re
 import socket
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import format_datetime
 from typing import Any
@@ -116,6 +117,12 @@ class FakeClawbits:
         self.send_state = "accepted"  # outcome recorded for new keyed sends
         self.mcp_links: list[dict[str, Any]] = []  # POST /mcp-oauth/links bodies (sign-in URLs registered)
         self.mcp_results: list[dict[str, Any]] = []  # POST /mcp-oauth/result bodies
+        self.alive_bodies: list[dict[str, Any]] = []  # POST /alive bodies
+        self.widgets: dict[str, dict[str, Any]] = {}  # chat games the agent sits in, by id
+        self.widget_actions: list[dict[str, Any]] = []  # POST /mm/widgets/{id}/actions: widget_id, body, private
+        self.snapshot_widgets = True  # False: channel lists name no waiting game (widget_waiting)
+        # Picks a reply per chat completion before the scripted queue (None falls through to it).
+        self.route: Callable[[dict[str, Any]], Any] | None = None
         self.model_requests: list[dict[str, Any]] = []
         # Answer to every email-reader call; scripted replies are for agent turns only.
         self.reader_reply: Any = json.dumps({"summary": "A short note.", "reply": "Noted."})
@@ -148,11 +155,73 @@ class FakeClawbits:
         agent_id: str | None = None,
         name: str = "Op",
         files: list[dict[str, Any]] | None = None,
+        widget_id: str | None = None,
     ) -> dict[str, Any]:
-        """Publish a post as an authenticated human (or, with agent_id, as an agent)."""
+        """Publish a post as an authenticated human (or, with agent_id, as an agent); with widget_id,
+        the post that started that game."""
         return self._add_post(
-            channel, text, human_id=None if agent_id else human_id, agent_id=agent_id, name=name, files=files
+            channel, text, human_id=None if agent_id else human_id, agent_id=agent_id, name=name, files=files,
+            widget_id=widget_id,
         )
+
+    def add_widget(
+        self, widget_id: str, *, channel: str = OPERATOR_DM, kind: str = "chess", seat: str = "white",
+        your_move: bool = True, secret: str = "", opponent: str = "Op",
+    ) -> dict[str, Any]:
+        """Seat the agent in an active game; ``secret`` is in its seat's private view only;
+        ``opponent`` is the other seat's display name, as the server's text shows it."""
+        with self.lock:
+            self.widgets[widget_id] = {
+                "widget_id": widget_id, "channel_id": channel, "kind": kind, "status": "active", "rev": 1,
+                "seat": seat, "other": "black" if seat == "white" else "white", "your_move": your_move,
+                "secret": secret, "opponent": opponent,
+            }
+            return self.widgets[widget_id]
+
+    def end_widget(self, widget_id: str) -> None:
+        with self.lock:
+            game = self.widgets[widget_id]
+            game.update(status="ended", rev=game["rev"] + 1, your_move=False)
+
+    def widget_turn(self, widget_id: str) -> dict[str, Any]:
+        """The ``widget.turn`` event the server publishes on the agent's topic for this game now."""
+        with self.lock:
+            game = self.widgets[widget_id]
+            return {"type": "widget.turn", "channel_id": game["channel_id"], "data": {
+                "widget_id": widget_id, "rev": game["rev"], "kind": game["kind"], "seat": game["seat"],
+                "waiting": game["your_move"], "status": game["status"], "move_deadline": None,
+            }}
+
+    def _widget_view(self, game: dict[str, Any], private: bool) -> dict[str, Any]:
+        """A view shaped like AgentWidgetView (clawbits/datastructures/widget_models.py)."""
+        own = private and game["status"] == "active" and game["your_move"]
+        legal = [{"type": "move", "args": {"move": "e4"}}] if own else []
+        instructions = (
+            "Your move. To act, call clawbits_widget_act with your action, or if it isn't in your tool "
+            "list run tool_call. Finish your turn with NO_REPLY." if own
+            else "You may talk about the game in chat, from what this view shows."
+        )
+        text = f"Clawbits chat game: {game['kind']} · rev {game['rev']} · {game['status']}\nYou play {game['seat']}."
+        text += f"\nseat {game['other']}: {game['opponent']} (human)"
+        if private and game["secret"]:
+            text += f"\nYour hand: {game['secret']}"
+        return {
+            "widget_id": game["widget_id"], "channel_id": game["channel_id"], "kind": game["kind"],
+            "status": game["status"], "rev": game["rev"], "seat": game["seat"],
+            "waiting_on": [game["seat"] if game["your_move"] else game["other"]] if game["status"] == "active" else [],
+            "your_move": game["status"] == "active" and game["your_move"], "move_deadline": None,
+            "players": [
+                {"seat": game["seat"], "name": "You", "type": "agent", "id": None},
+                {"seat": game["other"], "name": game["opponent"], "type": "human", "id": f"human:{OPERATOR_ID}"},
+            ],
+            "started_by": f"human:{OPERATOR_ID}", "text": text, "legal": legal,
+            "instructions": instructions, "outcome": None,
+        }
+
+    def _widget_summary(self, game: dict[str, Any]) -> dict[str, Any]:
+        view = self._widget_view(game, False)
+        keys = ("widget_id", "channel_id", "kind", "status", "rev", "seat", "waiting_on", "your_move")
+        return {**{k: view[k] for k in keys}, "opponent": {"name": game["opponent"], "type": "human", "id": f"human:{OPERATOR_ID}"}}
 
     def add_email(
         self,
@@ -217,6 +286,11 @@ class FakeClawbits:
         """The agent's channels and controls, as GET /mm/channels and the WS snapshot carry them."""
         with self.lock:
             channels = []
+            waiting = {
+                g["channel_id"]: {k: g[k] for k in ("widget_id", "rev", "kind", "seat")}
+                for g in self.widgets.values()
+                if g["status"] == "active" and g["your_move"] and self.snapshot_widgets
+            }
             for channel in self.channels:
                 ids = [
                     p["post_id"] for p in self.posts
@@ -226,6 +300,7 @@ class FakeClawbits:
                     "created_at": "2026-01-01 00:00:00", **channel,
                     "latest_post_id": max(ids, default=None),
                     "last_read_post_id": self.read_ptr.get(channel["channel_id"]),
+                    "widget_waiting": waiting.get(channel["channel_id"]),
                 })
         return {
             "channels": channels, "total": len(channels), "snoozed": self.snoozed,
@@ -250,12 +325,14 @@ class FakeClawbits:
         status: str = "published",
         parent_post_id: int | None = None,
         files: list[dict[str, Any]] | None = None,
+        widget_id: str | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             post = {
                 "post_id": next(self._post_ids), "channel_id": channel, "human_id": human_id,
                 "agent_id": agent_id, "poster_display_name": name, "message": text, "created_at": _now(),
                 "status": status, "parent_post_id": parent_post_id, "files": files or [],
+                "widget_id": widget_id,
             }
             self.posts.append(post)
         self._publish(post)
@@ -416,8 +493,43 @@ class FakeClawbits:
                 return {"channel_id": cid, "last_read_post_id": self.read_ptr.get(cid, 0)}
 
         @app.post(api + "/alive")
-        async def alive():
+        async def alive(request: Request):
+            body = await request.json()
+            with self.lock:
+                self.alive_bodies.append(body)
             return {"ok": True}
+
+        @app.get(api + "/mm/widgets")
+        async def list_widgets(channel_id: str | None = None, waiting: bool = False):
+            with self.lock:
+                rows = [
+                    self._widget_summary(g) for g in self.widgets.values()
+                    if g["status"] == "active" and channel_id in (None, g["channel_id"])
+                    and (g["your_move"] or not waiting)
+                ]
+            return {"widgets": rows}
+
+        @app.get(api + "/mm/widgets/{wid}")
+        async def get_widget(wid: str, private: bool = False):
+            with self.lock:
+                if wid not in self.widgets:
+                    raise HTTPException(404, "Widget not found")
+                return self._widget_view(self.widgets[wid], private)
+
+        @app.post(api + "/mm/widgets/{wid}/actions")
+        async def act_on_widget(wid: str, request: Request, private: bool = False):
+            body = await request.json()
+            with self.lock:
+                game = self.widgets.get(wid)
+                if game is None:
+                    raise HTTPException(404, "Widget not found")
+                self.widget_actions.append({"widget_id": wid, "body": body, "private": private})
+                if game["status"] != "active" or not game["your_move"]:
+                    code = "ended" if game["status"] != "active" else "not_your_turn"
+                    return {"ok": False, "code": code, "message": code, "view": self._widget_view(game, private)}
+                game.update(rev=game["rev"] + 1, your_move=False)
+                return {"ok": True, "compact": f"ok · rev {game['rev']} · waiting on {game['other']}",
+                        "your_move": False, "view": None}
 
         @app.get(api + "/agents/{aid}/info")
         async def info(aid: str):
@@ -598,7 +710,9 @@ class FakeClawbits:
             if gate is not None:
                 await asyncio.to_thread(gate.wait, 120)
             with self.lock:
-                reply = self._replies.pop(0) if self._replies else "stub reply"
+                reply = self.route(body) if self.route is not None else None
+                if reply is None:
+                    reply = self._replies.pop(0) if self._replies else "stub reply"
             return self._completion(reply, bool(body.get("stream")))
 
         return app

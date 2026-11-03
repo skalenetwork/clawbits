@@ -142,6 +142,14 @@ export interface ClawBitsAccountConfig {
    * persisted). Default ``true``. See LIVE_AGENT_ACTIVITY_PLAN.md.
    */
   liveActivity?: boolean;
+  /**
+   * Chat games. Default ``true``; ``false`` stops the agent claiming the
+   * ``widgets`` capability, so nobody can seat it in a game. Even when on,
+   * the capability also needs the tools plugin's ``clawbits_widget_act`` tool
+   * registered and allowed (``tools.alsoAllow``), and the operator's "Can play
+   * games" setting in Clawbits. See WIDGETS_AGENTS_PLAN.md.
+   */
+  widgets?: boolean;
 }
 
 export interface ClawBitsChannelSection extends ClawBitsAccountConfig {
@@ -187,6 +195,8 @@ export interface ResolvedClawBitsAccount {
   streaming: boolean;
   /** Defaults to ``true``; see ``ClawBitsAccountConfig.liveActivity``. */
   liveActivity: boolean;
+  /** Defaults to ``true``; see ``ClawBitsAccountConfig.widgets``. */
+  widgets: boolean;
   /** The merged per-account config slice that was resolved. */
   config: ClawBitsAccountConfig;
 }

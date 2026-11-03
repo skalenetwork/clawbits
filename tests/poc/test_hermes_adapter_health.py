@@ -61,7 +61,7 @@ class _Client:
     def list_channels(self) -> list[Any]:
         return self._answer([])
 
-    def alive(self) -> dict[str, Any]:
+    def alive(self, capabilities: list[str] | None = None) -> dict[str, Any]:
         return self._answer({})
 
     def agent_info(self, agent_id: str) -> dict[str, Any]:

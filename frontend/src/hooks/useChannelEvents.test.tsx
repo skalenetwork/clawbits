@@ -6,6 +6,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { useChannelEvents } from "./useChannelEvents";
 import { toggleTrace, useTraceOpen } from "@/hooks/useTraceState";
 import type { MmChannelPost } from "@/lib/api";
+import { queryKeys } from "@/lib/queryKeys";
 import { openSseStream } from "@/lib/sse";
 
 vi.mock("@/lib/sse", () => ({ openSseStream: vi.fn(() => ({ close: vi.fn() })) }));
@@ -98,5 +99,16 @@ describe("useChannelEvents", () => {
     emit({ type: "presence.snapshot", data: { members: [] } });
     await waitFor(() => { expect(client.getQueryState(["mm", "widget", "w1"])?.isInvalidated).toBe(true); });
     expect(client.getQueryState(["mm", "widget", "w2"])?.isInvalidated).toBe(false);
+  });
+
+  it("refetches this chat's score on its first snapshot, which may have missed a game finishing", async () => {
+    const client = new QueryClient();
+    const score = { channel_id: "c", players: [], draws: 0, finished: 0 };
+    client.setQueryData(queryKeys.mm.widgetScore("c"), score);
+    client.setQueryData(queryKeys.mm.widgetScore("d"), { ...score, channel_id: "d" });
+    const { emit } = follow(client);
+    emit({ type: "presence.snapshot", data: { members: [] } });
+    await waitFor(() => { expect(client.getQueryState(queryKeys.mm.widgetScore("c"))?.isInvalidated).toBe(true); });
+    expect(client.getQueryState(queryKeys.mm.widgetScore("d"))?.isInvalidated).toBe(false);
   });
 });

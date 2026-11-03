@@ -18,7 +18,9 @@ async def _raise_prompt(
 ) -> None:
     """Start a turn whose first tool call blocks on an operator prompt; wait for the prompt post."""
     if kind == "clarify":
-        gw.fake.script(tool("clarify", question="Which colour?", choices=["red", "blue"]), "chosen")
+        # The batch form: Hermes 5eea87882a (latest) dropped the single question/choices one.
+        ask = {"question": "Which colour?", "choices": ["red", "blue"]}
+        gw.fake.script(tool("clarify", questions=[ask]), "chosen")
         marker = "Which colour"
     else:
         gw.fake.script(tool("terminal", command=f"rm -rf {target}"), "cleaned")

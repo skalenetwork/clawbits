@@ -772,7 +772,7 @@ def test_forward_read_ignored_by_server_pauses_chat_intake(mod) -> None:
 
     pings: list[str | None] = []
 
-    def alive() -> None:
+    def alive(capabilities: list[str] | None = None) -> None:
         pings.append(adapter._intake_fault)
         adapter._running = False
 

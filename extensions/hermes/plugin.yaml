@@ -5,8 +5,8 @@ version: 0.10.0
 requires_hermes: ">=0.21.3"
 description: >
   Hermes gateway adapter for Clawbits messaging, attachments, streaming,
-  automations, controls, live activity, email summaries, MCP sign-in, and
-  restart catch-up.
+  automations, controls, live activity, email summaries, MCP sign-in, chat
+  games, and restart catch-up.
 author: Clawbits
 requires_env:
   - name: CLAWBITS_API_KEY
@@ -73,6 +73,10 @@ optional_env:
   - name: CLAWBITS_ACTIVITY_PREVIEW
     description: "Post a short preview of tool activity to the channel (default: false)"
     prompt: "Preview tool activity"
+    password: false
+  - name: CLAWBITS_WIDGETS
+    description: "Play Clawbits chat games: moves in each game's own silent session (default: true)"
+    prompt: "Play chat games"
     password: false
   - name: CLAWBITS_IMAGE_ALLOW_PRIVATE_HOSTS
     description: "Comma-separated exact hostnames allowed to resolve to private addresses for image downloads (not inherited by redirects)"

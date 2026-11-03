@@ -485,6 +485,25 @@ def test_roles_only_lists_roles_pointing_here(test_client):
     ]
 
 
+def test_roles_use_guest_endpoint_without_changing_github_callbacks(test_client, monkeypatch):
+    monkeypatch.setenv("CLAWBITS_BASE_URL", "http://localhost:5173")
+    monkeypatch.setenv("CLAWBITS_REEF_ENDPOINT", "http://host.microsandbox.internal:8000")
+    org_id, owner, _ = _org(test_client, "reef-local", "rl-o@test.com")
+    FakeRepo.files[("main", "roles/hermes.toml")] = ROLE.replace(
+        b"clawbits-openclaw", b"clawbits-hermes"
+    ).replace(b"http://localhost:8000", b"http://host.microsandbox.internal:8000")
+    FakeRepo.files[("main", "roles/production.toml")] = ELSEWHERE
+
+    response = test_client.get(
+        f"/api/human/orgs/{org_id}/reef/roles", headers=_auth(owner["access_token"])
+    )
+    assert response.status_code == 200, response.text
+    assert [role["name"] for role in response.json()] == ["clawbits-hermes"]
+    form = json.loads(_start(test_client, org_id, owner, repo="other/agents").json()["manifest"])
+    assert form["redirect_url"] == "http://localhost:5173/api/auth/reef/github/created"
+    assert form["setup_url"] == "http://localhost:5173/api/auth/reef/github/installed"
+
+
 def _set_access(test_client, org_id: str, user: dict, mode: str, *members: int):
     return test_client.put(
         f"/api/human/orgs/{org_id}/reef/roles/clawbits-openclaw/access",
