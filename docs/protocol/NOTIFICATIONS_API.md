@@ -31,7 +31,7 @@ Authorization: Bearer <human_token>
 
 **Authentication:** Human bearer token (WorkOS JWT). The caller must be a member of `channel_id`; returns `403` otherwise.
 
-**Scope:** Events for one channel — post lifecycle, member presence/typing, read receipts.
+**Scope:** Events for one channel — post lifecycle, member presence/typing, read receipts, game updates (`widget.updated`).
 
 **Initial frame:** A single `presence.snapshot` event is prepended before the Redis subscription opens. It contains the transient presence state (members currently typing or agents currently online) at the moment of connection.
 
@@ -44,7 +44,7 @@ Authorization: Bearer <human_token>
 
 **Authentication:** Human bearer token (WorkOS JWT).
 
-**Scope:** Cross-channel concerns — `post.created` and `post.deleted` fanned out to every channel the user is a member of (drives sidebar unread badges and preview rows); `channel.read`, `channel.muted`, `channel.pinned`, `channel.added`, `channel.removed`, `channel.event`, `org.added`, `user.status`, `agent.status`, and `server.hello`.
+**Scope:** Cross-channel concerns — `post.created` and `post.deleted` fanned out to every channel the user is a member of (drives sidebar unread badges and preview rows); `channel.read`, `channel.muted`, `channel.pinned`, `channel.added`, `channel.removed`, `channel.event`, `org.added`, `user.status`, `agent.status`, `channel.widgets`, `widget.turn`, `widget.notify`, and `server.hello`.
 
 The events `member.status`, `member.read`, and `presence.snapshot` are **not** delivered on this stream.
 
@@ -339,6 +339,92 @@ The current user was added to a new organization (invited or auto-provisioned). 
 }
 ```
 
+#### `widget.updated`
+
+A chat game changed: it started, someone moved, or it ended or was aborted. The payload is the full widget response with the **public** scene, each seat's `wins` in this chat and the chat's `draws`. Sent at every change; never unread, never a banner or a push.
+
+**Delivered on:** per-channel stream only.
+
+```json
+{
+  "type": "widget.updated",
+  "channel_id": "abc123",
+  "data": {
+    "widget_id": "w_456",
+    "channel_id": "abc123",
+    "kind": "chess",
+    "status": "active" | "finished" | "aborted",
+    "rev": 7,
+    "turn": "black" | null,
+    "waiting_on": ["black"],
+    "seats": [
+      { "seat": "white", "human_id": 7, "agent_id": null, "display_name": "Alice", "is_agent": false, "avatar": null, "wins": 2 }
+    ],
+    "scene": { /* the public scene */ },
+    "private": false,
+    "post_id": 42,
+    "outcome": null,
+    "created_by_human_id": 7,
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:31:00Z",
+    "draws": 0
+  }
+}
+```
+
+`private: true` (poker, blackjack, battleship) means the scene hides what only a seat may see; a seated client refetches its own view (`GET /api/human/mm/widgets/{widget_id}`) unless it already holds that `rev`.
+
+#### `widget.turn`
+
+Whether a chat game now waits on the current user: the sidebar's quiet "your move" (the channel list's `widget_turn`). Sent to each seated person at every change of the game, `my_turn: false` once it no longer waits on them or has ended. Never a banner, unread or push by itself; the one ping is `widget.notify`.
+
+**Delivered on:** per-user stream only.
+
+```json
+{
+  "type": "widget.turn",
+  "channel_id": "abc123",
+  "data": { "my_turn": true, "widget_id": "w_456", "rev": 7 }
+}
+```
+
+`rev` lets a client drop an event older than one it already applied. A seated agent gets a different `widget.turn` (ids, its seat, whether it waits, the status) on its own agent topic, not on these streams.
+
+#### `channel.widgets`
+
+A chat's widgets switch flipped (`PATCH /api/human/mm/channels/{channel_id}` with `widgets_enabled`). Sent to every human member, so their tabs patch the chat's `widgets_enabled`.
+
+**Delivered on:** per-user stream only.
+
+```json
+{
+  "type": "channel.widgets",
+  "channel_id": "abc123",
+  "data": { "widgets_enabled": true }
+}
+```
+
+#### `widget.notify`
+
+A chat game handed the current user the move and they haven't taken it within the grace (30 s by default): the one "your move" ping for that hand-off. The server decides it once, after re-reading the game, and sends this event at the same moment as the turn web push (§2.3) and APNs push (§2.7). It is sent only while the game is still active, the user's seat still waits at the hand-off, they still hold that seat and may still reach the chat, and the chat is not muted (mute is the only off switch); and at most once per (user, game) until the user acts in that game. A repeated `widget.turn` never causes one, nor does starting, ending or aborting a game. Agents never get it.
+
+**Delivered on:** per-user stream only.
+
+```json
+{
+  "type": "widget.notify",
+  "channel_id": "abc123",
+  "data": {
+    "widget_id": "w_456",
+    "rev": 7,
+    "title": "Your move",
+    "body": "Chess with Bob"
+  }
+}
+```
+
+`rev` is the widget revision at the hand-off (the game may have moved on since). `title` is always `Your move`; `body` is `<game> with <opponent>`, where the game is the scene title (`Chess`, `Battleship`, `Hold'em`, `Blackjack`) and the opponent is a display name only — never an email — with control and bidi characters stripped, capped at 40 characters, or `your opponent` when there is none. It never says anything about the board, cards, chips, fleets or the last move. The desktop app shows it as a native banner while its window is unfocused, keyed `turn:<channel_id>` so it never replaces a message banner (§3); other clients may ignore it.
+
 #### `server.hello`
 
 The first frame of every per-user stream connection. It is **not** a Redis pub/sub event — it is constructed at connection time and injected before the Redis subscription begins, so it is delivered on every new connection (including reconnects after a server restart). Web clients compare `data.version` against their bundled build version and prompt a page reload when they differ. The desktop app ignores this event (its binary updates via Tauri's updater, not a page reload).
@@ -380,6 +466,10 @@ The backend SSE pump self-heals Redis pub/sub connection drops (exponential back
 | `user.status` | ✓ | ✓ (fan-out) | ✓ |
 | `agent.status` | ✓ | ✓ (fan-out) | ✓ |
 | `org.added` | — | ✓ | ✓ |
+| `widget.updated` | ✓ | — | ✓ |
+| `widget.turn` | — | ✓ | ✓ |
+| `channel.widgets` | — | ✓ (fan-out) | ✓ |
+| `widget.notify` | — | ✓ | ✓ |
 | `server.hello` | — | ✓ (initial frame) | — |
 
 ---
@@ -388,7 +478,9 @@ The backend SSE pump self-heals Redis pub/sub connection drops (exponential back
 
 Web Push is the "reach the user when their tab is closed" layer. It operates entirely outside the SSE connection: the server signs push requests with a VAPID keypair and delivers them straight to the browser's push service (Chrome → Google, Firefox → Mozilla, Safari → Apple). No third-party notification vendor is involved.
 
-Web Push is only active when VAPID is configured server-side (`CLAWBITS_VAPID_PUBLIC_KEY` and `CLAWBITS_VAPID_PRIVATE_KEY` environment variables are set). When unconfigured, `GET /api/push/vapid-public-key` returns `{"key": null}` and all dispatch paths are no-ops. The client hides the notification opt-in UI when `key` is null.
+Web Push is only active when VAPID is configured server-side (`CLAWBITS_VAPID_PUBLIC_KEY` and `CLAWBITS_VAPID_PRIVATE_KEY` environment variables are set). When unconfigured, `GET /api/push/vapid-public-key` returns `{"key": null}` and no web push is sent. The client hides the notification opt-in UI when `key` is null.
+
+The push dispatcher (§2.2) also sends APNs (§2.7), so it runs when VAPID **or** APNs is configured; with neither, every push dispatch path is a no-op. A game's `widget.notify` (§1.3) is an SSE event, not a push: it is sent even when no push transport is configured.
 
 ### 2.1 Subscription Endpoints
 
@@ -488,7 +580,7 @@ The server sends a JSON body with `content_encoding = "aes128gcm"`:
   "body": "<message preview>",
   "author": "<poster display name>",
   "channelId": "<channel_id>",
-  "url": "/channels/<channel_id>",
+  "url": "https://<app origin>/channels/<channel_id>",
   "tag": "channel:<channel_id>"
 }
 ```
@@ -498,6 +590,27 @@ The server sends a JSON body with `content_encoding = "aes128gcm"`:
 **Body:** For direct channels, the message text. For group/public channels, `Author: message text`. Truncated to 140 characters with a trailing `…` if longer. If the post has no text but has attachments, the body is `"Sent an attachment"` or `"Sent N attachments"`. If neither, `"New message"`.
 
 **Tag:** Per-channel (`channel:<channel_id>`), so a newer notification from the same channel replaces the older banner in the OS instead of stacking.
+
+**URL:** Absolute, on the app origin (`APP_URL`), never a bare path: a service worker resolves a relative URL against its own origin, and one registered before the app moved origin would open the wrong host. The client folds a same-origin URL back to a path for soft navigation.
+
+**TTL:** `0`: the push service delivers it to a connected browser at once or drops it.
+
+#### Turn ping payload
+
+A game's "your move" ping (see `widget.notify`, §1.3) goes through the same queue and devices, to the one user it is for, with the same muted-chat exclusion already applied:
+
+```json
+{
+  "title": "Your move",
+  "body": "Chess with Bob",
+  "channelId": "<channel_id>",
+  "widgetId": "<widget_id>",
+  "url": "https://<app origin>/channels/<channel_id>?widget=<widget_id>",
+  "tag": "turn:<channel_id>"
+}
+```
+
+**Tag:** `turn:<channel_id>`, so a turn ping never replaces a message banner and a message never replaces a turn ping; a newer game's ping in the same chat replaces the older one. **URL:** opens the chat with the game panel open. **TTL:** `600` (`TURN_PUSH_TTL_SECONDS`): the push service keeps it up to 10 minutes for a browser that isn't connected, so it can show that late, after the user already moved from another device. There is no unread count and no post. `CLAWBITS_WIDGET_TURN_PUSH=0` turns turn pings off (all transports, `widget.notify` included); `CLAWBITS_WIDGET_TURN_PUSH_DELAY_SECONDS` sets the grace (default 30). Timers live in server memory, so a restart drops the pings pending at that moment.
 
 ### 2.4 Service Worker (`/sw.js`)
 
@@ -548,11 +661,38 @@ Generate one keypair per deployment with `uv run python -m clawbits.realtime.web
 
 Default `CLAWBITS_VAPID_SUBJECT`: `mailto:support@clawbits.ai`.
 
+### 2.7 APNs (native iOS) Payload
+
+The same dispatcher sends to iOS devices (`push_devices.transport = "apns"`) when `CLAWBITS_APNS_KEY`, `CLAWBITS_APNS_KEY_ID` and `CLAWBITS_APNS_TEAM_ID` are set. The app's keys go both at the top level (read by builds up to now) and under `body`, the only place expo-notifications reads a remote push's `data` from.
+
+Message push (`apns-collapse-id: <channel_id>`):
+
+```json
+{
+  "aps": {"alert": {"title": "...", "body": "..."}, "sound": "default", "thread-id": "<channel_id>"},
+  "channelId": "<channel_id>",
+  "body": {"channelId": "<channel_id>"}
+}
+```
+
+Turn ping (`apns-collapse-id: turn:<channel_id>`, so it never replaces a message banner; `thread-id` stays the channel, so it groups with its chat):
+
+```json
+{
+  "aps": {"alert": {"title": "Your move", "body": "Chess with Bob"}, "sound": "default", "thread-id": "<channel_id>"},
+  "channelId": "<channel_id>",
+  "widgetId": "<widget_id>",
+  "body": {"channelId": "<channel_id>", "widgetId": "<widget_id>"}
+}
+```
+
+A turn ping skips APNs (web push and `widget.notify` still go) while the user's global presence is `online`, i.e. a visible web or desktop tab was active within the last minutes; it still counts as that game's one ping.
+
 ---
 
 ## 3. Desktop Notifications (Tauri)
 
-The Tauri desktop app receives new-message events over the same per-user SSE stream as the web client. When a `post.created` event arrives, the frontend calls the `notify_channel_message` Tauri command to deliver a native OS notification — without going through the browser's Push API.
+The Tauri desktop app receives new-message events over the same per-user SSE stream as the web client. When a `post.created` event arrives, the frontend calls the `notify_channel_message` Tauri command to deliver a native OS notification — without going through the browser's Push API. A `widget.notify` event (a game's "your move" ping) goes through the same command as a turn ping (`kind: "turn"`).
 
 ### 3.1 Trigger Conditions
 
@@ -562,6 +702,14 @@ The Tauri desktop app receives new-message events over the same per-user SSE str
 - The post would increment the unread count: not the current user's own post, and not in the currently active channel.
 - The channel is not muted.
 - `document.hasFocus()` is `false` — the app window does not have focus.
+
+`notifyForTurn()` fires on `widget.notify` only when **all** of the following are true:
+
+- Running inside the Tauri desktop shell (`isDesktop === true`).
+- The chat is not muted in the cached chat list (the server checked the mute when it sent the event; this catches a mute since).
+- The app window is not both visible and focused.
+
+Unlike a message, it is not skipped for the chat on screen: the focus check already covers someone looking at it.
 
 ### 3.2 Tauri Command
 
@@ -573,9 +721,13 @@ await invoke("notify_channel_message", {
     channelName: string,
     authorName: string,
     body: string,
+    kind?: "turn",     // a game's "your move" ping; a message sends none
+    widgetId?: string, // the game a turn ping opens
   }
 })
 ```
+
+For a turn ping the frontend sends the event's `title` (`Your move`) as both `channelName` and `authorName`, so no author shows, and its `body` (`<Game> with <name>`) as `body`. The frontend ships inside the shell (`frontendDist` in `desktop/src-tauri/tauri.conf.json`), so the shell that runs it always knows `kind`.
 
 The Rust handler (`notify_channel_message` in `desktop/src-tauri/src/lib.rs`) dispatches to the main thread via `app.run_on_main_thread()`, then calls `notifications::deliver(&message)`.
 
@@ -588,6 +740,8 @@ The Rust handler (`notify_channel_message` in `desktop/src-tauri/src/lib.rs`) di
 | Linux | `notify_rust` D-Bus (`org.freedesktop.Notifications`) | Requires an installed `.desktop` file whose basename matches the `DesktopEntry` hint. Sends: `DesktopEntry`, `icon`, `Urgency::Normal`, `Category("im.received")`, `SoundName`, `Timeout(5 000 ms)`. `appname` is intentionally omitted. |
 | Windows | No-op | Not implemented; the call returns `Ok(())` silently. |
 
+A turn ping has a slot of its own, `turn:<channel_id>`: the request identifier on macOS (`UNUserNotificationCenter`; no Reply category, and the widget id rides in `userInfo.widgetId`) and the banner (`replaces_id`) key on Linux. So a turn ping and a message banner never replace each other, and the chat's next turn ping, a newer game's too, replaces it. Clicking it opens `/channels/<channel_id>?widget=<widget_id>`, which opens the chat's running game, or the linked one when none runs; a widget id that isn't URL-safe (`[A-Za-z0-9_-]`) is dropped and the click opens the chat. The unbundled macOS dev build (`NSUserNotification`) has no click handling.
+
 ### 3.4 Notification Content
 
 | Field | Direct channel | Public/private channel |
@@ -598,18 +752,20 @@ The Rust handler (`notify_channel_message` in `desktop/src-tauri/src/lib.rs`) di
 
 On Linux, there is no subtitle slot, so when the channel name differs from the author name the body is `"authorName: message text"`.
 
+A turn ping's title is `Your move`, with no subtitle or author, and its body is `<Game> with <name>` (see `widget.notify`).
+
 ---
 
 ## 4. Mobile (React Native)
 
 The mobile app uses the same two SSE endpoints as the web client, implemented via `react-native-sse`. The `RealtimeProvider` manages the connection lifecycle with exponential backoff (`pollingInterval: 0` disables the library's built-in reconnect so the provider controls backoff). Events are handled by `applyRealtimeEvent()`, which dispatches to per-type handlers (`applyPostCreated`, `applyChannelAdded`, etc.) that update the React Query cache.
 
-The mobile TypeScript `MmEventType` currently covers:
-`post.created` | `post.updated` | `post.deleted` | `member.status` | `member.read` | `channel.read` | `channel.muted` | `channel.pinned` | `channel.added` | `channel.removed` | `channel.event` | `presence.snapshot` | `user.status`
+The mobile TypeScript `ChatEvent` (`apps/mobile/src/lib/models.ts`) currently covers:
+`post.created` | `post.updated` | `post.deleted` | `member.status` | `presence.snapshot` | `channel.added` | `channel.removed` | `channel.read` | `channel.muted` | `widget.updated` | `widget.turn` | `channel.widgets`
 
-`agent.status`, `org.added`, and `server.hello` are not in the mobile type definition; they arrive on the wire but are not processed by the mobile client.
+Any other `channel.*` event (`channel.pinned`, `channel.event`) refetches the chat list. `member.read`, `user.status`, `agent.status`, `org.added` and `server.hello` arrive on the wire but are not processed by the mobile client.
 
-Push notifications for mobile (APNs / FCM) will use the same `push_devices` table with a different `transport` column. The SSE and VAPID layers described above are the only active notification paths today.
+iOS gets APNs alerts, messages and turn pings alike (§2.7), from the same dispatcher as web push; the app registers its device token with `POST /api/push/mobile/subscribe` (`push_devices.transport = "apns"`). There is no FCM/Android sender. A tap opens the chat: the app reads `channelId` and `widgetId` from the push's `body` (expo's `data`), falling back to the top-level copies, and a turn ping also opens the chat's running game in its bar, or the pinged game when none runs (as the desktop click does, §3.3). While the app is active on that chat, its pushes show no banner. The mobile app ignores `widget.notify`, which is for the desktop app.
 
 ---
 
@@ -632,5 +788,9 @@ Push notifications for mobile (APNs / FCM) will use the same `push_devices` tabl
 | `user.status` | ✓ (fan-out) | ✓ (fan-out) | — | — |
 | `agent.status` | ✓ (fan-out) | ✓ (fan-out) | — | — |
 | `org.added` | — | ✓ | — | — |
+| `widget.updated` | ✓ | — | — | — |
+| `widget.turn` | — | ✓ | — | — |
+| `channel.widgets` | — | ✓ (fan-out) | — | — |
+| `widget.notify` | — | ✓ | ✓ (turn ping) | ✓ (unfocused) |
 | `server.hello` | — | ✓ (initial) | — | — |
 

@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import os
 import secrets
 import uuid as _uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -27,6 +29,7 @@ from clawbits.datastructures.mm_models import (
     NEW_CHAT_TITLE,
     PAIR_CHANNEL_TYPES,
     McpApp,
+    McpAppUpload,
     MmTurnStep,
     MmTurnStepUpload,
     ModelStateReportRequest,
@@ -92,6 +95,40 @@ def _as_str(value: object, *, limit: int = 1000) -> str | None:
         return None
     value = value.strip()
     return value[:limit] if value else None
+
+
+# The name agents give clawbits' own MCP server, and where it says its URLs are served.
+_OWN_MCP_SERVER = "clawbits"
+_OWN_URL_SETTINGS = (
+    ("CLAWBITS_BASE_URL", "http://localhost:8000"),
+    ("CLAWBITS_FRONTEND_URL", "http://localhost:5173"),
+)
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _own_hosts() -> frozenset[str]:
+    """Clawbits' API and web hosts as an App view names its server's (``hostname[:port]``, a
+    default port left out, as a browser's ``URL.host`` gives it)."""
+    hosts: set[str] = set()
+    for name, default in _OWN_URL_SETTINGS:
+        url = urlsplit(os.environ.get(name, default))
+        try:
+            port = url.port
+        except ValueError:  # a malformed setting matches nothing rather than fail every finalize
+            continue
+        if url.hostname:
+            plain = port in (None, _DEFAULT_PORTS.get(url.scheme))
+            hosts.add(url.hostname if plain else f"{url.hostname}:{port}")
+    return frozenset(hosts)
+
+
+def _is_own_mcp_app(app: McpAppUpload) -> bool:
+    """A view clawbits' own MCP server rendered, by its name or its host. It may show one seat's
+    private game, and a reply's steps reach every member of the chat, so it's never kept: the
+    server's half of the plugin's filter, for plugins that predate or skip it."""
+    if app.server.lower() == _OWN_MCP_SERVER:
+        return True
+    return app.host is not None and app.host.lower() in _own_hosts()
 
 
 class UserDeletionBlocked(Exception):
@@ -689,6 +726,7 @@ class TableWrite:
         *,
         agent_type: str | None = None,
         plugin_version: str | None = None,
+        capabilities: Sequence[str] | None = None,
     ) -> datetime:
         """Bump an agent's ``last_alive_at`` to ``when`` (defaults to now) and
         return the stored value. Called by ``POST /api/agentic/alive`` on every
@@ -698,7 +736,9 @@ class TableWrite:
         it: ``agent_type`` (runtime kind, from the body) and ``plugin_version``
         (from the ``X-Clawbits-Plugin-Version`` header). Each is written only
         when non-None, so an older plugin that pings with no body never wipes a
-        previously-reported value.
+        previously-reported value. ``capabilities`` is the opposite: the ping's
+        whole set replaces the stored one (the endpoint passes ``[]`` for a ping
+        without it), so a capability lasts only while the runtime still claims it.
 
         Unlike the human heartbeat (every 30-60s, hence Redis-throttled) the
         plugin pings on the order of minutes, so one unconditional row update
@@ -713,6 +753,9 @@ class TableWrite:
                 row.agent_type = agent_type
             if plugin_version is not None:
                 row.plugin_version = plugin_version
+            if capabilities is not None:
+                # Self-reported, so bounded: short distinct names, a handful of them.
+                row.capabilities = sorted({c for c in capabilities if 0 < len(c) <= 64})[:32]
             session.flush()
         return ts
 
@@ -1060,6 +1103,11 @@ class TableWrite:
         session.exec(
             delete(AgentChannelState).where(AgentChannelState.agent_id == agent_id)
         )
+        # Widgets it played: a game it hadn't finished ends ("left") and its seat goes from every
+        # game, finished ones too, since ``mm_widget_seats.agent_id`` has no cascade either. Both
+        # paths, before a DM's delete would cascade its widgets away.
+        TableWrite.abort_mm_widgets_seating(session, reason="left", agent_id=agent_id)
+        session.exec(delete(MmWidgetSeat).where(MmWidgetSeat.agent_id == agent_id))
 
         if keep_content:
             TableWrite._delete_agent_keep_content(session, agent)
@@ -3206,10 +3254,13 @@ class TableWrite:
         clear_lobstertalk_ollama_model: bool = False,
         lobstertalk_interval_seconds: int | None = None,
         lobstertalk_message_limit: int | None = None,
+        widgets_enabled: bool | None = None,
     ) -> Agent | None:
         agent = session.get(Agent, agent_id)
         if agent is None:
             return None
+        if widgets_enabled is not None:
+            agent.widgets_enabled = widgets_enabled
         if inter_agent_mode_enabled is not None:
             agent.inter_agent_mode_enabled = inter_agent_mode_enabled
         if snoozed is not None:
@@ -3546,8 +3597,9 @@ class TableWrite:
 
     @staticmethod
     def keep_turn_step(session: Session, step: MmTurnStepUpload) -> dict:
-        """A reported step as its post keeps it: an App view's document is stored once and referenced by hash."""
-        app = step.app
+        """A reported step as its post keeps it: an App view's document is stored once and referenced by hash.
+        A view from clawbits' own MCP server is dropped and the step kept (:func:`_is_own_mcp_app`)."""
+        app = None if step.app is None or _is_own_mcp_app(step.app) else step.app
         kept = None
         if app is not None:
             kept = McpApp(**app.model_dump(include={"server", "host", "input", "result"}), resource=app.resource)
@@ -5031,6 +5083,17 @@ class TableWrite:
         ).first()
 
     @staticmethod
+    def lock_agent(session: Session, agent_id: str, *, shared: bool = False) -> Agent | None:
+        """The agent row, read fresh and locked until commit: shared to hold its settings steady
+        while it takes a seat, so switching its games off can't miss a game starting meanwhile."""
+        return session.exec(
+            select(Agent)
+            .where(Agent.agent_id == agent_id)
+            .with_for_update(read=shared)
+            .execution_options(populate_existing=True)
+        ).first()
+
+    @staticmethod
     def create_mm_widget(
         session: Session,
         *,
@@ -5038,11 +5101,13 @@ class TableWrite:
         kind: str,
         state: dict,
         turn: str | None,
-        seats: dict[str, int],
+        waiting_on: Sequence[str],
+        seats: Mapping[str, tuple[int | None, str | None]],
         created_by_human_id: int,
     ) -> str:
-        """Start a widget with its seats. A second active widget in the channel fails the
-        ``uq_mm_widgets_channel_active`` index on flush (``IntegrityError``)."""
+        """Start a widget with its seats, each held by ``(human_id, agent_id)`` with exactly one
+        set. A second active widget in the channel fails the ``uq_mm_widgets_channel_active``
+        index on flush (``IntegrityError``)."""
         widget_id = _uuid.uuid4().hex
         session.add(MmWidget(
             widget_id=widget_id,
@@ -5050,12 +5115,15 @@ class TableWrite:
             kind=kind,
             state=state,
             turn=turn,
+            waiting_on=list(waiting_on),
+            # The seats it waits on from the start have had the move since rev 0.
+            acted_revs=dict.fromkeys(waiting_on, 0),
             created_by_human_id=created_by_human_id,
         ))
         session.flush()
         session.add_all(
-            MmWidgetSeat(widget_id=widget_id, seat=seat, human_id=human_id)
-            for seat, human_id in seats.items()
+            MmWidgetSeat(widget_id=widget_id, seat=seat, human_id=human_id, agent_id=agent_id)
+            for seat, (human_id, agent_id) in seats.items()
         )
         session.flush()
         return widget_id
@@ -5079,16 +5147,28 @@ class TableWrite:
         status: str,
         outcome: dict | None,
         turn: str | None,
-    ) -> None:
-        """Store what an action did and bump ``rev``. ``turn`` clears once the widget ends."""
+        waiting_on: Sequence[str],
+        seat: str | None = None,
+    ) -> dict[str, int]:
+        """Store what an action by ``seat`` did and bump ``rev``. ``turn`` and ``waiting_on``
+        clear once the widget ends. ``acted_revs`` marks the new rev for the seat that acted and
+        for each seat the move just came to. Returns those marks for the seats the widget still
+        waits on (the move just came to them, or ``seat`` keeps it), taken under the caller's row
+        lock: a "your move" ping is due only while a seat's mark stands. Empty once it ends."""
+        handed = set(waiting_on) - set(widget.waiting_on)
         widget.state = state
         widget.status = status
         widget.outcome = outcome
         widget.turn = turn if status == "active" else None
+        widget.waiting_on = list(waiting_on) if status == "active" else []
         widget.rev += 1
+        marked = handed | ({seat} if seat is not None else set())
+        # A new dict, so the JSONB column is seen as changed.
+        widget.acted_revs = {**(widget.acted_revs or {}), **dict.fromkeys(marked, widget.rev)}
         widget.updated_at = _dt.datetime.now(_dt.UTC)
         session.add(widget)
         session.flush()
+        return {s: widget.rev for s in marked if s in widget.waiting_on}
 
     @staticmethod
     def abort_mm_widgets(session: Session, reason: str, *where) -> list[tuple[str, str]]:
@@ -5102,6 +5182,7 @@ class TableWrite:
                 .values(
                     status="aborted",
                     turn=None,
+                    waiting_on=[],
                     rev=MmWidget.rev + 1,
                     outcome={"reason": reason},
                     updated_at=func.now(),
@@ -5110,3 +5191,48 @@ class TableWrite:
                 .execution_options(synchronize_session=False)
             ).all()
         ]
+
+    @staticmethod
+    def abort_mm_widgets_seating(
+        session: Session,
+        *,
+        reason: str,
+        channel_id: str | None = None,
+        human_id: int | None = None,
+        agent_id: str | None = None,
+    ) -> list[tuple[str, str]]:
+        """:meth:`abort_mm_widgets` for the active widgets that seat ``human_id`` or ``agent_id``
+        (exactly one), only in ``channel_id`` when given: a player who can't play on ends the game."""
+        if (human_id is None) == (agent_id is None):
+            raise ValueError("A seat is held by a human or an agent")
+        seated = (
+            MmWidgetSeat.human_id == human_id if human_id is not None else MmWidgetSeat.agent_id == agent_id
+        )
+        where = [MmWidget.widget_id.in_(select(MmWidgetSeat.widget_id).where(seated))]
+        if channel_id is not None:
+            where.append(MmWidget.channel_id == channel_id)
+        return TableWrite.abort_mm_widgets(session, reason, *where)
+
+    @staticmethod
+    def abort_mm_widgets_out_of_reach(session: Session, agent_id: str) -> list[tuple[str, str]]:
+        """End (``left``) the active widgets seating ``agent_id`` in one-to-one chats it may no
+        longer reach, as after a contact grant is revoked: neither side of such a chat can play on.
+        Locks the agent row first, as switching its games off does: a game starting meanwhile
+        (which holds that row shared) is ended here, or starts after and sees the revoke."""
+        from clawbits.db.table_read import TableRead
+
+        TableWrite.lock_agent(session, agent_id)
+        seated = select(MmWidgetSeat.widget_id).where(MmWidgetSeat.agent_id == agent_id)
+        channel_ids = session.exec(
+            select(MmWidget.channel_id)
+            .join(MmChannel, MmChannel.channel_id == MmWidget.channel_id)
+            .where(MmWidget.status == "active")
+            .where(MmWidget.widget_id.in_(seated))
+            .where(MmChannel.channel_type.in_(PAIR_CHANNEL_TYPES))
+        ).all()
+        lost = [c for c in channel_ids if not TableRead.can_agent_access_dm(session, c, agent_id)]
+        if not lost:
+            return []
+        return TableWrite.abort_mm_widgets(
+            session, "left", MmWidget.widget_id.in_(seated), MmWidget.channel_id.in_(lost)
+        )

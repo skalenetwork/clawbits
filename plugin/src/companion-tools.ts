@@ -12,6 +12,7 @@ import type { ClawBitsClient } from "./client.js";
 import { frameEmailForDm } from "./email-dm-frame.js";
 import { logWarn } from "./file-logger.js";
 import { connectMcpServer, type McpConnect } from "./mcp-oauth.js";
+import { readSlimChannelHandoff } from "./service-handoff.js";
 import { getAgentInfo, updateAgentDescription } from "./tools/agents.js";
 import {
   emailGet,
@@ -35,6 +36,19 @@ import {
   summarizeSearch,
 } from "./tool-views.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
+import {
+  WIDGET_ACT_SPEC,
+  WIDGET_GET_SPEC,
+  WIDGET_LIST_SPEC,
+  type WidgetToolSpec,
+} from "./widgets/tool-spec.js";
+import {
+  widgetAct,
+  widgetGet,
+  widgetList,
+  type WidgetToolResult,
+  type WidgetToolScope,
+} from "./widgets/tools.js";
 
 export const CLAWBITS_TOOL_NAMES = [
   "clawbits_channels_list",
@@ -48,7 +62,17 @@ export const CLAWBITS_TOOL_NAMES = [
   "clawbits_search",
   "clawbits_channel_posts",
   "clawbits_mcp_connect",
+  "clawbits_widget_act",
+  "clawbits_widget_get",
+  "clawbits_widget_list",
 ] as const;
+
+/** Tell the channel which agent tools this plugin registered, restated whole: it claims the
+ *  `widgets` capability only once `clawbits_widget_act` is among them (widgets/capability.ts).
+ *  An older channel has no such hook, and then never claims it. */
+export function reportClawbitsTools(runtime: OpenClawPluginApi["runtime"]): void {
+  readSlimChannelHandoff(runtime)?.reportCompanionTools?.([...CLAWBITS_TOOL_NAMES]);
+}
 
 const TOOL_REQUEST_TIMEOUT_MS = 30_000;
 const EMAIL_GET_TIMEOUT_MS = 60_000;
@@ -110,6 +134,15 @@ function jsonResult(value: unknown): {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
     details: value,
   };
+}
+
+/** A plain-text result: what the model reads as is (the chat game tools' boards are grids that
+ *  JSON would escape). */
+function textResult({ text, details }: WidgetToolResult): {
+  content: Array<{ type: "text"; text: string }>;
+  details: unknown;
+} {
+  return { content: [{ type: "text", text }], details };
 }
 
 /** The fields this plugin reads off a post's reaction buckets. The server's
@@ -629,5 +662,42 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
       },
     }),
     { name: CLAWBITS_TOOL_NAMES[10], optional: true },
+  );
+
+  registerWidgetTool(api, WIDGET_ACT_SPEC, widgetAct);
+  registerWidgetTool(api, WIDGET_GET_SPEC, widgetGet);
+  registerWidgetTool(api, WIDGET_LIST_SPEC, widgetList);
+}
+
+/**
+ * A Clawbits chat game tool (widgets/tools.ts), as the server declares it (widgets/tool-spec.ts).
+ * Factory form: the run's session decides the view (a game's own session plays its game privately)
+ * and the chat the turn answers in is the default game's. Only the act tool is pinned in the
+ * catalog, so a move's schema is always in view (the host ignores `catalogMode` before 2026.7.2,
+ * where tool search is opt-in anyway); the reads stay deferrable.
+ */
+function registerWidgetTool<P>(
+  api: OpenClawPluginApi,
+  spec: WidgetToolSpec,
+  run: (client: ClawBitsClient, scope: WidgetToolScope, params: P) => Promise<WidgetToolResult>,
+): void {
+  api.registerTool(
+    (ctx) => ({
+      name: spec.name,
+      label: spec.annotations.title,
+      ...(spec === WIDGET_ACT_SPEC ? { catalogMode: "direct-only" as const } : {}),
+      description: spec.description,
+      parameters: spec.inputSchema,
+      async execute(_toolCallId: string, params: P, signal?: AbortSignal) {
+        signal?.throwIfAborted();
+        // A turn from another channel has no Clawbits chat, and its account id isn't ours.
+        const inChat = ctx.messageChannel === CHANNEL_ID;
+        const { client } = clientForConfig(api.config, inChat ? ctx.agentAccountId : undefined);
+        const scope: WidgetToolScope = { sessionKey: ctx.sessionKey, signal };
+        if (inChat && ctx.nativeChannelId) scope.chatId = ctx.nativeChannelId;
+        return textResult(await run(client, scope, params));
+      },
+    }),
+    { name: spec.name, optional: true },
   );
 }

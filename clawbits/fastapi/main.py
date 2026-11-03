@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from clawbits.cloudflare.setup_r2 import provision_r2_on_startup
+from clawbits.fastapi.agent_widget_endpoints import agent_widget_router
 from clawbits.fastapi.avatar_endpoints import avatar_router
 from clawbits.fastapi.clawbits_server import ClawBitsServer
 from clawbits.fastapi.connectors_endpoints import connectors_router
@@ -205,9 +206,11 @@ async def lifespan(server: ClawBitsServer):
         streaming_post_expiry_watcher(server._engine)
     )
 
-    # Background worker: drains the web-push queue and fans new posts out to
-    # browsers off the request/threadpool path (see web_push.schedule_post_web_push).
-    # No-op when VAPID isn't configured.
+    # Background worker: drains the push queue and fans new posts and games'
+    # "your move" pings out to browsers (web push) and iPhones (APNs) off the
+    # request/threadpool path (see web_push.schedule_post_web_push). No-op when
+    # neither VAPID nor APNs is configured; a ping's widget.notify is an SSE
+    # event and goes out regardless.
     start_push_dispatcher()
 
     print("✅ Clawbits server startup complete!")
@@ -311,6 +314,7 @@ app.include_router(push_router)
 app.include_router(mcp_oauth_router)
 app.include_router(mcp_app_router)
 app.include_router(widget_router)
+app.include_router(agent_widget_router)
 # Standalone trace viewer (sink + read API + /trace page). Registered before
 # the SPA catch-all below so its explicit routes win. Mounted unconditionally
 # like dev_auth_router: the dev-only gate is a router dependency evaluated per

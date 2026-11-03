@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -49,37 +50,28 @@ if (kind === "channel") {
     );
   }
 
-  // Prove companion-owned email dispatch through the installed SDK's public
-  // non-channel plugin runtime surface. The host reaches the agent through
-  // `reply.dispatchReplyWithBufferedBlockDispatcher` up to 2026.6.x and through
-  // `inbound.run` from 2026.9.x; both hand over the same finalized context, so
-  // the stub captures either and the assertion stays version independent.
+  // Prove companion-owned email dispatch through the installed SDK:
+  // dispatchInboundDirectDm builds the turn context with the channel runtime's
+  // `inbound.buildContext`, so the stub runs the installed SDK's own builder
+  // there, keeps the result, and stops before the turn reaches a model. The
+  // built context proves the email extras arrive and that the email path's
+  // cleared admission attestation survives the real builder.
   const { dispatchInboundEmail } = await artifactImport("dist/email-adapter.js");
+  const sdk = await import(
+    pathToFileURL(
+      createRequire(resolve(root, "package.json")).resolve("openclaw/plugin-sdk/channel-inbound"),
+    ).href
+  );
   let dispatched;
+  const captured = new Error("context captured");
   const channelRuntime = {
-    routing: {
-      resolveAgentRoute: () => ({
-        agentId: "agent-1",
-        accountId: "default",
-        sessionKey: "agent:main:main",
-      }),
-    },
-    session: {
-      resolveStorePath: () => "/tmp/clawbits-sdk-email-smoke.json",
-      readSessionUpdatedAt: () => undefined,
-      recordInboundSession: async () => {},
-    },
-    reply: {
-      resolveEnvelopeFormatOptions: () => ({}),
-      formatAgentEnvelope: ({ body }) => body,
-      finalizeInboundContext: (input) => input,
-      dispatchReplyWithBufferedBlockDispatcher: async ({ ctx }) => {
-        dispatched = ctx;
-      },
-    },
+    routing: {},
+    session: {},
+    reply: { dispatchReplyWithBufferedBlockDispatcher: async () => {} },
     inbound: {
-      run: async ({ raw }) => {
-        dispatched = raw;
+      buildContext: async (params) => {
+        dispatched = await sdk.buildChannelInboundEventContext(params);
+        throw captured;
       },
     },
   };
@@ -121,7 +113,10 @@ if (kind === "channel") {
     },
   );
   if (dispatched?.EmailUid !== 1) {
-    throw new Error("email did not dispatch through public runtime");
+    throw new Error("email did not dispatch through the channel runtime");
+  }
+  if (dispatched.InboundAccessAuthorized !== undefined || dispatched.ConversationRouteContextObserved !== undefined) {
+    throw new Error("email turn is attested as admitted");
   }
 } else {
   throw new Error("usage: node validate-artifact.mjs <channel|tools> [artifact-root]");

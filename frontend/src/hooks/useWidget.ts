@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   actOnWidget,
   getWidget,
+  getWidgetScore,
   listActiveWidgets,
   type Widget,
   type WidgetAction,
@@ -10,47 +11,7 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { openSseStream } from "@/lib/sse";
 import { errMsg, toast } from "@/lib/toast";
-import { applyWidget, applyWidgetEvent, freshActiveWidgets, freshWidget } from "@/lib/widgets";
-
-// The widgets whose board is on screen now, so the dock steps aside while the board itself is in view.
-const onScreen = new Set<string>();
-const onScreenListeners = new Set<() => void>();
-
-function setWidgetOnScreen(widgetId: string, shown: boolean): void {
-  if (onScreen.has(widgetId) === shown) return;
-  if (shown) onScreen.add(widgetId);
-  else onScreen.delete(widgetId);
-  for (const listener of onScreenListeners) listener();
-}
-
-/** Whether a widget's board is on screen now. */
-export function useWidgetOnScreen(widgetId: string): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      onScreenListeners.add(listener);
-      return () => { onScreenListeners.delete(listener); };
-    },
-    () => onScreen.has(widgetId),
-  );
-}
-
-/** A ref for the element that shows a widget's board, telling `useWidgetOnScreen` while most of it shows: half of
- *  it, or half the screen for a board taller than that. The glass header and composer don't count as showing. */
-export function useWidgetOnScreenRef(widgetId: string): (el: HTMLElement | null) => (() => void) | undefined {
-  return useCallback((el: HTMLElement | null) => {
-    if (!el) return undefined;
-    const observer = new IntersectionObserver(([entry]) => {
-      if (!entry) return;
-      const whole = Math.min(entry.boundingClientRect.height, entry.rootBounds?.height ?? window.innerHeight);
-      setWidgetOnScreen(widgetId, entry.isIntersecting && entry.intersectionRect.height >= whole / 2);
-    }, { rootMargin: "-64px 0px -160px 0px", threshold: Array.from({ length: 11 }, (_, i) => i / 10) });
-    observer.observe(el);
-    return () => {
-      observer.disconnect();
-      setWidgetOnScreen(widgetId, false);
-    };
-  }, [widgetId]);
-}
+import { applyWidget, applyWidgetEvent, freshActiveWidgets, freshWidget, scoreLine } from "@/lib/widgets";
 
 /** One widget; `widget.updated` keeps it live, so no polling. A slow answer never undoes a newer rev an event brought
  *  while it was out. */
@@ -86,7 +47,7 @@ export function useWidgetLive(widgetId: string, channelId: string | undefined) {
   }, [qc, widgetId, channelId]);
 }
 
-/** The chat's active widget, if any (the server allows one), for the dock. */
+/** The chat's active widget, if any (the server allows one), for its game panel. */
 export function useActiveWidgets(channelId: string, enabled: boolean) {
   const qc = useQueryClient();
   return useQuery({
@@ -95,6 +56,23 @@ export function useActiveWidgets(channelId: string, enabled: boolean) {
     enabled,
     staleTime: 60_000,
   });
+}
+
+/** The chat's score over its finished games, for Channel info and the "Play a game" menu. A game that finishes here
+ *  refetches it (`applyWidgetEvent`), so no polling. */
+export function useWidgetScore(channelId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.mm.widgetScore(channelId),
+    queryFn: () => getWidgetScore(channelId),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+/** The chat's score in one line for the viewer, "You 3 – 2 Bob · 1 draw"; null until a game here has finished.
+ *  `enabled` only gates the fetch: a score already cached still shows. */
+export function useScoreLine(channelId: string, userId: number | null, enabled: boolean): string | null {
+  return scoreLine(useWidgetScore(channelId, enabled).data, userId);
 }
 
 /** Act as the viewer's seat. A rejected action refetches, since the board it was taken on may be stale. */

@@ -14,6 +14,7 @@ from sqlalchemy import (
     ColumnElement,
     ScalarSelect,
     and_,
+    any_,
     case,
     func,
     literal,
@@ -77,6 +78,7 @@ from clawbits.db.models import (
     Skill,
     SkillVersion,
 )
+from clawbits.fastapi.version_check import widgets_eligible
 from clawbits.utils.parse import (
     format_db_timestamp as _iso,
 )
@@ -1603,10 +1605,14 @@ class TableRead:
         return TableRead._channel_to_dict(row, session) if row else None
 
     @staticmethod
-    def get_mm_channels_for_agent(session: Session, agent_id: str) -> list[dict]:
+    def get_mm_channels_for_agent(
+        session: Session, agent_id: str, *, widgets_waiting: bool = True
+    ) -> list[dict]:
         """The agent's channels with its read pointer, latest post and unread counts, so a
-        reconnecting agent drains only the channels that moved. A ``None`` pointer means first
-        boot. DMs the agent may no longer access are dropped."""
+        reconnecting agent drains only the channels that moved, and the game waiting on its move
+        there (``widget_waiting``), so it catches up on a wake it missed; ``widgets_waiting=False``
+        leaves that out (an agent past its daily wake budget). A ``None`` pointer means first boot.
+        DMs the agent may no longer access are dropped."""
         latest_post = (
             select(MmPost.post_id.label("post_id"))
             .where(MmPost.channel_id == MmChannel.channel_id)
@@ -1643,6 +1649,7 @@ class TableRead:
             .where(MmChannelMember.agent_id == agent_id)
             .order_by(MmChannel.created_at.desc())
         ).all()
+        waiting = TableRead.mm_widgets_waiting_on_agent(session, agent_id) if widgets_waiting else {}
         return [
             {
                 **TableRead._channel_to_dict(c, session),
@@ -1652,6 +1659,7 @@ class TableRead:
                 "unread_mention_count": unread_mention_count,
                 "model": model,
                 "thinking": thinking,
+                "widget_waiting": waiting.get(c.channel_id),
             }
             for (
                 c,
@@ -2702,8 +2710,10 @@ class TableRead:
         named agent chats keep their title), ``dm_peer`` the peer as
         :meth:`get_mm_channel_members` returns it (``can_tag`` included for an
         agent), and ``dm_peer_human_id`` or ``dm_peer_agent_id`` its id.
-        Presence is the endpoint's to apply. Returns the agent 1:1s the viewer
-        may no longer contact. Two statements for the whole list."""
+        Presence is the endpoint's to apply. ``widgets_supported`` says whether a
+        game can start here: a DM between people, or a 1:1 with an agent that may
+        take a seat. Returns the agent 1:1s the viewer may no longer contact. Two
+        statements for the whole list."""
         pair_ids = [d["channel_id"] for d in channels if d["channel_type"] in PAIR_CHANNEL_TYPES]
         if not pair_ids:
             return set()
@@ -2728,14 +2738,21 @@ class TableRead:
             row = peers.get(d["channel_id"])
             if row is None:
                 continue
-            m, u, *_ = row
+            m, u, _, a, *_ = row
             peer = TableRead._member_to_dict(*row, viewer_human_id=viewer_human_id)
             name = (u.display_name or u.email) if u else peer["display_name"]
             if name and d["channel_type"] != AGENT_CHAT:
                 d["display_name"] = name
             if m.agent_id is None:
                 d["dm_peer_human_id"] = m.human_id
+                d["widgets_supported"] = d["channel_type"] == "direct"
             else:
+                # As starting one requires (``widgets.service._opponent``): able, allowed, awake.
+                d["widgets_supported"] = (
+                    a is not None
+                    and not a.snoozed
+                    and widgets_eligible(a.agent_type, a.capabilities, a.widgets_enabled)
+                )
                 grant = grants.get(m.agent_id)
                 operates = peer["is_operator"]
                 peer["can_tag"] = operates or bool(grant and grant.can_tag)
@@ -2910,6 +2927,22 @@ class TableRead:
             select(MmChannelMember.channel_id)
             .where(MmChannelMember.agent_id == agent_id)
         ).all())
+
+    @staticmethod
+    def get_reachable_mm_channel_ids_for_agent(session: Session, agent_id: str) -> list[str]:
+        """The chats :meth:`get_mm_channels_for_agent` lists, ids only: memberships, less 1:1s the
+        agent may no longer reach. The contact check runs for 1:1s alone, as there."""
+        rows = session.exec(
+            select(MmChannel.channel_id, MmChannel.channel_type)
+            .join(MmChannelMember, MmChannelMember.channel_id == MmChannel.channel_id)
+            .where(MmChannelMember.agent_id == agent_id)
+        ).all()
+        return [
+            channel_id
+            for channel_id, channel_type in rows
+            if channel_type not in PAIR_CHANNEL_TYPES
+            or TableRead.can_agent_access_dm(session, channel_id, agent_id)
+        ]
 
     @staticmethod
     def get_human_ids_sharing_channel_with_agent(
@@ -4050,16 +4083,60 @@ class TableRead:
     # ---------------- widgets ----------------
 
     @staticmethod
+    def _widget_player(
+        human_id: int | None,
+        agent_id: str | None,
+        human: HumanUser | None,
+        agent: Agent | None,
+        profile: AgentProfile | None,
+    ) -> dict:
+        """A widget player as its seat shows them: ids, name, whether an agent, and avatar."""
+        return {
+            "human_id": human_id,
+            "agent_id": agent_id,
+            # The agent's name as every other surface resolves it, never its id unless that's all.
+            "display_name": (
+                (human.display_name or human.email)
+                if human
+                else (profile.display_name if profile else None)
+                or (agent.nickname if agent else None)
+                or agent_id
+            ),
+            "is_agent": agent_id is not None,
+            "avatar": (
+                avatar_ref_for_user(
+                    user_id=human.id, version=human.avatar_version, kind=human.avatar_kind
+                ).model_dump()
+                if human
+                else avatar_ref_for_agent(
+                    agent_id=agent.agent_id, version=agent.avatar_version, kind=agent.avatar_kind
+                ).model_dump()
+                if agent
+                else None
+            ),
+        }
+
+    @staticmethod
     def _mm_widget_dicts(
-        session: Session, rows: Sequence[MmWidget], viewer_human_id: int | None = None
+        session: Session,
+        rows: Sequence[MmWidget],
+        viewer_human_id: int | None = None,
+        *,
+        viewer_agent_id: str | None = None,
+        with_scores: bool = False,
     ) -> list[dict]:
-        """Response dicts for ``rows``, each with its seats and a fresh scene as ``viewer_human_id``
-        may see it; ``None`` gets the public scene a realtime event may carry. Three statements."""
+        """Response dicts for ``rows``, each with its seats and a fresh scene as the viewer (a human
+        or an agent, at most one) may see it; neither gets the public scene a realtime event may
+        carry. Three statements; two more ``with_scores``, which only people's views ask for: each
+        seat's player's ``wins`` and the widget's ``draws`` over its chat's finished games
+        (:meth:`mm_widget_scores`)."""
         if not rows:
             return []
         seats = session.exec(
-            select(MmWidgetSeat, HumanUser)
+            select(MmWidgetSeat, HumanUser, Agent, AgentProfile)
             .join(HumanUser, HumanUser.id == MmWidgetSeat.human_id, isouter=True)
+            .join(Agent, Agent.agent_id == MmWidgetSeat.agent_id, isouter=True)
+            .join(AgentProfile, AgentProfile.agent_id == MmWidgetSeat.agent_id, isouter=True)
             .where(MmWidgetSeat.widget_id.in_([w.widget_id for w in rows]))
         ).all()
         # The message that started each, which shows its board in the chat.
@@ -4069,20 +4146,22 @@ class TableRead:
             ).all()
         )
         by_widget: dict[str, list[dict]] = defaultdict(list)
-        for seat, human in seats:
+        for seat, human, agent, profile in seats:
             by_widget[seat.widget_id].append({
                 "seat": seat.seat,
-                "human_id": seat.human_id,
-                "agent_id": seat.agent_id,
-                "display_name": (human.display_name or human.email) if human else seat.agent_id,
+                **TableRead._widget_player(seat.human_id, seat.agent_id, human, agent, profile),
             })
         out = []
         for w in rows:
             kind = WIDGET_KINDS.get(w.kind)
             order = kind.seats if kind else ()
             seat = next(
-                (s["seat"] for s in by_widget[w.widget_id]
-                 if viewer_human_id is not None and s["human_id"] == viewer_human_id),
+                (
+                    s["seat"]
+                    for s in by_widget[w.widget_id]
+                    if (viewer_human_id is not None and s["human_id"] == viewer_human_id)
+                    or (viewer_agent_id is not None and s["agent_id"] == viewer_agent_id)
+                ),
                 None,
             )
             out.append({
@@ -4092,6 +4171,7 @@ class TableRead:
                 "status": w.status,
                 "rev": w.rev,
                 "turn": w.turn,
+                "waiting_on": list(w.waiting_on),
                 "seats": sorted(
                     by_widget[w.widget_id],
                     key=lambda s: order.index(s["seat"]) if s["seat"] in order else len(order),
@@ -4104,14 +4184,34 @@ class TableRead:
                 "created_at": _iso(w.created_at),
                 "updated_at": _iso(w.updated_at),
             })
+        if with_scores:
+            scores = TableRead.mm_widget_scores(session, {w.channel_id for w in rows})
+            for widget in out:
+                score = scores.get(widget["channel_id"], {})
+                widget["draws"] = score.get("draws", 0)
+                for s in widget["seats"]:
+                    s["wins"] = score.get("wins", {}).get((s["human_id"], s["agent_id"]), 0)
         return out
 
     @staticmethod
     def get_mm_widget(
-        session: Session, widget_id: str, viewer_human_id: int | None = None
+        session: Session,
+        widget_id: str,
+        viewer_human_id: int | None = None,
+        *,
+        viewer_agent_id: str | None = None,
+        with_scores: bool = False,
     ) -> dict | None:
         row = session.get(MmWidget, widget_id)
-        return TableRead._mm_widget_dicts(session, [row], viewer_human_id)[0] if row else None
+        if row is None:
+            return None
+        return TableRead._mm_widget_dicts(
+            session,
+            [row],
+            viewer_human_id,
+            viewer_agent_id=viewer_agent_id,
+            with_scores=with_scores,
+        )[0]
 
     @staticmethod
     def list_mm_widgets(
@@ -4120,13 +4220,17 @@ class TableRead:
         *,
         active_only: bool = True,
         viewer_human_id: int | None = None,
+        viewer_agent_id: str | None = None,
+        with_scores: bool = False,
     ) -> list[dict]:
         """The channel's widgets, newest first, as the viewer sees them; only the active one by default."""
         stmt = select(MmWidget).where(MmWidget.channel_id == channel_id)
         if active_only:
             stmt = stmt.where(MmWidget.status == "active")
         rows = session.exec(stmt.order_by(MmWidget.created_at.desc()).limit(20)).all()
-        return TableRead._mm_widget_dicts(session, rows, viewer_human_id)
+        return TableRead._mm_widget_dicts(
+            session, rows, viewer_human_id, viewer_agent_id=viewer_agent_id, with_scores=with_scores
+        )
 
     @staticmethod
     def active_mm_widget_ids_seating(session: Session, human_id: int) -> list[str]:
@@ -4139,6 +4243,22 @@ class TableRead:
                 .where(MmWidget.status == "active")
             ).all()
         )
+
+    @staticmethod
+    def list_active_mm_widgets_seating_agent(
+        session: Session, agent_id: str, channel_id: str | None = None
+    ) -> list[dict]:
+        """The active widgets ``agent_id`` holds a seat in, newest first (only ``channel_id``'s when
+        given), each with the public scene."""
+        stmt = (
+            select(MmWidget)
+            .join(MmWidgetSeat, MmWidgetSeat.widget_id == MmWidget.widget_id)
+            .where(MmWidgetSeat.agent_id == agent_id)
+            .where(MmWidget.status == "active")
+        )
+        if channel_id is not None:
+            stmt = stmt.where(MmWidget.channel_id == channel_id)
+        return TableRead._mm_widget_dicts(session, session.exec(stmt.order_by(MmWidget.created_at.desc())).all())
 
     @staticmethod
     def active_mm_widget_id(session: Session, channel_id: str) -> str | None:
@@ -4159,17 +4279,150 @@ class TableRead:
         ).one()
 
     @staticmethod
+    def mm_widgets_waiting_on_agent(session: Session, agent_id: str) -> dict[str, dict]:
+        """``{channel_id: {widget_id, rev, kind, seat}}`` for each active widget waiting on a seat
+        ``agent_id`` holds: one per chat at most, as only one widget is active there."""
+        return {
+            channel_id: {"widget_id": widget_id, "rev": rev, "kind": kind, "seat": seat}
+            for channel_id, widget_id, rev, kind, seat in session.exec(
+                select(MmWidget.channel_id, MmWidget.widget_id, MmWidget.rev, MmWidget.kind, MmWidgetSeat.seat)
+                .join(
+                    MmWidgetSeat,
+                    (MmWidgetSeat.widget_id == MmWidget.widget_id)
+                    & (MmWidgetSeat.seat == any_(MmWidget.waiting_on)),
+                )
+                .where(MmWidgetSeat.agent_id == agent_id)
+                .where(MmWidget.status == "active")
+            ).all()
+        }
+
+    @staticmethod
     def mm_widget_turn_channel_ids(session: Session, human_id: int) -> set[str]:
         """Channels where an active widget waits on this human's seat: the sidebar's "your move"."""
         return set(session.exec(
             select(MmWidget.channel_id)
             .join(
                 MmWidgetSeat,
-                (MmWidgetSeat.widget_id == MmWidget.widget_id) & (MmWidgetSeat.seat == MmWidget.turn),
+                (MmWidgetSeat.widget_id == MmWidget.widget_id)
+                & (MmWidgetSeat.seat == any_(MmWidget.waiting_on)),
             )
             .where(MmWidgetSeat.human_id == human_id)
             .where(MmWidget.status == "active")
         ).all())
+
+    @staticmethod
+    def turn_push_target(session: Session, widget_id: str, human_id: int) -> dict | None:
+        """What a "your move" ping to ``human_id`` rechecks and says (``widgets.turn_push``): the
+        widget's row, the seat they hold in it (``None`` once they hold none), whether they muted
+        its chat, and the other player's name. That name shows on a lock screen, so it's a display
+        name only (a person's, an agent's profile name or nickname), never an email: ``None`` when
+        there's none. ``None`` once the widget is gone."""
+        row = session.get(MmWidget, widget_id)
+        if row is None:
+            return None
+        seat: str | None = None
+        opponent: str | None = None
+        for held, human_name, profile_name, nickname in session.exec(
+            select(MmWidgetSeat, HumanUser.display_name, AgentProfile.display_name, Agent.nickname)
+            .join(HumanUser, HumanUser.id == MmWidgetSeat.human_id, isouter=True)
+            .join(Agent, Agent.agent_id == MmWidgetSeat.agent_id, isouter=True)
+            .join(AgentProfile, AgentProfile.agent_id == MmWidgetSeat.agent_id, isouter=True)
+            .where(MmWidgetSeat.widget_id == widget_id)
+            .order_by(MmWidgetSeat.seat)
+        ).all():
+            if held.human_id == human_id:
+                seat = held.seat
+            else:
+                opponent = opponent or human_name or profile_name or nickname
+        return {
+            "channel_id": row.channel_id,
+            "kind": row.kind,
+            "status": row.status,
+            "state": row.state,
+            "outcome": row.outcome,
+            "waiting_on": list(row.waiting_on),
+            "acted_revs": dict(row.acted_revs or {}),
+            "seat": seat,
+            "muted": bool(TableRead.get_muted_human_ids(session, row.channel_id, [human_id])),
+            "opponent": opponent,
+        }
+
+    @staticmethod
+    def mm_widget_scores(session: Session, channel_ids: Collection[str]) -> dict[str, dict]:
+        """Each chat's score over its finished games, every kind together: ``{channel_id:
+        {"wins": {(human_id, agent_id): n}, "draws": n, "finished": n}}``, ``wins`` keyed by
+        everyone seated in one of them. A win follows the player, since seats are drawn anew each
+        game; a ``null`` winner is a draw. Ended and aborted games never count, and a deleted
+        account's seats, its wins with them, are gone. A chat with none finished is absent. Two
+        statements."""
+        if not channel_ids:
+            return {}
+        finished = and_(MmWidget.channel_id.in_(channel_ids), MmWidget.status == "finished")
+        scores: dict[str, dict] = {
+            channel_id: {"wins": {}, "draws": draws, "finished": count}
+            for channel_id, count, draws in session.exec(
+                select(
+                    MmWidget.channel_id,
+                    func.count(),
+                    func.count().filter(func.jsonb_typeof(MmWidget.outcome["winner"]) == "null"),
+                )
+                .where(finished)
+                .group_by(MmWidget.channel_id)
+            ).all()
+        }
+        for channel_id, human_id, agent_id, wins in session.exec(
+            select(
+                MmWidget.channel_id,
+                MmWidgetSeat.human_id,
+                MmWidgetSeat.agent_id,
+                func.count().filter(MmWidgetSeat.seat == MmWidget.outcome["winner"].astext),
+            )
+            .join(MmWidgetSeat, MmWidgetSeat.widget_id == MmWidget.widget_id)
+            .where(finished)
+            .group_by(MmWidget.channel_id, MmWidgetSeat.human_id, MmWidgetSeat.agent_id)
+        ).all():
+            scores[channel_id]["wins"][(human_id, agent_id)] = wins
+        return scores
+
+    @staticmethod
+    def mm_widget_score(session: Session, channel_id: str) -> dict:
+        """A chat's score as its route answers it: everyone seated in one of its finished games,
+        named as on a seat, with their wins (most first); the draws; and how many games finished.
+        Four statements."""
+        score = TableRead.mm_widget_scores(session, [channel_id]).get(channel_id) or {
+            "wins": {}, "draws": 0, "finished": 0
+        }
+        wins: dict[tuple[int | None, str | None], int] = score["wins"]
+        humans = {
+            row.id: row
+            for row in session.exec(
+                select(HumanUser).where(HumanUser.id.in_([h for h, _ in wins if h is not None]))
+            ).all()
+        }
+        agents = {
+            agent.agent_id: (agent, profile)
+            for agent, profile in session.exec(
+                select(Agent, AgentProfile)
+                .join(AgentProfile, AgentProfile.agent_id == Agent.agent_id, isouter=True)
+                .where(Agent.agent_id.in_([a for _, a in wins if a is not None]))
+            ).all()
+        }
+        players = [
+            {
+                **TableRead._widget_player(
+                    human_id, agent_id, humans.get(human_id), *agents.get(agent_id, (None, None))
+                ),
+                "wins": count,
+            }
+            for (human_id, agent_id), count in wins.items()
+        ]
+        players.sort(key=lambda p: (-p["wins"], p["display_name"] or "", p["human_id"] or 0))
+        return {
+            "channel_id": channel_id,
+            "players": players,
+            "draws": score["draws"],
+            "finished": score["finished"],
+        }
 
     @staticmethod
     def get_org_member_human_ids(session: Session, org_id: str) -> list[int]:

@@ -10,24 +10,36 @@ import {
   boardsBySeat,
   canPlay,
   cardLabel,
+  chatScoreOf,
   drawsChessPieces,
   endOf,
   displayOf,
   freshActiveWidgets,
   freshWidget,
   fanMargin,
+  lastWidgetId,
   logLine,
   normalizeBoards,
   notesOf,
   parseCard,
   resultOf,
+  scoreLabel,
+  scoreLine,
+  scoreOf,
   seatOf,
   snapAmount,
   spriteLabel,
+  waitingOn,
+  waitsOn,
+  widgetDismissedKey,
   widgetKey,
-  widgetPostIndex,
+  widgetLine,
+  widgetOpenKey,
+  widgetScoreKey,
+  widgetTitle,
   type Widget,
   type WidgetBoardLayout,
+  type WidgetChatScore,
 } from "./widgets";
 
 const widget = (rev: number, status: Widget["status"] = "active", hidden = false): Widget => ({
@@ -56,7 +68,7 @@ const chess: WidgetBoardLayout = {
 };
 
 describe("widget caches", () => {
-  test("a newer rev wins, an older one is ignored, and an ended widget leaves the dock", () => {
+  test("a newer rev wins, an older one is ignored, and an ended widget leaves the active list", () => {
     const client = new QueryClient();
     applyWidget(client, widget(3));
     applyWidget(client, widget(2));
@@ -78,6 +90,18 @@ describe("widget caches", () => {
     applyWidgetEvent(client, { ...widget(4, "active", true), scene: { v: 1, title: "public" } });
     expect(client.getQueryData<Widget>(widgetKey("w1"))?.rev).toBe(3);
     expect(client.getQueryState(widgetKey("w1"))?.isInvalidated).toBe(true);
+  });
+
+  test("a game that finishes refetches its chat's score; a move or an end early doesn't", () => {
+    const client = new QueryClient();
+    const stale = () => client.getQueryState(widgetScoreKey("c1"))?.isInvalidated;
+    const none: WidgetChatScore = { channel_id: "c1", players: [], draws: 0, finished: 0 };
+    client.setQueryData(widgetScoreKey("c1"), none);
+    applyWidgetEvent(client, widget(2));
+    applyWidgetEvent(client, { ...widget(3, "aborted"), widget_id: "w2" });
+    expect(stale()).toBe(false);
+    applyWidgetEvent(client, widget(4, "finished", true));
+    expect(stale()).toBe(true);
   });
 });
 
@@ -185,12 +209,70 @@ describe("players beneath their boards", () => {
   });
 });
 
-describe("the dock's jump", () => {
-  const posts = [{ post_id: 7 }, { post_id: 9, widget_id: "w1" }, { post_id: 12 }];
-  test("finds the message that started the game, by its id or else by the game", () => {
-    expect(widgetPostIndex(posts, { ...widget(1), post_id: 9 })).toBe(1);
-    expect(widgetPostIndex(posts, { ...widget(1), post_id: null })).toBe(1);
-    expect(widgetPostIndex(posts, { ...widget(1), post_id: 3 })).toBe(-1);
+describe("the bar's game", () => {
+  test("is the latest game a loaded message started, or none", () => {
+    expect(lastWidgetId([{ widget_id: "w1" }, { widget_id: null }, { widget_id: "w2" }, {}])).toBe("w2");
+    expect(lastWidgetId([{}, { widget_id: null }])).toBeNull();
+  });
+
+  test("keeps its folds and put-away results under a key per game", () => {
+    expect(widgetOpenKey("w1")).toBe("clawbits.widget-bar.open.w1");
+    expect(widgetDismissedKey("w1")).toBe("clawbits.widget-bar.dismissed.w1");
+    expect(widgetOpenKey("w1")).not.toBe(widgetOpenKey("w2"));
+  });
+});
+
+describe("your move", () => {
+  const setup = { ...widget(1), turn: null, waiting_on: ["white", "black"] };
+  test("is every seat the game waits on, both at once while fleets are set", () => {
+    expect(waitingOn(setup)).toEqual(["white", "black"]);
+    expect(waitsOn(setup, "white")).toBe(true);
+    expect(waitsOn(setup, "black")).toBe(true);
+    expect(waitsOn(setup, null)).toBe(false);
+    expect(waitsOn({ ...widget(1), waiting_on: ["black"] }, "white")).toBe(false);
+  });
+
+  test("falls back to the turn from an older server", () => {
+    expect(waitingOn(widget(1))).toEqual(["white"]);
+    expect(waitsOn(widget(1), "white")).toBe(true);
+    expect(waitsOn(widget(1), "black")).toBe(false);
+    expect(waitingOn({ ...widget(1), turn: null })).toEqual([]);
+  });
+
+  test("is no one's once the game is over", () => {
+    expect(waitingOn({ ...widget(1, "finished"), waiting_on: ["white"] })).toEqual([]);
+    expect(waitsOn({ ...widget(1, "aborted"), turn: "white" }, "white")).toBe(false);
+  });
+});
+
+describe("the bar's line", () => {
+  const playing = (text: string) => ({ ...widget(1), scene: { v: 1, title: "Chess", status: { text, tone: "neutral" } } });
+  test("names the game by its scene, else its kind", () => {
+    expect(widgetTitle(playing("White to move"))).toBe("Chess");
+    expect(widgetTitle({ ...widget(1), kind: "poker" })).toBe("Poker");
+    expect(widgetTitle({ ...widget(1), kind: "go" })).toBe("go");
+  });
+
+  test("says your move while it waits on you, else how it stands", () => {
+    expect(widgetLine(playing("White to move"), "white")).toBe("Your move");
+    expect(widgetLine(playing("White to move"), "black")).toBe("White to move");
+    expect(widgetLine(playing("White to move"), null)).toBe("White to move");
+    expect(widgetLine({ ...widget(1), waiting_on: [] }, "white")).toBe("Playing");
+  });
+
+  test("gives the result once over, with its reason", () => {
+    const over = (status: Widget["status"], outcome: Record<string, unknown>, text: string) => ({
+      ...widget(2, status),
+      outcome,
+      scene: { v: 1, status: { text, tone: "info" } },
+    });
+    expect(widgetLine(over("finished", { winner: "white" }, "Checkmate"), "white")).toBe("You won · Checkmate");
+    expect(widgetLine(over("finished", { winner: "white" }, "Checkmate"), "black")).toBe("You lost · Checkmate");
+    expect(widgetLine(over("finished", { winner: "white" }, "Checkmate"), null)).toBe("Alice won · Checkmate");
+    expect(widgetLine(over("finished", { winner: null }, "Draw"), "white")).toBe("Draw");
+    expect(widgetLine(over("aborted", { reason: "stopped" }, "A player ended it"), "black")).toBe(
+      "Ended · A player ended it",
+    );
   });
 });
 
@@ -228,5 +310,57 @@ describe("answers that arrive late", () => {
     const other = { ...widget(5), widget_id: "w2" };
     expect(freshActiveWidgets(client, [other])).toEqual([other]);
     expect(client.getQueryData<Widget>(widgetKey("w2"))?.rev).toBe(5);
+  });
+});
+
+describe("the chat's score", () => {
+  const seats = (white?: number, black?: number) => [
+    { seat: "white", human_id: 1, agent_id: null, display_name: "Alice", wins: white },
+    { seat: "black", human_id: 2, agent_id: null, display_name: "Bob", wins: black },
+  ];
+  const scoring = { ...widget(1), seats: seats(3, 2), draws: 1 };
+
+  test("is the viewer's wins against the other seat's, from either seat", () => {
+    expect(scoreOf(scoring, 1)).toEqual({ mine: 3, theirs: 2, draws: 1, them: "Bob" });
+    expect(scoreOf(scoring, 2)).toEqual({ mine: 2, theirs: 3, draws: 1, them: "Alice" });
+  });
+
+  test("is hidden for a spectator, a game short of two seats, or before any game here finished", () => {
+    expect(scoreOf(scoring, 9)).toBeNull();
+    expect(scoreOf({ ...scoring, seats: seats(3, 2).slice(0, 1) }, 1)).toBeNull();
+    expect(scoreOf({ ...scoring, seats: seats(0, 0), draws: 0 }, 1)).toBeNull();
+    // An older server sends no score at all.
+    expect(scoreOf(widget(1), 1)).toBeNull();
+    // Draws alone are a score.
+    expect(scoreOf({ ...scoring, seats: seats(), draws: 2 }, 1)).toEqual({ mine: 0, theirs: 0, draws: 2, them: "Bob" });
+  });
+
+  test("between games, comes from the score route the same way", () => {
+    const player = (human_id: number, display_name: string, wins: number) => ({
+      human_id,
+      agent_id: null,
+      display_name,
+      is_agent: false,
+      wins,
+    });
+    const score: WidgetChatScore = {
+      channel_id: "c1",
+      players: [player(2, "Bob", 4), player(1, "Alice", 1)],
+      draws: 0,
+      finished: 5,
+    };
+    expect(chatScoreOf(score, 1)).toEqual({ mine: 1, theirs: 4, draws: 0, them: "Bob" });
+    expect(chatScoreOf(score, 2)).toEqual({ mine: 4, theirs: 1, draws: 0, them: "Alice" });
+    expect(chatScoreOf(score, 9)).toBeNull();
+    expect(chatScoreOf(undefined, 1)).toBeNull();
+    expect(chatScoreOf({ ...score, players: [player(1, "Alice", 0)], finished: 1 }, 1)).toBeNull();
+    expect(chatScoreOf({ ...score, players: [player(2, "Bob", 0), player(1, "Alice", 0)] }, 1)).toBeNull();
+  });
+
+  test("reads in words for the menu and a screen reader", () => {
+    expect(scoreLine({ mine: 3, theirs: 2, draws: 1, them: "Bob" })).toBe("You 3 – 2 Bob · 1 draw");
+    expect(scoreLine({ mine: 0, theirs: 1, draws: 0, them: null })).toBe("You 0 – 1 your opponent");
+    expect(scoreLabel({ mine: 3, theirs: 2, draws: 2, them: "Bob" })).toBe("score you 3, Bob 2, 2 draws");
+    expect(scoreLabel({ mine: 3, theirs: 2, draws: 0, them: "Bob" })).toBe("score you 3, Bob 2");
   });
 });

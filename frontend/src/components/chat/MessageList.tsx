@@ -152,7 +152,8 @@ export function MessageList<T>({
           ref={leadingSpacerRef}
           aria-hidden
           className="shrink-0"
-          style={{ height: `calc(${String(TOP_SPACER_PX)}px + var(--safe-top, 0px))` }}
+          // The phone's game bar, while it shows, takes a lane of its own beneath the header.
+          style={{ height: `calc(${String(TOP_SPACER_PX)}px + var(--safe-top, 0px) + var(--game-bar-space, 0px))` }}
         />
         <div className="flex-grow" />
         <Virtualizer

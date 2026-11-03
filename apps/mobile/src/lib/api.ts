@@ -7,7 +7,7 @@ import type {
   Recipient,
   User,
 } from "./models";
-import type { Widget, WidgetAction, WidgetKindName } from "./widgets";
+import type { Widget, WidgetAction, WidgetChatScore, WidgetKindName } from "./widgets";
 
 export const apiUrl = (
   process.env.EXPO_PUBLIC_CLAWBITS_API_URL || "https://app.clawbits.ai"
@@ -159,6 +159,9 @@ export const api = {
     request<Widget>(widgetPath(id), token, undefined, signal),
   activeWidgets: (token: string, channel: string, signal?: AbortSignal) =>
     request<{ widgets: Widget[] }>(`${channelPath(channel)}/widgets`, token, undefined, signal),
+  /** The chat's score over its finished games, every kind together. */
+  widgetScore: (token: string, channel: string, signal?: AbortSignal) =>
+    request<WidgetChatScore>(`${channelPath(channel)}/widgets/score`, token, undefined, signal),
   /** The caller's seat is drawn at random. */
   startWidget: (token: string, channel: string, kind: WidgetKindName) =>
     request<Widget>(`${channelPath(channel)}/widgets`, token, { kind }),

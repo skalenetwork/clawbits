@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { MmChannel, Org, Widget, WidgetScene } from "@/lib/api";
+import type { MmChannel, Org, Widget, WidgetScene, WidgetScore, WidgetScorePlayer } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 
 /** Fold a fresh widget into its caches; an older rev never overwrites a newer one. The widget's own entry keeps
@@ -36,8 +36,10 @@ export function freshActiveWidgets(qc: QueryClient, listed: Widget[]): Widget[] 
 }
 
 /** A realtime `widget.updated`. A private widget's event carries only the public scene, so the viewer's own view
- *  is refetched instead, unless this rev is already here (the viewer's own action answered with it). */
+ *  is refetched instead, unless this rev is already here (the viewer's own action answered with it). A game that
+ *  finished changes the chat's score, so that is refetched too. */
 export function applyWidgetEvent(qc: QueryClient, widget: Widget): void {
+  if (widget.status === "finished") void qc.invalidateQueries({ queryKey: queryKeys.mm.widgetScore(widget.channel_id) });
   if (!widget.private) {
     applyWidget(qc, widget);
     return;
@@ -83,6 +85,44 @@ export function resultOf(widget: Widget, seat: string | null): { end: WidgetEnd;
   return { end, headline: winner ? `${winner} won` : HEADLINE[end] };
 }
 
+/** A widget's state in a few words, for its strip, its bar and its line in the chat: the scene's status while it
+ *  runs; once over, how it ended and why (`Ended · A player ended it`), as the phone app says it. */
+export function statusOf(widget: Widget, seat: string | null): string {
+  const reason = widget.scene.status?.text;
+  const result = resultOf(widget, seat);
+  if (result) return reason && reason !== result.headline ? `${result.headline} · ${reason}` : result.headline;
+  return reason ?? "";
+}
+
+/** The game the chat's panel shows: one picked from its line in the chat, until another game starts; else the
+ *  running one; else the latest posted in the loaded messages; else the one last seen running here, whose message
+ *  is too far back to be loaded, so its result still shows once it ends. */
+export function panelGameOf({ picked, active, posted, lastActive }: {
+  picked: { widgetId: string; over: string | null } | null;
+  active: string | null;
+  posted: string | null;
+  lastActive: string | null;
+}): string | null {
+  return (picked?.over === active ? picked.widgetId : null) ?? active ?? posted ?? lastActive;
+}
+
+/** The game a "your move" link (`?widget=`) opens: the chat's running game, which is the one waiting now, even when an
+ *  older ping names one that has since ended; the linked game only while none runs, to show how it ended. */
+export function linkedGameOf(linked: string, active: string | null): string {
+  return active ?? linked;
+}
+
+/** The seats the game waits on: the server's list, or its one turn from a server that sends none. None once over. */
+export function waitingOn(widget: Widget): string[] {
+  if (widget.status !== "active") return [];
+  return widget.waiting_on ?? (widget.turn ? [widget.turn] : []);
+}
+
+/** Whether the game waits on this seat: for the viewer's seat, "your move". */
+export function waitsOn(widget: Widget, seat: string | null): boolean {
+  return seat != null && waitingOn(widget).includes(seat);
+}
+
 /** Whether a scene draws chess pieces, so the piece-set switch belongs beside it. */
 export function drawsChessPieces(scene: WidgetScene): boolean {
   return [scene.tokens ?? [], ...(scene.boards ?? []).map((board) => board.tokens ?? [])]
@@ -104,6 +144,60 @@ export function boardsBySeat(scene: WidgetScene): boolean {
 /** The viewer's seat, or null for a spectator. */
 export function seatOf(widget: Widget, userId: number | null): string | null {
   return widget.seats.find((s) => s.human_id != null && s.human_id === userId)?.seat ?? null;
+}
+
+/** The chat's score from the viewer's seat, as a widget carries it: wins over the chat's finished games, every kind
+ *  together, and the draws. */
+export interface SeatScore {
+  mine: number;
+  theirs: number;
+  draws: number;
+  /** The opponent's name. */
+  them: string | null;
+}
+
+/** The chat's score for a widget's player. Null for a spectator, a game without both its seats (every game is head
+ *  to head), or a chat with no game finished yet, which is also what an older server's widget reads as. */
+export function scoreOf(widget: Widget, userId: number | null): SeatScore | null {
+  const mine = widget.seats.find((s) => s.human_id != null && s.human_id === userId);
+  const them = widget.seats.find((s) => s !== mine);
+  if (!mine || !them || widget.seats.length !== 2) return null;
+  const score = { mine: mine.wins ?? 0, theirs: them.wins ?? 0, draws: widget.draws ?? 0, them: them.display_name };
+  return score.mine || score.theirs || score.draws ? score : null;
+}
+
+function drawsText(draws: number): string {
+  return draws === 1 ? "1 draw" : `${String(draws)} draws`;
+}
+
+/** A widget's score for a screen reader: "score you 3, Bob 2, 1 draw". */
+export function scoreLabel(score: SeatScore): string {
+  const parts = [`score you ${String(score.mine)}`, `${score.them || "opponent"} ${String(score.theirs)}`];
+  return [...parts, score.draws > 0 && drawsText(score.draws)].filter(Boolean).join(", ");
+}
+
+/** Wins in one line: "You 3 – 2 Bob · 1 draw" for two players, each player's wins for more. */
+function tallyLine(players: { name: string; wins: number }[], draws: number): string {
+  const [first, second, ...more] = players;
+  const tally = first && second && more.length === 0
+    ? `${first.name} ${String(first.wins)} – ${String(second.wins)} ${second.name}`
+    : players.map((p) => `${p.name} ${String(p.wins)}`).join(", ");
+  return draws > 0 ? `${tally} · ${drawsText(draws)}` : tally;
+}
+
+/** A widget's score in one line, as its chip's tooltip says it. */
+export function scoreTitle(score: SeatScore): string {
+  return tallyLine([{ name: "You", wins: score.mine }, { name: score.them || "Opponent", wins: score.theirs }], score.draws);
+}
+
+/** A chat's score in one line, the viewer first. Null until a game here has finished, or once fewer than two players
+ *  are left (a deleted account's wins go with it). */
+export function scoreLine(score: WidgetScore | undefined, userId: number | null): string | null {
+  if (!score?.finished || score.players.length < 2) return null;
+  const me = score.players.find((p) => p.human_id != null && p.human_id === userId);
+  const players = me ? [me, ...score.players.filter((p) => p !== me)] : score.players;
+  const name = (p: WidgetScorePlayer) => (p === me ? "You" : p.display_name || p.agent_id || "Someone");
+  return tallyLine(players.map((p) => ({ name: name(p), wins: p.wins })), score.draws);
 }
 
 /** Widgets run in one-to-one chats between people, with both the org's and the chat's switch on. */

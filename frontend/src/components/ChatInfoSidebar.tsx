@@ -4,6 +4,7 @@ import { ChessPawn, Download, Users } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useChannelActions } from "@/hooks/useChannelActions";
 import { memberKey, memberRowProps, useChannelMembers } from "@/hooks/useChannelMembers";
+import { useScoreLine } from "@/hooks/useWidget";
 import { getMmChannel, getOrgs, setChannelWidgets, type MmChannelMember } from "@/lib/api";
 import { formatChannelTitle } from "@/lib/formatting";
 import { isPairChannel } from "@/lib/chatFilters";
@@ -16,6 +17,7 @@ import { ProfileMenuProvider } from "@/components/ProfileMenu";
 import { useProfileMenuTrigger } from "@/components/profileMenuContext";
 import { mentionHandle } from "@/lib/messageHelpers";
 import { PanelNote, RightPanel } from "@/components/sidebars/RightPanel";
+import { ChatScore } from "@/components/widgets/ChatScore";
 import { CollapsibleGroup } from "@/components/sidebars/CollapsibleGroup";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
 import { Switch } from "@/components/ui/switch";
@@ -52,6 +54,7 @@ export default function ChatInfoSidebar({ channelId, open, onClose }: {
     },
     onError: (e) => { toast.error(errMsg(e, "Couldn't change widgets")); },
   });
+  const score = useScoreLine(channelId, user?.id ?? null, open && isWidgetChat(channel));
 
   // Its own provider: this panel sits beside the routed page, outside ChannelPage's, and has no composer.
   return (
@@ -76,6 +79,11 @@ export default function ChatInfoSidebar({ channelId, open, onClose }: {
                   <Users/>
                   <span>Manage members</span>
                 </SidebarMenuButton>
+              </SidebarMenuItem>
+            )}
+            {score && (
+              <SidebarMenuItem>
+                <ChatScore line={score} className="h-8 px-2 text-sm text-muted-foreground"/>
               </SidebarMenuItem>
             )}
             {isWidgetChat(channel) && (

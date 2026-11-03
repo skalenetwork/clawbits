@@ -32,7 +32,7 @@ import { MessageMarkdown } from "@/components/MessageMarkdown";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { PostAvatar } from "@/components/chat/PostAvatar";
 import { McpAppView } from "@/components/chat/McpAppView";
-import { WidgetCard } from "@/components/widgets/WidgetCard";
+import { WidgetLine } from "@/components/widgets/WidgetCard";
 import { TurnTrace } from "@/components/chat/TurnTrace";
 import { StreamingMarkdown } from "@/components/chat/StreamingMarkdown";
 import { SettleBody } from "@/components/chat/SettleBody";
@@ -607,6 +607,8 @@ interface MessageRowProps {
   onJumpToParent: (postId: number) => void;
   onToggleReaction: (vars: { postId: number; emoji: string }) => void;
   onTogglePin: (post: MmChannelPost) => void;
+  /** Brings a game this post started forward in the chat's game panel. */
+  onOpenWidget: (widgetId: string) => void;
   isEditing: boolean;
   onEdit: (postId: number | null) => void;
   onSaveEdit: (vars: { postId: number; message: string }) => void;
@@ -630,6 +632,7 @@ export const MessageRow = memo(function MessageRow({
   onJumpToParent,
   onToggleReaction,
   onTogglePin,
+  onOpenWidget,
   isEditing,
   onEdit,
   onSaveEdit,
@@ -722,7 +725,7 @@ export const MessageRow = memo(function MessageRow({
       onCancel={() => { onEdit(null); }}
     />
   ) : post.widget_id ? (
-    <WidgetCard widgetId={post.widget_id} channelId={post.channel_id} userId={currentUserId} />
+    <WidgetLine widgetId={post.widget_id} channelId={post.channel_id} userId={currentUserId} onOpen={onOpenWidget} />
   ) : adminCommand ? (
     <div className="my-1 inline-flex max-w-full items-center gap-2 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-foreground/80">
       <AdminCommandGlyph kind={adminCommand.kind} className="size-5" />
@@ -740,7 +743,7 @@ export const MessageRow = memo(function MessageRow({
 
   const previewUrl = settled && !post.link_preview && !post.widget_id ? extractUrls(post.message).find((url) => !mcpConnectLinkId(url)) : undefined;
   const reactionPicker = settled && <ReactionQuickPicker onSelect={react}/>;
-  // A widget fills its row to the corner where the receipt would sit, and a move never changes what was read.
+  // A game's line keeps no receipt: a move never changes what was read.
   const receipt = post.widget_id ? undefined : receiptOf(post, channelType, currentUserId, members);
   const handleText = authorMember ? `@${mentionHandle(authorMember)}` : "@user";
 

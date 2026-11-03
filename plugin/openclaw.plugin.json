@@ -1,7 +1,7 @@
 {
   "id": "clawbits",
   "name": "Clawbits Human Channel",
-  "version": "0.24.0",
+  "version": "0.24.1",
   "channels": [
     "clawbits"
   ],
@@ -88,6 +88,11 @@
             "type": "integer",
             "minimum": 0,
             "default": 600000
+          },
+          "widgets": {
+            "type": "boolean",
+            "default": true,
+            "description": "Chat games. Set false to keep this agent out of them: it then never reports the widgets capability. Even when true it also needs the clawbits-tools plugin's clawbits_widget_act tool (listed in tools.alsoAllow) and the agent's Can play games setting in Clawbits."
           },
           "catchUpEnabled": {
             "type": "boolean",
@@ -192,6 +197,11 @@
                   "type": "integer",
                   "minimum": 0,
                   "default": 100
+                },
+                "widgets": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Chat games. Set false to keep this agent out of them: it then never reports the widgets capability. Even when true it also needs the clawbits-tools plugin's clawbits_widget_act tool (listed in tools.alsoAllow) and the agent's Can play games setting in Clawbits."
                 },
                 "knownAnswers": {
                   "type": "object",

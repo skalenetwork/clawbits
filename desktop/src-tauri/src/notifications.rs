@@ -1,6 +1,9 @@
 //! Per-channel desktop notifications. macOS gives every message a fresh id so it
 //! banners, grouped per channel by `threadIdentifier`; Linux has no grouping, so a
 //! channel's next message replaces its banner (`replaces_id`), like web push's `tag`.
+//! A game's turn ping has no Reply and a slot of its own, `turn:{channel}` (the macOS
+//! request id, the Linux banner key), so it and a message never replace each other and
+//! the chat's next turn ping replaces it, as web push's tag and the APNs collapse id do.
 //! Bundled macOS builds use UNUserNotificationCenter; the unbundled dev binary has no
 //! bundle for it and posts NSUserNotifications under Terminal's identity.
 
@@ -13,6 +16,12 @@ pub struct ChannelMessage {
     channel_name: String,
     author_name: String,
     body: String,
+    /// `"turn"` for a game's "Your move" ping; a chat message sends none.
+    #[serde(default)]
+    kind: Option<String>,
+    /// The game a turn ping opens.
+    #[serde(default)]
+    widget_id: Option<String>,
 }
 
 impl ChannelMessage {
@@ -20,12 +29,28 @@ impl ChannelMessage {
     fn author(&self) -> Option<&str> {
         (self.author_name != self.channel_name).then_some(self.author_name.as_str())
     }
+
+    /// A turn ping has no Reply and a banner of its own, beside the channel's message banner.
+    fn is_turn(&self) -> bool {
+        self.kind.as_deref() == Some("turn")
+    }
+
+    /// A turn ping's game, if its id can go into a URL as is (the server's are hex).
+    fn widget(&self) -> Option<&str> {
+        let id = self.widget_id.as_deref().filter(|_| self.is_turn())?;
+        (!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')).then_some(id)
+    }
+
+    /// A turn ping's slot, `turn:{channel}`, which the chat's next turn ping replaces; none for a message.
+    fn turn_key(&self) -> Option<String> {
+        self.is_turn().then(|| format!("turn:{}", self.channel_id))
+    }
 }
 
 /// What the user did with one of our notifications.
 pub enum Activation {
-    /// Clicked it: open that channel (empty for the test notification).
-    Open(String),
+    /// Clicked it: open that channel (empty for the test notification), at a turn ping's game.
+    Open { channel_id: String, widget_id: Option<String> },
     /// Answered from the banner (macOS).
     #[cfg_attr(target_os = "linux", allow(dead_code, reason = "Linux has no inline reply"))]
     Reply(Reply),
@@ -51,7 +76,7 @@ pub fn set_activation_handler(handler: impl Fn(Activation) + Send + Sync + 'stat
 }
 
 fn deliver(message: ChannelMessage) {
-    log::info!("notify: channel={:?}", message.channel_id);
+    log::info!("notify: channel={:?} kind={:?}", message.channel_id, message.kind);
     #[cfg(target_os = "macos")]
     if tauri::is_dev() {
         macos::deliver_legacy(&message);
@@ -77,6 +102,8 @@ pub fn notify_debug_ping() {
         channel_name: "Clawbits".into(),
         author_name: "Clawbits".into(),
         body: "Test notification — delivery is working.".into(),
+        kind: None,
+        widget_id: None,
     });
     #[cfg(target_os = "linux")]
     linux::enqueue(linux::Job::Ping);
@@ -91,7 +118,7 @@ mod macos {
         runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject},
         AllocAnyThread, DefinedClass,
     };
-    use objc2_foundation::{ns_string, NSArray, NSError, NSSet, NSString, NSUUID};
+    use objc2_foundation::{ns_string, NSArray, NSDictionary, NSError, NSSet, NSString, NSUUID};
     #[allow(deprecated)]
     use objc2_foundation::{NSUserNotification, NSUserNotificationCenter, NSUserNotificationDefaultSoundName};
     use objc2_user_notifications::{
@@ -106,6 +133,8 @@ mod macos {
 
     const CATEGORY: &str = "message";
     const REPLY: &str = "reply";
+    /// The `userInfo` key that carries a turn ping's game to the click.
+    const WIDGET_ID: &str = "widgetId";
 
     define_class!(
         // SAFETY: NSObject has no subclassing requirements and Delegate has no Drop.
@@ -123,12 +152,18 @@ mod macos {
                 response: &UNNotificationResponse,
                 completion_handler: &block2::DynBlock<dyn Fn()>,
             ) {
-                let channel_id = response.notification().request().content().threadIdentifier().to_string();
+                let content = response.notification().request().content();
+                let channel_id = content.threadIdentifier().to_string();
+                let widget_id = content
+                    .userInfo()
+                    .objectForKey(&NSString::from_str(WIDGET_ID))
+                    .and_then(|id| id.downcast::<NSString>().ok())
+                    .map(|id| id.to_string());
                 (self.ivars())(match response.downcast_ref::<UNTextInputNotificationResponse>() {
                     Some(reply) if response.actionIdentifier().to_string() == REPLY => {
                         Activation::Reply(Reply { channel_id, text: reply.userText().to_string() })
                     }
-                    _ => Activation::Open(channel_id),
+                    _ => Activation::Open { channel_id, widget_id },
                 });
                 completion_handler.call(());
             }
@@ -168,14 +203,25 @@ mod macos {
         }
         content.setBody(&NSString::from_str(&message.body));
         content.setThreadIdentifier(&NSString::from_str(&message.channel_id));
-        content.setCategoryIdentifier(&NSString::from_str(CATEGORY));
+        if !message.is_turn() {
+            content.setCategoryIdentifier(&NSString::from_str(CATEGORY));
+        }
         content.setInterruptionLevel(UNNotificationInterruptionLevel::Active);
         content.setSound(Some(&UNNotificationSound::defaultSound()));
-        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-            &NSUUID::new().UUIDString(),
-            &content,
-            None,
-        );
+        // A turn ping's id is its chat's slot, so the chat's next turn ping replaces it, a newer
+        // game's too; the game it opens rides in userInfo.
+        let identifier = match message.turn_key() {
+            Some(key) => NSString::from_str(&key),
+            None => NSUUID::new().UUIDString(),
+        };
+        if let Some(widget_id) = message.widget() {
+            let key = NSString::from_str(WIDGET_ID);
+            let info = NSDictionary::from_slices(&[&*key], &[&*NSString::from_str(widget_id)]);
+            // SAFETY: the generics are only the type checker's, so a dictionary of strings is an
+            // NSDictionary of objects; userInfo takes property-list keys and values, as strings are.
+            unsafe { content.setUserInfo(&Retained::cast_unchecked::<NSDictionary>(info)) };
+        }
+        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&identifier, &content, None);
         let post = RcBlock::new(move |granted: Bool, _: *mut NSError| {
             if granted.as_bool() {
                 UNUserNotificationCenter::currentNotificationCenter()
@@ -373,11 +419,13 @@ pub mod linux {
         notification.show().inspect_err(|err| log::error!("notify {kind} failed: {err:#}")).ok()
     }
 
-    /// The banner on screen per channel, which its next message replaces. `watched`
-    /// keeps it to one action-watcher thread per id.
+    /// The banner on screen per key (the channel, or `turn:{channel}` for its turn ping),
+    /// which the key's next banner replaces. `watched` keeps it to one action-watcher
+    /// thread per id; `widget_id` is the game a turn banner shows now.
     struct Banner {
         id: u32,
         watched: bool,
+        widget_id: Option<String>,
     }
 
     static BANNERS: Mutex<BTreeMap<String, Banner>> = Mutex::new(BTreeMap::new());
@@ -392,34 +440,41 @@ pub mod linux {
             None => message.body.clone(),
         };
         let mut notification = notification(&message.channel_name, &body);
-        if let Some(banner) = banners().get(&message.channel_id) {
+        let (kind, key) = match message.turn_key() {
+            Some(key) => ("turn", key),
+            None => ("message", message.channel_id.clone()),
+        };
+        if let Some(banner) = banners().get(&key) {
             notification.id(banner.id);
         }
         let actionable = supports("actions");
         if actionable {
             notification.action(DEFAULT_ACTION, "Open");
         }
-        let Some(handle) = show("message", &notification) else { return };
+        let Some(handle) = show(kind, &notification) else { return };
         let id = handle.id();
-        let watched = banners().get(&message.channel_id).is_some_and(|banner| banner.watched && banner.id == id);
-        let watched = watched || (actionable && watch(handle, message.channel_id.clone()));
-        banners().insert(message.channel_id.clone(), Banner { id, watched });
+        let watched = banners().get(&key).is_some_and(|banner| banner.watched && banner.id == id);
+        let watched = watched || (actionable && watch(handle, key.clone(), message.channel_id.clone()));
+        banners().insert(key, Banner { id, watched, widget_id: message.widget().map(str::to_owned) });
     }
 
     /// `wait_for_action` blocks until a click or close, so it gets a thread of its own.
-    /// False when that thread could not start, so the next message tries again.
-    fn watch(handle: NotificationHandle, channel_id: String) -> bool {
+    /// False when that thread could not start, so the next banner tries again.
+    fn watch(handle: NotificationHandle, key: String, channel_id: String) -> bool {
         let id = handle.id();
         std::thread::Builder::new()
             .name("clawbits-notify-action".into())
             .spawn(move || {
                 handle.wait_for_action(|action| {
-                    if action == DEFAULT_ACTION && let Some(handler) = ON_ACTIVATE.get() {
-                        handler(Activation::Open(channel_id.clone()));
-                    }
+                    // Read at the click: a turn banner replaced in place may show a newer game.
                     let mut banners = banners();
-                    if banners.get(&channel_id).is_some_and(|banner| banner.id == id) {
-                        banners.remove(&channel_id);
+                    let widget_id = match banners.get(&key) {
+                        Some(banner) if banner.id == id => banners.remove(&key).and_then(|banner| banner.widget_id),
+                        _ => None,
+                    };
+                    drop(banners);
+                    if action == DEFAULT_ACTION && let Some(handler) = ON_ACTIVATE.get() {
+                        handler(Activation::Open { channel_id: channel_id.clone(), widget_id });
                     }
                 });
             })
@@ -471,5 +526,50 @@ pub mod linux {
         }
         let refreshed = std::process::Command::new("update-desktop-database").arg(&apps).status();
         log::info!("appimage integration: wrote {}, update-desktop-database: {refreshed:?}", target.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChannelMessage;
+
+    fn parse(json: &str) -> ChannelMessage {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn a_message_from_a_frontend_without_kind_still_parses() {
+        let message = parse(r#"{"channelId":"c1","channelName":"Bob","authorName":"Bob","body":"hi"}"#);
+        assert!(!message.is_turn());
+        assert_eq!((message.widget(), message.turn_key(), message.author()), (None, None, None));
+    }
+
+    #[test]
+    fn a_turn_ping_takes_its_chats_slot_and_opens_its_game() {
+        let message = parse(
+            r#"{"channelId":"c1","channelName":"Your move","authorName":"Your move","body":"Chess with Bob","kind":"turn","widgetId":"0f3a9c2b"}"#,
+        );
+        assert!(message.is_turn());
+        assert_eq!(message.turn_key().as_deref(), Some("turn:c1"));
+        assert_eq!(message.widget(), Some("0f3a9c2b"));
+        assert_eq!(message.author(), None);
+    }
+
+    #[test]
+    fn a_game_opens_only_from_a_turn_ping_with_an_id_fit_for_a_url() {
+        let with = |extra: &str| parse(&format!(r#"{{"channelId":"c1","channelName":"n","authorName":"a","body":"b",{extra}}}"#));
+        assert_eq!(with(r#""kind":"turn","widgetId":"A-z_9""#).widget(), Some("A-z_9"));
+        for extra in [
+            r#""kind":null,"widgetId":null"#,
+            r#""widgetId":"abc""#,
+            r#""kind":"message","widgetId":"abc""#,
+            r#""kind":"Turn","widgetId":"abc""#,
+            r#""kind":"turn","widgetId":"""#,
+            r#""kind":"turn","widgetId":"a?b=c""#,
+            r#""kind":"turn","widgetId":"../x""#,
+            r#""kind":"turn","widgetId":"é""#,
+        ] {
+            assert_eq!(with(extra).widget(), None, "{extra}");
+        }
     }
 }

@@ -6,6 +6,7 @@ import { Icon } from "@/components/Icon"
 import {
   MENU_DESTRUCTIVE,
   MENU_ITEM,
+  MENU_LABEL,
   MENU_SEPARATOR,
   MENU_SHORTCUT,
   MENU_SURFACE,
@@ -49,6 +50,17 @@ export function DropdownMenuContent({
 
 export function DropdownMenuGroup(props: MenuPrimitive.Group.Props) {
   return <MenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />
+}
+
+/** A group's heading; it names the `DropdownMenuGroup` it sits in. */
+export function DropdownMenuLabel({ className, ...props }: MenuPrimitive.GroupLabel.Props) {
+  return (
+    <MenuPrimitive.GroupLabel
+      data-slot="dropdown-menu-label"
+      className={cn(MENU_LABEL, className)}
+      {...props}
+    />
+  )
 }
 
 export function DropdownMenuItem({

@@ -129,8 +129,10 @@ class _FakeBus:
     def publish_now(self, topic: str, event: dict) -> None:
         self._queue(topic).put(event)
 
-    async def subscribe(self, topic: str):
+    async def subscribe(self, topic: str, *, ready: asyncio.Event | None = None):
         q = self._queue(topic)
+        if ready is not None:
+            ready.set()
         while True:
             try:
                 yield q.get_nowait()

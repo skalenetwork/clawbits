@@ -235,7 +235,8 @@ def run(args: argparse.Namespace) -> None:
         # (no PoC challenge). Without this the agent's last_alive_at stays NULL, it
         # never reads as "available", and the Add-agent wizard hangs on "Almost
         # ready…" forever. agent_type self-reports the runtime for the agent card.
-        data, h = c.request("POST", "/api/agentic/alive", json_body={"agent_type": "hermes"})
+        # capabilities: the whole set the runtime can do now ("widgets"), stored every ping.
+        data, h = c.request("POST", "/api/agentic/alive", json_body={"agent_type": "hermes", "capabilities": args.capability})
     elif cmd == "mm-file-upload":
         body = load_json(args.json) or {"filename": args.filename, "content_type": args.content_type, "size_bytes": args.size_bytes, "sha256": args.sha256, "has_thumbnail": args.has_thumbnail, "thumbnail_size_bytes": args.thumbnail_size_bytes}
         data, h = c.request("POST", f"/api/agentic/mm/channels/{args.channel_id}/files", json_body=body, session_token=st, challenge_response=cr)
@@ -299,6 +300,18 @@ def run(args: argparse.Namespace) -> None:
         data, h = c.request("GET", "/api/agentic/automations/desired")
     elif cmd == "automations-state":
         data, h = c.request("POST", "/api/agentic/automations/state", json_body=load_json(args.json))
+
+    # Chat games
+    elif cmd == "widgets":
+        q = {"channel_id": args.channel_id, "waiting": "1" if args.waiting else None}
+        data, h = c.request("GET", "/api/agentic/mm/widgets", query=q)
+    elif cmd == "widget-get":
+        path = f"/api/agentic/mm/widgets/{urllib.parse.quote(args.widget_id, safe='')}"
+        data, h = c.request("GET", path, query={"private": "1" if args.private else None})
+    elif cmd == "widget-act":
+        # --json (usually "@file") keeps the action off argv.
+        path = f"/api/agentic/mm/widgets/{urllib.parse.quote(args.widget_id, safe='')}/actions"
+        data, h = c.request("POST", path, json_body=load_json(args.json), query={"private": "1" if args.private else None})
 
     # MCP sign-in (Connect cards)
     elif cmd == "mcp-oauth-redirect":
@@ -425,7 +438,8 @@ def main() -> None:
     p = sp("mm-member-remove", True)
     p.add_argument("channel_id")
     p.add_argument("member_agent_id")
-    sp("alive")
+    p = sp("alive")
+    p.add_argument("--capability", action="append", default=[], help="A capability the runtime has now (repeatable)")
     p = sp("mm-members")
     p.add_argument("channel_id")
     p = sp("mm-post", True)
@@ -525,6 +539,17 @@ def main() -> None:
     sp("automations-desired")
     p = sp("automations-state")
     p.add_argument("json", help="JSON or @file")
+
+    p = sp("widgets")
+    p.add_argument("--channel-id", help="Only this chat's game")
+    p.add_argument("--waiting", action="store_true", help="Only the games waiting on this agent's move")
+    p = sp("widget-get")
+    p.add_argument("widget_id")
+    p.add_argument("--private", action="store_true", help="The seat's own view (a game's own session only)")
+    p = sp("widget-act")
+    p.add_argument("widget_id")
+    p.add_argument("--json", required=True, help="JSON or @file: type, args?, rev?")
+    p.add_argument("--private", action="store_true", help="The fresh view as the seat sees it")
 
     sp("mcp-oauth-redirect")
     p = sp("mcp-oauth-link")

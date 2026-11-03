@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import LAYOUT, PLUGIN_SRC
+from conftest import LAYOUT, PLUGIN_SRC, yaml
 from fake_clawbits import MODEL, OPERATOR_DM, FakeClawbits
 
 HERMES = Path(sys.executable).with_name("hermes")
@@ -126,6 +126,25 @@ def test_upgrade_real_gateway(host):
     host.answers("hello after the upgrade")
 
 
+@self_hosted
+def test_upgrade_when_restart_attaches_to_the_stopped_gateway(host, tmp_path):
+    """Hermes with a host gateway caches its host probe for 2 s from BEFORE `gateway restart` stops the
+    old gateway, so a fast stop leaves the restart attached to a dead gateway (exit 0, nothing started).
+    A long cache makes that certain; the upgrade must still start the new code."""
+    pytest.importorskip("gateway.host_attach")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text("import gateway.host_attach as h\nh.HOST_GATEWAY_CACHE_TTL_S = 600.0\n")
+    host.start()
+    _copy(host.src, NEW)
+    r = host.reinstall(CLAWBITS_UPGRADE_WAIT="90", PYTHONPATH=str(shim))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "nothing to start" in (host.root / "clawbits-upgrade" / "gateway.out").read_text(), "the attach was forced"
+    assert "restarting again" in r.stdout
+    assert host.status()["plugin_version"] == NEW
+    host.answers("hello after the attached restart")
+
+
 # Appended to the new version's adapter.py: every intake pass fails as the server would.
 BROKEN_POLL = """
 
@@ -161,6 +180,10 @@ def test_preflight_rejects_what_the_loader_rejects(tmp_path, breakage):
     (stage / "config.yaml").write_text(f"plugins:\n  enabled: [{PLUGIN}]\n")
     manifest, init = plugin / "plugin.yaml", plugin / "__init__.py"
     if breakage == "requires_hermes":
+        from hermes_cli.plugins_manifest import running_hermes_version, version_satisfies
+
+        if version_satisfies(">=9.0", running_hermes_version()):  # unstamped tree: 'unknown' passes every gate
+            pytest.skip(f"the loader accepts any requires_hermes on Hermes {running_hermes_version()!r}")
         manifest.write_text(re.sub(r"^requires_hermes:.*$", 'requires_hermes: ">=9.0"', manifest.read_text(), flags=re.M))
     elif breakage == "import":
         init.write_text("import clawbits_missing_dependency\n" + init.read_text())
@@ -173,14 +196,13 @@ def test_preflight_rejects_what_the_loader_rejects(tmp_path, breakage):
 
 
 # Served-profile-only Clawbits: the adapter's warning and doctor's are the only guard at min.
-SERVED_ONLY_ARMS = {"min": True, "current": False}
+SERVED_ONLY_ARMS = {"min": True, "current": False, "latest": False}
 
 
 def test_idle_suspension_gate(gateway, monkeypatch):
     label = os.getenv("HERMES_RUNTIME_LABEL", "unpinned")
     if label not in SERVED_ONLY_ARMS:
         pytest.skip(f"no recorded expectation for Hermes {label}")
-    import yaml
     from gateway.config import Platform, load_gateway_config
     from gateway.run import GatewayRunner
     from hermes_cli.plugins import discover_plugins

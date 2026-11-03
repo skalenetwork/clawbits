@@ -120,6 +120,8 @@ describe("dispatchInboundEmail", () => {
     assert.equal(dispatchedCtx.length, 1, "exactly one reply dispatch");
     const c = dispatchedCtx[0]!;
     assert.equal(c.ConversationId, "ch1", "lands in the owner DM conversation");
+    assert.equal(c.InboundAccessAuthorized, undefined, "no sender guard, so never attested as admitted");
+    assert.equal(c.ConversationRouteContextObserved, undefined);
     const bodyForAgent = String(c.BodyForAgent ?? "");
     assert.match(bodyForAgent, /Quarterly numbers/, "subject is in the agent body");
     assert.match(bodyForAgent, /Please send the latest figures\./, "body text is in the agent body");

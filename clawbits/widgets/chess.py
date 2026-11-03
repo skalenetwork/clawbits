@@ -55,6 +55,11 @@ def _replay(moves: list[str]) -> _Replay:
     return _Replay(position, seen, tokens, last)
 
 
+def position(state: dict[str, Any]) -> Position:
+    """Where the game stands. Chess keeps no secrets, so whoever sees the board may have it as FEN."""
+    return _replay(state["moves"]).position
+
+
 def _carry_tokens(position: Position, move: Move, tokens: dict[int, str]) -> dict[int, str]:
     """Token ids after ``move``: a piece keeps its id wherever it goes, promoted or not."""
     tokens = dict(tokens)
@@ -138,6 +143,9 @@ class Chess:
 
     def turn(self, state: dict[str, Any]) -> str | None:
         return SEATS[len(state["moves"]) % 2]
+
+    def waiting_on(self, state: dict[str, Any]) -> tuple[str, ...]:
+        return (self.turn(state),)
 
     def act(self, state: dict[str, Any], seat: str, action: dict[str, Any]) -> Step:
         kind = action.get("type")
