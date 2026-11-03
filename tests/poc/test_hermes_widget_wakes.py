@@ -235,6 +235,31 @@ def test_a_game_that_ends_while_its_move_waits_is_ended() -> None:
     run(scenario())
 
 
+def test_a_wake_whose_game_ends_while_it_reads_is_dropped() -> None:
+    """A wake queued behind the last move reads its view after the game ended; a stale or late read
+    that still says the move is ours must not be played."""
+    mod = _load_hermes_module()
+    loop = Loop(mod)
+
+    async def scenario() -> None:
+        reading, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_read(widget_id: str) -> dict[str, Any]:
+            reading.set()
+            await release.wait()
+            return _view(3)
+
+        loop.wakes._read = slow_read
+        loop.offer(1)
+        await reading.wait()
+        loop.offer(3, waiting=False, status="ended")
+        release.set()
+        await loop.settle()
+        assert loop.dispatched == [] and loop.ended == [WIDGET] and loop.wakes.has_ended(WIDGET)
+
+    run(scenario())
+
+
 @pytest.mark.parametrize(("flag", "value"), [("snoozed", True), ("paused", True), ("enabled", False)])
 def test_no_wake_while_snoozed_paused_or_off(flag: str, value: bool) -> None:
     loop = Loop(_load_hermes_module())
@@ -379,6 +404,23 @@ def test_a_move_no_longer_due_after_its_wait_is_not_played(now: str) -> None:
         assert gateway.events == []
 
     mod.adapter.http_status = lambda exc: 404 if "404" in str(exc) else None
+    run(scenario())
+
+
+def test_a_move_whose_game_ended_meanwhile_is_not_played() -> None:
+    """The wake loop already ended the game (a signal said so) while the move waited for its turn;
+    a read that still says active doesn't bring it back."""
+    mod = _load_hermes_module()
+    fake = Games()
+    adapter = _adapter(mod, fake)
+    gateway = FakeGateway(adapter)
+
+    async def scenario() -> None:
+        adapter._widget_wakes.offer(mod.widget_wakes.WidgetSignal(WIDGET, "dm", 2, "chess", "white", False, "finished"), "ws")
+        assert await adapter._play_game_turn(_view(), 1) is False
+        assert gateway.events == []
+        await _drain(adapter)
+
     run(scenario())
 
 

@@ -2200,6 +2200,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
             logger.warning("clawbits: game %s move not played: games can't be played here (%s)", widget_id, state)
             return None
         fresh = await self._read_game(widget_id)
+        if self._widget_wakes.has_ended(widget_id):
+            return None  # it ended while this move waited, whatever the read says
         if fresh.get("status") != "active":
             raise GameGone(widget_id)
         if not (fresh.get("your_move") and fresh.get("seat")) or fresh.get("rev") != view.get("rev"):

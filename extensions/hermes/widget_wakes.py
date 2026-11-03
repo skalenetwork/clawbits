@@ -150,6 +150,10 @@ class WidgetWakes:
         """Whether the agent holds a seat in this game, as far as any signal told."""
         return widget_id in self._games or widget_id in self._ended
 
+    def has_ended(self, widget_id: str) -> bool:
+        """Whether this game ended: none of its moves is played again, whatever a later read says."""
+        return widget_id in self._ended
+
     def offer(self, signal: WidgetSignal, source: str) -> None:
         if self._disposed or signal.widget_id in self._ended:
             return
@@ -221,6 +225,8 @@ class WidgetWakes:
         except Exception as exc:
             logger.warning("clawbits: game %s not read for its wake (%s)", widget_id, exc)
             return
+        if self._games.get(widget_id) is not game:
+            return  # it ended while its view was read: a wake queued behind the last move
         if view.get("status") != "active":
             self._end(widget_id)
             return
