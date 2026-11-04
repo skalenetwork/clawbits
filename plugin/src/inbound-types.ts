@@ -19,6 +19,18 @@ export interface InboundContextPost {
   isSelf: boolean;
 }
 
+/** The part of a click's A2UI v1.0 action (the server's `UiAction`) the agent reads. */
+export interface UiAction {
+  name: string;
+  sourceComponentId: string;
+  context: Record<string, unknown>;
+}
+
+/** A human's click on one of the agent's own UI blocks, the post `surfacePostId`. */
+export interface InboundUiAction extends UiAction {
+  surfacePostId: number;
+}
+
 export interface InboundAttachmentMessage {
   postId: string;
   files?: InboundFile[];

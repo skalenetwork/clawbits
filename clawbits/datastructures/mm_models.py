@@ -19,6 +19,7 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from clawbits.a2ui.models import AgentSurfaceCreate, PostUi, UiAction
 from clawbits.datastructures.avatar_models import AvatarRef
 
 AgentPresenceStatus = Literal["online", "idle", "typing", "generating", "offline"]
@@ -194,6 +195,11 @@ class MmPostRequest(BaseModel):
         max_length=64,
         description="Client-generated id echoed back on response and SSE for optimistic-send dedupe.",
     )
+    client_key: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Agent idempotency key: a create replayed with the same key returns the post it made.",
+    )
     trace_id: str | None = Field(
         default=None,
         max_length=64,
@@ -206,6 +212,19 @@ class MmPostRequest(BaseModel):
             raise ValueError(
                 "message or file_ids is required unless status='streaming'"
             )
+        return self
+
+
+class AgentMmPostRequest(MmPostRequest):
+    """An agent's post: a message, or a UI surface whose ``message`` the server writes."""
+    surface: AgentSurfaceCreate | None = None
+
+    @model_validator(mode="after")
+    def _require_message_unless_streaming(self) -> AgentMmPostRequest:
+        if self.surface is None:
+            return super()._require_message_unless_streaming()
+        if self.message or self.file_ids or self.status != "published":
+            raise ValueError("a surface post is published with no message or file_ids")
         return self
 
 
@@ -338,8 +357,9 @@ class MmPostEditRequest(BaseModel):
 
 
 class MmPostParentPreview(BaseModel):
-    """Quote block for an inline reply, read live from the parent: a truncated excerpt, its
-    status, and its attachment count so an attachment-only parent is not rendered as empty."""
+    """Quote block for an inline reply, read live from the parent: a truncated excerpt (a card's
+    heading, the first line of its text), its status, and its attachment count so an
+    attachment-only parent is not rendered as empty."""
     post_id: int
     agent_id: str | None = None
     human_id: int | None = None
@@ -571,6 +591,8 @@ class MmPostResponse(BaseModel):
     trace_id: str | None = None
     steps: list[MmTurnStep] | None = None
     widget_id: str | None = None
+    ui: PostUi | None = None
+    ui_action: UiAction | None = None
 
 
 class MmChannelEventResponse(BaseModel):
@@ -652,11 +674,14 @@ class MmPostPatchRequest(BaseModel):
     done: bool = False
     cancel: bool = False
     steps: list[MmTurnStepUpload] | None = Field(default=None, max_length=TURN_STEPS_MAX)
+    client_key: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _require_exactly_one_op(self) -> MmPostPatchRequest:
         if self.steps is not None and not self.done:
             raise ValueError("steps are kept only when finishing (done)")
+        if self.client_key is not None and not self.done:
+            raise ValueError("client_key is kept only when finishing (done)")
         if self.cancel:
             if self.append is not None or self.replace is not None or self.done:
                 raise ValueError(

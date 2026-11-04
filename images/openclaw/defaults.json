@@ -18,7 +18,8 @@
       "clawbits_mcp_connect",
       "clawbits_widget_act",
       "clawbits_widget_get",
-      "clawbits_widget_list"
+      "clawbits_widget_list",
+      "clawbits_ui"
     ]
   },
   "plugins": {

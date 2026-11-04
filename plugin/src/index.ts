@@ -4,12 +4,12 @@ import { registerClawBitsCli } from "./cli.js";
 import { clawbitsChannelPlugin } from "./plugin.js";
 import { registerMcpApps } from "./activity/mcp-apps.js";
 import { registerActivitySubscription } from "./activity/subscription.js";
-import { setMcpOAuthRuntime } from "./mcp-oauth.js";
-import { setModelChoiceRuntime } from "./model-choice.js";
+import { postSurface } from "./outbound-adapter.js";
 import {
   registerSlimChannelHandoff,
   resolveClawBitsServiceOwner,
 } from "./service-handoff.js";
+import { setRuntime } from "./runtime.js";
 import { PLUGIN_VERSION } from "./version.js";
 import { registerGameTurnGuards } from "./widgets/session.js";
 
@@ -22,8 +22,7 @@ export default defineChannelPluginEntry({
   configSchema: emptyChannelConfigSchema(),
   registerCliMetadata: registerClawBitsCli,
   registerFull: (api) => {
-    setModelChoiceRuntime(api.runtime);
-    setMcpOAuthRuntime(api.runtime);
+    setRuntime(api.runtime);
     const hostApi = api as typeof api & {
       config?: OpenClawConfig;
       logger?: { warn?: (message: string) => void };
@@ -44,7 +43,7 @@ export default defineChannelPluginEntry({
     // Public runtime-context marker consumed by the companion plugin. An old
     // channel has no marker, so a newly installed companion remains idle and
     // cannot duplicate the old channel-owned background services.
-    const handoff = registerSlimChannelHandoff(api.runtime, PLUGIN_VERSION);
+    const handoff = registerSlimChannelHandoff(api.runtime, PLUGIN_VERSION, postSurface);
     api.on?.("gateway_stop", () => handoff?.dispose());
 
     // Live activity belongs to the channel: lifecycle/assistant/thinking/tool

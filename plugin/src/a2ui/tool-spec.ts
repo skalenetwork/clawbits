@@ -1,0 +1,117 @@
+// The Clawbits UI block tool, exactly as the server declares it for every runtime
+// (clawbits/a2ui/tool_spec.json, an MCP `tools/list` result): name, description, inputSchema and
+// annotations. A copy, since the server's file doesn't ship with the plugin; a test keeps the two
+// equal, so a wording change is made on the server and copied here.
+
+import type { WidgetToolSpec } from "../widgets/tool-spec.js";
+
+export const UI_TOOL_SPEC: Omit<WidgetToolSpec, "name"> & { name: "clawbits_ui" } = {
+  name: "clawbits_ui",
+  description:
+    "Show a UI block in this Clawbits chat: tables, charts, stats, status lists, and buttons, " +
+    "choices and form fields for the user, in one card built from A2UI v1.0 components. Use it when " +
+    "structure reads better than prose (metrics, comparisons, step status) or when the user should " +
+    "pick from options or fill in a few fields; keep explanation in your normal reply. The block is " +
+    "its own message, placed where you call this. Returns {post_id}, or {errors} to fix and call " +
+    "again.\n\n" +
+    "Components are a flat list. Each has a unique id (letters, digits, underscores) and a " +
+    'component name; one has id "root"; containers name their children by id, and each component ' +
+    "has one parent.\n\n" +
+    "Layout: Column {children: [ids], justify?, align?}, Row {children: [ids], justify?, align?}, " +
+    "Card {child: id}, Divider {}.\n" +
+    "Content: Text {text, variant?: body | caption}, markdown without links or images. Notice " +
+    "{tone, text, title?}. KeyValue {items: [{label, value}]}, max 16. Stats {items: [{label, " +
+    "value, unit?, delta?, trend?: up | down | flat}]}, max 6. StatusList {items: [{title, " +
+    "subtitle?, tone}]}, max 30. Table {caption, headers: [strings], rows: [[string or number " +
+    "cells]]}, max 50 rows of 12 cells, every row as wide as headers. Chart {chartType: pie | bar | " +
+    "line | area, title, xLabel?, yLabel?}: a pie takes segments: [{label, value}], the others take " +
+    "categories: [strings] and series: [{name, values: [one number per category]}], max 4 series of " +
+    "60 points.\n" +
+    "tone is one of ok, info, warn, bad, idle. Values are literal strings and numbers; format " +
+    "numbers and dates yourself.\n\n" +
+    "Buttons: Button {child: id of a Text, variant?: default | primary | borderless, action, " +
+    'checks?}. A link: action {functionCall: {"@call": "openUrl", args: {url: "https://..."}}}. An ' +
+    'event to you: action {event: {name, context?: {key: literal or {"@path": "/pointer"}}, ' +
+    "userMessage?}}. A click posts userMessage, else the button's label, as the user's message, " +
+    "with one line per filled input it sends, and reaches you as a UI action with its name and " +
+    "context, each @path replaced by the user's value. Event names starting with oc. are reserved.\n" +
+    "Inputs keep the user's value in dataModel at their value's pointer; a button sends it by " +
+    "naming the same pointer in its context. ChoicePicker {label?, options: [{label, value}], " +
+    'value: {"@path": "/pointer"}, variant?: mutuallyExclusive | multipleSelection} keeps the ' +
+    'picked option values, a list of strings. TextField {label, value: {"@path"}, variant?: ' +
+    'shortText | longText | number, checks?} keeps a string. CheckBox {label, value: {"@path"}} ' +
+    'keeps true or false. DateTimeInput {label, value: {"@path"}, enableDate?, enableTime?} enables ' +
+    "a date, a time or both and keeps YYYY-MM-DD, HH:MM or YYYY-MM-DDTHH:MM with the user's UTC " +
+    "offset, such as 2026-11-04T18:30+02:00.\n" +
+    'checks: [{condition, message?}], a condition being {"@call": "required" | "length" | "email", ' +
+    'args: {value: {"@path"}, min?, max?}} or {"@path"} of a boolean, such as a CheckBox\'s; email ' +
+    'passes "", so pair it with required. A TextField\'s checks read only its own value, and a ' +
+    "Button's only the pointers its context sends. A TextField shows its failing check under it, " +
+    "and a Button cannot be pressed while its checks, or those of a TextField it sends, fail.\n" +
+    'Give dataModel the starting values, such as {"target": [], "reason": "", "notify": false}, ' +
+    "each what its input keeps, a date or time to the minute and without an offset. Its strings can " +
+    "post in the user's name, so they have no @ or link and do not start with /. Everyone in the " +
+    "chat sees what a click sends, so never ask for passwords or other secrets.\n" +
+    "once (default true) closes the card after its first click; pass false for a card meant to be " +
+    "clicked again.\n\n" +
+    'Example: [{"id": "root", "component": "Card", "child": "body"}, {"id": "body", "component": ' +
+    '"Column", "children": ["title", "stats", "runs"]}, {"id": "title", "component": "Text", ' +
+    '"text": "**Deploys this week**"}, {"id": "stats", "component": "Stats", "items": [{"label": ' +
+    '"Succeeded", "value": "9", "unit": "of 10"}]}, {"id": "runs", "component": "StatusList", ' +
+    '"items": [{"title": "api v2.4.1", "subtitle": "3 min ago", "tone": "ok"}]}]\n' +
+    'Choice example, with dataModel {"target": []}: [{"id": "root", "component": "Column", ' +
+    '"children": ["ask", "pick", "go"]}, {"id": "ask", "component": "Text", "text": "Deploy ' +
+    'where?"}, {"id": "pick", "component": "ChoicePicker", "options": [{"label": "Staging", ' +
+    '"value": "staging"}, {"label": "Production", "value": "production"}], "value": {"@path": ' +
+    '"/target"}, "variant": "mutuallyExclusive"}, {"id": "go", "component": "Button", "child": ' +
+    '"go_label", "variant": "primary", "action": {"event": {"name": "deploy", "context": {"target": ' +
+    '{"@path": "/target"}}}}}, {"id": "go_label", "component": "Text", "text": "Deploy"}]\n' +
+    'Form example, with dataModel {"reason": "", "when": "", "notify": false}: [{"id": "root", ' +
+    '"component": "Column", "children": ["reason", "when", "notify", "go"]}, {"id": "reason", ' +
+    '"component": "TextField", "label": "Reason", "value": {"@path": "/reason"}, "checks": ' +
+    '[{"condition": {"@call": "required", "args": {"value": {"@path": "/reason"}}}}]}, {"id": ' +
+    '"when", "component": "DateTimeInput", "label": "When", "value": {"@path": "/when"}, ' +
+    '"enableDate": true, "enableTime": true}, {"id": "notify", "component": "CheckBox", "label": ' +
+    '"Notify the team", "value": {"@path": "/notify"}}, {"id": "go", "component": "Button", ' +
+    '"child": "go_label", "variant": "primary", "checks": [{"condition": {"@call": "required", ' +
+    '"args": {"value": {"@path": "/when"}}}, "message": "Pick a time."}], "action": {"event": ' +
+    '{"name": "schedule", "context": {"reason": {"@path": "/reason"}, "when": {"@path": "/when"}, ' +
+    '"notify": {"@path": "/notify"}}}}}, {"id": "go_label", "component": "Text", "text": ' +
+    '"Schedule"}]',
+  inputSchema: {
+    type: "object",
+    required: ["components"],
+    additionalProperties: false,
+    properties: {
+      components: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        description: 'The flat component list; one has id "root".',
+        items: {
+          type: "object",
+          required: ["id", "component"],
+          properties: {
+            id: { type: "string" },
+            component: {
+              type: "string",
+              enum: ["Text", "Column", "Row", "Card", "Divider", "Button", "ChoicePicker", "TextField", "CheckBox", "DateTimeInput", "Notice", "KeyValue", "Stats", "StatusList", "Table", "Chart"],
+            },
+          },
+        },
+      },
+      dataModel: {
+        type: "object",
+        description: "Starting values for the pointers the card's inputs and buttons name.",
+      },
+      once: { type: "boolean", description: "Close the card after its first click (default true)." },
+    },
+  },
+  annotations: {
+    title: "Show a UI block in a Clawbits chat",
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: false,
+  },
+};

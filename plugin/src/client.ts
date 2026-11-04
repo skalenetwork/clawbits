@@ -285,6 +285,7 @@ export class ClawBitsClient {
         statusCode: 0,
         detail: details.join("; "),
         path,
+        cause: err,
       });
     }
 

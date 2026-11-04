@@ -1,5 +1,7 @@
 import {
+  lazy,
   memo,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -28,7 +30,7 @@ import { AdminCommandGlyph } from "@/components/AdminCommandGlyph";
 import { Icon } from "@/components/Icon";
 import { LinkPreviewCard } from "@/components/LinkPreviewCard";
 import { MessageAttachments } from "@/components/MessageAttachments";
-import { MessageMarkdown } from "@/components/MessageMarkdown";
+import { MessageMarkdown, PlainMarkdown } from "@/components/MessageMarkdown";
 import { ProfileMenuTrigger } from "@/components/ProfileMenu";
 import { PostAvatar } from "@/components/chat/PostAvatar";
 import { McpAppView } from "@/components/chat/McpAppView";
@@ -68,6 +70,12 @@ interface MessageAction {
   label: string;
   onClick: () => void;
 }
+
+const Surface = lazy(() =>
+  import("@/components/chat/ui/Surface").catch(() => ({
+    default: ({ message }: { ui: unknown; message: string }) => <MessageMarkdown content={message}/>,
+  })),
+);
 
 const QUICK_REACTIONS = ["👍", "👎", "❤️", "😂", "😮", "😢"] as const;
 const ACTION_BUTTON =
@@ -573,7 +581,7 @@ function ParentQuoteBlock({
                 <Icon icon={Attachment01Icon} className="size-2.5! shrink-0 opacity-70"/>
               )}
               <span className="min-w-0 truncate">
-                {quotedBodyText(preview.message_excerpt, attachmentCount)}
+                <PlainMarkdown content={quotedBodyText(preview.message_excerpt, attachmentCount)}/>
               </span>
             </span>
           </>
@@ -679,7 +687,7 @@ export const MessageRow = memo(function MessageRow({
   const actions: MessageAction[] = hasActions
     ? [
         settled && { key: "reply", icon: ArrowTurnBackwardIcon, label: "Reply", onClick: () => { onReply(post); } },
-        isOwnHumanPost && isPublished && !post.widget_id && {
+        isOwnHumanPost && isPublished && !post.widget_id && !post.ui_action && {
           key: "edit",
           icon: Edit02Icon,
           label: "Edit",
@@ -726,6 +734,10 @@ export const MessageRow = memo(function MessageRow({
     />
   ) : post.widget_id ? (
     <WidgetLine widgetId={post.widget_id} channelId={post.channel_id} userId={currentUserId} onOpen={onOpenWidget} />
+  ) : post.ui ? (
+    <Suspense fallback={<MessageMarkdown content={post.message}/>}>
+      <Surface ui={post.ui} message={post.message} postId={post.post_id} channelId={post.channel_id}/>
+    </Suspense>
   ) : adminCommand ? (
     <div className="my-1 inline-flex max-w-full items-center gap-2 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-foreground/80">
       <AdminCommandGlyph kind={adminCommand.kind} className="size-5" />
@@ -741,7 +753,7 @@ export const MessageRow = memo(function MessageRow({
     <MessageMarkdown content={post.message}/>
   );
 
-  const previewUrl = settled && !post.link_preview && !post.widget_id ? extractUrls(post.message).find((url) => !mcpConnectLinkId(url)) : undefined;
+  const previewUrl = settled && !post.link_preview && !post.widget_id && !post.ui && !post.ui_action ? extractUrls(post.message).find((url) => !mcpConnectLinkId(url)) : undefined;
   const reactionPicker = settled && <ReactionQuickPicker onSelect={react}/>;
   // A game's line keeps no receipt: a move never changes what was read.
   const receipt = post.widget_id ? undefined : receiptOf(post, channelType, currentUserId, members);

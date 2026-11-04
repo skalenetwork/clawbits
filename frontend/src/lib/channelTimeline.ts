@@ -50,11 +50,12 @@ export function mergePosts(
 }
 
 // Drops dead reply placeholders: stale empty streams, and ones the same agent already overtook with a published post.
+// A surface overtakes nothing: the turn that posted it goes on below it.
 export function buildTimeline(posts: MmChannelPost[], events: MmChannelEvent[]): TimelineItem[] {
   const staleCutoff = Date.now() - STALE_STREAMING_MS;
   const latestPublishedByAgent = new Map<string, number>();
   for (const p of posts) {
-    if (p.agent_id && p.status === "published" && p.post_id > (latestPublishedByAgent.get(p.agent_id) ?? 0)) {
+    if (p.agent_id && p.status === "published" && !p.ui && p.post_id > (latestPublishedByAgent.get(p.agent_id) ?? 0)) {
       latestPublishedByAgent.set(p.agent_id, p.post_id);
     }
   }

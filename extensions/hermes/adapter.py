@@ -75,6 +75,7 @@ from .messages import (
     _post_sequence,
     _split_message_chunks,
     _trace_id_from_metadata,
+    _ui_action_block,
 )
 from .read_cursors import load_read_cursors
 from .widget_wakes import (
@@ -1521,6 +1522,11 @@ class ClawbitsAdapter(BasePlatformAdapter):
     def _is_pair_channel(self, channel: _Channel) -> bool:
         return self._is_direct_channel(channel) or channel.channel_type == "agent_chat"
 
+    def _answers_own_surface(self, post: dict[str, Any]) -> bool:
+        """A human's UI action on a UI block this agent posted."""
+        preview = post.get("parent_preview") or {}
+        return bool(post.get("ui_action")) and preview.get("agent_id") == self.agent_id
+
     def _skip_reason(self, channel: _Channel, post: dict[str, Any]) -> str | None:
         """Why a post is not ours to answer, or None when it is addressed to this agent."""
         text = str(post.get("message") or "")
@@ -1532,7 +1538,11 @@ class ClawbitsAdapter(BasePlatformAdapter):
             return "game_start"
         if not text.strip() and not _extract_files(post):
             return "empty"
-        if not (self._is_pair_channel(channel) or self._mention_re.search(text)):
+        if not (
+            self._is_pair_channel(channel)
+            or self._mention_re.search(text)
+            or self._answers_own_surface(post)
+        ):
             return "not_addressed"
         if post.get("agent_id") and not self._inter_agent_mode:
             return "inter_agent_off"
@@ -1772,6 +1782,8 @@ class ClawbitsAdapter(BasePlatformAdapter):
         text = str(post.get("message") or "")
         if self._mention_re.search(text):
             text = self._strip_self_mentions(text)
+        if self._answers_own_surface(post) and (action := _ui_action_block(post)):
+            text = f"{text}\n\n{action}"
         paths, media_types, notes = await asyncio.to_thread(
             cache_post_attachments, self.client, post
         )
@@ -1907,9 +1919,12 @@ class ClawbitsAdapter(BasePlatformAdapter):
         return self._operator_email, identity[1] if identity else self.fallback_channel_id or None
 
     async def _is_operator_control(self, channel: _Channel, post: dict[str, Any]) -> bool:
-        """True only for a post the verified operator (a human) wrote in the operator DM."""
+        """True only for a post the verified operator (a human) wrote in the operator DM. A UI
+        action never counts: its text comes from the agent's own UI block."""
         human_id = post.get("human_id")
-        if post.get("agent_id") or human_id is None or channel.channel_type not in {None, "direct"}:
+        if post.get("agent_id") or post.get("ui_action") or human_id is None:
+            return False
+        if channel.channel_type not in {None, "direct"}:
             return False
         return await self._operator_identity() == (str(human_id), channel.id)
 

@@ -27,7 +27,7 @@ MOVE = {"name": "clawbits_widget_act", "arguments": {"widget_id": WIDGET, "type"
 # Everything a move's run may be offered: the ``clawbits`` toolset and Hermes's tool search. Any
 # other tool (memory, recall, shell, todo, cron, delegation, ...) fails the test.
 GAME_RUN_TOOLS = {"clawbits_widget_act", "clawbits_widget_get", "clawbits_widget_list", "clawbits_send_email",
-                  "clawbits_mcp_connect", "tool_search", "tool_describe", "tool_call"}
+                  "clawbits_mcp_connect", "clawbits_ui", "tool_search", "tool_describe", "tool_call"}
 
 
 def _module(gw, name: str) -> Any:

@@ -1,28 +1,18 @@
-// Lightweight polling loop that ingests new Mattermost posts from the
-// Clawbits-managed owner channel and forwards them to an inbound handler.
-//
-// Clawbits inbound uses a single agent WebSocket when available, with SSE,
-// rare reconciliation, and fallback polling behind it. The poller tracks a monotonic
-// `create_at` cursor so we never re-dispatch the same post, filters out our
-// own echoes (posts authored by `account.agentId`) and Mattermost system
-// messages (`type: "system_join_channel"`, etc.), and respects an AbortSignal
-// for clean shutdown from the channel gateway.
-
-import type { WatermarkStore } from "./channel-watermarks.js";
+import {
+  createChannelIngressMonitor,
+  type ChannelIngressMonitorLifecycle,
+  type ChannelIngressQueue,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { stopTurn } from "./draft-registry.js";
 import { resolveKnownAnswers, withChallenge } from "./challenge.js";
 import type { ClawBitsClient } from "./client.js";
 import { ClawBitsError } from "./errors.js";
-import {
-  consoleErrorWithFile,
-  logDebug,
-  logError,
-  logInfo,
-  logWarn,
-  writeTraceSpan,
-} from "./file-logger.js";
+import { logDebug, logError, logInfo, logWarn, writeTraceSpan } from "./file-logger.js";
+import type { InboundUiAction, UiAction } from "./inbound-types.js";
 import { finishMcpSignIn, isMcpSignIn, type McpSignIn } from "./mcp-oauth.js";
 import { choiceOf, INHERIT, type ModelSelection } from "./model-choice.js";
+import { answerQuestionClick, QUESTION_EVENT, questionWaiting } from "./questions.js";
+import type { KeyedStore } from "./runtime.js";
 import { wakeCompanion } from "./service-handoff.js";
 import * as mmTools from "./tools/mattermost.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
@@ -118,6 +108,10 @@ export interface InboundMessage {
   /** Set on a game wake (widgets/wake.ts): the turn is the agent's move in this game. It runs in
    *  the game's own session and is silent: no draft, no status, no chat text, no sends. */
   widget?: WidgetTurn;
+  /** Set when the post is a human's click on one of this agent's UI blocks. */
+  uiAction?: InboundUiAction;
+  /** Set when `text` answers the question its chat waits on: core takes the whole text as the answer. */
+  questionAnswer?: true;
 }
 
 /** Subset of the Mattermost post shape the poller actually reads. */
@@ -130,10 +124,6 @@ export interface MattermostPost {
   channel_id?: string;
   message?: string;
   type?: string;
-  /** ``streaming`` | ``draft`` | ``published`` | ``rejected``. Needed because
-   *  the agent read path returns streaming rows too, and a half-written reply
-   *  is otherwise indistinguishable from a finished one. See
-   *  `isSettledSelfPost`. */
   status?: string;
   props?: Record<string, unknown>;
   agent_id?: string;
@@ -147,6 +137,10 @@ export interface MattermostPost {
   files?: InboundFile[];
   /** Set on the message that started a chat game, which its wake plays instead. */
   widget_id?: string;
+  /** Set on a human's click on a UI block: the action the server built from the block. */
+  ui_action?: UiAction;
+  /** The post this one replies to; a click's is its UI block. */
+  parent_preview?: { post_id: number; agent_id: string | null };
 }
 
 export interface InboundPollerLog {
@@ -160,49 +154,21 @@ export interface InboundPollerOptions {
   client: ClawBitsClient;
   account: ResolvedClawBitsAccount;
   abortSignal: AbortSignal;
-  onInboundMessage: (msg: InboundMessage) => Promise<void> | void;
+  queue: ChannelIngressQueue<StoredInboundEvent> | (() => ChannelIngressQueue<StoredInboundEvent>);
+  onInboundMessage: (msg: InboundMessage, turn?: InboundTurn) => Promise<void> | void;
+  contextWatermarks?: KeyedStore<number>;
   onModelSelection?: (selection: ModelSelection) => void;
-  /** Milliseconds between fallback polls when realtime is unavailable. Defaults to 30 seconds. */
   pollIntervalMs?: number;
-  /** Milliseconds a queued inbound post may wait before it is dropped. Defaults to 10 minutes. */
-  inboundQueueTtlMs?: number;
-  /** Prefer one agent WebSocket over per-channel SSE. Defaults true. */
   websocketEnabled?: boolean;
-  /** Rare post reconciliation poll cadence while WebSocket is healthy. Defaults to 5 minutes. */
   websocketReconcileIntervalMs?: number;
-  /** Channel/settings refresh cadence while WebSocket is healthy. Defaults to 5 minutes. */
   websocketControlRefreshIntervalMs?: number;
   log?: InboundPollerLog;
-  /** Test seam: override wall-clock time for cursor init. */
   now?: () => number;
-  /** Test seam: pin every channel's floor to this `create_at` and skip boot
-   *  catch-up. Production never passes it. */
-  initialCursor?: number;
-  /** Run the one-shot boot catch-up pass. Defaults true. */
   catchUpEnabled?: boolean;
-  /**
-   * Optional set of post IDs to treat as self-authored echoes (skip). The
-   * outbound adapter can share this bag to suppress its own posts when the
-   * server does not echo a distinct `user_id`.
-   */
-  seenPostIds?: Set<string>;
-  /**
-   * Persistent per-(account, channel) "last seen" watermark. Used to trim the
-   * catch-up backlog so history the agent has already been shown is never
-   * re-injected across gateway restarts. Omit for the in-memory-only
-   * behaviour (dedupe within a single poller lifetime; re-inject once after a
-   * restart).
-   */
-  watermarkStore?: WatermarkStore;
-  /** A chat game the agent sat in ended: drop the game's own session. Runs on the inbound queue,
-   *  after any move still in flight; "busy" runs it again later (widgets/wake.ts). */
   onWidgetEnded?: (widget: {
     widgetId: string;
     channelId: string;
   }) => Promise<GameSessionDeletion | void> | GameSessionDeletion | void;
-  /** Sweep the sessions of games that ended while the agent was away: after boot catch-up, then
-   *  hourly. `serial` runs a deletion on the inbound queue, after any move; `seated` tells a game
-   *  this account sat in since it started. */
   onGameSessionSweep?: (
     serial: (run: () => Promise<void>) => Promise<void>,
     seated: (widgetId: string) => boolean,
@@ -327,6 +293,12 @@ function normalizePost(raw: Record<string, unknown>): MattermostPost | undefined
     ...(typeof raw["widget_id"] === "string" && raw["widget_id"]
       ? { widget_id: raw["widget_id"] as string }
       : {}),
+    ...(raw["ui_action"] && typeof raw["ui_action"] === "object"
+      ? { ui_action: raw["ui_action"] as UiAction }
+      : {}),
+    ...(raw["parent_preview"] && typeof raw["parent_preview"] === "object"
+      ? { parent_preview: raw["parent_preview"] as MattermostPost["parent_preview"] }
+      : {}),
     ...(files ? { files } : {}),
   };
 }
@@ -334,107 +306,71 @@ function normalizePost(raw: Record<string, unknown>): MattermostPost | undefined
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_WEBSOCKET_RECONCILE_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_WEBSOCKET_CONTROL_REFRESH_INTERVAL_MS = 5 * 60_000;
-/** How often ended games' sessions are swept (with up to a minute of jitter). */
 const GAME_SESSION_SWEEP_INTERVAL_MS = 60 * 60_000;
-const DEFAULT_INBOUND_QUEUE_TTL_MS = 10 * 60_000;
-const SEEN_RING_LIMIT = 1000;
+const KNOWN_LIMIT = 1000;
 const DEFAULT_CONSECUTIVE_AGENT_TURNS = 10;
 const MAX_CONSECUTIVE_AGENT_TURNS = 50;
 const HUMAN_GUIDANCE_MESSAGE = "Nice, but need human guidance to proceed.";
-
-// --- Boot catch-up -----------------------------------------------------------
-// PREFERRED RESUME POINT: the server-side read pointer (`last_read_post_id`
-// on the channel listing, acked on turn settle). It is a post-id serial, so
-// it needs no look-back window, no clock math, and survives a wiped guest
-// filesystem. The timestamp windows below are the LEGACY fallback for
-// servers that predate the pointer (channel payload carries no
-// `last_read_post_id`) — that path keeps the old semantics.
-//
-// Legacy look-back bound with a persisted cursor. Generous because the
-// one-turn-per-channel cap decouples window size from burst risk.
-const CATCH_UP_WINDOW_MS = 6 * 60 * 60_000;
-// Legacy look-back with no cursor: a first boot, or a recreate/upgrade that
-// wiped the state file.
-const COLD_CATCH_UP_WINDOW_MS = 60 * 60_000;
-// The pass runs before the agent WebSocket starts, so bound it: on breach the
-// remaining channels keep their now()-seeded floors and retry next boot (the
-// un-advanced read pointer is what makes the retry work).
-const MAX_CATCH_UP_TURNS = 8;
-const MAX_CATCH_UP_MS = 5 * 60_000;
 const CATCH_UP_CONTEXT_LIMIT = 50;
-// See the skew note in `runCatchUp` (legacy path only — a serial cursor has
-// no clock to skew).
-const MAX_CATCH_UP_CLOCK_SKEW_MS = 10 * 60_000;
-// Forward-cursor drain bounds: pages of `CATCH_UP_PAGE_SIZE` via
-// `after_post_id`, at most `MAX_CATCH_UP_PAGES` per channel. A gap beyond
-// that falls back to the newest page with the overflow noted — answering
-// this week's messages beats faithfully replaying last week's.
 const CATCH_UP_PAGE_SIZE = 50;
 const MAX_CATCH_UP_PAGES = 4;
-// A failed boot control fetch defers catch-up — but only this many times,
-// each followed by a SHORT retry sleep (not the full poll interval): the
-// deferral holds realtime startup to keep live settles from acking past the
-// unread gap, so every deferred tick is added latency on all message flow.
-// After the budget the pass runs against the fallback channel set — a
-// bounded snooze-blindness window that is no worse than the live path's own
-// (agentSnoozed also starts false there), rather than an indefinite outage.
 const MAX_CATCH_UP_DEFERRALS = 1;
 const CATCH_UP_DEFERRAL_RETRY_MS = 1000;
+const INGRESS_RETRY = { maxAttempts: 3, deadLetterMinAgeMs: 0, baseMs: 2_000, maxMs: 30_000 };
+const INGRESS_RETENTION = { completedTtlMs: 30 * 24 * 60 * 60_000, completedMaxEntries: 2_000, failedMaxEntries: 1_000 };
 
 type InboundSource = "poll" | "reconcile" | "sse" | "ws";
 
-type ExpiringInboundQueueItem = {
-  id: string;
-  enqueuedAt: number;
-  expiresAt: number;
-  run: () => Promise<void>;
-  expire?: () => Promise<void> | void;
-};
+interface PostEvent {
+  kind: "post";
+  channelId: string;
+  post: MattermostPost;
+  source: InboundSource;
+  attention?: true;
+  catchUp?: InboundContextPost[];
+  /** Admitted as an answer to a waiting question; the ingress lane is fixed when admitted. */
+  question?: true;
+  /** Admitted again as an ordinary post after its question ended before it was delivered. */
+  requeued?: true;
+}
 
-type PendingExpiringInboundQueueItem = ExpiringInboundQueueItem & {
-  resolve: () => void;
-  reject: (err: unknown) => void;
-};
+export type InboundEvent =
+  | PostEvent
+  | { kind: "message"; msg: InboundMessage }
+  | { kind: "stop"; channelId: string; at: number };
 
-class ExpiringInboundQueue {
-  #pending: PendingExpiringInboundQueueItem[] = [];
-  #draining = false;
+export interface StoredInboundEvent {
+  version: number;
+  body: InboundEvent;
+}
 
-  constructor(private readonly now: () => number) {}
+export interface InboundTurn {
+  lifecycle: ChannelIngressMonitorLifecycle;
+  lastAttempt: boolean;
+}
 
-  enqueue(item: ExpiringInboundQueueItem): Promise<void> {
-    const task = new Promise<void>((resolve, reject) => {
-      this.#pending.push({ ...item, resolve, reject });
-    });
-    this.#drain();
-    return task;
+function inboundEventId(event: InboundEvent): string {
+  switch (event.kind) {
+    case "post":
+      return event.attention ? `attention:${event.post.id}` : event.requeued ? `turn:${event.post.id}` : event.post.id;
+    case "message":
+      return event.msg.postId;
+    case "stop":
+      return `stop:${event.channelId}:${String(event.at)}`;
   }
+}
 
-  #drain(): void {
-    if (this.#draining) return;
-    this.#draining = true;
-    void (async () => {
-      try {
-        for (;;) {
-          const item = this.#pending.shift();
-          if (!item) return;
-          try {
-            if (this.now() >= item.expiresAt) {
-              await item.expire?.();
-            } else {
-              await item.run();
-            }
-            item.resolve();
-          } catch (err) {
-            item.reject(err);
-          }
-        }
-      } finally {
-        this.#draining = false;
-        if (this.#pending.length > 0) this.#drain();
-      }
-    })();
-  }
+function isUnsettled(post: MattermostPost): boolean {
+  return post.status === "streaming" || post.status === "draft";
+}
+
+function postSerialOf(post: MattermostPost): number {
+  const serial = Number(post.id);
+  return Number.isFinite(serial) && serial > 0 ? Math.floor(serial) : 0;
+}
+
+function errorText(err: unknown): string {
+  return String((err as Error)?.message ?? err);
 }
 
 function resolvePositiveMs(value: unknown, fallback: number): number {
@@ -444,10 +380,6 @@ function resolvePositiveMs(value: unknown, fallback: number): number {
     return fallback;
   }
   return Math.max(0, Math.floor(parsed));
-}
-
-function resolveInboundQueueTtlMs(value: unknown): number {
-  return resolvePositiveMs(value, DEFAULT_INBOUND_QUEUE_TTL_MS);
 }
 
 function resolvePollIntervalMs(value: unknown): number {
@@ -528,26 +460,6 @@ export function isUserAuthoredPost(post: MattermostPost): boolean {
   return hasText || hasFiles;
 }
 
-/**
- * True when `post` is a *finished* reply by this agent — the only thing that
- * proves it already answered what came before.
- *
- * The `status` check is the whole point. `activity/stream-patcher.ts` appends
- * partial assistant text into the open draft every ~180ms, so a turn killed
- * mid-reply leaves a NON-EMPTY `streaming` row that `isUserAuthoredPost`
- * accepts. Trusting that would clamp away the post the dead turn was answering
- * — a permanent silent miss whose evidence the server reaper then deletes.
- *
- * Missing `status` counts as settled: old servers and test fixtures omit it.
- */
-export function isSettledSelfPost(post: MattermostPost, agentId: string | undefined): boolean {
-  if (!agentId) return false;
-  if (post.agent_id !== agentId && post.user_id !== agentId) return false;
-  if (post.status === "streaming" || post.status === "draft") return false;
-  if (post.delete_at && post.delete_at > 0) return false;
-  return isUserAuthoredPost(post);
-}
-
 /** Stable sender label for a post: prefer the human id, then the agent id,
  *  finally the raw user id. Mirrors the attribution `runInboundPoller`
  *  builds for the dispatched message so context lines read consistently. */
@@ -590,6 +502,24 @@ function hasAgentMention(message: string, agentId: string): boolean {
 
 function isPairChat(channelType: string | null | undefined): boolean {
   return channelType === "direct" || channelType === "agent_chat";
+}
+
+/** The action of a click on one of this agent's own UI blocks, which the server makes the parent of
+ *  the click's post. */
+function ownSurfaceAction(post: MattermostPost, agentId: string | undefined): InboundUiAction | undefined {
+  const { ui_action: action, parent_preview: parent } = post;
+  if (!agentId || !action || parent?.agent_id !== agentId) return undefined;
+  const { name, sourceComponentId, context } = action;
+  return { name, surfacePostId: parent.post_id, sourceComponentId, context };
+}
+
+/** A human's typed answer to the question its chat waits on: plain text with this agent's own @mention
+ *  removed, no files and no leading `/`. */
+function typedAnswer(post: MattermostPost, agentId: string | undefined): string | undefined {
+  if (!agentId || post.human_id === undefined || post.ui_action || post.widget_id || post.files?.length) return undefined;
+  const own = new RegExp(`(^|[^${MENTION_HANDLE_CHARS}])@${escapeRegExp(agentId)}(?![${MENTION_HANDLE_CHARS}])[,:]?[ \\t]*`, "g");
+  const text = (post.message ?? "").replace(own, "$1").trim();
+  return text && !text.startsWith("/") ? text : undefined;
 }
 
 /**
@@ -676,16 +606,6 @@ export function buildPriorContext(
   return eligible.length > limit ? eligible.slice(-limit) : eligible;
 }
 
-/**
- * Long-lived polling loop. Resolves when `abortSignal` fires or the loop
- * exits normally. Never throws; network/parse failures are logged.
- *
- * The poller fans out across every channel the agent is a member of (via
- * `GET /api/agentic/mm/channels`), maintaining a per-channel `create_at`
- * cursor so each conversation tracks independently. It dispatches human
- * posts that are addressed to the agent; when inter-agent mode is enabled it
- * also dispatches other agents' addressed posts and tags replies to the sender.
- */
 interface SseEnvelope {
   type?: string;
   channel_id?: string;
@@ -835,27 +755,17 @@ async function consumeChannelEvents(params: {
 
 export async function runInboundPoller(opts: InboundPollerOptions): Promise<void> {
   const now = opts.now ?? (() => Date.now());
-  const seen = opts.seenPostIds ?? new Set<string>();
-  // SCHEDULER EPOCH ONLY — feeds the reconcile/control-refresh deadlines below.
-  // It used to double as the per-channel cursor seed, which is what dropped
-  // every message sent during a VM restart. Keep the two separate: seeding the
-  // timers from a past watermark puts both deadlines permanently in the past.
-  const startedAt = opts.initialCursor ?? now();
-  const cursors = new Map<string, number>();
-  const reconcileFloors = new Map<string, number>();
   const { client, account, abortSignal, log } = opts;
+  const tag = `[clawbits/${account.accountId}]`;
   const mentionToken = account.agentId ? `@${account.agentId}` : null;
   const backlog = account.channelContextBacklog ?? 0;
   const allowFromSet = new Set(
     (account.allowFrom ?? []).map((v) => String(v).trim()).filter((v) => v.length > 0),
   );
-  // `"*"` is OpenClaw's canonical allow-everyone entry (its shared matcher,
-  // `src/plugin-sdk/allow-from.ts`, special-cases it). Clawbits matched entries
-  // by exact set membership only, so an operator who wrote the documented
-  // OpenClaw form got the opposite of what they asked for: no key ever equals
-  // `"*"`, so a non-empty list denied EVERY sender. Fail open on the wildcard,
-  // matching the host, rather than silently denying the whole channel.
   const allowFromWildcard = allowFromSet.has("*");
+  const allowedKey = (key: string): boolean => allowFromSet.size === 0 || allowFromWildcard || allowFromSet.has(key);
+  const allowedSender = (senderId: string): boolean =>
+    (senderId && !senderId.includes(":") ? [senderId, `human:${senderId}`, `agent:${senderId}`] : [senderId]).some(allowedKey);
   const answers = resolveKnownAnswers(account.knownAnswers);
   let interAgentMode = account.interAgentMode === true;
   let interAgentMessageLimit = clampInterAgentMessageLimit(account.interAgentMessageLimit);
@@ -864,152 +774,101 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
   let consecutiveAgentTurns = 0;
   let awaitingHumanGuidance = false;
   let guidanceNoticeSent = false;
-  const watermarks = opts.watermarkStore;
   const channelTypes = new Map<string, string | null>();
-  const sseChannels = new Map<
-    string,
-    { channelType: string | null; task: Promise<void>; abort: AbortController }
-  >();
+  const baselines = new Map<string, number>();
+  const admitted = new Set<string>();
+  const sseChannels = new Map<string, { task: Promise<void>; abort: AbortController }>();
   let agentWsTask: Promise<void> | undefined;
   let agentWsAbort: AbortController | undefined;
   let agentWsConnected = false;
   let agentWsDisabledUntil = 0;
   let forceReconcilePoll = false;
-  let nextWebSocketReconcileAt = startedAt;
-  let nextWebSocketControlRefreshAt = startedAt;
-  // OpenClaw's reply runtime is single-agent stateful. Poll delivery was already
-  // serial because each post awaited dispatch; SSE delivery used to fire-and-forget
-  // each post.created event, so two quick messages could enter the same agent
-  // session at once and wedge the chat. Keep pickup low-latency by enqueueing
-  // from the SSE reader, but run process+dispatch through an explicit expiring
-  // message queue so stale backlog does not drain minutes later.
+  const config = account.config as Record<string, unknown>;
   const pollMs = resolvePollIntervalMs(
-    opts.pollIntervalMs ??
-      account.config.pollIntervalMs ??
-      (account.config as Record<string, unknown>)["poll_interval_ms"] ??
-      process.env.CLAWBITS_POLL_INTERVAL_MS,
-  );
-  const inboundQueueTtlMs = resolveInboundQueueTtlMs(
-    opts.inboundQueueTtlMs ??
-      account.config.inboundQueueTtlMs ??
-      (account.config as Record<string, unknown>)["inbound_queue_ttl_ms"] ??
-      process.env.CLAWBITS_INBOUND_QUEUE_TTL_MS,
+    opts.pollIntervalMs ?? account.config.pollIntervalMs ?? config["poll_interval_ms"] ?? process.env.CLAWBITS_POLL_INTERVAL_MS,
   );
   const websocketEnabled = resolveBoolean(
-    opts.websocketEnabled ??
-      account.config.websocketEnabled ??
-      (account.config as Record<string, unknown>)["websocket_enabled"] ??
-      process.env.CLAWBITS_WEBSOCKET_ENABLED,
+    opts.websocketEnabled ?? account.config.websocketEnabled ?? config["websocket_enabled"] ?? process.env.CLAWBITS_WEBSOCKET_ENABLED,
     true,
   );
   const catchUpEnabled = resolveBoolean(
-    opts.catchUpEnabled ??
-      account.config.catchUpEnabled ??
-      (account.config as Record<string, unknown>)["catch_up_enabled"] ??
-      process.env.CLAWBITS_CATCH_UP_ENABLED,
+    opts.catchUpEnabled ?? account.config.catchUpEnabled ?? config["catch_up_enabled"] ?? process.env.CLAWBITS_CATCH_UP_ENABLED,
     true,
   );
   const websocketReconcileIntervalMs = resolvePositiveMs(
     opts.websocketReconcileIntervalMs ??
       account.config.websocketReconcileIntervalMs ??
-      (account.config as Record<string, unknown>)["websocket_reconcile_interval_ms"] ??
+      config["websocket_reconcile_interval_ms"] ??
       process.env.CLAWBITS_WEBSOCKET_RECONCILE_INTERVAL_MS,
     DEFAULT_WEBSOCKET_RECONCILE_INTERVAL_MS,
   );
   const websocketControlRefreshIntervalMs = resolvePositiveMs(
     opts.websocketControlRefreshIntervalMs ??
       account.config.websocketControlRefreshIntervalMs ??
-      (account.config as Record<string, unknown>)["websocket_control_refresh_interval_ms"] ??
+      config["websocket_control_refresh_interval_ms"] ??
       process.env.CLAWBITS_WEBSOCKET_CONTROL_REFRESH_INTERVAL_MS,
     DEFAULT_WEBSOCKET_CONTROL_REFRESH_INTERVAL_MS,
   );
-  const websocketIntervalJitter = (intervalMs: number): number =>
-    intervalMs > 0
-      ? Math.floor(Math.random() * Math.min(30_000, Math.floor(intervalMs / 10)))
-      : 0;
-  const websocketReconcileJitter = (): number =>
-    websocketIntervalJitter(websocketReconcileIntervalMs);
-  const websocketControlRefreshJitter = (): number =>
-    websocketIntervalJitter(websocketControlRefreshIntervalMs);
-  nextWebSocketReconcileAt =
-    startedAt + websocketReconcileIntervalMs + websocketReconcileJitter();
-  nextWebSocketControlRefreshAt =
-    startedAt + websocketControlRefreshIntervalMs + websocketControlRefreshJitter();
-  const inboundQueue = new ExpiringInboundQueue(now);
-  // Chat games: "your move" signals become one silent turn per move (widgets/wake.ts), on the
-  // same queue as chat turns so a move never runs beside one.
+  const jitter = (intervalMs: number): number =>
+    intervalMs > 0 ? Math.floor(Math.random() * Math.min(30_000, Math.floor(intervalMs / 10))) : 0;
+  let nextWebSocketReconcileAt = now() + websocketReconcileIntervalMs + jitter(websocketReconcileIntervalMs);
+  let nextWebSocketControlRefreshAt =
+    now() + websocketControlRefreshIntervalMs + jitter(websocketControlRefreshIntervalMs);
+
+  let lane: Promise<unknown> = Promise.resolve();
+  const inLane = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = lane.then(run);
+    lane = next.catch(() => undefined);
+    return next;
+  };
+
+  const dispatchMessage = async (msg: InboundMessage): Promise<boolean> => {
+    try {
+      await opts.onInboundMessage(msg);
+      return true;
+    } catch (err) {
+      logError(log, `${tag} inbound dispatch failed for ${msg.postId}: ${String(err)}`);
+      return false;
+    }
+  };
+
   const widgetWakes = new WidgetWakes({
     accountId: account.accountId,
     now,
     snoozed: () => agentSnoozed,
-    allowed: (key) => allowFromSet.size === 0 || allowFromWildcard || allowFromSet.has(key),
+    allowed: allowedKey,
     read: (widgetId) => getWidget(client, widgetId, { private: true }, { signal: abortSignal }),
-    enqueue: (id, run, expire) => {
-      const enqueuedAt = now();
-      void inboundQueue
-        .enqueue({ id, enqueuedAt, expiresAt: enqueuedAt + inboundQueueTtlMs, run, expire })
-        .catch((err) =>
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] queued ${id} failed: ${String((err as Error)?.message ?? err)}`,
-          ),
-        );
+    enqueue: (id, run) => {
+      void inLane(run).catch((err) => logWarn(log, `${tag} queued ${id} failed: ${errorText(err)}`));
     },
-    dispatch: (msg) => dispatchMessage(msg),
+    dispatch: dispatchMessage,
     channelType: (channelId) => channelTypes.get(channelId) ?? null,
     ...(opts.onWidgetEnded
-      ? {
-          ended: async (widget: { widgetId: string; channelId: string }) =>
-            await opts.onWidgetEnded?.(widget),
-        }
+      ? { ended: async (widget: { widgetId: string; channelId: string }) => await opts.onWidgetEnded?.(widget) }
       : {}),
     log,
   });
-  // An account with games turned off (`widgets: false`) never plays a move, even in a game it
-  // was seated in before.
   const widgetsOn = account.widgets !== false;
   const offerGame = (signal: WidgetSignal, source: WidgetSignalSource): void => {
     if (widgetsOn) widgetWakes.offer(signal, source);
   };
-  // The games a control payload read during boot catch-up named, offered once it is done.
   let heldGameSignals: WidgetSignal[] = [];
-  // Ended games' sessions: swept once boot catch-up is done, then hourly. Single-flight.
   let nextGameSessionSweepAt = 0;
   let gameSessionSweep: Promise<void> | undefined;
   const startGameSessionSweep = (): void => {
     const sweep = opts.onGameSessionSweep;
     if (!sweep || gameSessionSweep || abortSignal.aborted || now() < nextGameSessionSweepAt) return;
-    nextGameSessionSweepAt =
-      now() + GAME_SESSION_SWEEP_INTERVAL_MS + Math.floor(Math.random() * 60_000);
-    const serial = (run: () => Promise<void>): Promise<void> => {
-      const enqueuedAt = now();
-      return inboundQueue.enqueue({
-        id: "widget-session-sweep",
-        enqueuedAt,
-        expiresAt: enqueuedAt + inboundQueueTtlMs,
-        run,
-      });
-    };
-    gameSessionSweep = sweep(serial, (widgetId) => widgetWakes.seated(widgetId))
-      .catch((err) =>
-        logWarn(
-          log,
-          `[clawbits/${account.accountId}] game session sweep failed: ${String((err as Error)?.message ?? err)}`,
-        ),
-      )
+    nextGameSessionSweepAt = now() + GAME_SESSION_SWEEP_INTERVAL_MS + Math.floor(Math.random() * 60_000);
+    gameSessionSweep = sweep(inLane, (widgetId) => widgetWakes.seated(widgetId))
+      .catch((err) => logWarn(log, `${tag} game session sweep failed: ${errorText(err)}`))
       .finally(() => {
         gameSessionSweep = undefined;
       });
   };
-  // `GET /widgets?waiting=1`: catch-up for wakes the WebSocket missed (the reconcile) or never
-  // carried (the SSE fallback, on a tick whose channel list didn't name them). Single-flight; a
-  // server without the route answers 404 once and is not asked again.
   let waitingWidgetsSupported = true;
   let waitingWidgetsRead: Promise<void> | undefined;
   const readWaitingWidgets = (): Promise<void> => {
-    if (!widgetsOn || !waitingWidgetsSupported || agentSnoozed || abortSignal.aborted) {
-      return Promise.resolve();
-    }
+    if (!widgetsOn || !waitingWidgetsSupported || agentSnoozed || abortSignal.aborted) return Promise.resolve();
     waitingWidgetsRead ??= (async () => {
       try {
         const listed = await listWidgets(client, { waiting: true }, { signal: abortSignal });
@@ -1017,13 +876,10 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       } catch (err) {
         if (err instanceof ClawBitsError && err.statusCode === 404) {
           waitingWidgetsSupported = false;
-          logInfo(log, `[clawbits/${account.accountId}] server has no agent widget routes; game catch-up off`);
+          logInfo(log, `${tag} server has no agent widget routes; game catch-up off`);
           return;
         }
-        logWarn(
-          log,
-          `[clawbits/${account.accountId}] waiting games read failed: ${String((err as Error)?.message ?? err)}`,
-        );
+        logWarn(log, `${tag} waiting games read failed: ${errorText(err)}`);
       } finally {
         waitingWidgetsRead = undefined;
       }
@@ -1031,168 +887,300 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     return waitingWidgetsRead;
   };
 
-  if (watermarks?.load) {
-    try {
-      await watermarks.load();
-    } catch (err) {
-      logWarn(
-        log,
-        `[clawbits/${account.accountId}] watermark store load failed: ${String((err as Error)?.message ?? err)} — backlog runs untrimmed`,
-      );
-    }
-  }
-
-  // Catch-up durability rests on this file, and every way it can fail is
-  // silent: writes are swallowed, and the gateway's cwd is not a reef
-  // persistent volume. Say where it landed and whether we found anything, so
-  // "the fix is a no-op on this VM" is one grep away.
-  logInfo(
-    log,
-    `[clawbits/${account.accountId}] cursor store: path=${watermarks?.path ?? "(none)"} existing=${watermarks?.loadedExisting ?? false} catchUp=${catchUpEnabled}`,
-  );
-
   if (!account.agentId) {
-    logWarn(log, `[clawbits/${account.accountId}] inbound poller: no agentId; exiting`);
+    logWarn(log, `${tag} inbound poller: no agentId; exiting`);
     return;
   }
-
   const fallbackChannelId = account.channelId;
-  consoleErrorWithFile(
-    `[clawbits/${account.accountId}] inbound poller started; fallback channel ${String(fallbackChannelId ?? "(none)")}; mention token ${String(mentionToken)}; fallback poll ${pollMs}ms; ws reconcile ${websocketReconcileIntervalMs}ms; ws control refresh ${websocketControlRefreshIntervalMs}ms`,
-  );
   logInfo(
     log,
-    `[clawbits/${account.accountId}] inbound poller started; fallback channel ${String(fallbackChannelId ?? "(none)")}; fallback poll ${pollMs}ms; ws reconcile ${websocketReconcileIntervalMs}ms; ws control refresh ${websocketControlRefreshIntervalMs}ms`,
+    `${tag} inbound poller started; fallback channel ${String(fallbackChannelId ?? "(none)")}; mention token ${String(mentionToken)}; fallback poll ${pollMs}ms; ws reconcile ${websocketReconcileIntervalMs}ms; ws control refresh ${websocketControlRefreshIntervalMs}ms`,
   );
 
-  // --- Durable resume cursor -------------------------------------------------
-  // The store's bare-channel-id key means "history already SHOWN as context"
-  // and is only written for shared channels — a DM never gets one. This second
-  // key means "a turn for this post finished, or we refused it", and is written
-  // for every channel. Same namespacing trick as the
-  // email poller's `EMAIL_WATERMARK_CHANNEL`.
-  const cursorKey = (channelId: string): string => `cursor:${channelId}`;
-
-  const persistCursor = (channelId: string, createAt: number): void => {
-    if (!Number.isFinite(createAt) || createAt <= 0) return;
-    watermarks?.set(account.accountId, cursorKey(channelId), createAt);
+  const acks = new Map<string, { sent: number; want: number; busy: boolean }>();
+  const ackRead = (channelId: string, postSerial: number): void => {
+    if (!(postSerial > 0)) return;
+    const ack = acks.get(channelId) ?? { sent: 0, want: 0, busy: false };
+    acks.set(channelId, ack);
+    if (postSerial <= ack.want) return;
+    ack.want = postSerial;
+    if (ack.busy) return;
+    ack.busy = true;
+    void (async () => {
+      while (ack.sent < ack.want) {
+        const target = ack.want;
+        try {
+          await mmTools.markChannelRead(client, channelId, target);
+          ack.sent = target;
+        } catch (err) {
+          logWarn(log, `${tag} read-pointer ack failed for ${channelId}: ${errorText(err)}`);
+          break;
+        }
+      }
+      ack.busy = false;
+    })();
   };
 
-  // --- Server read-pointer ack ---------------------------------------------
-  // The durable twin of `persistCursor`, in server units: `POST .../read`
-  // advances this agent's `last_read_post_id`, which the next boot reads
-  // back off the channel listing and drains from (`after_post_id`). Unlike
-  // the local file it survives recreates and image upgrades. "Settled"
-  // semantics: call sites are turn completion and catch-up's
-  // nothing-addressable case — never observation or a transient refusal.
-  const ackedByChannel = new Map<string, number>();
-  let serverAckSupported = true;
-  const ackRead = (channelId: string, postSerial: number): void => {
-    if (!serverAckSupported) return;
-    if (!Number.isFinite(postSerial) || postSerial <= 0) return;
-    const previous = ackedByChannel.get(channelId) ?? 0;
-    if (postSerial <= previous) return;
-    // Claim before the async call so concurrent settles don't double-send;
-    // rolled back on a non-404 failure so a later settle retries.
-    ackedByChannel.set(channelId, postSerial);
-    void mmTools.markChannelRead(client, channelId, postSerial).catch((err) => {
-      if (err instanceof ClawBitsError && err.statusCode === 404) {
-        serverAckSupported = false;
-        logInfo(
+  const postHumanGuidanceNotice = async (channelId: string, post: MattermostPost): Promise<void> => {
+    const senderTag = senderTagForPost(post);
+    const message = senderTag ? `${senderTag} ${HUMAN_GUIDANCE_MESSAGE}` : HUMAN_GUIDANCE_MESSAGE;
+    try {
+      await withChallenge(client, answers, (ans) =>
+        mmTools.postToChannel(client, channelId, { message, ...(post.trace_id ? { trace_id: post.trace_id } : {}) }, ans),
+      );
+    } catch (err) {
+      logWarn(log, `${tag} failed to post human-guidance pause notice in ${channelId}: ${errorText(err)}`);
+    }
+  };
+
+  const handlePost = async (event: PostEvent, turn: InboundTurn, question = false): Promise<void> => {
+    const { channelId, post, source, attention, catchUp } = event;
+    if (post.delete_at && post.delete_at > 0) return;
+    if (agentSnoozed) {
+      logDebug(log, `${tag} inbound skip ${post.id}: agent snoozed`);
+      return;
+    }
+    const channelType = channelTypes.get(channelId) ?? null;
+    const isUserPost = isUserAuthoredPost(post);
+    const isSelfAuthored = post.agent_id === account.agentId || post.user_id === account.agentId;
+    const isAgentAuthored = Boolean(post.agent_id);
+    const senderId = senderIdForPost(post);
+    const senderAllowed = interAgentMode || !isAgentAuthored;
+    const senderAllowedByAllowFrom = allowedSender(senderId);
+    const postChannelId = post.channel_id ?? channelId;
+    const hasMention = account.agentId ? hasAgentMention(post.message ?? "", account.agentId) : false;
+    if (isUserPost && !isSelfAuthored && !isAgentAuthored && hasMention) {
+      consecutiveAgentTurns = 0;
+      awaitingHumanGuidance = false;
+      guidanceNoticeSent = false;
+    }
+    const pairChat = isPairChat(channelType);
+    const uiAction = ownSurfaceAction(post, account.agentId);
+    const isFallbackOperatorChannel = Boolean(
+      fallbackChannelId && postChannelId === fallbackChannelId && channelType === null,
+    );
+    const isAddressedToAgent = hasMention || Boolean(uiAction) || pairChat || isFallbackOperatorChannel || Boolean(attention);
+    const isServerCommand = channelType === "direct" && isServerHandledCommand(post.message);
+    const isGameStart =
+      Boolean(post.widget_id) &&
+      isUserPost &&
+      !isSelfAuthored &&
+      !isAgentAuthored &&
+      (pairChat || widgetWakes.seated(post.widget_id as string));
+    if (isGameStart) {
+      logDebug(log, `${tag} inbound skip ${post.id}: starts game ${String(post.widget_id)}, played by its wake`);
+      return;
+    }
+    const wouldDispatch = isUserPost && !isSelfAuthored && senderAllowed && isAddressedToAgent && !isServerCommand;
+    if (wouldDispatch && !senderAllowedByAllowFrom) {
+      logWarn(log, `${tag} inbound blocked by allowFrom sender=${senderId || "(unknown)"} post=${post.id} channel=${postChannelId}`);
+      return;
+    }
+    if (!wouldDispatch) {
+      logDebug(
+        log,
+        `${tag} inbound skip ${post.id}: source=${source} userPost=${isUserPost} self=${isSelfAuthored} agentAuthored=${isAgentAuthored} interAgentMode=${interAgentMode} hasMention=${hasMention} addressed=${isAddressedToAgent} serverCommand=${isServerCommand} type=${post.type ?? ""}`,
+      );
+      return;
+    }
+    if (isAgentAuthored) {
+      if (awaitingHumanGuidance || consecutiveAgentTurns >= interAgentMessageLimit) {
+        awaitingHumanGuidance = true;
+        if (guidanceNoticeSent) return;
+        guidanceNoticeSent = true;
+        logWarn(
           log,
-          `[clawbits/${account.accountId}] server has no read-pointer endpoint; falling back to local watermarks only`,
+          `${tag} pausing inter-agent replies after ${consecutiveAgentTurns} consecutive agent turn(s); limit=${interAgentMessageLimit}; waiting for a human @${account.agentId} tag`,
         );
+        await postHumanGuidanceNotice(postChannelId, post);
         return;
       }
-      if (ackedByChannel.get(channelId) === postSerial) {
-        ackedByChannel.set(channelId, previous);
+      consecutiveAgentTurns += 1;
+    }
+
+    const pickedUpAt = Date.now();
+    writeTraceSpan({
+      trace_id: post.trace_id ?? null,
+      span: "plugin.pickup_lag",
+      subsystem: "plugin",
+      dur_ms: pickedUpAt - post.create_at,
+      t_start_ms: post.create_at,
+      t_end_ms: pickedUpAt,
+      account_id: account.accountId,
+      channel_id: channelId,
+      inbound_post_id: post.id,
+      source,
+    });
+
+    if (question) {
+      const answer = typedAnswer(post, account.agentId);
+      logInfo(log, `${tag} inbound ${post.id} answers the question waiting in ${postChannelId}`);
+      if (uiAction) await answerQuestionClick(client, account.accountId, uiAction, senderId);
+      else if (answer) {
+        await opts.onInboundMessage(
+          {
+            accountId: account.accountId,
+            channelId: postChannelId,
+            postId: post.id,
+            senderId,
+            text: answer,
+            files: [],
+            channelType,
+            ...(post.trace_id ? { traceId: post.trace_id } : {}),
+            createAt: post.create_at,
+            questionAnswer: true,
+          },
+          turn,
+        );
       }
-      logWarn(
-        log,
-        `[clawbits/${account.accountId}] read-pointer ack failed for ${channelId}: ${String((err as Error)?.message ?? err)}`,
-      );
+      return;
+    }
+
+    const shownKey = `${account.accountId}:${channelId}`;
+    const sharedRoom = !pairChat && !isFallbackOperatorChannel;
+    let priorContext = catchUp?.length ? catchUp : undefined;
+    if (catchUp) {
+      if (sharedRoom) await opts.contextWatermarks?.register(shownKey, post.create_at);
+    } else if (backlog > 0 && sharedRoom) {
+      const shown = (await opts.contextWatermarks?.lookup(shownKey)) ?? 0;
+      try {
+        const history = parsePostsResponse(await mmTools.getChannelPosts(client, channelId, backlog + 1));
+        const context = buildPriorContext(history, post.id, post.create_at, backlog, account.agentId, shown, interAgentMode);
+        if (context.length > 0) priorContext = context;
+      } catch (err) {
+        logWarn(log, `${tag} backlog fetch failed for ${channelId}: ${errorText(err)} - dispatching without context`);
+      }
+      await opts.contextWatermarks?.register(shownKey, post.create_at);
+    }
+
+    const senderTag = interAgentMode && !pairChat ? senderTagForPost(post) : undefined;
+    const msg: InboundMessage = {
+      accountId: account.accountId,
+      channelId: postChannelId,
+      postId: post.id,
+      senderId,
+      ...(senderTag ? { senderTag } : {}),
+      text: collapseSelfMentions(post.message ?? "", account.agentId),
+      files: post.files ?? [],
+      channelType,
+      ...(priorContext ? { priorContext } : {}),
+      ...(post.trace_id ? { traceId: post.trace_id } : {}),
+      ...(attention ? { attention: true } : {}),
+      ...(catchUp ? { catchUp: true } : {}),
+      ...(uiAction ? { uiAction } : {}),
+      createAt: post.create_at,
+    };
+    logInfo(log, `${tag} inbound dispatch ${msg.postId} from ${msg.senderId || "unknown"} on ${msg.channelId}: ${JSON.stringify(msg.text)}`);
+    await opts.onInboundMessage(msg, turn);
+  };
+
+  /** A click on one of this agent's question cards, or a typed post in a chat waiting on a question.
+   *  The asking turn holds the account lane, the turn lane and its session's dispatch guard until the
+   *  question ends, so these go around all three. */
+  const answersQuestion = (event: PostEvent): boolean =>
+    !event.attention &&
+    (ownSurfaceAction(event.post, account.agentId)?.name === QUESTION_EVENT ||
+      (questionWaiting(account.accountId, event.channelId) && typedAnswer(event.post, account.agentId) !== undefined));
+
+  const deliver = async (event: InboundEvent, turn: InboundTurn): Promise<void> => {
+    if (event.kind === "stop") return await stopTurn(account.accountId, event.channelId);
+    const { lifecycle } = turn;
+    const beat = setInterval(() => lifecycle.onDeferredHeartbeat?.(), lifecycle.deferredHeartbeatIntervalMs ?? 60_000);
+    try {
+      if (event.kind === "post" && event.question) {
+        if (answersQuestion(event)) await handlePost(event, turn, true);
+        else {
+          const { channelId, post, source } = event;
+          if (!(await admit({ kind: "post", channelId, post, source, requeued: true }))) {
+            throw new Error(`inbound ${post.id} could not move to the turn lane`);
+          }
+        }
+      } else {
+        await inLane(async () => {
+          if (event.kind === "post") await handlePost(event, turn);
+          else await opts.onInboundMessage(event.msg, turn);
+        });
+      }
+    } finally {
+      clearInterval(beat);
+    }
+  };
+
+  const ingress = createChannelIngressMonitor<InboundEvent, InboundEvent, StoredInboundEvent>({
+    queue: opts.queue,
+    inspect: (event) => ({
+      eventId: inboundEventId(event),
+      laneKey: event.kind === "stop" ? "stop" : event.kind === "post" && event.question ? "question" : "turn",
+    }),
+    payload: {
+      version: 1,
+      serialize: (event) => event,
+      deserialize: (event) => event,
+      encode: (envelope) => envelope,
+      decode: (stored) => stored,
+      createClaimError: (kind, claim) => new Error(`inbound event ${claim.id}: ${kind}`),
+    },
+    pollIntervalMs: 1_000,
+    retention: INGRESS_RETENTION,
+    drain: { retryPolicy: INGRESS_RETRY },
+    abortSignal,
+    onError: (err) => logWarn(log, `${tag} inbound queue: ${errorText(err)}`),
+    deliver: (event, lifecycle, claim) =>
+      deliver(event, { lifecycle, lastAttempt: claim.attempts + 1 >= INGRESS_RETRY.maxAttempts }),
+  });
+
+  const admit = async (event: InboundEvent): Promise<boolean> => {
+    try {
+      return (await ingress.admit(event)).kind === "durable";
+    } catch (err) {
+      logWarn(log, `${tag} inbound admission failed for ${inboundEventId(event)}: ${errorText(err)}`);
+      return false;
+    }
+  };
+
+  const observe = async (channelId: string, post: MattermostPost, source: InboundSource, attention = false): Promise<void> => {
+    const id = postSerialOf(post);
+    const floor = baselines.get(channelId);
+    const key = attention ? `attention:${post.id}` : post.id;
+    if (!id || admitted.has(key) || isUnsettled(post) || post.agent_id === account.agentId || post.user_id === account.agentId) return;
+    if (!attention && (floor === undefined ? source === "poll" || source === "reconcile" : id <= floor)) return;
+    const event: PostEvent = { kind: "post", channelId, post, source, ...(attention ? { attention: true } : {}) };
+    if (!(await admit(answersQuestion(event) ? { ...event, question: true } : event))) return;
+    remember(admitted, key);
+    if (!attention) ackRead(channelId, id);
+  };
+
+  const wakeAfterMcpSignIn = ({ state, channel_id, human_id }: McpSignIn, text: string): void => {
+    const channelId = channelTypes.has(channel_id) ? channel_id : account.channelId;
+    if (!channelId) return;
+    void admit({
+      kind: "message",
+      msg: {
+        accountId: account.accountId,
+        channelId,
+        postId: `mcp-oauth-${state}`,
+        senderId: `human:${human_id}`,
+        text,
+        channelType: channelTypes.get(channelId) ?? null,
+        createAt: now(),
+      },
     });
   };
 
-  /** Serial of a post as the server knows it, or 0 when unparseable (the
-   *  ack path treats 0 as "nothing to ack"). Post ids on the agent API are
-   *  integer serials serialised into `id` by `normalizePost`. */
-  const postSerialOf = (post: MattermostPost): number => {
-    const serial = Number(post.id);
-    return Number.isFinite(serial) && serial > 0 ? Math.floor(serial) : 0;
-  };
-
-  /** Raise a channel's live cursor, and unless told otherwise its durable one.
-   *  In-memory means "claimed" (taken before the turn, so a concurrent SSE/WS
-   *  delivery can't double-enter); durable means "the turn settled". A kill
-   *  between the two re-delivers on the next boot, which is what we want. */
-  const advanceCursor = (channelId: string, createAt: number, persist = true): void => {
-    if (!Number.isFinite(createAt)) return;
-    if (createAt > cursorFor(channelId)) cursors.set(channelId, createAt);
-    if (persist) persistCursor(channelId, createAt);
-  };
-
-  /** Raise BOTH gates. `cursors` gates the poll path, `reconcileFloors` the
-   *  reconcile path; they are independent and production normally takes the
-   *  reconcile one, so moving only one leaves the other open.
-   *
-   *  IN-MEMORY ONLY, deliberately: a clamp is burst suppression for this
-   *  process, not proof anything settled. The durable pointers (local
-   *  watermark + server ack) advance only on turn settle or a permanent
-   *  classification — that gap is exactly what re-delivers a clamped-past
-   *  post on the next boot. */
-  const clampChannelFloors = (channelId: string, createAt: number): void => {
-    if (!Number.isFinite(createAt)) return;
-    advanceCursor(channelId, createAt, false);
-    const floor = reconcileFloors.get(channelId) ?? startedAt;
-    if (createAt > floor) reconcileFloors.set(channelId, createAt);
-  };
-
-  /** How far back catch-up may look here. Deliberately NOT what `cursorFor`
-   *  seeds: live floors always start at `now()`, and catch-up opens the gate
-   *  only for the single post it replays. Seeding the map low would leave a low
-   *  floor behind on every path that skips catch-up (failed control fetch,
-   *  abort, blown budget), and the ordinary poll would then drain the backlog
-   *  one turn per post. */
-  const resumeFloorFor = (channelId: string): number => {
-    if (opts.initialCursor !== undefined) return opts.initialCursor;
-    const persisted = watermarks?.get(account.accountId, cursorKey(channelId));
-    const window = persisted === undefined ? COLD_CATCH_UP_WINDOW_MS : CATCH_UP_WINDOW_MS;
-    const windowFloor = startedAt - window;
-    return persisted === undefined ? windowFloor : Math.max(persisted, windowFloor);
-  };
-
-  // `cursorFor` is the lazy seeder for a channel first seen at ANY point in the
-  // process lifetime — the first control refresh, but equally a `channel.added`
-  // event hours later. It always seeds at the current clock, so being added to
-  // an existing busy room never replays that room's history.
-  const cursorFor = (channelId: string): number => {
-    const existing = cursors.get(channelId);
-    if (existing !== undefined) return existing;
-    const floor = opts.initialCursor ?? now();
-    cursors.set(channelId, floor);
-    reconcileFloors.set(channelId, floor);
-    return floor;
+  const seedBaseline = (channel: DiscoveredChannel): void => {
+    if (!baselines.has(channel.id) && channel.latestPostId !== null) baselines.set(channel.id, channel.latestPostId);
   };
 
   const rebuildDiscoveredChannels = (channels: DiscoveredChannel[]): void => {
     channelTypes.clear();
     for (const channel of channels) {
       channelTypes.set(channel.id, channel.channelType);
-      cursorFor(channel.id);
+      if (!catchUpPending) seedBaseline(channel);
     }
   };
 
-  // Read-state fields are null here on purpose: they are only trustworthy
-  // fresh off a control payload, and null routes catch-up to its safe
-  // (legacy) branch rather than acting on stale pointers.
   const discoveredFromChannelTypes = (): DiscoveredChannel[] =>
-    [...channelTypes.entries()].map(([id, channelType]) => ({
-      id,
-      channelType,
-      latestPostId: null,
-      lastReadPostId: null,
-    }));
+    [...channelTypes.entries()].map(([id, channelType]) => ({ id, channelType, latestPostId: null, lastReadPostId: null }));
 
   const channelSetKey = (channels: DiscoveredChannel[]): string =>
     channels.map((channel) => channel.id).sort().join("\0");
@@ -1206,16 +1194,10 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     const channels = extractChannels(raw);
     rebuildDiscoveredChannels(channels);
     interAgentMode = extractInterAgentMode(raw) ?? (account.interAgentMode === true);
-    interAgentMessageLimit =
-      extractInterAgentMessageLimit(raw) ??
-      clampInterAgentMessageLimit(account.interAgentMessageLimit);
+    interAgentMessageLimit = extractInterAgentMessageLimit(raw) ?? clampInterAgentMessageLimit(account.interAgentMessageLimit);
     agentSnoozed = extractAgentSnoozed(raw) ?? false;
     const selection = extractModelSelection(raw);
     if (selection) publishModelSelection(selection);
-    // The snapshot and every channel list name the game waiting on the agent in each chat. While
-    // boot catch-up is pending they are held until it is done: a move queued now would run ahead
-    // of every replayed chat turn, spend catch-up's budget and the queue TTL, and hold realtime
-    // back.
     const waiting = waitingSignals(raw);
     if (catchUpPending) heldGameSignals = waiting;
     else for (const signal of waiting) offerGame(signal, "snapshot");
@@ -1223,484 +1205,62 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
   };
 
   const mergeDiscoveredChannels = (channels: DiscoveredChannel[]): void => {
-    if (channels.length === 0) return;
-    const merged = new Map(channelTypes);
     for (const channel of channels) {
-      merged.set(channel.id, channel.channelType);
-      cursorFor(channel.id);
+      channelTypes.set(channel.id, channel.channelType);
+      seedBaseline(channel);
     }
-    rebuildDiscoveredChannels(
-      [...merged.entries()].map(([id, channelType]) => ({
-        id,
-        channelType,
-        latestPostId: null,
-        lastReadPostId: null,
-      })),
-    );
   };
 
   const removeDiscoveredChannel = (channelId: string): void => {
     channelTypes.delete(channelId);
-    cursors.delete(channelId);
-    reconcileFloors.delete(channelId);
+    baselines.delete(channelId);
   };
-
-  const dropQueuedPost = (
-    channelId: string,
-    post: MattermostPost,
-    source: InboundSource,
-    reason: "agent snoozed" | "queue expired",
-    enqueuedAt: number,
-  ): void => {
-    const waitedMs = Math.max(0, now() - enqueuedAt);
-    if (isUserAuthoredPost(post) && !seen.has(post.id)) rememberSeen(seen, post.id);
-    const postCreateAt = post.create_at ?? 0;
-    // TRANSIENT abandonment: claim in memory so this process doesn't retry,
-    // but leave the durable cursor (and the server pointer) behind it — a
-    // message that aged out because a long turn held the lane, or landed in
-    // a snooze window, should re-deliver on the next boot, not vanish.
-    advanceCursor(channelId, postCreateAt, false);
-    const message =
-      reason === "queue expired"
-        ? `[clawbits/${account.accountId}] inbound queue expired ${post.id}: source=${source} channel=${channelId} waited=${waitedMs}ms ttl=${inboundQueueTtlMs}ms`
-        : `[clawbits/${account.accountId}] inbound skip ${post.id}: agent snoozed`;
-    if (reason === "queue expired") logWarn(log, message);
-    else logDebug(log, message);
-  };
-
-  const enqueueInbound = (
-    channelId: string,
-    channelType: string | null,
-    post: MattermostPost,
-    source: InboundSource,
-    awaitDispatch: boolean,
-    forceAttention = false,
-    contextOverride?: InboundContextPost[],
-  ): Promise<void> => {
-    const enqueuedAt = now();
-    if (agentSnoozed) {
-      dropQueuedPost(channelId, post, source, "agent snoozed", enqueuedAt);
-      return Promise.resolve();
-    }
-    return inboundQueue.enqueue({
-      id: post.id,
-      enqueuedAt,
-      expiresAt: enqueuedAt + inboundQueueTtlMs,
-      run: async () => {
-        if (agentSnoozed) {
-          dropQueuedPost(channelId, post, source, "agent snoozed", enqueuedAt);
-          return;
-        }
-        await processPost(
-          channelId,
-          channelType,
-          post,
-          source,
-          awaitDispatch,
-          forceAttention,
-          contextOverride,
-        );
-      },
-      expire: () => dropQueuedPost(channelId, post, source, "queue expired", enqueuedAt),
-    });
-  };
-
-  const postHumanGuidanceNotice = async (channelId: string, post: MattermostPost): Promise<void> => {
-    const senderTag = senderTagForPost(post);
-    const message = senderTag ? `${senderTag} ${HUMAN_GUIDANCE_MESSAGE}` : HUMAN_GUIDANCE_MESSAGE;
-    try {
-      await withChallenge(client, answers, (ans) =>
-        mmTools.postToChannel(
-          client,
-          channelId,
-          {
-            message,
-            ...(post.trace_id ? { trace_id: post.trace_id } : {}),
-          },
-          ans,
-        ),
-      );
-    } catch (err) {
-      logWarn(
-        log,
-        `[clawbits/${account.accountId}] failed to post human-guidance pause notice in ${channelId}: ${String((err as Error)?.message ?? err)}`,
-      );
-    }
-  };
-
-  /** Dispatch one turn. Returns whether it SETTLED (ran to completion) —
-   *  the callers gate the durable cursor and the server ack on this, so a
-   *  crashed/failed turn re-delivers on the next boot instead of being
-   *  silently burned past. */
-  const dispatchMessage = async (msg: InboundMessage): Promise<boolean> => {
-    try {
-      logInfo(
-        log,
-        `[clawbits/${account.accountId}] inbound dispatch ${msg.postId} from ${msg.senderId || "unknown"} on ${msg.channelId}: ${msg.widget ? "(game move: brief not logged)" : JSON.stringify(msg.text)}`,
-      );
-      await opts.onInboundMessage(msg);
-      return true;
-    } catch (err) {
-      logError(
-        log,
-        `[clawbits/${account.accountId}] inbound dispatch failed for ${msg.postId}: ${String(err)}`,
-      );
-      return false;
-    }
-  };
-
-  const wakeAfterMcpSignIn = ({ state, channel_id, human_id }: McpSignIn, text: string): void => {
-    const channelId = channelTypes.has(channel_id) ? channel_id : account.channelId;
-    if (!channelId) return;
-    const postId = `mcp-oauth-${state}`;
-    const createAt = now();
-    void inboundQueue.enqueue({
-      id: postId,
-      enqueuedAt: createAt,
-      expiresAt: createAt + inboundQueueTtlMs,
-      run: async () => {
-        await dispatchMessage({
-          accountId: account.accountId,
-          channelId,
-          postId,
-          senderId: `human:${human_id}`,
-          text,
-          channelType: channelTypes.get(channelId) ?? null,
-          createAt,
-        });
-      },
-    });
-  };
-
-  async function processPost(
-    channelId: string,
-    channelType: string | null,
-    post: MattermostPost,
-    source: InboundSource,
-    awaitDispatch: boolean,
-    forceAttention = false,
-    contextOverride?: InboundContextPost[],
-  ): Promise<void> {
-    if (post.create_at == null) return;
-    if (post.delete_at && post.delete_at > 0) return;
-    const cursor = cursorFor(channelId);
-    const postCreateAt = post.create_at;
-    const isSeen = seen.has(post.id);
-    const reconcileFloor = reconcileFloors.get(channelId) ?? cursorFor(channelId);
-    if (source === "poll" && postCreateAt <= cursor) return;
-    if (source === "reconcile" && postCreateAt <= reconcileFloor) return;
-    if (source === "reconcile" && isSeen) return;
-    const isUserPost = isUserAuthoredPost(post);
-    if (agentSnoozed) {
-      if (isUserPost && !isSeen) rememberSeen(seen, post.id);
-      // In-memory only: snooze is transient, and the durable pointer staying
-      // put is what re-delivers the post after a restart. The unsnooze
-      // branch in the main loop decides whether the snoozed backlog is
-      // durably discarded.
-      advanceCursor(channelId, postCreateAt, false);
-      logDebug(
-        log,
-        `[clawbits/${account.accountId}] inbound skip ${post.id}: agent snoozed`,
-      );
-      return;
-    }
-    const isSelfAuthored = Boolean(
-      account.agentId && (post.agent_id === account.agentId || post.user_id === account.agentId),
-    );
-    const isAgentAuthored = Boolean(post.agent_id);
-    const senderId = senderIdForPost(post);
-    const senderAllowKeys = [senderId];
-    if (senderId && !senderId.includes(":")) {
-      senderAllowKeys.push(`human:${senderId}`, `agent:${senderId}`);
-    }
-    const senderAllowed = interAgentMode || !isAgentAuthored;
-    const senderAllowedByAllowFrom =
-      allowFromSet.size === 0 ||
-      allowFromWildcard ||
-      senderAllowKeys.some((key) => allowFromSet.has(key));
-    const postChannelId = post.channel_id ?? channelId;
-    const hasMention = account.agentId ? hasAgentMention(post.message ?? "", account.agentId) : false;
-    const humanTaggedThisAgent = isUserPost && !isSelfAuthored && !isAgentAuthored && hasMention;
-    if (humanTaggedThisAgent) {
-      if (awaitingHumanGuidance || consecutiveAgentTurns > 0) {
-        logInfo(
-          log,
-          `[clawbits/${account.accountId}] human tagged ${account.agentId}; resetting inter-agent guidance pause/counter`,
-        );
-      }
-      consecutiveAgentTurns = 0;
-      awaitingHumanGuidance = false;
-      guidanceNoticeSent = false;
-    }
-
-    const isDirectChannel = channelType === "direct";
-    const pairChat = isPairChat(channelType);
-    const isFallbackOperatorChannel = Boolean(
-      fallbackChannelId && postChannelId === fallbackChannelId && channelType === null,
-    );
-    // `forceAttention` is the server-side LobsterTalk gate saying "look at this
-    // post even though nobody tagged you"; it makes an un-mentioned channel
-    // post dispatch like an addressed one. The remaining gates (user-authored,
-    // not self, allowFrom, not already seen) still apply. Non-addressed posts
-    // are never marked seen, so this can't double-fire against `post.created`.
-    const isAddressedToAgent =
-      hasMention || pairChat || isFallbackOperatorChannel || forceAttention;
-    // `/cb-usage` is a DM-only command answered server-side; elsewhere it's a
-    // normal message and must still reach the model.
-    const isServerCommand = isDirectChannel && isServerHandledCommand(post.message);
-    // The message that started a game this agent plays: the game's wake takes the move, so a chat
-    // turn here would only race it (and run in the chat's session). Acked like an answered post.
-    const isGameStart =
-      Boolean(post.widget_id) &&
-      isUserPost &&
-      !isSelfAuthored &&
-      !isAgentAuthored &&
-      (pairChat || widgetWakes.seated(post.widget_id as string));
-    if (isGameStart && !isSeen) {
-      rememberSeen(seen, post.id);
-      advanceCursor(channelId, postCreateAt);
-      ackRead(channelId, postSerialOf(post));
-      logDebug(
-        log,
-        `[clawbits/${account.accountId}] inbound skip ${post.id}: starts game ${String(post.widget_id)}, played by its wake`,
-      );
-      return;
-    }
-    const wouldDispatchWithoutAllowFrom =
-      !isSeen &&
-      isUserPost &&
-      !isSelfAuthored &&
-      senderAllowed &&
-      isAddressedToAgent &&
-      !isServerCommand;
-    if (wouldDispatchWithoutAllowFrom && !senderAllowedByAllowFrom) {
-      rememberSeen(seen, post.id);
-      // In-memory only: the allowlist is operator-editable, so this refusal
-      // is transient — an added sender's backlog should surface on the next
-      // boot instead of having been silently burned past.
-      advanceCursor(channelId, postCreateAt, false);
-      logWarn(
-        log,
-        `[clawbits/${account.accountId}] inbound blocked by allowFrom sender=${senderId || "(unknown)"} post=${post.id} channel=${postChannelId}`,
-      );
-      return;
-    }
-    const shouldDispatch = wouldDispatchWithoutAllowFrom && senderAllowedByAllowFrom;
-
-    if (shouldDispatch && isAgentAuthored) {
-      if (awaitingHumanGuidance || consecutiveAgentTurns >= interAgentMessageLimit) {
-        awaitingHumanGuidance = true;
-        rememberSeen(seen, post.id);
-        advanceCursor(channelId, postCreateAt);
-        if (!guidanceNoticeSent) {
-          guidanceNoticeSent = true;
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] pausing inter-agent replies after ${consecutiveAgentTurns} consecutive agent turn(s); limit=${interAgentMessageLimit}; waiting for a human @${account.agentId} tag`,
-          );
-          await postHumanGuidanceNotice(postChannelId, post);
-        } else {
-          logDebug(
-            log,
-            `[clawbits/${account.accountId}] inbound skip ${post.id}: inter-agent replies paused until human tags @${account.agentId}`,
-          );
-        }
-        return;
-      }
-      consecutiveAgentTurns += 1;
-    }
-
-    if (!shouldDispatch) {
-      logDebug(
-        log,
-        `[clawbits/${account.accountId}] inbound skip ${post.id}: source=${source} seen=${isSeen} userPost=${isUserPost} self=${isSelfAuthored} agentAuthored=${isAgentAuthored} interAgentMode=${interAgentMode} senderAllowed=${senderAllowed} allowFrom=${allowFromSet.size > 0 ? "restricted" : "off"} allowFromMatch=${senderAllowedByAllowFrom} hasMention=${hasMention} fallbackOperatorChannel=${isFallbackOperatorChannel} addressed=${isAddressedToAgent} serverCommand=${isServerCommand} type=${post.type ?? ""}`,
-      );
-      advanceCursor(channelId, postCreateAt);
-      return;
-    }
-
-    // Claim before optional backlog fetch / model dispatch. SSE and safety
-    // polling can observe the same post; early claim prevents double runs.
-    rememberSeen(seen, post.id);
-
-    // Trace span: how long the post sat between server-side creation
-    // (``create_at``) and the agent picking it up here. Surfaces poll-cadence
-    // vs SSE delivery lag — the gap that's otherwise invisible because each
-    // subsystem only times its own work. (Cross-machine clock skew applies to
-    // this cross-process delta; on one host it's exact.) Fires once per
-    // claimed inbound, tagged with the delivery ``source`` so poll and SSE
-    // pickups are distinguishable.
-    const pickedUpAt = Date.now();
-    writeTraceSpan({
-      trace_id: post.trace_id ?? null,
-      span: "plugin.pickup_lag",
-      subsystem: "plugin",
-      dur_ms: pickedUpAt - postCreateAt,
-      t_start_ms: postCreateAt,
-      t_end_ms: pickedUpAt,
-      account_id: account.accountId,
-      channel_id: channelId,
-      inbound_post_id: post.id,
-      source,
-    });
-
-    let priorContext: InboundContextPost[] | undefined;
-    // Catch-up supplies its own context and already paid for the fetch. Skip
-    // the `channelEligible` branch — it excludes direct channels, so a DM could
-    // not otherwise carry catch-up context at all — but still advance the
-    // "shown" watermark so the next mention doesn't re-inject the same history.
-    const channelEligible =
-      !contextOverride && backlog > 0 && !pairChat && !isFallbackOperatorChannel;
-    if (contextOverride) {
-      if (contextOverride.length > 0) priorContext = contextOverride;
-      if (!pairChat && !isFallbackOperatorChannel) {
-        watermarks?.set(account.accountId, channelId, postCreateAt);
-      }
-    }
-    logDebug(
-      log,
-      `[clawbits/${account.accountId}] backlog eligibility for ${post.id} in ${channelId}: backlog=${backlog} isDirect=${isDirectChannel} isFallbackOperator=${isFallbackOperatorChannel} → eligible=${channelEligible}`,
-    );
-    if (channelEligible) {
-      const watermark = watermarks?.get(account.accountId, channelId) ?? 0;
-      try {
-        const historyRaw = await mmTools.getChannelPosts(client, channelId, backlog + 1);
-        const history = parsePostsResponse(historyRaw);
-        const ctx = buildPriorContext(
-          history,
-          post.id,
-          postCreateAt,
-          backlog,
-          account.agentId,
-          watermark,
-          interAgentMode,
-        );
-        if (ctx.length > 0) priorContext = ctx;
-        logDebug(
-          log,
-          `[clawbits/${account.accountId}] gathered ${ctx.length} backlog post(s) since watermark=${watermark} for mention ${post.id} in ${channelId}`,
-        );
-      } catch (err) {
-        logWarn(
-          log,
-          `[clawbits/${account.accountId}] backlog fetch failed for ${channelId}: ${String((err as Error)?.message ?? err)} — dispatching without context`,
-        );
-      }
-      watermarks?.set(account.accountId, channelId, postCreateAt);
-    }
-
-    // Reply-tagging addresses the right participant in a multi-party (inter-
-    // agent) channel. In a 1:1 DM there's only one counterpart, so prefixing
-    // every reply with their handle is noise — skip it in direct channels.
-    const senderTag = interAgentMode && !pairChat ? senderTagForPost(post) : undefined;
-    const msg: InboundMessage = {
-      accountId: account.accountId,
-      channelId: postChannelId,
-      postId: post.id,
-      senderId,
-      ...(senderTag ? { senderTag } : {}),
-      text: collapseSelfMentions(post.message ?? "", account.agentId),
-      files: post.files ?? [],
-      channelType,
-      ...(priorContext ? { priorContext } : {}),
-      ...(post.trace_id ? { traceId: post.trace_id } : {}),
-      ...(forceAttention ? { attention: true } : {}),
-      ...(contextOverride ? { catchUp: true } : {}),
-      createAt: postCreateAt,
-    };
-    // Claim in memory before the turn; persist + ack only once it SETTLES.
-    // A dispatch failure leaves both durable pointers behind the post, so
-    // the next boot re-delivers it (bounded: one catch-up turn per channel).
-    advanceCursor(channelId, postCreateAt, false);
-
-    const settle = (ok: boolean): void => {
-      if (!ok) return;
-      persistCursor(channelId, postCreateAt);
-      ackRead(channelId, postSerialOf(post));
-    };
-    const task = dispatchMessage(msg);
-    if (awaitDispatch) {
-      settle(await task);
-    } else {
-      void task.then(settle);
-    }
-  }
 
   const stopSse = (reason: string): void => {
     for (const [channelId, state] of sseChannels) {
-      logDebug(log, `[clawbits/${account.accountId}] closing SSE for ${channelId}: ${reason}`);
+      logDebug(log, `${tag} closing SSE for ${channelId}: ${reason}`);
       state.abort.abort();
     }
   };
 
   const stopAgentWebSocket = (reason: string): void => {
     if (!agentWsAbort) return;
-    logDebug(log, `[clawbits/${account.accountId}] closing agent WebSocket: ${reason}`);
+    logDebug(log, `${tag} closing agent WebSocket: ${reason}`);
     agentWsAbort.abort();
   };
 
-  const handleRealtimePostEvent = (event: SseEnvelope, source: "sse" | "ws"): void => {
-    if (event.type !== "post.created") return;
+  const postOf = (event: SseEnvelope): { channelId: string; post: MattermostPost } | undefined => {
     const raw = event.data;
-    if (!raw || typeof raw !== "object") return;
+    if (!raw || typeof raw !== "object") return undefined;
     const post = normalizePost(raw as Record<string, unknown>);
-    if (!post) return;
-    const channelId = event.channel_id ?? post.channel_id ?? fallbackChannelId;
-    if (!channelId) return;
-    void enqueueInbound(
-      channelId,
-      channelTypes.get(channelId) ?? null,
-      post,
-      source,
-      true,
-    ).catch((err) => {
-      logWarn(
-        log,
-        `[clawbits/${account.accountId}] queued ${source.toUpperCase()} dispatch failed for ${post.id}: ${String((err as Error)?.message ?? err)}`,
-      );
-    });
+    const channelId = event.channel_id ?? post?.channel_id ?? fallbackChannelId;
+    return post && channelId ? { channelId, post } : undefined;
   };
 
-  const handleAttentionNudge = (event: SseEnvelope): void => {
-    // A `lobstertalk.consider` control event carries the same post payload as
-    // `post.created`; dispatch it as an attention nudge so the agent considers
-    // a message it wasn't tagged in (and is prompted to reply only if useful).
-    const raw = event.data;
-    if (!raw || typeof raw !== "object") return;
-    const post = normalizePost(raw as Record<string, unknown>);
-    if (!post) return;
-    const channelId = event.channel_id ?? post.channel_id ?? fallbackChannelId;
-    if (!channelId) return;
-    void enqueueInbound(
-      channelId,
-      channelTypes.get(channelId) ?? null,
-      post,
-      "ws",
-      true,
-      true,
-    ).catch((err) => {
-      logWarn(
-        log,
-        `[clawbits/${account.accountId}] LobsterTalk nudge dispatch failed for ${post.id}: ${String((err as Error)?.message ?? err)}`,
-      );
-    });
+  const handleRealtimePostEvent = (event: SseEnvelope, source: "sse" | "ws", attention = false): void => {
+    const found = postOf(event);
+    if (found) void observe(found.channelId, found.post, source, attention);
+  };
+
+  const scheduleNextWebSocketReconcile = (): void => {
+    nextWebSocketReconcileAt = now() + websocketReconcileIntervalMs + jitter(websocketReconcileIntervalMs);
+  };
+
+  const scheduleNextWebSocketControlRefresh = (): void => {
+    nextWebSocketControlRefreshAt =
+      websocketControlRefreshIntervalMs > 0
+        ? now() + websocketControlRefreshIntervalMs + jitter(websocketControlRefreshIntervalMs)
+        : Number.POSITIVE_INFINITY;
   };
 
   const startAgentWebSocket = (): void => {
-    if (
-      !websocketEnabled ||
-      agentWsTask ||
-      agentWsDisabledUntil > now() ||
-      abortSignal.aborted ||
-      agentSnoozed ||
-      !account.apiKey
-    ) {
+    if (!websocketEnabled || agentWsTask || agentWsDisabledUntil > now() || abortSignal.aborted || agentSnoozed || !account.apiKey) {
       return;
     }
     const wsAbort = new AbortController();
     const abortWs = () => wsAbort.abort();
     abortSignal.addEventListener("abort", abortWs, { once: true });
-    logInfo(log, `[clawbits/${account.accountId}] opening agent WebSocket`);
+    logInfo(log, `${tag} opening agent WebSocket`);
     agentWsAbort = wsAbort;
     agentWsTask = consumeAgentWebSocketEvents({
       client,
@@ -1711,94 +1271,72 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         forceReconcilePoll = true;
         scheduleNextWebSocketControlRefresh();
         stopSse("agent WebSocket connected");
-        logInfo(log, `[clawbits/${account.accountId}] agent WebSocket connected`);
+        logInfo(log, `${tag} agent WebSocket connected`);
       },
       onEvent: (event) => {
-        if (event.type === "snapshot") {
-          applyControlPayload(event.data);
-          forceReconcilePoll = true;
-          scheduleNextWebSocketControlRefresh();
-          return;
-        }
-        if (event.type === "channel.added") {
-          const rawChannel = event.data ??
-            (event.channel_id ? { channel_id: event.channel_id } : null);
-          const added = extractChannels([rawChannel]);
-          mergeDiscoveredChannels(added);
-          forceReconcilePoll = true;
-          return;
-        }
-        if (event.type === "channel.removed") {
-          const channelId = event.channel_id;
-          if (channelId) removeDiscoveredChannel(channelId);
-          forceReconcilePoll = true;
-          return;
-        }
-        if (event.type === "resync_required") {
-          // The forced reconcile reads the games waiting on a move too.
-          forceReconcilePoll = true;
-          return;
-        }
-        if (event.type === "model.selection") {
-          const data = event.data;
-          if (!data || typeof data !== "object") return;
-          const { channel_id, model, thinking } = data as Record<string, unknown>;
-          const choice = choiceOf(model, thinking);
-          publishModelSelection(
-            typeof channel_id === "string"
-              ? { ...modelSelection, channels: new Map(modelSelection.channels).set(channel_id, choice) }
-              : { ...modelSelection, agentDefault: choice },
-          );
-          return;
-        }
-        // Both loops live in the tools plugin, which polls when nothing is bridged.
-        if (event.type === "skills.sync" || event.type === "automation.sync") {
-          wakeCompanion(event.type, account.accountId);
-          return;
-        }
-        if (event.type === "turn.stop") {
-          if (event.channel_id) void stopTurn(account.accountId, event.channel_id);
-          return;
-        }
-        if (event.type === "widget.turn") {
-          const signal = widgetTurnSignal(event.channel_id, event.data);
-          if (signal) offerGame(signal, "ws");
-          return;
-        }
-        if (event.type === "mcp.oauth.code") {
-          const signIn = event.data;
-          if (isMcpSignIn(signIn)) {
+        switch (event.type) {
+          case "snapshot":
+            applyControlPayload(event.data);
+            forceReconcilePoll = true;
+            scheduleNextWebSocketControlRefresh();
+            return;
+          case "channel.added":
+            mergeDiscoveredChannels(extractChannels([event.data ?? (event.channel_id ? { channel_id: event.channel_id } : null)]));
+            forceReconcilePoll = true;
+            return;
+          case "channel.removed":
+            if (event.channel_id) removeDiscoveredChannel(event.channel_id);
+            forceReconcilePoll = true;
+            return;
+          case "resync_required":
+            forceReconcilePoll = true;
+            return;
+          case "model.selection": {
+            const data = event.data;
+            if (!data || typeof data !== "object") return;
+            const { channel_id, model, thinking } = data as Record<string, unknown>;
+            const choice = choiceOf(model, thinking);
+            publishModelSelection(
+              typeof channel_id === "string"
+                ? { ...modelSelection, channels: new Map(modelSelection.channels).set(channel_id, choice) }
+                : { ...modelSelection, agentDefault: choice },
+            );
+            return;
+          }
+          case "skills.sync":
+          case "automation.sync":
+            wakeCompanion(event.type, account.accountId);
+            return;
+          case "turn.stop":
+            if (event.channel_id) void admit({ kind: "stop", channelId: event.channel_id, at: now() });
+            return;
+          case "widget.turn": {
+            const signal = widgetTurnSignal(event.channel_id, event.data);
+            if (signal) offerGame(signal, "ws");
+            return;
+          }
+          case "mcp.oauth.code": {
+            const signIn = event.data;
+            if (!isMcpSignIn(signIn)) return;
             void finishMcpSignIn(signIn, client)
               .then((note) => wakeAfterMcpSignIn(signIn, note))
-              .catch((err: unknown) =>
-                logWarn(log, `[clawbits/${account.accountId}] MCP sign-in for ${signIn.server} failed: ${String((err as Error)?.message ?? err)}`),
-              );
+              .catch((err: unknown) => logWarn(log, `${tag} MCP sign-in for ${signIn.server} failed: ${errorText(err)}`));
+            return;
           }
-          return;
+          case "lobstertalk.consider":
+            handleRealtimePostEvent(event, "ws", true);
+            return;
+          case "post.created":
+            handleRealtimePostEvent(event, "ws");
+            return;
         }
-        // `mutualist.consider` is the pre-rename name for the same event; kept
-        // so an agent on this build still gets nudges from a server that hasn't
-        // been redeployed yet. Drop once every server speaks `lobstertalk.*`.
-        if (
-          event.type === "lobstertalk.consider" ||
-          event.type === "mutualist.consider"
-        ) {
-          // Server-side attention gate flagged a post this agent wasn't tagged
-          // in; dispatch it as an attention nudge (reply only if useful).
-          handleAttentionNudge(event);
-          return;
-        }
-        handleRealtimePostEvent(event, "ws");
       },
     })
       .catch((err) => {
         if (!abortSignal.aborted && !wsAbort.signal.aborted) {
           agentWsDisabledUntil = now() + 60_000;
           forceReconcilePoll = true;
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] agent WebSocket stopped: ${String((err as Error)?.message ?? err)}; SSE/polling fallback remains active`,
-          );
+          logWarn(log, `${tag} agent WebSocket stopped: ${errorText(err)}; SSE/polling fallback remains active`);
         }
       })
       .finally(() => {
@@ -1819,7 +1357,7 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     ) {
       return;
     }
-    logInfo(log, `[clawbits/${account.accountId}] opening SSE for ${channel.id}`);
+    logInfo(log, `${tag} opening SSE for ${channel.id}`);
     const sseAbort = new AbortController();
     const abortSse = () => sseAbort.abort();
     abortSignal.addEventListener("abort", abortSse, { once: true });
@@ -1827,46 +1365,27 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       client,
       channelId: channel.id,
       abortSignal: sseAbort.signal,
-      onEvent: (event) => handleRealtimePostEvent(event, "sse"),
+      onEvent: (event) => {
+        if (event.type === "post.created") handleRealtimePostEvent(event, "sse");
+      },
     })
       .catch((err) => {
         if (!abortSignal.aborted && !sseAbort.signal.aborted) {
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] SSE stopped for ${channel.id}: ${String((err as Error)?.message ?? err)}; polling fallback remains active`,
-          );
+          logWarn(log, `${tag} SSE stopped for ${channel.id}: ${errorText(err)}; polling fallback remains active`);
         }
       })
       .finally(() => {
         abortSignal.removeEventListener("abort", abortSse);
         sseChannels.delete(channel.id);
       });
-    sseChannels.set(channel.id, { channelType: channel.channelType, task, abort: sseAbort });
+    sseChannels.set(channel.id, { task, abort: sseAbort });
   };
 
-  const scheduleNextWebSocketReconcile = (): void => {
-    nextWebSocketReconcileAt = now() + websocketReconcileIntervalMs + websocketReconcileJitter();
-  };
-
-  const scheduleNextWebSocketControlRefresh = (): void => {
-    nextWebSocketControlRefreshAt =
-      websocketControlRefreshIntervalMs > 0
-        ? now() + websocketControlRefreshIntervalMs + websocketControlRefreshJitter()
-        : Number.POSITIVE_INFINITY;
-  };
-
-  /** Page the server's forward cursor from `fromSerial`: every post that
-   *  arrived after that serial, oldest first, bounded by
-   *  `MAX_CATCH_UP_PAGES`. `overflowed` means the gap may extend further. */
-  const drainGap = async (
-    channelId: string,
-    fromSerial: number,
-  ): Promise<{ posts: MattermostPost[]; overflowed: boolean }> => {
+  const drainGap = async (channelId: string, fromSerial: number): Promise<{ posts: MattermostPost[]; overflowed: boolean }> => {
     const collected: MattermostPost[] = [];
     let after = fromSerial;
     for (let page = 0; page < MAX_CATCH_UP_PAGES; page += 1) {
-      const raw = await mmTools.getChannelPosts(client, channelId, CATCH_UP_PAGE_SIZE, after);
-      const posts = parsePostsResponse(raw);
+      const posts = parsePostsResponse(await mmTools.getChannelPosts(client, channelId, CATCH_UP_PAGE_SIZE, after));
       collected.push(...posts);
       if (posts.length < CATCH_UP_PAGE_SIZE) return { posts: collected, overflowed: false };
       after = posts.reduce((max, p) => Math.max(max, postSerialOf(p)), after);
@@ -1874,239 +1393,94 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
     return { posts: collected, overflowed: true };
   };
 
-  /**
-   * One-shot boot catch-up: answer what arrived while the gateway was down.
-   *
-   * Runs after the first control payload lands (so `agentSnoozed` is real) and
-   * before the WebSocket starts (so live traffic can't interleave ahead of the
-   * backlog).
-   *
-   * Two modes per channel:
-   *  - SERVER-CURSOR (the channel payload carries `last_read_post_id`): drain
-   *    `after_post_id` pages — the exact offline gap, no look-back window, no
-   *    clock math, immune to a wiped state file. The pointer advances only
-   *    when the replayed turn settles (or nothing was addressable), so a
-   *    crash mid-catch-up retries on the next boot.
-   *  - LEGACY (no pointer): the previous behavior — newest-50 page trimmed by
-   *    the persisted-watermark/window floor, with the clock-skew canary. Its
-   *    completion acks too, so a legacy agent upgrades itself to
-   *    server-cursor mode on its next restart.
-   *
-   * ONE turn per channel by design: dispatch is serial at three layers (this
-   * queue, the session lock in inbound-dispatch-guard, OpenClaw's per-session
-   * lane), so N turns would take minutes and start expiring against the queue
-   * TTL. Newest addressed post is the trigger; older ones ride as context.
-   */
-  const runCatchUp = async (discovered: DiscoveredChannel[]): Promise<void> => {
-    const deadline = now() + MAX_CATCH_UP_MS;
-    let turnsSpent = 0;
-    let recovered = 0;
+  const catchUpChannel = async ({ id: channelId, channelType, latestPostId, lastReadPostId }: DiscoveredChannel): Promise<number> => {
+    if (lastReadPostId === null) {
+      if (latestPostId === null) return 0;
+      baselines.set(channelId, latestPostId);
+      ackRead(channelId, latestPostId);
+      return 0;
+    }
+    baselines.set(channelId, Math.max(lastReadPostId, latestPostId ?? 0));
+    if (latestPostId !== null && latestPostId <= lastReadPostId) return 0;
+    const gap = await drainGap(channelId, lastReadPostId);
+    let posts = gap.posts;
+    if (gap.overflowed) {
+      logWarn(log, `${tag} catch-up gap in ${channelId} exceeds ${posts.length} post(s); skipping the oldest part`);
+      posts = parsePostsResponse(await mmTools.getChannelPosts(client, channelId));
+    }
+    const newest = posts.reduce((max, p) => Math.max(max, postSerialOf(p)), lastReadPostId);
+    baselines.set(channelId, Math.max(newest, latestPostId ?? 0));
+    const pending = posts.filter(
+      (p) =>
+        !(p.delete_at && p.delete_at > 0) &&
+        isUserAuthoredPost(p) &&
+        !p.agent_id &&
+        p.user_id !== account.agentId &&
+        !p.widget_id,
+    );
+    const isOperator = Boolean(fallbackChannelId && channelId === fallbackChannelId && channelType === null);
+    const addressed = pending.filter(
+      (p) =>
+        isPairChat(channelType) ||
+        isOperator ||
+        (ownSurfaceAction(p, account.agentId)?.name ?? QUESTION_EVENT) !== QUESTION_EVENT ||
+        (account.agentId ? hasAgentMention(p.message ?? "", account.agentId) : false),
+    );
+    const trigger = addressed.at(-1);
+    if (trigger) {
+      const context = buildPriorContext(posts, trigger.id, trigger.create_at, CATCH_UP_CONTEXT_LIMIT, account.agentId, 0, interAgentMode);
+      if (!(await admit({ kind: "post", channelId, post: trigger, source: "poll", catchUp: context }))) return 0;
+      remember(admitted, trigger.id);
+      logInfo(log, `${tag} catch-up: replaying ${channelId} - trigger ${trigger.id}, ${context.length} message(s) of missed context`);
+    } else if (pending.length > 0) {
+      logInfo(log, `${tag} catch-up: ${pending.length} missed post(s) in ${channelId}, none addressed to this agent - skipping`);
+    }
+    ackRead(channelId, posts.filter((p) => !isUnsettled(p)).reduce((max, p) => Math.max(max, postSerialOf(p)), lastReadPostId));
+    return trigger ? pending.length : 0;
+  };
 
+  const runCatchUp = async (discovered: DiscoveredChannel[]): Promise<void> => {
+    let recovered = 0;
     for (const channel of discovered) {
       if (abortSignal.aborted) return;
-      const { id: channelId, channelType } = channel;
-      if (turnsSpent >= MAX_CATCH_UP_TURNS || now() >= deadline) {
-        // Out of budget. Floors keep their now()-seeds (burst-safe), the
-        // durable pointers stay put, and the next boot retries this channel.
-        clampChannelFloors(channelId, now());
-        continue;
-      }
-
-      const serverMode = channel.lastReadPostId != null;
-      // Quiet channel, zero fetches: the pointer already covers the newest
-      // post. Only trustable when the payload carries both serials.
-      if (
-        serverMode &&
-        channel.latestPostId != null &&
-        channel.latestPostId <= (channel.lastReadPostId as number)
-      ) {
-        continue;
-      }
-
-      // Every exit from here MUST clamp (in-memory), or the lowered floor is
-      // picked up by the next reconcile pass as the per-post burst this
-      // function avoids.
-      let clampTo = now();
       try {
-        let posts: MattermostPost[];
-        let resume: number;
-        if (serverMode) {
-          const gap = await drainGap(channelId, channel.lastReadPostId as number);
-          posts = gap.posts;
-          if (gap.overflowed) {
-            // The gap outran the page budget. Prioritise the newest traffic
-            // — answering this week's messages beats faithfully replaying
-            // last week's — and log the truncation instead of pretending
-            // the middle never happened.
-            logWarn(
-              log,
-              `[clawbits/${account.accountId}] catch-up gap in ${channelId} exceeds ${posts.length} post(s); skipping the oldest part`,
-            );
-            posts = parsePostsResponse(await mmTools.getChannelPosts(client, channelId));
-          }
-          // Everything drained is strictly after the acked pointer, so the
-          // whole fetch is unread by definition. No settled-self-post clamp
-          // here: the ack is the settle marker in this mode, and clamping on
-          // self posts would let a boot-time automation delivery bury the
-          // very gap being recovered (the D8 race).
-          resume = 0;
-        } else {
-          posts = parsePostsResponse(await mmTools.getChannelPosts(client, channelId));
-          if (posts.length > 0) {
-            const newestInPage = posts[posts.length - 1]?.create_at ?? 0;
-            clampTo = Math.max(clampTo, newestInPage);
-            // Clock-skew canary (legacy only — a serial cursor has no clock
-            // to skew): the window floor is VM-local, every `create_at` is
-            // server-issued, and the reef image has no NTP. Only "VM behind"
-            // is detectable; refuse rather than look back by skew + window.
-            // In-memory clamp only: the durable pointer stays put, so the
-            // next boot (or an upgraded server) retries instead of the old
-            // behavior of durably burning past what it refused to read.
-            const skew = now() - newestInPage;
-            if (newestInPage > 0 && skew < -MAX_CATCH_UP_CLOCK_SKEW_MS) {
-              logWarn(
-                log,
-                `[clawbits/${account.accountId}] catch-up skipped for ${channelId}: VM clock is ${Math.round(-skew / 1000)}s behind the newest server post — refusing to guess a look-back window`,
-              );
-              continue;
-            }
-          }
-          resume = Math.max(
-            resumeFloorFor(channelId),
-            ...posts.filter((p) => isSettledSelfPost(p, account.agentId)).map((p) => p.create_at),
-          );
-        }
-        if (posts.length === 0) continue;
-        const newestCreateAt = posts[posts.length - 1]?.create_at ?? 0;
-        clampTo = Math.max(clampTo, newestCreateAt);
-        const newestSerial = posts.reduce((max, p) => Math.max(max, postSerialOf(p)), 0);
-
-        const pending = posts.filter(
-          (p) =>
-            p.create_at > resume &&
-            !(p.delete_at && p.delete_at > 0) &&
-            isUserAuthoredPost(p) &&
-            // Human-authored only (also excludes our own echoes): replaying
-            // agent traffic would reset every agent's inter-agent throttle at
-            // the same instant across a fleet roll.
-            !p.agent_id &&
-            p.user_id !== account.agentId &&
-            // A game's start post is played by the game's own wake, never answered.
-            !p.widget_id,
-        );
-        if (pending.length === 0) {
-          // Examined, nothing pending: a permanent classification, so the
-          // pointer may advance — this is also what creates the pointer for
-          // legacy agents and stops the same gap being re-drained every boot.
-          ackRead(channelId, newestSerial);
-          continue;
-        }
-
-        const pairChat = isPairChat(channelType);
-        // Mirrors processPost's operator test exactly (channelType === null):
-        // a typed non-direct operator channel must NOT pick an un-mentioned
-        // trigger here that processPost will then refuse as not-addressed —
-        // that mismatch used to drop the recovered message AND burn the
-        // cursor past it.
-        const isOperator = Boolean(
-          fallbackChannelId && channelId === fallbackChannelId && channelType === null,
-        );
-        const addressed = pending.filter(
-          (p) =>
-            pairChat ||
-            isOperator ||
-            (account.agentId ? hasAgentMention(p.message ?? "", account.agentId) : false),
-        );
-        if (addressed.length === 0) {
-          logInfo(
-            log,
-            `[clawbits/${account.accountId}] catch-up: ${pending.length} missed post(s) in ${channelId}, none addressed to this agent — skipping`,
-          );
-          // Same permanent classification as the empty-pending case. The
-          // LobsterTalk rescue path is unaffected: nudges arrive over the
-          // WS keyed on the post, gated by `seen` — never by this pointer.
-          ackRead(channelId, newestSerial);
-          continue;
-        }
-
-        const trigger = addressed[addressed.length - 1]!;
-        const context = buildPriorContext(
-          posts,
-          trigger.id,
-          trigger.create_at,
-          CATCH_UP_CONTEXT_LIMIT,
-          account.agentId,
-          resume,
-          interAgentMode,
-        );
-
-        // Open the gate just below the trigger so processPost will accept it,
-        // then let the dispatch path claim it normally. The ack rides the
-        // settle path inside processPost — never fired from here.
-        cursors.set(channelId, trigger.create_at - 1);
-        reconcileFloors.set(channelId, trigger.create_at - 1);
-
-        turnsSpent += 1;
-        recovered += pending.length;
-        logInfo(
-          log,
-          `[clawbits/${account.accountId}] catch-up: replaying ${channelId} — trigger ${trigger.id}, ${context.length} message(s) of missed context, mode=${serverMode ? "server-cursor" : "legacy"}, resume=${serverMode ? channel.lastReadPostId : resume}`,
-        );
-        await enqueueInbound(channelId, channelType, trigger, "poll", true, false, context);
+        recovered += await catchUpChannel(channel);
       } catch (err) {
-        logWarn(
-          log,
-          `[clawbits/${account.accountId}] catch-up failed for ${channelId}: ${String((err as Error)?.message ?? err)} — clamping to now (retries next boot)`,
-        );
-      } finally {
-        clampChannelFloors(channelId, clampTo);
+        if (!baselines.has(channel.id) && channel.latestPostId !== null) baselines.set(channel.id, channel.latestPostId);
+        logWarn(log, `${tag} catch-up failed for ${channel.id}: ${errorText(err)} (retries next boot)`);
       }
     }
-
-    logInfo(
-      log,
-      `[clawbits/${account.accountId}] catch-up complete: ${turnsSpent} turn(s) over ${discovered.length} channel(s), ${recovered} missed message(s) surfaced`,
-    );
+    logInfo(log, `${tag} catch-up complete over ${discovered.length} channel(s), ${recovered} missed message(s) surfaced`);
   };
 
-  const pollDiscoveredChannels = async (
-    discovered: DiscoveredChannel[],
-    source: "poll" | "reconcile",
-  ): Promise<void> => {
-    for (const { id: channelId, channelType } of discovered) {
+  const pollDiscoveredChannels = async (discovered: DiscoveredChannel[], source: "poll" | "reconcile"): Promise<void> => {
+    for (const { id: channelId } of discovered) {
       if (abortSignal.aborted) break;
       try {
-        const raw = await mmTools.getChannelPosts(client, channelId);
-        const posts = parsePostsResponse(raw);
-        logDebug(
-          log,
-          `[clawbits/${account.accountId}] inbound ${source} fetched ${posts.length} post(s) from ${channelId}; cursor=${cursorFor(channelId)}`,
-        );
+        const posts = parsePostsResponse(await mmTools.getChannelPosts(client, channelId));
+        if (!baselines.has(channelId)) {
+          baselines.set(channelId, posts.reduce((max, p) => Math.max(max, postSerialOf(p)), 0));
+          continue;
+        }
         for (const post of posts) {
           if (abortSignal.aborted) break;
-          await enqueueInbound(channelId, channelType, post, source, true);
+          await observe(channelId, post, source);
         }
       } catch (err) {
-        consoleErrorWithFile(
-          `[clawbits/${account.accountId}] inbound ${source} failed for ${channelId}: ${String((err as Error)?.stack ?? (err as Error)?.message ?? err)}`,
-        );
-        logWarn(
-          log,
-          `[clawbits/${account.accountId}] inbound ${source} failed for ${channelId}: ${String((err as Error)?.message ?? err)}`,
-        );
+        logWarn(log, `${tag} inbound ${source} failed for ${channelId}: ${errorText(err)}`);
       }
     }
   };
 
-  let catchUpPending = catchUpEnabled && opts.initialCursor === undefined;
+  let catchUpPending = catchUpEnabled;
   let catchUpDeferrals = 0;
   let controlPayloadOk = false;
+  ingress.start();
 
   try {
     while (!abortSignal.aborted) {
       let discovered: DiscoveredChannel[] = discoveredFromChannelTypes();
       const wasSnoozed = agentSnoozed;
-      // Whether this tick's channel list named each chat's waiting game (`widget_waiting`).
       let waitingGamesListed = false;
       const shouldRefreshControl =
         !agentWsConnected ||
@@ -2114,118 +1488,54 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         (websocketControlRefreshIntervalMs > 0 && now() >= nextWebSocketControlRefreshAt);
       if (shouldRefreshControl) {
         try {
-          const listed = await mmTools.listChannels(client);
           const beforeIds = channelSetKey(discovered);
-          discovered = applyControlPayload(listed);
+          discovered = applyControlPayload(await mmTools.listChannels(client));
           waitingGamesListed = true;
           controlPayloadOk = true;
-          const afterIds = channelSetKey(discovered);
-          if (agentWsConnected) {
-            scheduleNextWebSocketControlRefresh();
-          }
-          if (agentWsConnected && beforeIds !== afterIds) {
+          if (agentWsConnected) scheduleNextWebSocketControlRefresh();
+          if (agentWsConnected && beforeIds !== channelSetKey(discovered)) {
             forceReconcilePoll = true;
             stopAgentWebSocket("channel set changed");
           }
         } catch (err) {
-          if (agentWsConnected) {
-            scheduleNextWebSocketControlRefresh();
-          } else {
-            interAgentMode = account.interAgentMode === true;
-          }
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] listChannels failed: ${String((err as Error)?.message ?? err)} — falling back to cached channels/single channel`,
-          );
+          if (agentWsConnected) scheduleNextWebSocketControlRefresh();
+          else interAgentMode = account.interAgentMode === true;
+          logWarn(log, `${tag} listChannels failed: ${errorText(err)} - falling back to cached channels/single channel`);
           discovered = discoveredFromChannelTypes();
         }
       }
       if (discovered.length === 0 && fallbackChannelId) {
-        discovered = [
-          { id: fallbackChannelId, channelType: null, latestPostId: null, lastReadPostId: null },
-        ];
+        discovered = [{ id: fallbackChannelId, channelType: null, latestPostId: null, lastReadPostId: null }];
         rebuildDiscoveredChannels(discovered);
-      }
-      if (discovered.length === 0) {
-        logDebug(log, `[clawbits/${account.accountId}] no channels to poll this tick`);
       }
 
       if (agentSnoozed) {
         stopAgentWebSocket("agent snoozed");
         stopSse("agent snoozed");
-        if (!wasSnoozed) {
-          logInfo(
-            log,
-            `[clawbits/${account.accountId}] agent snoozed; skipping SSE and post polling`,
-          );
-        }
+        if (!wasSnoozed) logInfo(log, `${tag} agent snoozed; skipping SSE and post polling`);
         await sleepInterruptible(pollMs, abortSignal);
         continue;
       }
 
-      if (wasSnoozed && !agentSnoozed) {
-        if (catchUpPending) {
-          // Snoozed since BOOT: the pending gap predates the snooze (it
-          // accumulated while the process was down), so it is not "snoozed
-          // backlog" — leave catch-up armed and let the pass below answer
-          // it now that the agent is awake. This is what used to strand the
-          // boot gap forever: the flag was cleared here before the pass
-          // ever got to run.
-          logInfo(
-            log,
-            `[clawbits/${account.accountId}] agent unsnoozed with boot catch-up still pending; running it now`,
-          );
-        } else {
-          // Mid-life unsnooze: discard the snoozed backlog, and durably —
-          // ack to the latest serial where known, so a restart right after
-          // unsnoozing doesn't replay the pile the operator silenced.
-          const resumeCursor = now();
-          for (const channel of discovered) {
-            clampChannelFloors(channel.id, resumeCursor);
-            if (channel.latestPostId != null) ackRead(channel.id, channel.latestPostId);
-          }
-          logInfo(
-            log,
-            `[clawbits/${account.accountId}] agent unsnoozed; cursor advanced to skip snoozed backlog`,
-          );
+      if (wasSnoozed && !catchUpPending) {
+        for (const channel of discovered) {
+          if (channel.latestPostId === null) continue;
+          baselines.set(channel.id, Math.max(baselines.get(channel.id) ?? 0, channel.latestPostId));
+          ackRead(channel.id, channel.latestPostId);
         }
+        logInfo(log, `${tag} agent unsnoozed; skipping snoozed backlog`);
       }
 
-      // Gated on a real control payload: `agentSnoozed` starts false and is only
-      // set by `applyControlPayload`, so running blind would let a snoozed agent
-      // answer its backlog.
       if (catchUpPending) {
         if (!controlPayloadOk && catchUpDeferrals < MAX_CATCH_UP_DEFERRALS) {
-          // Hold realtime startup too: starting the WebSocket/poll on this
-          // tick would let a live settle ack past the gap before catch-up
-          // ever reads it — the deferred-control race. Short retry sleep,
-          // not the poll interval: this hold delays ALL message flow.
           catchUpDeferrals += 1;
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] catch-up deferred (${catchUpDeferrals}/${MAX_CATCH_UP_DEFERRALS}): no control payload yet — holding realtime startup`,
-          );
+          logWarn(log, `${tag} catch-up deferred (${catchUpDeferrals}/${MAX_CATCH_UP_DEFERRALS}): no control payload yet - holding realtime startup`);
           await sleepInterruptible(Math.min(CATCH_UP_DEFERRAL_RETRY_MS, pollMs), abortSignal);
           continue;
         }
         catchUpPending = false;
-        if (!controlPayloadOk) {
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] catch-up proceeding without a control payload after ${catchUpDeferrals} deferral(s) — fallback channel set only`,
-          );
-        }
-        try {
-          await runCatchUp(discovered);
-        } catch (err) {
-          logWarn(
-            log,
-            `[clawbits/${account.accountId}] catch-up pass aborted: ${String((err as Error)?.message ?? err)}`,
-          );
-          for (const channel of discovered) clampChannelFloors(channel.id, now());
-        }
+        await runCatchUp(discovered);
         if (abortSignal.aborted) break;
-        // The boot payload's games, now behind the replayed chat turns.
         for (const signal of heldGameSignals.splice(0)) offerGame(signal, "snapshot");
       }
 
@@ -2233,24 +1543,15 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       startAgentWebSocket();
 
       if (websocketEnabled && agentWsTask && !agentWsConnected && agentWsDisabledUntil <= now()) {
-        await Promise.race([
-          sleepInterruptible(Math.min(1000, pollMs), abortSignal),
-          agentWsTask.catch(() => undefined),
-        ]);
+        await Promise.race([sleepInterruptible(Math.min(1000, pollMs), abortSignal), agentWsTask.catch(() => undefined)]);
         if (abortSignal.aborted) break;
         if (agentWsConnected) continue;
       }
 
       for (const channel of discovered) startSse(channel);
 
-      const websocketHealthy = Boolean(
-        websocketEnabled && agentWsConnected && agentWsDisabledUntil <= now(),
-      );
-      if (websocketHealthy) {
-        const shouldReconcile =
-          forceReconcilePoll ||
-          (websocketReconcileIntervalMs > 0 && now() >= nextWebSocketReconcileAt);
-        if (shouldReconcile) {
+      if (websocketEnabled && agentWsConnected && agentWsDisabledUntil <= now()) {
+        if (forceReconcilePoll || (websocketReconcileIntervalMs > 0 && now() >= nextWebSocketReconcileAt)) {
           forceReconcilePoll = false;
           scheduleNextWebSocketReconcile();
           await pollDiscoveredChannels(discovered, "reconcile");
@@ -2258,8 +1559,6 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
         }
       } else {
         await pollDiscoveredChannels(discovered, "poll");
-        // No agent WebSocket, so no `widget.turn`: this tick's channel list named the games waiting
-        // on a move; ask for them only when it didn't (it failed).
         if (!waitingGamesListed) await readWaitingWidgets();
       }
 
@@ -2273,36 +1572,15 @@ export async function runInboundPoller(opts: InboundPollerOptions): Promise<void
       abort.abort();
       void task.catch(() => undefined);
     }
-    // The only other writer is a 1s unref'd debounce timer that must not hold
-    // the process open, so without this a clean stop loses the last second.
-    try {
-      await watermarks?.flush?.();
-    } catch (err) {
-      logWarn(
-        log,
-        `[clawbits/${account.accountId}] watermark flush on shutdown failed: ${String((err as Error)?.message ?? err)}`,
-      );
-    }
-    logInfo(log, `[clawbits/${account.accountId}] inbound poller stopped`);
+    await ingress.stop();
+    logInfo(log, `${tag} inbound poller stopped`);
   }
 }
 
-/** A channel discovered through `GET /api/agentic/mm/channels`. */
 interface DiscoveredChannel {
   id: string;
-  /** ``"direct"`` for 1:1 DMs, ``"public"`` / ``"private"`` for rooms.
-   *  ``null`` when the listing didn't carry the field (older payloads,
-   *  fallback-only path). The dispatch gate treats ``null`` like a
-   *  non-direct channel, so a missing type doesn't accidentally make
-   *  the agent auto-reply in a shared room. */
   channelType: string | null;
-  /** Newest published post serial, or null when the channel is empty or the
-   *  payload predates the field. With `lastReadPostId` this answers "did
-   *  anything move while I was down" without a posts GET. */
   latestPostId: number | null;
-  /** This agent's server-side read pointer (acked on turn settle), or null
-   *  on servers that predate it / when the agent never acked. Null selects
-   *  the legacy timestamp-window catch-up. */
   lastReadPostId: number | null;
 }
 
@@ -2396,12 +1674,10 @@ function extractInterAgentMode(raw: unknown): boolean | undefined {
   return undefined;
 }
 
-/** Bounded LRU-ish ring: drop the oldest entry when we exceed the cap. */
-function rememberSeen(seen: Set<string>, id: string): void {
-  if (seen.has(id)) return;
-  if (seen.size >= SEEN_RING_LIMIT) {
-    const first = seen.values().next();
-    if (!first.done) seen.delete(first.value);
+function remember(known: Set<string>, id: string): void {
+  if (known.size >= KNOWN_LIMIT) {
+    const first = known.values().next();
+    if (!first.done) known.delete(first.value);
   }
-  seen.add(id);
+  known.add(id);
 }

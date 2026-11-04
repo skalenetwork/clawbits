@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { CHANNEL_ID } from "./accounts.js";
 import { type BasicLogger, logWarn } from "./file-logger.js";
+import { type KeyedStore, type PluginRuntime, pluginRuntime } from "./runtime.js";
 
-type PluginRuntime = OpenClawPluginApi["runtime"];
 type SessionEntry = NonNullable<ReturnType<PluginRuntime["agent"]["session"]["getSessionEntry"]>>;
 type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["entries"]>[string];
 
@@ -21,22 +20,12 @@ interface ChoicePatch {
   applied: ModelChoice;
 }
 
-export interface ModelChoiceStore {
-  getChoice(accountId: string, key: string): ModelChoice | undefined;
-  setChoice(accountId: string, key: string, choice: ModelChoice): Promise<void>;
-}
-
 export const INHERIT: ModelChoice = { model: null, thinking: null };
-
-let runtime: PluginRuntime | undefined;
-
-export function setModelChoiceRuntime(next: PluginRuntime): void {
-  runtime = next;
-}
 
 /** The host's config as it is now (the agent default this module writes lands there), or
  *  undefined before the runtime is set. */
 export function currentConfig(): OpenClawConfig | undefined {
+  const runtime = pluginRuntime();
   return typeof runtime?.config?.current === "function" ? (runtime.config.current() as OpenClawConfig) : undefined;
 }
 
@@ -119,6 +108,7 @@ async function loadSdk(): Promise<
 }
 
 export function operatorDmRoute(accountId: string): { agentId: string; sessionKey?: string } | undefined {
+  const runtime = pluginRuntime();
   if (
     typeof runtime?.channel?.routing?.resolveAgentRoute !== "function" ||
     typeof runtime.config?.current !== "function"
@@ -141,6 +131,7 @@ async function patchSession(
   desired: ModelChoice,
 ): Promise<void> {
   const { resolveDefaultModelForAgent, applyModelOverrideWithAuthProfileCompatibility } = await loadSdk();
+  const runtime = pluginRuntime();
   const agent = runtime?.agent;
   if (
     !resolveDefaultModelForAgent ||
@@ -207,7 +198,7 @@ let agentDefaultWrites = Promise.resolve();
 export function convergeAgentDefault(
   target: { accountId: string; agentId: string },
   desired: ModelChoice,
-  store: ModelChoiceStore,
+  store: KeyedStore<ModelChoice>,
   log?: BasicLogger,
 ): Promise<void> {
   agentDefaultWrites = agentDefaultWrites.then(() => writeAgentDefault(target, desired, store, log));
@@ -217,12 +208,13 @@ export function convergeAgentDefault(
 async function writeAgentDefault(
   target: { accountId: string; agentId: string },
   desired: ModelChoice,
-  store: ModelChoiceStore,
+  store: KeyedStore<ModelChoice>,
   log?: BasicLogger,
 ): Promise<void> {
-  const key = `model:${target.agentId}`;
+  const key = `${target.accountId}:model:${target.agentId}`;
   try {
     const { setAgentEffectiveModelPrimary } = await loadSdk();
+    const runtime = pluginRuntime();
     const config = runtime?.config;
     const normalize = runtime?.agent?.normalizeThinkingLevel;
     if (
@@ -234,7 +226,7 @@ async function writeAgentDefault(
       return;
     }
     const current = rosterChoice(config.current() as OpenClawConfig, target.agentId);
-    const plan = planChoice(current, desired, store.getChoice(target.accountId, key) ?? INHERIT);
+    const plan = planChoice(current, desired, (await store.lookup(key)) ?? INHERIT);
     const thinking = plan?.thinking ? normalize(plan.thinking) : undefined;
     if (!plan || (plan.thinking && !thinking)) return;
     await config.mutateConfigFile({
@@ -255,7 +247,7 @@ async function writeAgentDefault(
         else if (thinking) entry.thinkingDefault = thinking;
       },
     });
-    await store.setChoice(target.accountId, key, plan.applied);
+    await store.register(key, plan.applied);
   } catch (err) {
     logWarn(log, `[clawbits] agent default model not applied to ${target.agentId}: ${String((err as Error)?.message ?? err)}`);
   }

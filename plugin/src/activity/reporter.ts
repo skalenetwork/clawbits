@@ -227,8 +227,21 @@ export function onCommandOutputEvent(turn: InFlightTurn, data: unknown): void {
 export async function turnSteps(turn: InFlightTurn): Promise<TurnStep[] | undefined> {
   const state = states.get(turn);
   if (!state?.steps.size || serverLacksActivity) return undefined;
+  return withApps(state, [...state.steps.values()]);
+}
+
+/** The steps so far for a post that ends mid-turn; the turn's later steps start a fresh list. */
+export async function takeTurnSteps(turn: InFlightTurn): Promise<TurnStep[] | undefined> {
+  const state = states.get(turn);
+  if (!state?.steps.size || serverLacksActivity) return undefined;
+  const taken = [...state.steps.values()];
+  state.steps.clear();
+  return withApps(state, taken);
+}
+
+function withApps(state: ReporterState, steps: TurnStep[]): Promise<TurnStep[]> {
   return Promise.all(
-    [...state.steps.values()].map(async (step) => {
+    steps.map(async (step) => {
       const app = await state.apps.get(step.id);
       return app ? { ...step, app } : step;
     }),

@@ -106,6 +106,22 @@ describe("buildTimeline", () => {
     const published = post(6, { agent_id: "a1", human_id: null, message: "done" });
     expect(postsOf(buildTimeline([draft, published], [])).map((p) => p.post_id)).toEqual([6]);
   });
+
+  it("keeps the turn's draft when its agent posts a surface mid-turn", () => {
+    const draft = post(5, { agent_id: "a1", human_id: null, message: "", status: "streaming" });
+    const surface = post(6, {
+      agent_id: "a1",
+      human_id: null,
+      message: "Deploys this week",
+      ui: {
+        a2ui: { version: "1.0", createSurface: { surfaceId: "post-6", catalogId: "c", components: [], dataModel: {} } },
+        rev: 0,
+        once: true,
+        closed: null,
+      },
+    });
+    expect(postsOf(buildTimeline([draft, surface], [])).map((p) => p.post_id)).toEqual([5, 6]);
+  });
 });
 
 describe("decorateRows", () => {

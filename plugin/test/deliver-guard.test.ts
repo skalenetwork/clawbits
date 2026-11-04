@@ -7,13 +7,16 @@ import assert from "node:assert/strict";
 import type {
   ChannelGatewayContext,
 } from "openclaw/plugin-sdk/core";
-import type { ClawBitsClient } from "../src/client.js";
+import { ClawBitsClient } from "../src/client.js";
 import type { ResolvedClawBitsAccount } from "../src/types.js";
 import { dispatchInboundMessage } from "../src/gateway-adapter.js";
 import type { InboundMessage } from "../src/inbound-poller.js";
 import { __resetDraftRegistryForTest, stopTurn } from "../src/draft-registry.js";
 import { __resetTurnRegistryForTest } from "../src/activity/turn-registry.js";
 import { routeAgentEvent } from "../src/activity/subscription.js";
+import { postSurface } from "../src/outbound-adapter.js";
+import { type PluginRuntime, setRuntime } from "../src/runtime.js";
+import { memoryState } from "./runtime-state.js";
 
 interface RecordedCall {
   method: string;
@@ -23,33 +26,28 @@ interface RecordedCall {
 
 /** Answers every route the dispatch touches: challenge GETs, the draft
  *  create, draft PATCHes, status POSTs and message POSTs. */
-class FakeClient {
-  calls: RecordedCall[] = [];
-
-  encodePath(value: string): string {
-    return encodeURIComponent(value);
-  }
-
-  async request(
-    method: string,
-    path: string,
-    opts?: { json?: unknown },
-  ): Promise<unknown> {
-    if (method === "GET" && path.endsWith("/auth/challenge")) {
-      return { challenge: "2+2", session_token: "sess" };
-    }
-    const json = (opts?.json ?? {}) as Record<string, unknown>;
-    this.calls.push({ method, path, json });
+function installServer(finalError?: Error): { calls: RecordedCall[]; restore: () => void } {
+  const calls: RecordedCall[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const { pathname: path } = new URL(String(input));
+    const method = (init?.method ?? "GET").toUpperCase();
+    const respond = (body: unknown) => new Response(JSON.stringify(body ?? {}), { status: 200 });
+    if (method === "GET" && path.endsWith("/auth/challenge")) return respond({ challenge: "2+2", session_token: "sess" });
+    const json = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    if (finalError && (method === "PATCH" || (path.endsWith("/posts") && json.status !== "streaming"))) throw finalError;
+    calls.push({ method, path, json });
     if (method === "POST" && path.endsWith("/posts")) {
-      return json.status === "streaming"
-        ? { post_id: 5, channel_id: "chan-1", message: "", status: "streaming" }
-        : { post_id: 99 };
+      return respond(
+        json.status === "streaming"
+          ? { post_id: 5, channel_id: "chan-1", message: "", status: "streaming" }
+          : { post_id: 99 },
+      );
     }
-    if (method === "PATCH") {
-      return { post_id: 5, channel_id: "chan-1", message: "", status: "published" };
-    }
-    return undefined;
-  }
+    if (method === "PATCH") return respond({ post_id: 5, channel_id: "chan-1", message: "", status: "published" });
+    return respond({});
+  }) as typeof fetch;
+  return { calls, restore: () => (globalThis.fetch = original) };
 }
 
 function makeAccount(): ResolvedClawBitsAccount {
@@ -85,7 +83,7 @@ function makeCtx(
 ): ChannelGatewayContext<ResolvedClawBitsAccount> {
   const ac = new AbortController();
   return {
-    cfg: {},
+    cfg: { channels: { clawbits: { endpoint: "http://fc", orgId: "user-1", agentId: "bot-agent", apiKey: "k1", channelId: "chan-1", knownAnswers: { "2+2": "4" } } } },
     accountId: "default",
     account: makeAccount(),
     abortSignal: ac.signal,
@@ -110,15 +108,19 @@ const MSG: InboundMessage = {
 };
 
 /** Dispatches MSG through a stub runtime and returns what reached the server. */
-async function run(reply: Parameters<typeof makeCtx>[0], msg = MSG): Promise<RecordedCall[]> {
+async function run(reply: Parameters<typeof makeCtx>[0], msg = MSG, finalError?: Error): Promise<RecordedCall[]> {
   __resetDraftRegistryForTest();
   __resetTurnRegistryForTest();
-  const client = new FakeClient();
-  await dispatchInboundMessage(makeCtx(reply), msg, {
-    client: client as unknown as ClawBitsClient,
-    answers: { "2+2": "4" },
-  });
-  return client.calls;
+  const server = installServer(finalError);
+  try {
+    await dispatchInboundMessage(makeCtx(reply), msg, {
+      client: new ClawBitsClient({ endpoint: "http://fc", apiKey: "k1" }),
+      answers: { "2+2": "4" },
+    });
+  } finally {
+    server.restore();
+  }
+  return server.calls;
 }
 
 const lastPatch = (calls: RecordedCall[]) => calls.filter((c) => c.method === "PATCH").at(-1)?.json;
@@ -135,7 +137,8 @@ describe("deliver multi-payload guard", () => {
     // First deliver finalized the pre-opened draft in place.
     const patches = calls.filter((c) => c.method === "PATCH");
     assert.equal(patches.length, 1);
-    assert.deepEqual(patches[0]!.json, { replace: "block one", done: true });
+    const { client_key: finalKey, ...finalized } = patches[0]!.json;
+    assert.deepEqual(finalized, { replace: "block one", done: true });
 
     // The identical retry minted nothing; the distinct payload posted once.
     // (The draft create also POSTs /posts but carries status:"streaming".)
@@ -148,6 +151,29 @@ describe("deliver multi-payload guard", () => {
     );
     assert.equal(messagePosts.length, 1);
     assert.equal(messagePosts[0]!.json.message, "block two");
+    assert.match(String(finalKey), /:0$/);
+    assert.notEqual(messagePosts[0]!.json.client_key, finalKey, "each durable send carries its own intent key");
+  });
+});
+
+describe("a final the backend did not take", () => {
+  const offline = (code: string, syscall: string) =>
+    new TypeError("fetch failed", { cause: Object.assign(new Error(`${syscall} ${code}`), { code, syscall }) });
+
+  it("counts as delivered when the queue holds it and it never left", async () => {
+    let outcome: unknown = "pending";
+    await run(async ({ deliver }) => {
+      outcome = await deliver!({ text: "later" }).then(() => "delivered", (error: unknown) => error);
+    }, MSG, offline("ECONNREFUSED", "connect"));
+    assert.equal(outcome, "delivered");
+  });
+
+  it("fails when it may have reached the chat", async () => {
+    let outcome: unknown = "pending";
+    await run(async ({ deliver }) => {
+      outcome = await deliver!({ text: "maybe" }).then(() => "delivered", (error: unknown) => error);
+    }, MSG, offline("ECONNRESET", "read"));
+    assert.ok(outcome instanceof Error);
   });
 });
 
@@ -167,6 +193,49 @@ describe("turn steps", () => {
         { kind: "note", id: "m1", label: "Listing issues.", ok: undefined },
         { kind: "tool", id: "c1", label: "exec: 'gh issue list'", ok: true },
       ],
+    );
+  });
+});
+
+describe("a block mid-turn", () => {
+  it("keeps the steps before it on the reply above and starts the rest afresh below", async () => {
+    const { cfg } = makeCtx(async () => {});
+    setRuntime({ config: { current: () => cfg }, state: memoryState() } as unknown as PluginRuntime);
+    const tool = (id: string, command: string) => {
+      routeAgentEvent({ runId: "run-b", stream: "tool", data: { phase: "start", name: "exec", toolCallId: id, args: { command } } });
+      routeAgentEvent({ runId: "run-b", stream: "tool", data: { phase: "result", name: "exec", toolCallId: id, isError: false } });
+    };
+    const calls = await run(async ({ deliver }) => {
+      routeAgentEvent({ runId: "run-b", stream: "lifecycle", data: { phase: "start" } });
+      tool("c1", "gh run list");
+      routeAgentEvent({ runId: "run-b", stream: "assistant", data: { text: "Here is the week:" } });
+      await postSurface("default", "chan-1", { components: [{ id: "root", component: "Text", text: "Deploys" }] });
+      tool("c2", "date");
+      await deliver!({ text: "That is all." });
+    });
+    const ended = calls.filter((c) => c.method === "PATCH" && c.json.done === true).map((c) => ({
+      replace: c.json.replace,
+      steps: (c.json.steps as { id: string }[] | undefined)?.map((step) => step.id),
+    }));
+    assert.deepEqual(ended, [
+      { replace: "Here is the week:", steps: ["c1"] },
+      { replace: "That is all.", steps: ["c2"] },
+    ]);
+  });
+});
+
+describe("a click in the operator DM", () => {
+  it("never runs its text as a command", async () => {
+    const turns: Record<string, unknown>[] = [];
+    const uiAction = { name: "go", sourceComponentId: "go", context: {}, surfacePostId: 812 };
+    for (const extra of [{}, { uiAction }]) {
+      await run(async ({ ctx: turn }) => {
+        turns.push(turn);
+      }, { ...MSG, text: "/reset", ...extra });
+    }
+    assert.deepEqual(
+      turns.map((turn) => [turn.CommandAuthorized, turn.CommandSource]),
+      [[true, "text"], [false, undefined]],
     );
   });
 });

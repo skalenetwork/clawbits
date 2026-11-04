@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import { UI_TOOL_SPEC } from "./a2ui/tool-spec.js";
 import {
   CHANNEL_ID,
   listClawBitsAccountIds,
@@ -35,7 +36,7 @@ import {
   summarizePosts,
   summarizeSearch,
 } from "./tool-views.js";
-import type { ResolvedClawBitsAccount } from "./types.js";
+import type { AgentSurfaceCreate, ResolvedClawBitsAccount } from "./types.js";
 import {
   WIDGET_ACT_SPEC,
   WIDGET_GET_SPEC,
@@ -65,6 +66,7 @@ export const CLAWBITS_TOOL_NAMES = [
   "clawbits_widget_act",
   "clawbits_widget_get",
   "clawbits_widget_list",
+  "clawbits_ui",
 ] as const;
 
 /** Tell the channel which agent tools this plugin registered, restated whole: it claims the
@@ -667,6 +669,40 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
   registerWidgetTool(api, WIDGET_ACT_SPEC, widgetAct);
   registerWidgetTool(api, WIDGET_GET_SPEC, widgetGet);
   registerWidgetTool(api, WIDGET_LIST_SPEC, widgetList);
+
+  api.registerTool(
+    (ctx) => ({
+      name: UI_TOOL_SPEC.name,
+      label: UI_TOOL_SPEC.annotations.title,
+      catalogMode: "direct-only",
+      description: UI_TOOL_SPEC.description,
+      parameters: UI_TOOL_SPEC.inputSchema,
+      async execute(_toolCallId: string, { components, dataModel, once }: AgentSurfaceCreate, signal?: AbortSignal) {
+        signal?.throwIfAborted();
+        const channelId = ctx.messageChannel === CHANNEL_ID ? ctx.nativeChannelId : undefined;
+        if (!channelId) throw new Error("clawbits_ui works only while answering in a Clawbits chat.");
+        const postSurface = readSlimChannelHandoff(api.runtime)?.postSurface;
+        if (!postSurface) {
+          return jsonResult({ error: "This chat cannot show UI blocks: the Clawbits channel plugin predates them. Answer in text." });
+        }
+        const reserved = reservedEventErrors(components);
+        if (reserved.length) return jsonResult({ errors: reserved });
+        const accountId = ctx.agentAccountId ?? resolveDefaultClawBitsAccountId(api.config);
+        return jsonResult(await postSurface(accountId, channelId, { components, dataModel, once }));
+      },
+    }),
+    { name: UI_TOOL_SPEC.name, optional: true },
+  );
+}
+
+/** Event names starting `oc.` are OpenClaw's own (`oc.question` answers ask_user), never an agent's. */
+function reservedEventErrors(components: AgentSurfaceCreate["components"]): Array<{ path: string; message: string }> {
+  return components.flatMap((component, index) => {
+    const name = (component["action"] as { event?: { name?: unknown } } | undefined)?.event?.name;
+    return typeof name === "string" && name.startsWith("oc.")
+      ? [{ path: `/components/${String(index)}/action/event/name`, message: "Event names starting with oc. are reserved." }]
+      : [];
+  });
 }
 
 /**

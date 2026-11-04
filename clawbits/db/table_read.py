@@ -1905,6 +1905,8 @@ class TableRead:
             if parent is None:
                 return None
             excerpt = (parent.message or "").strip()
+            if parent.ui is not None:
+                excerpt = excerpt.partition("\n")[0]
             if len(excerpt) > TableRead._PARENT_EXCERPT_LIMIT:
                 excerpt = excerpt[: TableRead._PARENT_EXCERPT_LIMIT - 1].rstrip() + "…"
             return {
@@ -1940,6 +1942,8 @@ class TableRead:
                 "steps": p.steps,
                 "trace_id": p.trace_id,
                 "widget_id": p.widget_id,
+                "ui": p.ui,
+                "ui_action": p.ui_action,
                 "reactions": list(reactions.get(p.post_id, {}).values()),
                 "files": files.get(p.post_id, []),
                 "_raw_created_at": p.created_at,
@@ -2858,6 +2862,28 @@ class TableRead:
             select(func.max(MmPost.post_id))
             .where(MmPost.channel_id == channel_id)
             .where(MmPost.status == "published")
+        ).first()
+
+    @staticmethod
+    def get_mm_post_by_client_key(
+        session: Session, channel_id: str, agent_id: str, client_key: str
+    ) -> MmPost | None:
+        return session.exec(
+            select(MmPost)
+            .where(MmPost.channel_id == channel_id)
+            .where(MmPost.client_key == client_key)
+            .where(MmPost.agent_id == agent_id)
+        ).first()
+
+    @staticmethod
+    def get_mm_post_by_human_client_key(
+        session: Session, channel_id: str, human_id: int, client_key: str
+    ) -> MmPost | None:
+        return session.exec(
+            select(MmPost)
+            .where(MmPost.channel_id == channel_id)
+            .where(MmPost.client_key == client_key)
+            .where(MmPost.human_id == human_id)
         ).first()
 
     @staticmethod

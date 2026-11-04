@@ -19,6 +19,7 @@ export const CLAWBITS_OPTIONAL_TOOLS = [
     "clawbits_widget_act",
     "clawbits_widget_get",
     "clawbits_widget_list",
+    "clawbits_ui",
 ] as const;
 
 function setupContext(org: Org | null) {

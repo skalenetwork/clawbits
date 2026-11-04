@@ -2,11 +2,14 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   __resetDraftRegistryForTest,
+  claimDraft,
   claimOpenDraft,
   registerOpenDraft,
   unregisterOpenDraft,
   type OpenDraftRef,
 } from "../src/draft-registry.js";
+import { type PluginRuntime, setRuntime } from "../src/runtime.js";
+import { memoryState } from "./runtime-state.js";
 
 describe("draft-registry", () => {
   beforeEach(() => {
@@ -54,5 +57,35 @@ describe("draft-registry", () => {
     assert.equal(claimOpenDraft("default", "chan-1")?.id, 2);
     unregisterOpenDraft("default", "chan-1", turn2);
     assert.equal(claimOpenDraft("default", "chan-1"), undefined);
+  });
+
+  it("hands a draft left open by a crashed process to the next delivery, once", async () => {
+    setRuntime({ state: memoryState() } as unknown as PluginRuntime);
+    __resetDraftRegistryForTest();
+    registerOpenDraft("default", "chan-1", { id: 712 });
+    await Promise.resolve();
+    __resetDraftRegistryForTest();
+    assert.equal((await claimDraft("default", "chan-1"))?.id, "712");
+    assert.equal(await claimDraft("default", "chan-1"), undefined);
+  });
+
+  it("forgets the persisted draft when its turn ends", async () => {
+    setRuntime({ state: memoryState() } as unknown as PluginRuntime);
+    __resetDraftRegistryForTest();
+    const ref: OpenDraftRef = { id: 713 };
+    registerOpenDraft("default", "chan-1", ref);
+    unregisterOpenDraft("default", "chan-1", ref);
+    await Promise.resolve();
+    __resetDraftRegistryForTest();
+    assert.equal(await claimDraft("default", "chan-1"), undefined);
+  });
+
+  it("drops the persisted copy when a live send takes the draft", async () => {
+    setRuntime({ state: memoryState() } as unknown as PluginRuntime);
+    __resetDraftRegistryForTest();
+    registerOpenDraft("default", "chan-1", { id: 714 });
+    await Promise.resolve();
+    assert.equal((await claimDraft("default", "chan-1"))?.id, 714);
+    assert.equal(await claimDraft("default", "chan-1"), undefined);
   });
 });
