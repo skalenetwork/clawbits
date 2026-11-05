@@ -199,6 +199,25 @@ def test_snoozed_and_mentioned_and_own_are_skipped(monkeypatch):
     assert delivered == ["Free"]  # Snoozy snoozed, Tagged @mentioned
 
 
+def test_a_click_skips_the_agent_whose_card_it_answers(monkeypatch):
+    ctx = _ctx(
+        AttentionCandidate("Carder", snoozed=False, inter_agent_mode=False),
+        AttentionCandidate("Free", snoozed=False, inter_agent_mode=False),
+    )
+    delivered = _run(
+        monkeypatch,
+        post={
+            "message": "Deploy: Staging",
+            "post_id": 3,
+            "ui_action": {"name": "deploy"},
+            "parent_preview": {"post_id": 2, "agent_id": "Carder"},
+        },
+        context=ctx,
+        author_agent_id=None,
+    )
+    assert delivered == ["Free"]
+
+
 def test_no_escalation_delivers_nothing(monkeypatch):
     ctx = _ctx(AttentionCandidate("Alpha", snoozed=False, inter_agent_mode=False))
     delivered = _run(

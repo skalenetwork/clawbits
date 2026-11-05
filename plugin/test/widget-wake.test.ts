@@ -466,7 +466,7 @@ async function runUntilDispatch(
       client: makeClient(),
       account,
       abortSignal: ac.signal,
-      initialCursor: 150,
+      queue: () => ({}) as never,
       pollIntervalMs: 20,
       onInboundMessage: (msg) => {
         received.push(msg);
@@ -527,7 +527,7 @@ describe("game wakes in the inbound poller", () => {
         client: makeClient(),
         account: makeAccount({ config: { websocketEnabled: false } }),
         abortSignal: ac.signal,
-        initialCursor: 150,
+        queue: () => ({}) as never,
         pollIntervalMs: 20,
         onInboundMessage: (msg) => void received.push(msg),
       });
@@ -673,6 +673,7 @@ async function runBoot(opts: {
       client: makeClient(),
       account: makeAccount({ config: { websocketEnabled: false } }),
       abortSignal: ac.signal,
+      queue: () => ({}) as never,
       catchUpEnabled: true,
       pollIntervalMs: 20,
       ...(opts.onGameSessionSweep ? { onGameSessionSweep: opts.onGameSessionSweep } : {}),

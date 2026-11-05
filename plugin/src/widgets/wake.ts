@@ -58,8 +58,8 @@ export interface WidgetWakeDeps {
   allowed: (senderKey: string) => boolean;
   /** The game's private view, read at dispatch. */
   read: (widgetId: string) => Promise<AgentWidgetView>;
-  /** Run on the serial inbound queue; `expire` instead when it waited past the queue's TTL. */
-  enqueue: (id: string, run: () => Promise<void>, expire: () => void) => void;
+  /** Run on the serial inbound lane. */
+  enqueue: (id: string, run: () => Promise<void>) => void;
   /** Dispatch the turn; whether it settled. */
   dispatch: (msg: InboundMessage) => Promise<boolean>;
   channelType: (channelId: string) => string | null;
@@ -226,14 +226,7 @@ export class WidgetWakes {
     game.pending = signal;
     if (game.queued) return;
     game.queued = true;
-    this.#deps.enqueue(
-      `widget-${signal.widgetId}`,
-      () => this.#run(signal.widgetId),
-      () => {
-        game.queued = false;
-        game.pending = undefined;
-      },
-    );
+    this.#deps.enqueue(`widget-${signal.widgetId}`, () => this.#run(signal.widgetId));
   }
 
   /** Stop retries; later signals are ignored. */
@@ -391,7 +384,7 @@ export class WidgetWakes {
       this.#debug(`cleanup of ${widgetId} waits for a run on its session`);
       (this.#deps.setTimer ?? defaultTimer)(() => this.#cleanup(widgetId, channelId, attempt + 1), wait);
     };
-    this.#deps.enqueue(`widget-${widgetId}-end`, cleanup, () => void cleanup());
+    this.#deps.enqueue(`widget-${widgetId}-end`, cleanup);
   }
 
   #debug(message: string): void {

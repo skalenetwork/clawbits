@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { AgentSurfaceCreate } from "./types.js";
 
 export const CLAWBITS_SERVICE_HANDOFF_CAPABILITY = "service-handoff";
 export const CLAWBITS_SLIM_CHANNEL_MIN_VERSION = "0.17.0";
@@ -8,6 +9,15 @@ export type ClawBitsServiceOwner = "channel" | "tools";
 /** The server's sync nudges, which only the channel's agent WebSocket receives. */
 type CompanionNudge = "skills.sync" | "automation.sync";
 type CompanionWaker = (nudge: CompanionNudge, accountId: string) => void;
+
+/** A UI block posted, or the server's validation errors for the agent to fix and post again. */
+export type SurfacePosted = { post_id: number } | { errors: unknown[] };
+
+export type PostSurface = (
+  accountId: string,
+  channelId: string,
+  surface: AgentSurfaceCreate,
+) => Promise<SurfacePosted>;
 
 export interface ClawBitsServiceHandoff {
   channelVersion: string;
@@ -19,6 +29,9 @@ export interface ClawBitsServiceHandoff {
    *  channels. The channel claims a capability that rests on a tool (`widgets` on
    *  `clawbits_widget_act`) only once the companion said it registered it. */
   reportCompanionTools?: (names: readonly string[]) => void;
+  /** Posts an agent's UI block in a chat, below what its turn has said so far. The channel owns
+   *  the turn's draft, so the companion's `clawbits_ui` posts through it. Absent on older channels. */
+  postSurface?: PostSurface;
 }
 
 interface RuntimeContextRegistry {
@@ -117,6 +130,7 @@ export function onCompanionToolsChanged(listener: () => void): () => void {
 export function registerSlimChannelHandoff(
   runtime: RuntimeWithContexts | undefined,
   channelVersion: string,
+  postSurface?: PostSurface,
 ): { dispose(): void } | undefined {
   return runtime?.channel?.runtimeContexts?.register({
     channelId: "clawbits",
@@ -127,6 +141,7 @@ export function registerSlimChannelHandoff(
       modelSelection: true,
       onCompanionWake,
       reportCompanionTools,
+      ...(postSurface ? { postSurface } : {}),
     },
   });
 }

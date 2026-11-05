@@ -9,15 +9,9 @@
 //      read the full body (+ attachments; this marks it read server-side) and
 //      hand it to `onEmailMessage`, then advance the watermark.
 //
-// The watermark is the last processed IMAP UID, persisted per account via the
-// shared `WatermarkStore` (keyed by the synthetic channel id `email:inbox`).
-// IMAP UIDs grow monotonically, so the store's monotonic `set` dedupes across
-// restarts. On the very first observation (no persisted watermark) we seed to
-// the current max UID WITHOUT injecting — exactly like the chat poller seeds
-// its `create_at` cursor to "now" — so a fresh start never replays the whole
-// mailbox backlog at the agent.
+// The watermark is the last processed IMAP UID, kept in the plugin's keyed
+// store. A first observation seeds it to the current max UID without injecting.
 
-import type { WatermarkStore } from "./channel-watermarks.js";
 import type { ClawBitsClient } from "./client.js";
 import { DEFAULT_EMAIL_POLL_MS, MIN_EMAIL_POLL_MS } from "./email-constants.js";
 import { htmlToText } from "./email-html.js";
@@ -25,11 +19,12 @@ import { ClawBitsError } from "./errors.js";
 import { logError, logInfo, logWarn } from "./file-logger.js";
 import * as emailTools from "./tools/email.js";
 import type { EmailAttachment, EmailDetail } from "./tools/email.js";
+import type { KeyedStore } from "./runtime.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
 
-/** Synthetic channel id under which the last-processed email UID is persisted
- *  in the shared watermark store. */
-export const EMAIL_WATERMARK_CHANNEL = "email:inbox" as const;
+export function emailWatermarkKey(accountId: string): string {
+  return `${accountId}:email:inbox`;
+}
 
 /** Inbox listing page size. We page past this window when a burst leaves more
  *  unprocessed mail than one page can hold (see `processInbox`). */
@@ -66,7 +61,7 @@ export interface EmailPollerOptions {
   /** Milliseconds between polls. Defaults to the account's resolved interval. */
   pollIntervalMs?: number;
   /** Persistent last-processed-UID watermark. Omit for in-memory-only behaviour. */
-  watermarkStore?: WatermarkStore;
+  watermarks?: KeyedStore<number>;
   log?: EmailPollerLog;
 }
 
@@ -115,7 +110,7 @@ function sortedUids(listing: emailTools.EmailListResponse): number[] {
  * which permanently stops this account's poller so it never hammers the API.
  */
 export async function runEmailPoller(opts: EmailPollerOptions): Promise<void> {
-  const { client, account, abortSignal, onEmailMessage, watermarkStore, log } = opts;
+  const { client, account, abortSignal, onEmailMessage, watermarks, log } = opts;
   const accountId = account.accountId;
   const agentId = account.agentId;
   if (!agentId) {
@@ -131,11 +126,14 @@ export async function runEmailPoller(opts: EmailPollerOptions): Promise<void> {
     opts.pollIntervalMs ??
     Math.max(MIN_EMAIL_POLL_MS, account.emailPollIntervalMs ?? DEFAULT_EMAIL_POLL_MS);
 
-  await watermarkStore?.load?.();
-  // Seed the watermark on first observation so a fresh start doesn't replay the
-  // whole mailbox. `undefined` means "not yet observed"; we set it from the
-  // first inbox listing below before processing anything.
-  let seeded = watermarkStore?.get(accountId, EMAIL_WATERMARK_CHANNEL) !== undefined;
+  const watermarkKey = emailWatermarkKey(accountId);
+  let watermark = await watermarks?.lookup(watermarkKey);
+  let seeded = watermark !== undefined;
+  const advance = async (uid: number): Promise<void> => {
+    if (watermark !== undefined && uid <= watermark) return;
+    watermark = uid;
+    await watermarks?.register(watermarkKey, uid);
+  };
   let lastTotal: number | undefined;
   let lastUnread: number | undefined;
   // True when a prior `processInbox` bailed early on a transient error without
@@ -200,7 +198,7 @@ export async function runEmailPoller(opts: EmailPollerOptions): Promise<void> {
       // still counts as observed (seed 0).
       seeded = true;
       const seedUid = firstUids.length > 0 ? firstUids[firstUids.length - 1] : 0;
-      watermarkStore?.set(accountId, EMAIL_WATERMARK_CHANNEL, seedUid);
+      await advance(seedUid);
       if (seedUid > 0) {
         logInfo(
           log,
@@ -210,7 +208,7 @@ export async function runEmailPoller(opts: EmailPollerOptions): Promise<void> {
       return true;
     }
 
-    const watermark = watermarkStore?.get(accountId, EMAIL_WATERMARK_CHANNEL) ?? 0;
+    const floor = watermark ?? 0;
 
     // Collect every UID past the watermark. The inbox is newest-first, so when a
     // burst exceeds one page the older-but-still-new UIDs spill onto later
@@ -223,9 +221,9 @@ export async function runEmailPoller(opts: EmailPollerOptions): Promise<void> {
     let pages = 1;
     while (true) {
       for (const uid of pageUids) {
-        if (uid > watermark) newUids.add(uid);
+        if (uid > floor) newUids.add(uid);
       }
-      const reachedSeen = pageUids.length === 0 || pageUids[0] <= watermark;
+      const reachedSeen = pageUids.length === 0 || pageUids[0] <= floor;
       const lastPage = pageUids.length < INBOX_PAGE_LIMIT;
       if (reachedSeen || lastPage || pages >= MAX_INBOX_PAGES || abortSignal.aborted) break;
       const nextPage = await emailTools.emailInbox(client, agentId, {
@@ -255,12 +253,12 @@ export async function runEmailPoller(opts: EmailPollerOptions): Promise<void> {
             detail.headers && typeof detail.headers === "object" ? detail.headers : {},
         };
         await onEmailMessage(msg);
-        watermarkStore?.set(accountId, EMAIL_WATERMARK_CHANNEL, uid);
+        await advance(uid);
       } catch (err) {
         if (err instanceof ClawBitsError && err.statusCode === 404) {
           // Vanished between the listing and the fetch (deleted/moved). Skip it
           // past the watermark so we don't retry a message that no longer exists.
-          watermarkStore?.set(accountId, EMAIL_WATERMARK_CHANNEL, uid);
+          await advance(uid);
           logWarn(
             log,
             `[clawbits/${accountId}] email uid ${uid} not found on fetch; skipping`,

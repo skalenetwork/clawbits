@@ -138,6 +138,8 @@ export interface DraftPatch {
   cancel?: boolean;
   /** The finished turn's steps, kept on the post; only with ``done``. */
   steps?: TurnStep[];
+  /** Idempotency key stamped on the finished post; only with ``done``. */
+  client_key?: string;
 }
 
 export async function patchDraftPost(

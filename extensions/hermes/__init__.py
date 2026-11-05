@@ -25,6 +25,7 @@ rest for compatibility:
 - :mod:`.widgets`    — chat game tools, the game session guard and the ``widgets`` capability
 - :mod:`.widget_wakes` — the wake loop: one silent turn per move, in the game's own session
 - :mod:`.game_sessions` — a game's Hermes sessions: rotation and complete deletion
+- :mod:`.ui`         — the ``clawbits_ui`` tool: A2UI surfaces posted in the chat
 - :mod:`.health`     — per-subsystem status written for the doctor
 - :mod:`.doctor`     — ``hermes clawbits doctor`` diagnostics
 - :mod:`.signup`     — ``hermes clawbits signup`` flow + CB_TOKENS minting
@@ -64,6 +65,7 @@ from . import (
     pinned_http,
     read_cursors,
     signup,
+    ui,
     widget_wakes,
     widgets,
 )
@@ -142,6 +144,7 @@ __all__ = [
     "resolve_account",
     "scoped_setting",
     "signup",
+    "ui",
     "validate_config",
     "widget_wakes",
     "widgets",
@@ -250,6 +253,16 @@ def register(ctx: Any) -> None:
             description=schema["description"],
             emoji=emoji,
         )
+    ctx.register_tool(
+        name=ui.TOOL_NAME,
+        toolset="clawbits",
+        schema=ui.TOOL_SCHEMA,
+        handler=ui.ui_tool,
+        check_fn=widgets.available,
+        requires_env=["CLAWBITS_API_KEY", "CLAWBITS_AGENT_ID"],
+        description=ui.TOOL_SCHEMA["description"],
+        emoji="🧩",
+    )
     ctx.register_hook("pre_tool_call", mcp_connect.guard_sign_in)
     ctx.register_hook("pre_tool_call", widgets.guard_game_tools)
     ctx.register_cli_command(

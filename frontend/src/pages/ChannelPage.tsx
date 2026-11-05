@@ -39,7 +39,7 @@ import { errMsg, toast } from "@/lib/toast";
 import { applyWidget, isWidgetChat, linkedGameOf, panelGameOf, widgetsAvailable } from "@/lib/widgets";
 import { setWidgetView } from "@/lib/widgetView";
 import { computePendingAutoMention } from "@/lib/autoMention";
-import { mentionHandle, mentionLabel } from "@/lib/messageHelpers";
+import { mentionHandle, mentionLabel, quotedMessage } from "@/lib/messageHelpers";
 import {
   buildTimeline,
   decorateRows,
@@ -415,7 +415,7 @@ function ChannelView({ channelId }: { channelId: string }) {
           agent_id: replyBefore.agent_id,
           human_id: replyBefore.human_id,
           poster_display_name: replyBefore.poster_display_name,
-          message_excerpt: replyBefore.message,
+          message_excerpt: quotedMessage(replyBefore),
           status: replyBefore.status,
           attachment_count: replyBefore.files?.length ?? 0,
         },

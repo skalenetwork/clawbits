@@ -1,28 +1,13 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-// `channel-outbound`, not the older `channel-message`: OpenClaw 2026.8
-// ("2.0") turned `channel-message` into a `@deprecated` re-export of
-// `channel-outbound` and gave it a dated removal record (`removal-pending`,
-// removeAfter 2026-09-01) in `src/plugins/compat/plugin-sdk-subpath-records.ts`.
-// The function itself moved unchanged, so this is a path-only migration.
 import { createChannelMessageAdapterFromOutbound } from "openclaw/plugin-sdk/channel-outbound";
 import { CHANNEL_ID } from "./accounts.js";
 import { outboundAdapter } from "./outbound-adapter.js";
 
-// ---------------------------------------------------------------------------
-// message adapter - bridges the host's `message` tool / codex `agent_message`
-// stream to our outbound. Without this slot, codex-harness replies (which are
-// emitted as `tools.message({action:"send"})` from the agent's exec sandbox)
-// have no channel-side consumer for Clawbits and silently drop, leaving the
-// draft to finalize as "(reply failed to generate)". Other plugin channels
-// (e.g. telegram) wire the same SDK helper.
-// ---------------------------------------------------------------------------
-
-export const messageAdapter = createChannelMessageAdapterFromOutbound<OpenClawConfig>({
+const adapter = createChannelMessageAdapterFromOutbound<OpenClawConfig>({
   id: CHANNEL_ID,
+  outbound: outboundAdapter,
+  capabilities: { text: true, media: true, payload: true, reconcileUnknownSend: true },
   live: {
-    // We open a draft post at turn start (`createDraftPost`) and finalize it
-    // with a single PATCH (`patchDraftPost { replace, done: true }`). We do
-    // not stream incremental updates today, so `progressUpdates` stays off.
     capabilities: {
       draftPreview: true,
       previewFinalization: true,
@@ -41,5 +26,15 @@ export const messageAdapter = createChannelMessageAdapterFromOutbound<OpenClawCo
     defaultAckPolicy: "after_agent_dispatch",
     supportedAckPolicies: ["after_receive_record", "after_agent_dispatch"],
   },
-  outbound: outboundAdapter,
 });
+
+/** Every send carries its durable intent as an idempotency key, so replaying an ambiguous one cannot post twice. */
+export const messageAdapter: typeof adapter = {
+  ...adapter,
+  durableFinal: {
+    ...adapter.durableFinal,
+    automaticUnknownSendReconciliation: true,
+    reconcileUnknownSendKinds: { text: true, media: true, payload: true },
+    reconcileUnknownSend: () => ({ status: "not_sent" }),
+  },
+};

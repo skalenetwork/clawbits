@@ -1,16 +1,17 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ClawBitsClient } from "../src/client.js";
-import { ChannelWatermarkStore } from "../src/channel-watermarks.js";
 import {
+  emailWatermarkKey,
   runEmailPoller,
-  EMAIL_WATERMARK_CHANNEL,
   type EmailInboundMessage,
 } from "../src/email-poller.js";
+import { memoryStore } from "./runtime-state.js";
 import type { ResolvedClawBitsAccount } from "../src/types.js";
 
 const ACCOUNT_ID = "default";
 const AGENT_ID = "a1";
+const KEY = emailWatermarkKey(ACCOUNT_ID);
 
 function makeAccount(overrides: Partial<ResolvedClawBitsAccount> = {}): ResolvedClawBitsAccount {
   return {
@@ -58,7 +59,7 @@ function installFetchStub(
 
 describe("runEmailPoller", () => {
   it("seeds the watermark to the max existing uid without injecting on first run", async () => {
-    const wm = ChannelWatermarkStore.inMemory();
+    const wm = memoryStore<number>();
     const seen: EmailInboundMessage[] = [];
     const controller = new AbortController();
     const stub = installFetchStub((url) => {
@@ -73,22 +74,22 @@ describe("runEmailPoller", () => {
         client: makeClient(),
         account: makeAccount(),
         abortSignal: controller.signal,
-        watermarkStore: wm,
+        watermarks: wm,
         onEmailMessage: (m) => { seen.push(m); },
       });
       await new Promise((r) => setTimeout(r, 40));
       controller.abort();
       await run;
       assert.equal(seen.length, 0, "no email injected on first observation");
-      assert.equal(wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL), 3, "watermark seeded to max uid");
+      assert.equal(wm.rows.get(KEY), 3, "watermark seeded to max uid");
     } finally {
       stub.restore();
     }
   });
 
   it("injects only uids beyond the watermark, in ascending order, and advances it", async () => {
-    const wm = ChannelWatermarkStore.inMemory();
-    wm.set(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL, 0); // already-seeded, watermark 0
+    const wm = memoryStore<number>();
+    wm.rows.set(KEY, 0); // already-seeded, watermark 0
     const seen: EmailInboundMessage[] = [];
     const controller = new AbortController();
     const stub = installFetchStub((url) => {
@@ -108,7 +109,7 @@ describe("runEmailPoller", () => {
         client: makeClient(),
         account: makeAccount(),
         abortSignal: controller.signal,
-        watermarkStore: wm,
+        watermarks: wm,
         onEmailMessage: (m) => { seen.push(m); },
       });
       await new Promise((r) => setTimeout(r, 60));
@@ -116,15 +117,15 @@ describe("runEmailPoller", () => {
       await run;
       assert.deepEqual(seen.map((m) => m.uid), [1, 2, 3], "injected in ascending uid order");
       assert.equal(seen[0]!.bodyText, "b1");
-      assert.equal(wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL), 3, "watermark advanced to newest uid");
+      assert.equal(wm.rows.get(KEY), 3, "watermark advanced to newest uid");
     } finally {
       stub.restore();
     }
   });
 
   it("skips a uid that 404s on fetch but still advances past it", async () => {
-    const wm = ChannelWatermarkStore.inMemory();
-    wm.set(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL, 0);
+    const wm = memoryStore<number>();
+    wm.rows.set(KEY, 0);
     const seen: EmailInboundMessage[] = [];
     const controller = new AbortController();
     const stub = installFetchStub((url) => {
@@ -139,21 +140,21 @@ describe("runEmailPoller", () => {
         client: makeClient(),
         account: makeAccount(),
         abortSignal: controller.signal,
-        watermarkStore: wm,
+        watermarks: wm,
         onEmailMessage: (m) => { seen.push(m); },
       });
       await new Promise((r) => setTimeout(r, 60));
       controller.abort();
       await run;
       assert.deepEqual(seen.map((m) => m.uid), [2], "only the fetchable email is injected");
-      assert.equal(wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL), 2, "watermark advanced past the missing uid");
+      assert.equal(wm.rows.get(KEY), 2, "watermark advanced past the missing uid");
     } finally {
       stub.restore();
     }
   });
 
   it("stops cleanly when the server reports email is not configured (503)", async () => {
-    const wm = ChannelWatermarkStore.inMemory();
+    const wm = memoryStore<number>();
     const seen: EmailInboundMessage[] = [];
     const controller = new AbortController();
     let inboxCalls = 0;
@@ -168,7 +169,7 @@ describe("runEmailPoller", () => {
         client: makeClient(),
         account: makeAccount(),
         abortSignal: controller.signal,
-        watermarkStore: wm,
+        watermarks: wm,
         onEmailMessage: (m) => { seen.push(m); },
       });
       assert.equal(seen.length, 0, "no email injected");
@@ -180,8 +181,8 @@ describe("runEmailPoller", () => {
   });
 
   it("pages past the first window so a burst larger than the page size isn't skipped", async () => {
-    const wm = ChannelWatermarkStore.inMemory();
-    wm.set(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL, 0); // seeded, watermark 0
+    const wm = memoryStore<number>();
+    wm.rows.set(KEY, 0); // seeded, watermark 0
     const seen: EmailInboundMessage[] = [];
     const controller = new AbortController();
     // 60 messages, newest-first, served in pages of 50 keyed by offset.
@@ -206,22 +207,22 @@ describe("runEmailPoller", () => {
         client: makeClient(),
         account: makeAccount(),
         abortSignal: controller.signal,
-        watermarkStore: wm,
+        watermarks: wm,
         onEmailMessage: (m) => { seen.push(m); },
       });
       await new Promise((r) => setTimeout(r, 120));
       controller.abort();
       await run;
       assert.deepEqual(seen.map((m) => m.uid), Array.from({ length: 60 }, (_, i) => i + 1), "all 60 injected in ascending order");
-      assert.equal(wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL), 60, "watermark advanced to newest uid");
+      assert.equal(wm.rows.get(KEY), 60, "watermark advanced to newest uid");
     } finally {
       stub.restore();
     }
   });
 
   it("falls back to stripped HTML when there is no plain-text body", async () => {
-    const wm = ChannelWatermarkStore.inMemory();
-    wm.set(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL, 0);
+    const wm = memoryStore<number>();
+    wm.rows.set(KEY, 0);
     const seen: EmailInboundMessage[] = [];
     const controller = new AbortController();
     const stub = installFetchStub((url) => {
@@ -237,7 +238,7 @@ describe("runEmailPoller", () => {
         client: makeClient(),
         account: makeAccount(),
         abortSignal: controller.signal,
-        watermarkStore: wm,
+        watermarks: wm,
         onEmailMessage: (m) => { seen.push(m); },
       });
       await new Promise((r) => setTimeout(r, 60));
@@ -251,8 +252,8 @@ describe("runEmailPoller", () => {
   });
 
   it("retries a transient fetch failure on the next poll even when counts are unchanged", async () => {
-    const wm = ChannelWatermarkStore.inMemory();
-    wm.set(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL, 0);
+    const wm = memoryStore<number>();
+    wm.rows.set(KEY, 0);
     const seen: EmailInboundMessage[] = [];
     const controller = new AbortController();
     let attempt = 0;
@@ -272,33 +273,33 @@ describe("runEmailPoller", () => {
         client: makeClient(),
         account: makeAccount(),
         abortSignal: controller.signal,
-        watermarkStore: wm,
+        watermarks: wm,
         pollIntervalMs: 5,
         onEmailMessage: (m) => { seen.push(m); },
       });
       const deadline = Date.now() + 1000;
-      while (wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL) !== 1 && Date.now() < deadline) {
+      while (wm.rows.get(KEY) !== 1 && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 5));
       }
       controller.abort();
       await run;
       assert.ok(attempt >= 2, "the failed uid was retried");
       assert.deepEqual(seen.map((m) => m.uid), [1], "delivered exactly once, after the retry");
-      assert.equal(wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL), 1, "watermark advanced only after success");
+      assert.equal(wm.rows.get(KEY), 1, "watermark advanced only after success");
     } finally {
       stub.restore();
     }
   });
 
   it("re-checks the inbox when unread changes but total does not (delete + arrival)", async () => {
-    const wm = ChannelWatermarkStore.inMemory();
-    wm.set(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL, 0);
+    const wm = memoryStore<number>();
+    wm.rows.set(KEY, 0);
     const seen: EmailInboundMessage[] = [];
     const controller = new AbortController();
     // Phase advances with the watermark: before uid1 is seen the box holds uid1;
     // after, a delete+arrival keeps total at 1 but bumps unread and lists uid2.
     const stub = installFetchStub((url) => {
-      const seenFirst = (wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL) ?? 0) >= 1;
+      const seenFirst = (wm.rows.get(KEY) ?? 0) >= 1;
       if (url.includes("/email/count")) {
         return { body: { total: 1, unread: seenFirst ? 1 : 0 } };
       }
@@ -317,18 +318,18 @@ describe("runEmailPoller", () => {
         client: makeClient(),
         account: makeAccount(),
         abortSignal: controller.signal,
-        watermarkStore: wm,
+        watermarks: wm,
         pollIntervalMs: 5,
         onEmailMessage: (m) => { seen.push(m); },
       });
       const deadline = Date.now() + 1000;
-      while (wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL) !== 2 && Date.now() < deadline) {
+      while (wm.rows.get(KEY) !== 2 && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 5));
       }
       controller.abort();
       await run;
       assert.deepEqual(seen.map((m) => m.uid), [1, 2], "both messages delivered despite unchanged total");
-      assert.equal(wm.get(ACCOUNT_ID, EMAIL_WATERMARK_CHANNEL), 2);
+      assert.equal(wm.rows.get(KEY), 2);
     } finally {
       stub.restore();
     }

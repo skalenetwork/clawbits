@@ -189,6 +189,8 @@ const COMPONENTS: Components = {
 
 const CHAT_PLUGINS = [remarkGfm, remarkBreaks];
 const DOCUMENT_PLUGINS = [remarkGfm];
+/** A surface's Text keeps no links or images. */
+const SURFACE_DISALLOWED = ["a", "img"];
 
 export const MessageMarkdown = memo(function MessageMarkdown({
   content,
@@ -197,7 +199,7 @@ export const MessageMarkdown = memo(function MessageMarkdown({
 }: {
   content: string;
   className?: string;
-  variant?: "message" | "document";
+  variant?: "message" | "document" | "surface";
 }) {
   const emojiCount = classifyEmojiOnly(content);
   if (emojiCount > 0) {
@@ -208,12 +210,27 @@ export const MessageMarkdown = memo(function MessageMarkdown({
     );
   }
 
-  const chat = variant === "message";
+  const chat = variant !== "document";
   return (
     <div className={cn("text-message text-pretty text-foreground break-words", className)}>
-      <ReactMarkdown remarkPlugins={chat ? CHAT_PLUGINS : DOCUMENT_PLUGINS} components={COMPONENTS} skipHtml>
+      <ReactMarkdown
+        remarkPlugins={chat ? CHAT_PLUGINS : DOCUMENT_PLUGINS}
+        components={COMPONENTS}
+        disallowedElements={variant === "surface" ? SURFACE_DISALLOWED : undefined}
+        unwrapDisallowed
+        skipHtml
+      >
         {chat ? preserveBlankLines(content) : content}
       </ReactMarkdown>
     </div>
   );
 });
+
+/** Markdown as its text alone, for a one-line quote: no formatting, links, images or mentions. */
+export function PlainMarkdown({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={DOCUMENT_PLUGINS} allowedElements={[]} unwrapDisallowed skipHtml>
+      {content}
+    </ReactMarkdown>
+  );
+}

@@ -50,7 +50,9 @@ import {
   mentionLabel,
   posterName,
   quotedBodyText,
+  quotedMessage,
 } from "@/lib/messageHelpers";
+import { PlainMarkdown } from "@/components/MessageMarkdown";
 import type { MmChannelMember, MmChannelPost, MmChannelType, WidgetKindName } from "@/lib/api";
 import { isPairType } from "@/lib/chatFilters";
 import type { PendingAutoMention } from "@/lib/autoMention";
@@ -566,7 +568,7 @@ export function MessageComposer({
               <span className="min-w-0 flex-1 truncate">
                 Replying to <span className="font-medium text-foreground">{posterName(replyingTo)}</span>
                 {" · "}
-                {quotedBodyText(replyingTo.message || "", replyingTo.files?.length ?? 0)}
+                <PlainMarkdown content={quotedBodyText(quotedMessage(replyingTo), replyingTo.files?.length ?? 0)}/>
               </span>
               <button
                 type="button"

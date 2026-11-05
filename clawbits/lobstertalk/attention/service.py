@@ -364,6 +364,7 @@ async def consider_post(
             or (author_agent_id is not None and not c.inter_agent_mode)
             or c.snoozed
             or _mentions(text, c.agent_id)
+            or (post.get("ui_action") and (post.get("parent_preview") or {}).get("agent_id") == c.agent_id)
         ):
             continue
         if not await _claim_cooldown(c.agent_id, channel_id, cooldown):

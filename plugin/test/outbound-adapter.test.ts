@@ -6,7 +6,10 @@ import {
   registerOpenDraft,
   type OpenDraftRef,
 } from "../src/draft-registry.js";
-import { __resetOutboundDedupeForTest, outboundAdapter } from "../src/outbound-adapter.js";
+import { outboundAdapter, postSurface } from "../src/outbound-adapter.js";
+import type { TurnStep } from "../src/tools/realtime.js";
+import { type PluginRuntime, setRuntime } from "../src/runtime.js";
+import { memoryState } from "./runtime-state.js";
 
 const CHANNEL = "916abcc5-5eb2-4bb9-9ff6-b3b5b7070b4d";
 
@@ -36,16 +39,20 @@ function cfg() {
  * fresh id. Set `failPatches` to make draft-finalize PATCHes 404 (draft
  * already cancelled server-side).
  */
-function installFetchStub(opts: { failPatches?: boolean } = {}): {
+function installFetchStub(opts: { failPatches?: boolean; rejectPosts?: unknown[] } = {}): {
   restore: () => void;
   postCount: () => number;
   patchCount: () => number;
   lastPatchBody: () => unknown;
+  postBodies: () => unknown[];
+  patches: () => Array<[string, unknown]>;
 } {
   const original = globalThis.fetch;
   let posts = 0;
+  const postBodies: unknown[] = [];
   let patches = 0;
   let lastPatchBody: unknown;
+  const patched: Array<[string, unknown]> = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
     const method = (init?.method ?? "GET").toUpperCase();
@@ -58,6 +65,7 @@ function installFetchStub(opts: { failPatches?: boolean } = {}): {
     if (method === "PATCH" && url.includes("/posts/")) {
       patches += 1;
       lastPatchBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+      patched.push([url.slice(url.lastIndexOf("/") + 1), lastPatchBody]);
       if (opts.failPatches) {
         return new Response(JSON.stringify({ detail: "Post not found" }), {
           status: 404,
@@ -71,6 +79,13 @@ function installFetchStub(opts: { failPatches?: boolean } = {}): {
     }
     if (method === "POST" && url.includes("/posts")) {
       posts += 1;
+      postBodies.push(init?.body ? JSON.parse(String(init.body)) : undefined);
+      if (opts.rejectPosts) {
+        return new Response(JSON.stringify({ detail: opts.rejectPosts }), {
+          status: 422,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       // Mirror the real create-post response: MmPostResponse carries a
       // NUMERIC ``post_id`` and no ``id`` field. Keeping the stub honest is
       // what guards the String() coercion in the adapter (OpenClaw's receipt
@@ -94,6 +109,8 @@ function installFetchStub(opts: { failPatches?: boolean } = {}): {
     postCount: () => posts,
     patchCount: () => patches,
     lastPatchBody: () => lastPatchBody,
+    postBodies: () => postBodies,
+    patches: () => patched,
   };
 }
 
@@ -108,52 +125,55 @@ function send(text: string, extra: Partial<ChannelOutboundContext> = {}) {
 
 describe("outboundAdapter.sendText idempotency", () => {
   beforeEach(() => {
-    __resetOutboundDedupeForTest();
+    __resetDraftRegistryForTest();
   });
 
-  it("collapses an identical re-send into one post (best-effort retry)", async () => {
+  it("keys each post by its durable delivery intent and part", async () => {
     const stub = installFetchStub();
     try {
-      const first = await send("y = 11");
-      const second = await send("y = 11");
-      assert.equal(stub.postCount(), 1, "the duplicate re-send must not mint a second post");
-      // The retry reuses the original post id so the delivery layer acks it.
-      assert.equal(second.messageId, first.messageId);
-      assert.equal(second.channelId, CHANNEL);
+      const result = await send("y = 11", { deliveryQueueId: "q1", deliveryPartIndex: 2 });
+      assert.deepEqual(stub.postBodies(), [{ message: "y = 11", client_key: "q1:2" }]);
+      assert.equal(result.target?.id, CHANNEL);
     } finally {
       stub.restore();
     }
   });
 
-  it("does not collapse two genuinely different replies", async () => {
+  it("keys the finalized draft the same way", async () => {
     const stub = installFetchStub();
     try {
-      await send("first answer");
-      await send("second answer");
-      assert.equal(stub.postCount(), 2, "distinct bodies must each post");
+      registerOpenDraft("default", CHANNEL, { id: 777 });
+      await send("done", { deliveryQueueId: "q2" });
+      assert.deepEqual(stub.lastPatchBody(), { replace: "done", done: true, client_key: "q2:0" });
     } finally {
       stub.restore();
     }
   });
 
-  it("keys on replyToId so identical text for different turns both post", async () => {
+  it("hands the send to the durable queue before the draft is finalized", async () => {
     const stub = installFetchStub();
+    const seen: string[] = [];
     try {
-      await send("ok", { replyToId: "100" });
-      await send("ok", { replyToId: "200" });
-      assert.equal(stub.postCount(), 2, "same text but different reply target must both post");
+      registerOpenDraft("default", CHANNEL, { id: 777 });
+      await send("done", {
+        onPlatformSendDispatch: async () => {
+          seen.push(`dispatch:${stub.patchCount()}`);
+        },
+        assertDirectAdapterHandoff: () => {
+          seen.push(`handoff:${stub.patchCount()}`);
+        },
+      });
+      assert.deepEqual([...seen, `finalized:${stub.patchCount()}`], ["dispatch:0", "handoff:0", "finalized:1"]);
     } finally {
       stub.restore();
     }
   });
 
-  it("posts again after the dedup cache is cleared", async () => {
+  it("posts without a key outside the durable queue", async () => {
     const stub = installFetchStub();
     try {
-      await send("again");
-      __resetOutboundDedupeForTest();
-      await send("again");
-      assert.equal(stub.postCount(), 2);
+      await send("plain");
+      assert.deepEqual(stub.postBodies(), [{ message: "plain" }]);
     } finally {
       stub.restore();
     }
@@ -162,7 +182,6 @@ describe("outboundAdapter.sendText idempotency", () => {
 
 describe("outboundAdapter.sendText result shape", () => {
   beforeEach(() => {
-    __resetOutboundDedupeForTest();
     __resetDraftRegistryForTest();
   });
 
@@ -176,7 +195,7 @@ describe("outboundAdapter.sendText result shape", () => {
       const result = await send("cron announce body");
       assert.equal(typeof result.messageId, "string");
       assert.equal(result.messageId, "1001");
-      assert.equal(result.channelId, CHANNEL);
+      assert.equal(result.target?.id, CHANNEL);
     } finally {
       stub.restore();
     }
@@ -185,7 +204,6 @@ describe("outboundAdapter.sendText result shape", () => {
 
 describe("outboundAdapter.sendText draft takeover", () => {
   beforeEach(() => {
-    __resetOutboundDedupeForTest();
     __resetDraftRegistryForTest();
   });
 
@@ -239,6 +257,72 @@ describe("outboundAdapter.sendText draft takeover", () => {
       await send("unrelated reply");
       assert.equal(stub.patchCount(), 0);
       assert.equal(stub.postCount(), 1);
+    } finally {
+      stub.restore();
+    }
+  });
+});
+
+describe("postSurface", () => {
+  const SURFACE = { components: [{ id: "root", component: "Text", text: "**Deploys**" }] };
+  const DRAFT = { message: "", status: "streaming", trace_id: "trace-1" };
+
+  beforeEach(() => {
+    setRuntime({ config: { current: cfg }, state: memoryState() } as unknown as PluginRuntime);
+    __resetDraftRegistryForTest();
+  });
+
+  it("ends the draft with what streamed and its steps, posts the block with the turn's trace, and continues below it", async () => {
+    const stub = installFetchStub();
+    const steps: TurnStep[] = [{ kind: "tool", id: "c1", label: "exec: 'gh run list'", ok: true }];
+    const ref: OpenDraftRef = { id: 777, traceId: "trace-1", handOver: async () => ({ replace: "Here is the week:", steps }) };
+    registerOpenDraft("default", CHANNEL, ref);
+    try {
+      assert.deepEqual(await postSurface("default", CHANNEL, SURFACE), { post_id: 1001 });
+      assert.deepEqual(stub.postBodies(), [{ surface: SURFACE, trace_id: "trace-1" }, DRAFT]);
+      assert.deepEqual(stub.patches(), [["777", { replace: "Here is the week:", steps, done: true }]]);
+      assert.equal(ref.id, 1002);
+      await send("That is all.");
+      assert.deepEqual(stub.patches()[1], ["1002", { replace: "That is all.", done: true }]);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("cancels a draft nothing streamed into", async () => {
+    const stub = installFetchStub();
+    const ref: OpenDraftRef = { id: 777, traceId: "trace-1" };
+    registerOpenDraft("default", CHANNEL, ref);
+    try {
+      await postSurface("default", CHANNEL, SURFACE);
+      assert.deepEqual(stub.patches(), [["777", { cancel: true }]]);
+      assert.equal(ref.id, 1002);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("hands back the server's errors and leaves the turn's draft as it was", async () => {
+    const errors = [{ code: "missing_root", message: "No component has id root" }];
+    const stub = installFetchStub({ rejectPosts: errors });
+    const ref: OpenDraftRef = { id: 777, traceId: "trace-1" };
+    registerOpenDraft("default", CHANNEL, ref);
+    try {
+      assert.deepEqual(await postSurface("default", CHANNEL, SURFACE), { errors });
+      assert.equal(stub.postCount(), 1);
+      assert.equal(stub.patchCount(), 0);
+      assert.equal(ref.id, 777);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it("just posts outside a turn", async () => {
+    const stub = installFetchStub();
+    try {
+      assert.deepEqual(await postSurface("default", CHANNEL, SURFACE), { post_id: 1001 });
+      assert.deepEqual(stub.postBodies(), [{ surface: SURFACE }]);
+      assert.equal(stub.patchCount(), 0);
     } finally {
       stub.restore();
     }
@@ -344,7 +428,6 @@ function sendMedia(extra: Partial<ChannelOutboundContext> = {}) {
 
 describe("outboundAdapter.sendMedia", () => {
   beforeEach(() => {
-    __resetOutboundDedupeForTest();
     __resetDraftRegistryForTest();
   });
 
@@ -357,7 +440,7 @@ describe("outboundAdapter.sendMedia", () => {
       const body = stub.postBodies()[0] as { message: string; file_ids: string[] };
       assert.equal(body.message, "here is your image");
       assert.deepEqual(body.file_ids, ["media-file-1"]);
-      assert.equal(result.channelId, CHANNEL);
+      assert.equal(result.target?.id, CHANNEL);
       assert.equal(typeof result.messageId, "string");
     } finally {
       stub.restore();
@@ -379,7 +462,7 @@ describe("outboundAdapter.sendMedia", () => {
       // The shared ref was emptied synchronously, so the gateway's
       // turn-end cleanup won't double-cancel.
       assert.equal(ref.id, undefined);
-      assert.equal(result.channelId, CHANNEL);
+      assert.equal(result.target?.id, CHANNEL);
     } finally {
       stub.restore();
     }
@@ -410,33 +493,6 @@ describe("outboundAdapter.sendMedia", () => {
     }
   });
 
-  it("collapses an identical media re-send into one post", async () => {
-    const stub = installMediaFetchStub();
-    try {
-      const first = await sendMedia();
-      const second = await sendMedia();
-      assert.equal(stub.postBodies().length, 1, "the retry must not mint a second post");
-      assert.equal(second.messageId, first.messageId);
-    } finally {
-      stub.restore();
-    }
-  });
-
-  it("does not collide with a text-only send of the same caption", async () => {
-    const stub = installMediaFetchStub();
-    try {
-      await sendMedia();
-      await outboundAdapter.sendText!({
-        cfg: cfg(),
-        to: CHANNEL,
-        text: "here is your image",
-      } as ChannelOutboundContext);
-      assert.equal(stub.postBodies().length, 2, "media and text sends are distinct payloads");
-    } finally {
-      stub.restore();
-    }
-  });
-
   it("falls back to text + URL when the upload fails for an https media URL", async () => {
     const stub = installMediaFetchStub({ failUploads: true });
     try {
@@ -445,7 +501,7 @@ describe("outboundAdapter.sendMedia", () => {
       assert.equal(bodies.length, 1);
       assert.equal(bodies[0]!.message, `here is your image\n${MEDIA_URL}`);
       assert.equal(bodies[0]!.file_ids, undefined);
-      assert.equal(result.channelId, CHANNEL);
+      assert.equal(result.target?.id, CHANNEL);
     } finally {
       stub.restore();
     }

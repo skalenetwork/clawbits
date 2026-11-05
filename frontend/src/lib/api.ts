@@ -1097,6 +1097,52 @@ export interface MmChannelPost {
   steps?: MmTurnStep[] | null;
   /** The widget this post shows, set only by the server. */
   widget_id?: string | null;
+  /** The agent's A2UI surface; `message` holds its text fallback. */
+  ui?: PostUi | null;
+  /** The click this human post carries, on the surface that is its parent. */
+  ui_action?: UiAction | null;
+}
+
+/** An agent's surface as its post keeps it: the standard A2UI v1.0 envelope, with ours beside it. */
+export interface PostUi {
+  a2ui: { version: "1.0"; createSurface: A2uiCreateSurface };
+  /** Rises on every change. Live updates order by it, since `updated_at` stays at publish. */
+  rev: number;
+  /** Closes the surface on its first accepted action. */
+  once: boolean;
+  closed: UiClosed | null;
+}
+
+export interface A2uiCreateSurface {
+  /** `post-<post_id>`, set by the server. */
+  surfaceId: string;
+  catalogId: string;
+  components: Record<string, unknown>[];
+  dataModel: Record<string, unknown>;
+}
+
+/** Set once: every control renders disabled, with `text` below. */
+export interface UiClosed {
+  text: string;
+  at: string;
+}
+
+/** The standard A2UI v1.0 `action` body, built by the server from the stored surface. */
+export interface UiAction {
+  name: string;
+  surfaceId: string;
+  sourceComponentId: string;
+  timestamp: string;
+  userMessage?: string | null;
+  context: Record<string, unknown>;
+}
+
+/** A click on an event Button: the rev it was taken on, and only its `@path`-bound context values. */
+export interface UiActionRequest {
+  rev: number;
+  sourceComponentId: string;
+  bound: Record<string, unknown>;
+  client_key: string;
 }
 
 /** The MCP App view a tool call rendered: its stored `ui://` document and the call it shows. */
@@ -1562,6 +1608,14 @@ export async function pinMmPost(postId: number) {
 
 export async function unpinMmPost(postId: number) {
   return request<MmChannelPost>(postUrl(postId, "/pin"), { method: "DELETE", detail: true });
+}
+
+/** Sends a click on a surface as the viewer's post. Null when the surface has moved on (409): closed, or a newer rev. */
+export async function postUiAction(postId: number, body: UiActionRequest): Promise<MmChannelPost | null> {
+  const res = await fetch(postUrl(postId, "/ui/actions"), { credentials: "include", ...json("POST", body) });
+  if (res.status === 409) return null;
+  if (!res.ok) throw new Error(await readDetail(res));
+  return res.json() as Promise<MmChannelPost>;
 }
 
 export async function listPinnedMmPosts(channelId: string) {

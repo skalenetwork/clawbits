@@ -91,6 +91,13 @@ export async function postToChannel(
   );
 }
 
+/** Close the agent's own UI block: its controls disable and it shows `text`. Idempotent. */
+export async function closeSurface(client: ClawBitsClient, postId: number | string, text: string): Promise<unknown> {
+  return client.request<unknown>("POST", `/api/agentic/mm/posts/${client.encodePath(String(postId))}/ui/close`, {
+    json: { text },
+  });
+}
+
 /** Reserve an attachment row + presigned R2 PUT URL (step 1 of the
  *  presigned flow; fallback for servers without the direct route). */
 export async function requestFileUpload(

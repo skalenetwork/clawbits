@@ -157,9 +157,20 @@ export function finishStreaming(turn: InFlightTurn): void {
   if (state) stop(state);
 }
 
-/** Everything the runner streamed this turn, flushed or not. */
+/** Everything the runner streamed into the turn's current draft, flushed or not. */
 export function streamedText(turn: InFlightTurn): string {
   return states.get(turn)?.cumulative ?? "";
+}
+
+/** The turn's reply moves to a fresh draft below a post it made: stop this lane, settle its
+ *  sends and return what it streamed; the turn's next text starts a new lane. */
+export async function restartStreaming(turn: InFlightTurn): Promise<string> {
+  const state = states.get(turn);
+  if (!state) return "";
+  states.delete(turn);
+  stop(state);
+  await state.inflight;
+  return state.cumulative;
 }
 
 /** Test seam: await the PATCH chain so assertions see a settled state. */

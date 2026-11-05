@@ -2,7 +2,7 @@
   "id": "clawbits-tools",
   "name": "Clawbits Tools & Services",
   "description": "Clawbits tools and companion background services.",
-  "version": "0.24.1",
+  "version": "0.25.0",
   "requiresPlugins": [
     "clawbits"
   ],
@@ -32,7 +32,8 @@
       "clawbits_mcp_connect",
       "clawbits_widget_act",
       "clawbits_widget_get",
-      "clawbits_widget_list"
+      "clawbits_widget_list",
+      "clawbits_ui"
     ]
   },
   "toolMetadata": {
@@ -76,6 +77,9 @@
       "optional": true
     },
     "clawbits_widget_list": {
+      "optional": true
+    },
+    "clawbits_ui": {
       "optional": true
     }
   }

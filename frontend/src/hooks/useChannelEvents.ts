@@ -73,6 +73,12 @@ function versionOf(p: MmChannelPost): number {
   return Math.max(...[p.created_at, p.updated_at, p.edited_at].map((s) => (s ? parseUtcTimestamp(s).getTime() || 0 : 0)));
 }
 
+/** A patch over a post. Its surface moves by `rev` alone, since a close leaves `updated_at` at publish. */
+function patched(existing: MmChannelPost, patch: MmChannelPost): MmChannelPost {
+  const ui = (existing.ui?.rev ?? -1) > (patch.ui?.rev ?? -1) ? existing.ui : patch.ui;
+  return { ...existing, ...patch, ui };
+}
+
 /** A channel's live events. A presence snapshot opens every stream and lists who generates now: a turn already
  *  followed keeps its own steps, a mid-turn join or reconnect starts from the agent's current step, and every other
  *  turn ends. */
@@ -201,7 +207,7 @@ export function useChannelEvents(channelId: string) {
               delta += 1;
             }
           } else if (versionOf(patch) >= versionOf(existing)) {
-            next = next.with(idx, { ...existing, ...patch });
+            next = next.with(idx, patched(existing, patch));
           }
         }
         return next === prev.posts ? prev : { ...prev, posts: next, total: Math.max(0, prev.total + delta) };
@@ -243,7 +249,7 @@ export function useChannelEvents(channelId: string) {
             const existing = prev.posts[idx];
             if (existing) {
               if (optimisticIdx < 0 && versionOf(post) < versionOf(existing)) return prev;
-              return { ...prev, posts: prev.posts.with(idx, { ...existing, ...post }) };
+              return { ...prev, posts: prev.posts.with(idx, patched(existing, post)) };
             }
             const kept = prev.posts.filter(
               (p) => !(post.agent_id && p.post_id < 0 && p.status === "streaming" && p.agent_id === post.agent_id),
@@ -255,7 +261,9 @@ export function useChannelEvents(channelId: string) {
           const cached = qc.getQueryData<MmPostListPayload>(postsKey)?.posts.find((p) => p.post_id === post.post_id);
           if (cached && (cached.pinned_at != null) !== (post.pinned_at != null)) pinnedChanged = true;
           const pending = pendingPostUpdates.get(post.post_id);
-          if (!pending || versionOf(post) >= versionOf(pending)) pendingPostUpdates.set(post.post_id, post);
+          if (!pending || versionOf(post) >= versionOf(pending)) {
+            pendingPostUpdates.set(post.post_id, pending ? patched(pending, post) : post);
+          }
           flushTimer = flushTimer ?? window.setTimeout(flushPostUpdates, FLUSH_DELAY_MS);
         }
         if (replyPublished) {
