@@ -15,6 +15,7 @@ import {
   Plus,
   Shuffle,
   Split,
+  Trash2,
   Trophy,
   X,
   type LucideProps,
@@ -30,9 +31,11 @@ function glyph(type: string, props: LucideProps): ReactNode {
     case "resign":
       return <Flag {...props} />;
     case "decline_draw":
-    case "abort":
     case "fold":
       return <X {...props} />;
+    case "abort":
+      // The game thrown away before it began, no result: never Decline's ✕ beside it.
+      return <Trash2 {...props} />;
     case "shuffle":
       return <Shuffle {...props} />;
     case "ready":
@@ -69,7 +72,7 @@ export function ActionGlyph({ type, ...props }: { type: string } & LucideProps) 
 /** What an action's button shows: its glyph and the number its label carries (what a call costs, a bet's size),
  *  or, for an action no glyph names, its label in words. The full label is the button's name. */
 export function ActionFace({ type, label, bare = false }: { type: string; label: string; bare?: boolean }) {
-  const icon = glyph(type, { "aria-hidden": true, className: "size-[1.125rem] shrink-0" });
+  const icon = glyph(type, { "aria-hidden": true, className: "size-4 shrink-0" });
   if (!icon) return <span className="px-1 text-[0.875rem] leading-tight font-medium">{label}</span>;
   const number = bare ? undefined : /\d[\d,]*/.exec(label)?.[0];
   return (

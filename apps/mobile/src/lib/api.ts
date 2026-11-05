@@ -2,6 +2,7 @@ import type {
   Channel,
   McpConnectLink,
   Organization,
+  OrgAgent,
   Post,
   PostsPage,
   Recipient,
@@ -107,6 +108,23 @@ export const api = {
       token,
       undefined,
       signal,
+    ),
+  /** The org's agents, each with its last alive ping, whether this person runs it, and its "Can play games". */
+  agents: (token: string, org: string, signal?: AbortSignal) =>
+    request<{ agents: OrgAgent[] }>(
+      `/api/human/orgs/${encodeURIComponent(org)}/agents`,
+      token,
+      undefined,
+      signal,
+    ),
+  /** "Can play games" for one of the org's agents, by its operator or an owner of the org; off ends its games. */
+  setAgentGames: (token: string, org: string, agent: string, enabled: boolean) =>
+    request<{ agent_id: string; widgets_enabled: boolean }>(
+      `/api/human/orgs/${encodeURIComponent(org)}/agents/${encodeURIComponent(agent)}/settings`,
+      token,
+      { widgets_enabled: enabled },
+      undefined,
+      "PATCH",
     ),
   members: (token: string, org: string, signal?: AbortSignal) =>
     request<{ total: number }>(

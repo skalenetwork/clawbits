@@ -34,6 +34,17 @@ describe("SceneView", () => {
     expect(onAct).toHaveBeenCalledWith({ type: "move", args: { from: "e2", to: "e4" } });
   });
 
+  it("keeps a piece held while the other player moves, as long as it may still move", () => {
+    const { rerender } = render(<SceneView scene={scene()} seat="white" busy={false} onAct={vi.fn()} />);
+    fireEvent.click(square("e2"));
+    // The other seat moved: a new scene, the held pawn still offered.
+    rerender(<SceneView scene={scene({ marks: [{ at: "e7", tone: "last" }] })} seat="white" busy={false} onAct={vi.fn()} />);
+    expect(square("e2")).toHaveAttribute("aria-pressed", "true");
+    // Once it may not move any more, it's let go.
+    rerender(<SceneView scene={scene({ input: { white: { action: "move", pick: { e1: ["d1"] } } } })} seat="white" busy={false} onAct={vi.fn()} />);
+    expect(square("e2")).not.toHaveAttribute("aria-pressed", "true");
+  });
+
   it("asks which piece before a promotion", () => {
     const onAct = vi.fn();
     const promoting = scene({

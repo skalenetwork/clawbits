@@ -22,6 +22,21 @@ export interface Organization {
   member_count?: number;
   /** Chat widgets (games) allowed in the org's one-to-one chats. */
   widgets_enabled?: boolean;
+  /** An owner may switch any of the org's agents' games. */
+  my_role?: "owner" | "member" | null;
+}
+
+/** One of the org's agents, as its agents list gives it. */
+export interface OrgAgent {
+  agent_id: string;
+  nickname: string | null;
+  display_name: string | null;
+  avatar: Avatar | null;
+  /** Its last alive ping (naive UTC); none before its first. */
+  last_alive_at: string | null;
+  is_operator: boolean;
+  /** "Can play games": people may start chat games with it. An older server sends none. */
+  widgets_enabled?: boolean;
 }
 
 export interface Channel {
@@ -42,6 +57,9 @@ export interface Channel {
   unread_count: number;
   /** The chat's own widgets switch. */
   widgets_enabled?: boolean;
+  /** A game can start here: a DM between people, or a 1:1 with an agent able and allowed to play. An older server
+   *  sends none and runs no games with agents. */
+  widgets_supported?: boolean;
   /** An active widget here waits on the viewer. */
   widget_turn?: boolean;
 }
@@ -129,6 +147,7 @@ export type ChatEvent = { channel_id: string } & (
   | { type: "widget.updated"; data: Widget }
   | { type: "widget.turn"; data: { my_turn: boolean; widget_id?: string; rev?: number } }
   | { type: "channel.widgets"; data: { widgets_enabled: boolean } }
+  | { type: "agent.status"; data: { agent_id: string; last_alive_at: string | null } }
 );
 
 export function channelName(channel: Channel): string {

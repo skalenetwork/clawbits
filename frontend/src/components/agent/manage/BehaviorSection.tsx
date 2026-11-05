@@ -14,10 +14,15 @@ export function BehaviorSection({ orgId, profile }: { orgId: string; profile: Ag
 
   const mutation = useMutation({
     mutationFn: (patch: SettingsPatch) => updateAgentSettings(orgId, agentId, patch),
-    onSuccess: (data) => {
+    onSuccess: (data, patch) => {
       queryClient.setQueryData<AgentProfile>(profileKey, (old) => (old ? { ...old, ...data } : old));
       void queryClient.invalidateQueries({ queryKey: profileKey });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents(orgId) });
+      // Whether a game can start in its chats (`widgets_supported`) follows these two.
+      if ("widgets_enabled" in patch || "snoozed" in patch) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.mm.channelsAll });
+        void queryClient.invalidateQueries({ queryKey: ["mm", "channel"], predicate: (q) => q.queryKey.length === 3 });
+      }
     },
   });
 
@@ -83,6 +88,21 @@ export function BehaviorSection({ orgId, profile }: { orgId: string; profile: Ag
             disabled={pending === "lobstertalk_enabled"}
             onCheckedChange={(next) => {
               mutation.mutate({ lobstertalk_enabled: next });
+            }}
+          />
+        }
+      />
+      <SettingsRow
+        title="Can play games"
+        description="People can start chat games like chess with it"
+        htmlFor="agent-widgets"
+        control={
+          <Switch
+            id="agent-widgets"
+            checked={Boolean(profile.widgets_enabled)}
+            disabled={pending === "widgets_enabled"}
+            onCheckedChange={(next) => {
+              mutation.mutate({ widgets_enabled: next });
             }}
           />
         }

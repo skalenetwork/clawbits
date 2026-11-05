@@ -264,6 +264,7 @@ function ChannelView({ channelId }: { channelId: string }) {
   const activeWidgetId = activeWidgets.data?.[0]?.widget_id ?? null;
   // A game picked from the chat, which shows in the panel until another game starts.
   const [pickedWidget, setPickedWidget] = useState<{ widgetId: string; over: string | null } | null>(null);
+  const [gameToggleSlot, setGameToggleSlot] = useState<HTMLSpanElement | null>(null);
   // The game last active here, for its result once it ends with its message too far back to be loaded.
   const [lastActiveId, setLastActiveId] = useState<string | null>(null);
   if (activeWidgetId && activeWidgetId !== lastActiveId) setLastActiveId(activeWidgetId);
@@ -278,7 +279,7 @@ function ChannelView({ channelId }: { channelId: string }) {
     refetchOnWindowFocus: true,
   });
   const latestPosts = postsQuery.data?.posts ?? NO_POSTS;
-  // The latest game posted here: one that has ended stays in the panel, as its strip, until it's dismissed.
+  // The latest game posted here: one that has ended stays in the panel, folded, until it's dismissed.
   const postedWidgetId = useMemo(
     () => latestPosts.reduce<MmChannelPost | null>(
       (last, p) => (p.widget_id && (!last || p.post_id > last.post_id) ? p : last),
@@ -844,6 +845,8 @@ function ChannelView({ channelId }: { channelId: string }) {
                 <Icon icon={AttachmentIcon} className="size-3.5 shrink-0"/>
               </PanelToggle>
             )}
+            {/* The game's toggle, put here by its column, which knows whether it's open. */}
+            <span ref={setGameToggleSlot} className="contents" />
           </>
         }
       />
@@ -992,6 +995,8 @@ function ChannelView({ channelId }: { channelId: string }) {
           userId={user?.id ?? null}
           picked={gameId === pickedWidget?.widgetId}
           covered={panels?.panel != null}
+          toggleSlot={gameToggleSlot}
+          onReveal={() => { if (panels?.panel) panels.togglePanel(panels.panel); }}
           onDismiss={() => {
             setPickedWidget(null);
             // The dismissed column takes its focus with it.

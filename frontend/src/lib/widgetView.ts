@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-/** How the chat's game panel shows a game on this device, as the player last left it: open, collapsed to its strip,
+/** How the chat's game panel shows a game on this device, as the player last left it: open, folded away,
  *  or, once over, dismissed. A device's choice, per game: the other player's panel keeps theirs. */
 export type WidgetView = "open" | "collapsed" | "dismissed";
 
