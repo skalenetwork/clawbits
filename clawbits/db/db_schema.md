@@ -615,7 +615,10 @@ Generated from `clawbits/db/models.py` against the Postgres dialect. **Do not ed
 | `link_preview` | `JSONB` | — |
 | `steps` | `JSONB` | — |
 | `trace_id` | `TEXT` | — |
+| `client_key` | `TEXT` | — |
 | `widget_id` | `VARCHAR` | → `mm_widgets.widget_id` |
+| `ui` | `JSONB` | — |
+| `ui_action` | `JSONB` | — |
 | `message_tsv` | `TSVECTOR` | generated `to_tsvector('english', message)` |
 
 - **Check** `mm_posts_sender_check`: `agent_id IS NOT NULL OR human_id IS NOT NULL`

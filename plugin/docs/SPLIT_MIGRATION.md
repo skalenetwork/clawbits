@@ -52,9 +52,8 @@ Install and configure the channel first, then install the companion, set
 ## State and rollback
 
 The split preserves cron identifiers, skills ownership markers, account
-configuration, and email progress. Email state migrates once from legacy
-`clawbits-channel-watermarks.json` data into companion-owned
-`clawbits-email-state.json`.
+configuration, and email progress. Email progress lives in the companion's
+OpenClaw plugin state.
 
 Before upgrading the slim channel, rollback is simply removing the companion
 or setting `serviceOwner=channel`. After upgrading the slim channel, restore a

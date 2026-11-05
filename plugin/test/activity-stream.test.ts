@@ -11,6 +11,8 @@ import {
   __streamPatcherInflightForTest,
   finishStreaming,
   onAssistantEvent,
+  restartStreaming,
+  streamedText,
 } from "../src/activity/stream-patcher.js";
 import {
   __reporterInflightForTest,
@@ -147,6 +149,25 @@ describe("stream patcher (text lane)", () => {
     onAssistantEvent(off, { text: "e".repeat(200), delta: "e".repeat(200) });
     await __streamPatcherInflightForTest(off);
     assert.equal(client.calls.length, 0);
+  });
+
+  it("hands what streamed to the draft a mid-turn post ends, and streams the rest into the next one", async () => {
+    const client = new FakeClient();
+    const turn = makeTurn(client);
+    const before = "f".repeat(130);
+    onAssistantEvent(turn, { text: before, delta: before });
+    await __streamPatcherInflightForTest(turn);
+    onAssistantEvent(turn, { text: `${before} tail`, delta: " tail" });
+    assert.equal(await restartStreaming(turn), `${before} tail`);
+    turn.draftRef.id = 8;
+    onAssistantEvent(turn, { text: "after", delta: "after" });
+    await sleep(250);
+    await __streamPatcherInflightForTest(turn);
+    assert.deepEqual(client.calls.map((c) => [c.path, c.json]), [
+      ["/api/agentic/mm/channels/chan-1/posts/7", { append: before }],
+      ["/api/agentic/mm/channels/chan-1/posts/8", { append: "after" }],
+    ]);
+    assert.equal(streamedText(turn), "after");
   });
 
   it("finishStreaming drops pending unsent text", async () => {

@@ -3,7 +3,6 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { listClawBitsAccountIds, resolveClawBitsAccount } from "./accounts.js";
 import { setCronHandle, type CronHandle } from "./automations/cron-handle.js";
 import { runAutomationsReconciler, wakeAutomationsReconciler } from "./automations/reconcile.js";
-import { ChannelWatermarkStore } from "./channel-watermarks.js";
 import { resolveKnownAnswers } from "./challenge.js";
 import { buildClientForAccount } from "./client-factory.js";
 import { dispatchInboundEmail } from "./email-adapter.js";
@@ -47,7 +46,6 @@ export function resolveCompanionServiceActivation(
 interface RunningServices {
   controller: AbortController;
   tasks: Promise<void>[];
-  emailWatermarks: ChannelWatermarkStore;
   usageActive: boolean;
   stopWakes?: () => void;
 }
@@ -61,7 +59,6 @@ async function stopRunningServices(): Promise<void> {
   current.stopWakes?.();
   current.controller.abort(new Error("Clawbits companion services stopped"));
   await Promise.allSettled(current.tasks);
-  await current.emailWatermarks.flush();
   setCronHandle(undefined);
 }
 
@@ -91,11 +88,10 @@ async function startCompanionServices(
   setCronHandle(ctx.getCron?.());
   const controller = new AbortController();
   const tasks: Promise<void>[] = [];
-  const emailWatermarks = ChannelWatermarkStore.emailFileBacked();
+  const emailWatermarks = api.runtime.state.openKeyedStore<number>({ namespace: "email-watermarks", maxEntries: 1_000 });
   const state: RunningServices = {
     controller,
     tasks,
-    emailWatermarks,
     usageActive: false,
   };
   running = state;
@@ -177,7 +173,7 @@ async function startCompanionServices(
           account,
           abortSignal: controller.signal,
           log: api.logger,
-          watermarkStore: emailWatermarks,
+          watermarks: emailWatermarks,
           onEmailMessage: (message) =>
             dispatchInboundEmail(
               {

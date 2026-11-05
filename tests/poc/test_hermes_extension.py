@@ -444,7 +444,7 @@ def test_email_reply_context_preserves_threading_headers() -> None:
         "In-Reply-To": "<abc@example>",
         "References": "<abc@example>",
     }
-    assert mod.PLUGIN_VERSION == "0.10.0"
+    assert mod.PLUGIN_VERSION == "0.11.0"
 
 
 def test_automation_interval_keeps_anchor_and_existing_next_run(monkeypatch) -> None:

@@ -1,4 +1,5 @@
 import { describe, it } from "node:test";
+import { memoryState } from "./runtime-state.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -19,6 +20,9 @@ import {
 import type { AgentWidgetSummary, AgentWidgetView } from "../src/widgets/api.js";
 import { WIDGET_TOOL_SPECS } from "../src/widgets/tool-spec.js";
 import { widgetViewText } from "../src/widgets/tools.js";
+import { UI_TOOL_SPEC } from "../src/a2ui/tool-spec.js";
+import { postSurface } from "../src/outbound-adapter.js";
+import { setRuntime } from "../src/runtime.js";
 
 function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8")) as Record<string, unknown>;
@@ -71,7 +75,7 @@ async function until(check: () => boolean): Promise<void> {
 }
 
 type PluginRuntime = OpenClawPluginApi["runtime"];
-type StubRuntime = Pick<PluginRuntime, "version"> & {
+type StubRuntime = Pick<PluginRuntime, "version" | "state"> & {
   channel: Pick<PluginRuntime["channel"], "runtimeContexts">;
 };
 type StubPluginApi = Pick<
@@ -104,6 +108,7 @@ function runtimeWithHandoff(version?: string): StubRuntime {
   const contexts = new Map<string, unknown>();
   const runtime: StubRuntime = {
     version: "2026.6.33",
+    state: memoryState(),
     channel: {
       runtimeContexts: {
         register({ channelId, capability, context }) {
@@ -244,7 +249,7 @@ describe("clawbits companion plugin", () => {
       registeredTools()
         .filter(({ tool }) => tool.catalogMode === "direct-only")
         .map(({ tool }) => tool.name),
-      ["clawbits_react", "clawbits_mcp_connect", "clawbits_widget_act"],
+      ["clawbits_react", "clawbits_mcp_connect", "clawbits_widget_act", "clawbits_ui"],
     );
   });
 
@@ -527,6 +532,7 @@ describe("clawbits companion plugin", () => {
           avatar: { url: "https://cdn/a.png" },
           trace_id: "t-1",
           link_preview: { title: "noise" },
+          ui: { a2ui: { version: "1.0" }, rev: 0 },
           files: [
             {
               file_id: "f1",
@@ -552,7 +558,7 @@ describe("clawbits companion plugin", () => {
       { file_id: "f1", filename: "plan.pdf", content_type: "application/pdf", size_bytes: 10 },
     ]);
     const rendered = JSON.stringify(post);
-    for (const dropped of ["avatar", "trace_id", "link_preview", "signed.example"]) {
+    for (const dropped of ["avatar", "trace_id", "link_preview", "a2ui", "signed.example"]) {
       assert.ok(!rendered.includes(dropped), `${dropped} dropped`);
     }
   });
@@ -1230,5 +1236,80 @@ describe("clawbits chat game tools", () => {
     });
     toolsEntry.register(asPluginApi(pluginApi({}, { registrationMode: "full", runtime: older }).api));
     assert.equal(companionToolRegistered("clawbits_widget_act"), false);
+  });
+});
+
+describe("clawbits_ui", () => {
+  const IN_CHAT = { messageChannel: "clawbits", nativeChannelId: "room-7" };
+  const SURFACE = { components: [{ id: "root", component: "Text", text: "**Deploys**" }] };
+
+  /** The tool in a turn, beside a channel of `channelVersion` that posts surfaces, or no channel. */
+  function uiTool(ctx: OpenClawPluginToolContext, channelVersion?: string): AnyAgentTool {
+    const runtime = runtimeWithHandoff();
+    if (channelVersion) registerSlimChannelHandoff(runtime, channelVersion, postSurface);
+    const { api } = pluginApi({ accounts: { default: { ...DEFAULT_ACCOUNT } } }, { runtime });
+    setRuntime({ config: { current: () => api.config }, state: memoryState() } as unknown as PluginRuntime);
+    const tool = registeredTools(api, ctx).find((entry) => entry.tool.name === UI_TOOL_SPEC.name)?.tool;
+    assert.ok(tool);
+    return tool;
+  }
+
+  it("declares the UI block tool exactly as the server's tool_spec.json", () => {
+    assert.deepEqual({ tools: [UI_TOOL_SPEC] }, readJson("../../clawbits/a2ui/tool_spec.json"));
+    const entry = registeredTools().find(({ tool }) => tool.name === UI_TOOL_SPEC.name);
+    assert.ok(entry?.optional);
+    assert.equal(entry.tool.label, UI_TOOL_SPEC.annotations.title);
+    assert.equal(entry.tool.description, UI_TOOL_SPEC.description);
+    assert.deepEqual(entry.tool.parameters, UI_TOOL_SPEC.inputSchema);
+  });
+
+  it("works only while answering in a Clawbits chat", async () => {
+    const telegram = uiTool({ messageChannel: "telegram", nativeChannelId: "chat-1" }, "0.25.0");
+    await assert.rejects(executeTool(telegram, SURFACE), /only while answering in a Clawbits chat/);
+  });
+
+  it("tells the agent a chat whose channel cannot post surfaces cannot show UI blocks", async () => {
+    const result = (await executeTool(uiTool(IN_CHAT), SURFACE)) as { error?: string };
+    assert.match(result.error ?? "", /cannot show UI blocks/);
+  });
+
+  it("posts the block in the chat it answers in, through the channel", async () => {
+    const posted: unknown[] = [];
+    const surface = { ...SURFACE, dataModel: { target: [] }, once: false };
+    const { result } = await callWithMockedFetch(uiTool(IN_CHAT, "0.25.0"), surface, (input, init) => {
+      const target = String(input);
+      if (target.endsWith("/api/agentic/auth/challenge")) return challengeResponse();
+      posted.push([new URL(target).pathname, JSON.parse(String(init?.body))]);
+      return jsonResponse({ post_id: 9 });
+    });
+    assert.deepEqual(posted, [["/api/agentic/mm/channels/room-7/posts", { surface }]]);
+    assert.deepEqual(result, { post_id: 9 });
+  });
+
+  it("refuses an event named like OpenClaw's own without posting, for the agent to fix", async () => {
+    const posted: string[] = [];
+    const button = { id: "go", component: "Button", child: "root", action: { event: { name: "oc.question" } } };
+    const { result } = await callWithMockedFetch(
+      uiTool(IN_CHAT, "0.25.0"),
+      { components: [...SURFACE.components, button] },
+      (input) => {
+        posted.push(String(input));
+        return jsonResponse({ post_id: 9 });
+      },
+    );
+    assert.deepEqual(result, {
+      errors: [{ path: "/components/1/action/event/name", message: "Event names starting with oc. are reserved." }],
+    });
+    assert.deepEqual(posted, []);
+  });
+
+  it("hands the server's validation errors back as its result, for the agent to fix", async () => {
+    const errors = [{ code: "missing_root", message: "No component has id root" }];
+    const { result } = await callWithMockedFetch(uiTool(IN_CHAT, "0.25.0"), SURFACE, (input) =>
+      String(input).endsWith("/api/agentic/auth/challenge")
+        ? challengeResponse()
+        : new Response(JSON.stringify({ detail: errors }), { status: 422, headers: { "Content-Type": "application/json" } }),
+    );
+    assert.deepEqual(result, { errors });
   });
 });

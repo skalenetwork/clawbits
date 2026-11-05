@@ -26,6 +26,9 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from sqlmodel import Session
 
+from clawbits.a2ui.fallback import fallback_text
+from clawbits.a2ui.models import UiCloseRequest
+from clawbits.a2ui.validate import surface_errors
 from clawbits.cloudflare.setup_r2 import setup_r2
 from clawbits.datastructures.action_models import (
     ActionListItem,
@@ -68,6 +71,7 @@ from clawbits.datastructures.known_answers import get_random_question_answer
 from clawbits.datastructures.mint_cb_tokens_response import MintCbTokensResponse
 from clawbits.datastructures.mm_models import (
     AGENT_OFFLINE_AFTER,
+    AgentMmPostRequest,
     AutomationDesiredResponse,
     AutomationStateReportRequest,
     AutomationStateReportResponse,
@@ -91,7 +95,6 @@ from clawbits.datastructures.mm_models import (
     MmMarkReadResponse,
     MmPostListResponse,
     MmPostPatchRequest,
-    MmPostRequest,
     MmPostResponse,
     MmReactionRequest,
     MmSearchResult,
@@ -682,7 +685,10 @@ class ClawBitsServer(FastAPI):
             response_model=MmPostResponse,
             tags=["Mattermost"],
             summary="Post a message",
-            description="Post a message to a channel. Caller must be a member. Requires API key + challenge.",
+            description=(
+                "Post a message, or with `surface` an A2UI v1.0 UI block whose text fallback the "
+                "server writes into `message`. Caller must be a member. Requires API key + challenge."
+            ),
         )
         self.add_api_route(
             "/api/agentic/mm/channels/{channel_id}/posts",
@@ -743,6 +749,18 @@ class ClawBitsServer(FastAPI):
                 "the caller already reacted with this emoji, the reaction is "
                 "removed; otherwise it's added. Caller must be a member of "
                 "the post's channel. Requires API key + challenge."
+            ),
+        )
+        self.add_api_route(
+            "/api/agentic/mm/posts/{post_id}/ui/close",
+            self.mm_close_post_ui,
+            methods=["POST"],
+            response_model=MmPostResponse,
+            tags=["Mattermost"],
+            summary="Close a UI surface",
+            description=(
+                "Close the caller's own UI surface post: renderers disable its controls and show "
+                "`text`. Idempotent; a closed surface stays closed."
             ),
         )
         self.add_api_route(
@@ -2277,10 +2295,15 @@ class ClawBitsServer(FastAPI):
     def mm_create_post(
         self,
         channel_id: str,
-        body: MmPostRequest,
+        body: AgentMmPostRequest,
         api_key: str = Security(api_key_header),
     ) -> MmPostResponse:
-        """Post a message to a channel. Caller must be a member."""
+        """Post a message to a channel. Caller must be a member.
+
+        A ``surface`` is validated, then posted with its text fallback as ``message``, which the
+        ``can_tag`` gate reads. It leaves the agent's presence alone: one sent mid-turn must not
+        end the turn's generating state.
+        """
         from clawbits.db.models import MmPost as _MmPostRow
         from clawbits.lobstertalk.attention import (
             build_attention_context,
@@ -2307,10 +2330,22 @@ class ClawBitsServer(FastAPI):
         agent_id = agent.agent_id.value
         with Session(self._engine) as db:
             self._require_mm_member(db, channel_id, agent_id)
+            replayed = body.client_key and TableRead.get_mm_post_by_client_key(
+                db, channel_id, agent_id, body.client_key
+            )
+            if replayed:
+                post_dict = TableRead.hydrate_mm_posts(db, [replayed])[0]
+                enrich_post_files_with_urls(post_dict, self._r2_presigner, cfg)
+                return MmPostResponse(**post_dict)
+            message = body.message
+            if body.surface is not None:
+                if errors := surface_errors(body.surface.to_ui("post-new").a2ui):
+                    raise HTTPException(status_code=422, detail=errors)
+                message = fallback_text(body.surface.components)
             # Contact is closed by default: an agent may only ``@``-tag
             # another agent it holds a ``can_tag`` grant for.
             for tagged_id in TableRead.find_tagged_agents_in_channel(
-                db, channel_id, body.message
+                db, channel_id, message
             ):
                 if tagged_id == agent_id:
                     continue
@@ -2323,12 +2358,14 @@ class ClawBitsServer(FastAPI):
                     )
             try:
                 post_id = TableWrite.create_mm_post(
-                    db, channel_id, agent_id, body.message,
+                    db, channel_id, agent_id, message,
                     status=body.status,
                     parent_post_id=body.parent_post_id,
                     # The agent re-stamps the inbound post's trace id onto
                     # its reply, so one id spans the whole turn end to end.
                     trace_id=body.trace_id,
+                    client_key=body.client_key,
+                    surface=body.surface,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
@@ -2369,8 +2406,9 @@ class ClawBitsServer(FastAPI):
                 bus, channel_id, response.model_dump(), member_human_ids=member_human_ids
             )
         )
-        fire_and_forget(bus.presence_set(channel_id, "agent", agent_id, status))
-        fire_and_forget(publish_member_status(bus, channel_id, "agent", agent_id, status))
+        if body.surface is None:
+            fire_and_forget(bus.presence_set(channel_id, "agent", agent_id, status))
+            fire_and_forget(publish_member_status(bus, channel_id, "agent", agent_id, status))
         if attention_ctx is not None:
             fire_and_forget(
                 consider_post(
@@ -2381,6 +2419,38 @@ class ClawBitsServer(FastAPI):
                     engine=self._engine,
                 )
             )
+        return response
+
+    @cost(1)
+    def mm_close_post_ui(
+        self,
+        post_id: int,
+        body: UiCloseRequest,
+        api_key: str = Security(api_key_header),
+    ) -> MmPostResponse:
+        """Close the caller's own surface. Only the first close bumps ``rev`` and emits
+        ``post.updated``; a repeat answers with the post as it is."""
+        from clawbits.db.models import MmPost as _MmPostRow
+        from clawbits.realtime import fire_and_forget, get_bus, publish_post_updated
+
+        agent_id = extract_agent(self._engine, api_key).agent_id.value
+        with Session(self._engine) as db:
+            post = db.get(_MmPostRow, post_id)
+            if post is None:
+                raise HTTPException(status_code=404, detail="Post not found")
+            self._require_mm_member(db, post.channel_id, agent_id)
+            try:
+                closed = TableWrite.close_mm_post_ui(db, post_id, agent_id, body.text)
+            except LookupError:
+                raise HTTPException(status_code=404, detail="Post not found")
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Not the post owner")
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            db.commit()
+            response = MmPostResponse(**TableRead.hydrate_mm_posts(db, [db.get(_MmPostRow, post_id)])[0])
+        if closed:
+            fire_and_forget(publish_post_updated(get_bus(), response.channel_id, response.model_dump()))
         return response
 
     @cost(1)
@@ -3685,6 +3755,7 @@ class ClawBitsServer(FastAPI):
                     finalise=body.done,
                     cancel=body.cancel,
                     steps=[TableWrite.keep_turn_step(db, s) for s in body.steps] if body.steps else None,
+                    client_key=body.client_key,
                 )
             except LookupError:
                 raise HTTPException(status_code=404, detail="Post not found")

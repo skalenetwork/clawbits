@@ -48,11 +48,18 @@ class ClawbitsCliError(RuntimeError):
     """Agent-CLI failure as HTTP status plus stable code; str() never carries bodies, URLs or argv.
 
     ``detail`` is the server's structured ``detail`` object when the error body
-    has one (e.g. ``{"code": "mailbox_epoch_changed", "uidvalidity": 7}``), else None.
+    has one (e.g. ``{"code": "mailbox_epoch_changed", "uidvalidity": 7}``), else None;
+    ``errors`` is its ``detail`` list when it is one (a 422's validation errors), else None.
     """
 
-    def __init__(self, status: int | None, code: str, detail: dict[str, Any] | None = None) -> None:
-        self.status, self.code, self.detail = status, code, detail
+    def __init__(
+        self,
+        status: int | None,
+        code: str,
+        detail: dict[str, Any] | None = None,
+        errors: list[Any] | None = None,
+    ) -> None:
+        self.status, self.code, self.detail, self.errors = status, code, detail, errors
         super().__init__(f"HTTP {status}: {code}" if status else f"agent-cli: {code}")
 
 
@@ -73,11 +80,12 @@ def _cli_error(returncode: int, stderr: str) -> ClawbitsCliError:
     detail = body.get("detail") if isinstance(body, dict) else None
     if isinstance(detail, str) and "not configured" in detail.lower():
         return ClawbitsCliError(status, "not_configured")
+    errors = detail if isinstance(detail, list) else None
     detail = detail if isinstance(detail, dict) else None
     code = detail.get("code") if detail else None
     if not (isinstance(code, str) and _CODE_RE.fullmatch(code)):
         code = _STATUS_CODES.get(status, "http_error")
-    return ClawbitsCliError(status, code, detail)
+    return ClawbitsCliError(status, code, detail, errors)
 
 
 def http_status(error: BaseException) -> int | None:
@@ -221,12 +229,15 @@ class _ClawbitsCli:
         trace_id: str | None = None,
         file_ids: list[str] | None = None,
         status: str = "published",
+        surface: dict[str, Any] | None = None,
     ) -> Any:
         body: dict[str, Any] = {"message": content, "status": status, "file_ids": file_ids or []}
         if parent_post_id is not None:
             body["parent_post_id"] = parent_post_id
         if trace_id:
             body["trace_id"] = trace_id
+        if surface is not None:
+            body["surface"] = surface
         with private_json_file(body) as ref:
             return self._run("mm-post", channel_id, "--json", ref)
 
