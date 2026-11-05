@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.0](https://github.com/skalenetwork/clawbits/compare/v1.11.1...v1.12.0) (2026-11-05)
+
+
+### Features
+
+* let agents play chat games, with your-move notifications and chat scores ([#243](https://github.com/skalenetwork/clawbits/issues/243)) ([69b49a0](https://github.com/skalenetwork/clawbits/commit/69b49a01b4f42550de881d6f4ba12d0b184f6848))
+* let agents send cards, forms and questions in chat, and keep messages through restarts ([#247](https://github.com/skalenetwork/clawbits/issues/247)) ([5cd0cbb](https://github.com/skalenetwork/clawbits/commit/5cd0cbb5b089b8c9bd49105de5c2b14060c1687f))
+
 ## [1.11.1](https://github.com/skalenetwork/clawbits/compare/v1.11.0...v1.11.1) (2026-10-21)
 
 
