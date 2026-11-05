@@ -1,6 +1,8 @@
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
 import { ClawBitsClient } from "../src/client.js";
+import { registerOpenDraft, unregisterOpenDraft } from "../src/draft-registry.js";
 import {
   buildPriorContext,
   collapseSelfMentions,
@@ -11,13 +13,15 @@ import {
   senderIdForPost,
   senderTagForPost,
   type InboundMessage,
+  type InboundPollerOptions,
+  type InboundTurn,
   type MattermostPost,
 } from "../src/inbound-poller.js";
-import { ChannelWatermarkStore } from "../src/channel-watermarks.js";
-import { setMcpOAuthRuntime } from "../src/mcp-oauth.js";
+import { __resetQuestionsForTest, bindQuestion, markQuestionWaiting, questionFinalizing, questionWaiting } from "../src/questions.js";
+import { setRuntime, type PluginRuntime } from "../src/runtime.js";
 import { type ClawBitsServiceHandoff, registerSlimChannelHandoff } from "../src/service-handoff.js";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { ResolvedClawBitsAccount } from "../src/types.js";
+import { memoryState, memoryStore } from "./runtime-state.js";
 
 function makeAccount(overrides: Partial<ResolvedClawBitsAccount> = {}): ResolvedClawBitsAccount {
   return {
@@ -38,70 +42,148 @@ function makeAccount(overrides: Partial<ResolvedClawBitsAccount> = {}): Resolved
   };
 }
 
-function makeClient(): ClawBitsClient {
-  return new ClawBitsClient({ endpoint: "http://fc.example", apiKey: "test-key" });
+const ROOM = "chan-123";
+
+function post(id: number, fields: Partial<MattermostPost> = {}): MattermostPost {
+  return { id: String(id), create_at: id * 1000, human_id: 1, message: `msg ${id}`, channel_id: ROOM, ...fields };
 }
 
-function installFetchStub(
-  handler: (
-    url: string,
-    init?: RequestInit,
-  ) => { body?: unknown; status?: number } | Promise<{ body?: unknown; status?: number }>,
-): { restore: () => void; calls: string[] } {
-  const calls: string[] = [];
-  const original = globalThis.fetch;
-  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
-    calls.push(url);
-    const { body, status } = await handler(url, init);
-    return new Response(JSON.stringify(body ?? {}), {
-      status: status ?? 200,
-      headers: { "Content-Type": "application/json" },
+function agentPost(id: number, fields: Partial<MattermostPost> = {}): MattermostPost {
+  return post(id, { human_id: undefined, agent_id: "helper-agent", ...fields });
+}
+
+function row(fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return { channel_id: ROOM, channel_type: "direct", last_read_post_id: 100, latest_post_id: 100, ...fields };
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function postsBody(posts: MattermostPost[]): unknown {
+  return { order: posts.map((p) => p.id), posts: Object.fromEntries(posts.map((p) => [p.id, p])) };
+}
+
+let socket: MockWebSocket | undefined;
+const opened: Array<{ url: string; auth?: string }> = [];
+
+class MockWebSocket {
+  static events: unknown[] = [];
+  #listeners = new Map<string, Set<(event: unknown) => void>>();
+  constructor(url: string, init?: { headers?: Record<string, string> }) {
+    opened.push({ url, auth: init?.headers?.Authorization });
+    socket = this;
+    queueMicrotask(() => {
+      this.emit("open", {});
+      for (const event of MockWebSocket.events) this.push(event);
     });
-  }) as typeof fetch;
-  return {
-    restore: () => {
-      globalThis.fetch = original;
-    },
-    calls,
-  };
+  }
+  addEventListener(type: string, listener: (event: unknown) => void): void {
+    this.#listeners.set(type, (this.#listeners.get(type) ?? new Set()).add(listener));
+  }
+  removeEventListener(type: string, listener: (event: unknown) => void): void {
+    this.#listeners.get(type)?.delete(listener);
+  }
+  push(event: unknown): void {
+    this.emit("message", { data: JSON.stringify(event) });
+  }
+  close(): void {
+    this.emit("close", { code: 1000, reason: "" });
+  }
+  emit(type: string, event: unknown): void {
+    for (const listener of this.#listeners.get(type) ?? []) listener(event);
+  }
 }
 
-function installMockWebSocket(events: unknown[]): {
-  urls: string[];
-  authorizations: (string | undefined)[];
-  restore: () => void;
-} {
-  const original = globalThis.WebSocket;
-  const urls: string[] = [];
-  const authorizations: (string | undefined)[] = [];
-  class MockWebSocket {
-    #listeners = new Map<string, Set<(event: unknown) => void>>();
-    constructor(url: string, init?: { headers?: Record<string, string> }) {
-      urls.push(url);
-      authorizations.push(init?.headers?.Authorization);
-      queueMicrotask(() => {
-        this.emit("open", {});
-        for (const event of events) this.emit("message", { data: JSON.stringify(event) });
-      });
+interface Run {
+  received: InboundMessage[];
+  calls: string[];
+  acks: Array<[string, number]>;
+  sent: unknown[];
+}
+
+interface Scenario {
+  listing?: (call: number) => unknown;
+  posts?: MattermostPost[];
+  route?: (url: string, init?: RequestInit) => Response | void;
+  ws?: unknown[];
+  account?: Partial<ResolvedClawBitsAccount>;
+  poller?: Partial<InboundPollerOptions>;
+  onMessage?: (msg: InboundMessage, turn: InboundTurn | undefined, run: Run) => unknown;
+  until?: (run: Run) => boolean;
+  ms?: number;
+}
+
+const hits = (calls: string[], suffix: string): number => calls.filter((url) => url.endsWith(suffix)).length;
+const dispatched = (n: number) => ({ received }: Run): boolean => received.length >= n;
+const ticks = (n: number) => ({ calls }: Run): boolean => hits(calls, "/api/agentic/mm/channels") > n;
+
+async function waitFor(done: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !done(); i += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+}
+
+/** Runs the poller against a fake server until `until` holds (default: one dispatch). */
+async function run(s: Scenario = {}): Promise<Run> {
+  const out: Run = { received: [], calls: [], acks: [], sent: [] };
+  const ac = new AbortController();
+  const check = (): void => {
+    if ((s.until ?? dispatched(1))(out)) ac.abort();
+  };
+  let listings = 0;
+  const serve = (url: string, init?: RequestInit): Response => {
+    const { pathname, searchParams } = new URL(url);
+    const match = /\/api\/agentic\/mm\/channels(?:\/([^/]+)\/(\w+))?$/.exec(pathname);
+    if (!match) return json(pathname.endsWith("/auth/challenge") ? { session_token: "s1", challenge: "known" } : {});
+    const [, channelId = "", leaf] = match;
+    if (!leaf) return json((s.listing ?? (() => ({ channels: [row()] })))(++listings));
+    if (leaf === "read") out.acks.push([channelId, (JSON.parse(String(init?.body)) as { post_id: number }).post_id]);
+    else if (leaf === "posts" && init?.method === "POST") out.sent.push(JSON.parse(String(init.body)));
+    else if (leaf === "posts") {
+      const after = Number(searchParams.get("after_post_id") ?? 0);
+      return json(postsBody((s.posts ?? []).filter((p) => p.channel_id === channelId && Number(p.id) > after)));
     }
-    addEventListener(type: string, listener: (event: unknown) => void): void {
-      const listeners = this.#listeners.get(type) ?? new Set();
-      listeners.add(listener);
-      this.#listeners.set(type, listeners);
+    return json({});
+  };
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    out.calls.push(url);
+    try {
+      const routed = s.route?.(url, init);
+      return routed instanceof Response ? routed : serve(url, init);
+    } finally {
+      check();
     }
-    removeEventListener(type: string, listener: (event: unknown) => void): void {
-      this.#listeners.get(type)?.delete(listener);
-    }
-    close(): void {
-      this.emit("close", { code: 1000, reason: "" });
-    }
-    emit(type: string, event: unknown): void {
-      for (const listener of this.#listeners.get(type) ?? []) listener(event);
-    }
+  }) as typeof fetch;
+  if (s.ws) {
+    MockWebSocket.events = s.ws;
+    opened.length = 0;
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
   }
-  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
-  return { urls, authorizations, restore: () => { globalThis.WebSocket = original; } };
+  const account = makeAccount({ ...(s.ws ? { config: { websocketEnabled: true } } : {}), ...s.account });
+  const timer = setTimeout(() => ac.abort(), s.ms ?? 2000);
+  try {
+    await runInboundPoller({
+      client: new ClawBitsClient({ endpoint: account.endpoint, apiKey: "test-key" }),
+      account,
+      abortSignal: ac.signal,
+      queue: () => ({}) as never,
+      pollIntervalMs: 1,
+      onInboundMessage: async (msg, turn) => {
+        await s.onMessage?.(msg, turn, out);
+        out.received.push(msg);
+        check();
+      },
+      ...s.poller,
+    });
+  } finally {
+    clearTimeout(timer);
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+    socket = undefined;
+  }
+  return out;
 }
 
 describe("parsePostsResponse", () => {
@@ -261,1102 +343,331 @@ describe("isServerHandledCommand", () => {
 });
 
 describe("runInboundPoller", () => {
-  it("dispatches only new user posts once and advances the cursor", async () => {
-    const posts: MattermostPost[] = [
-      { id: "p0", create_at: 100, human_id: 1, message: "old", channel_id: "chan-123" },
-      { id: "p1", create_at: 200, human_id: 1, message: "hi", channel_id: "chan-123" },
-      { id: "p2", create_at: 300, human_id: 1, message: "again", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub(() => ({
-      body: {
-        order: posts.map((p) => p.id),
-        posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-      },
-    }));
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    let polls = 0;
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        // Start cursor BEFORE p1 so p1/p2 dispatch; p0 should be filtered.
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          polls += 1;
-          if (polls >= 2) ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["p1", "p2"],
-    );
+  it("dispatches each user post above the channel's read pointer once", async () => {
+    const { received } = await run({
+      posts: [post(99), post(100), post(101, { message: "hi" }), post(102)],
+      until: dispatched(2),
+    });
+    assert.deepEqual(received.map((m) => m.postId), ["101", "102"]);
     assert.equal(received[0]?.text, "hi");
     assert.equal(received[0]?.senderId, "human:1");
     assert.equal(received[0]?.accountId, "default");
   });
 
   it("filters posts authored by the bot agentId (self-echoes)", async () => {
-    const posts: MattermostPost[] = [
-      { id: "self", create_at: 200, agent_id: "bot-agent", message: "echo", channel_id: "chan-123" },
-      { id: "human", create_at: 300, human_id: 1, message: "real", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub(() => ({
-      body: {
-        order: posts.map((p) => p.id),
-        posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-      },
-    }));
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["human"],
-    );
+    const { received } = await run({ posts: [agentPost(101, { agent_id: "bot-agent" }), post(102)] });
+    assert.deepEqual(received.map((m) => m.postId), ["102"]);
   });
 
   it("defaults to human-authored requests only", async () => {
-    const posts: MattermostPost[] = [
-      { id: "agent", create_at: 200, agent_id: "helper-agent", message: "bot to bot", channel_id: "chan-123" },
-      { id: "human", create_at: 300, human_id: 1, message: "real", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return { body: { channels: [{ channel_id: "chan-123", channel_type: "direct" }] } };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
-    });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(received.map((m) => m.postId), ["human"]);
+    const { received } = await run({ posts: [agentPost(101), post(102)] });
+    assert.deepEqual(received.map((m) => m.postId), ["102"]);
     assert.equal(received[0]?.senderTag, undefined);
   });
 
   it("does not dispatch a `/cb-usage` command (answered server-side) but dispatches the next message", async () => {
-    const posts: MattermostPost[] = [
-      { id: "usage", create_at: 200, human_id: 1, message: "/cb-usage", channel_id: "chan-123" },
-      { id: "real", create_at: 300, human_id: 1, message: "hello", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return { body: { channels: [{ channel_id: "chan-123", channel_type: "direct" }] } };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
-    });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    // The `/cb-usage` post is skipped; only the following real message reaches the model.
-    assert.deepEqual(received.map((m) => m.postId), ["real"]);
+    const { received } = await run({ posts: [post(101, { message: "/cb-usage" }), post(102)] });
+    assert.deepEqual(received.map((m) => m.postId), ["102"]);
   });
 
   it("dispatches `/cb-usage` normally outside a DM (DM-only command)", async () => {
-    const posts: MattermostPost[] = [
-      { id: "usage", create_at: 200, human_id: 1, message: "@bot-agent /cb-usage", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return { body: { channels: [{ channel_id: "chan-123", channel_type: "public" }] } };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received } = await run({
+      listing: () => ({ channels: [row({ channel_type: "public" })] }),
+      posts: [post(101, { message: "@bot-agent /cb-usage" })],
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    // Not a DM, but the agent is mentioned → `/cb-usage` reaches the model as text.
-    assert.deepEqual(received.map((m) => m.postId), ["usage"]);
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
   });
 
   it("dispatches other agents and sets senderTag in a shared (non-direct) channel when inter-agent mode is enabled", async () => {
-    // The agent-sender is @-mentioned so it's addressed in a public channel;
-    // reply-tagging is load-bearing here (the reply mentions the other agent so
-    // ITS poller picks the reply up and the conversation continues).
-    const posts: MattermostPost[] = [
-      { id: "agent", create_at: 200, agent_id: "helper-agent", message: "@bot-agent bot to bot", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "public" }],
-            inter_agent_mode_enabled: true,
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received } = await run({
+      listing: () => ({ channels: [row({ channel_type: "public" })], inter_agent_mode_enabled: true }),
+      posts: [agentPost(101, { message: "@bot-agent bot to bot" })],
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(received.map((m) => m.postId), ["agent"]);
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
     assert.equal(received[0]?.senderId, "agent:helper-agent");
     assert.equal(received[0]?.senderTag, "@helper-agent");
   });
 
   it("does NOT set senderTag (no reply-tag) in a 1:1 DM, even when inter-agent mode is enabled", async () => {
-    // Regression for the reported bug: inter-agent (LobsterTalk) reply-tagging
-    // must not leak into direct channels. In a DM there's a single counterpart,
-    // so no senderTag → buildReplyTagBlock stays empty → the agent doesn't
-    // prefix every reply with the human's @handle.
-    const posts: MattermostPost[] = [
-      { id: "dm", create_at: 200, human_id: 1, poster_display_name: "Dmytro Tkachuk", message: "why are you tagging me", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-            inter_agent_mode_enabled: true,
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received } = await run({
+      listing: () => ({ channels: [row()], inter_agent_mode_enabled: true }),
+      posts: [post(101, { poster_display_name: "Dmytro Tkachuk", message: "why are you tagging me" })],
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(received.map((m) => m.postId), ["dm"]);
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
     assert.equal(received[0]?.senderTag, undefined);
   });
 
   it("does not poll posts or open SSE while the agent is snoozed", async () => {
-    const ac = new AbortController();
-    let listCalls = 0;
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        listCalls += 1;
-        if (listCalls >= 2) queueMicrotask(() => ac.abort());
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-            inter_agent_mode_enabled: true,
-            snoozed: true,
-          },
-        };
-      }
-      throw new Error(`unexpected request while snoozed: ${url}`);
+    const { received, calls } = await run({
+      listing: () => ({ channels: [row()], snoozed: true }),
+      posts: [post(101)],
+      until: ticks(2),
     });
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-        },
-      });
-    } finally {
-      stub.restore();
-    }
     assert.deepEqual(received, []);
-    assert.equal(
-      stub.calls.some((url) => url.includes("/api/agentic/mm/channels/chan-123/posts")),
-      false,
-    );
-    assert.equal(
-      stub.calls.some((url) => url.includes("/api/agentic/mm/channels/chan-123/events")),
-      false,
-    );
+    assert.equal(calls.some((url) => url.includes("/chan-123/posts") || url.includes("/chan-123/events")), false);
   });
 
-  it("skips backlog that arrived while snoozed after unsnooze", async () => {
-    const posts: MattermostPost[] = [
-      { id: "during-snooze", create_at: 200, human_id: 1, message: "help", channel_id: "chan-123" },
-    ];
-    const ac = new AbortController();
-    let listCalls = 0;
-    let currentNow = 100;
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        listCalls += 1;
-        currentNow = listCalls >= 2 ? 1_000 : 100;
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-            snoozed: listCalls === 1,
-          },
-        };
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/events")) {
-        return { body: {} };
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/posts")) {
-        queueMicrotask(() => ac.abort());
-        return {
-          body: {
-            order: posts.map((p) => p.id),
-            posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-          },
-        };
-      }
-      throw new Error(`unexpected request: ${url}`);
+  it("skips what arrived while snoozed once unsnoozed, moving the baseline to latest and acking it", async () => {
+    const posts: MattermostPost[] = [];
+    const { received, acks } = await run({
+      posts,
+      listing: (call) => {
+        if (call === 2) posts.push(post(101), post(102));
+        if (call === 4) posts.push(post(103));
+        return { channels: [row({ latest_post_id: call < 3 ? 100 : 102 })], snoozed: call === 2 };
+      },
     });
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        now: () => currentNow,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(received, []);
+    assert.deepEqual(received.map((m) => m.postId), ["103"]);
+    assert.deepEqual(acks[0], [ROOM, 102]);
   });
 
   it("pauses inter-agent replies after 5 consecutive agent-authored turns", async () => {
-    const posts: MattermostPost[] = Array.from({ length: 7 }, (_, i) => ({
-      id: `agent-${i + 1}`,
-      create_at: 200 + i,
-      agent_id: "helper-agent",
-      message: `agent turn ${i + 1}`,
-      channel_id: "chan-123",
-    }));
-    const ac = new AbortController();
-    let noticeBody: Record<string, unknown> | undefined;
-    const stub = installFetchStub((url, init) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-            inter_agent_mode_enabled: true,
-            inter_agent_message_limit: 5,
-          },
-        };
-      }
-      if (url.endsWith("/api/agentic/auth/challenge")) {
-        return { body: { session_token: "s1", challenge: "known" } };
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/posts") && init?.method === "POST") {
-        noticeBody = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
-        ac.abort();
-        return { body: { id: "notice" } };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received, sent } = await run({
+      listing: () => ({ channels: [row()], inter_agent_mode_enabled: true, inter_agent_message_limit: 5 }),
+      posts: Array.from({ length: 7 }, (_, i) => agentPost(101 + i)),
+      account: { knownAnswers: { known: "answer" } },
+      until: ({ sent }) => sent.length > 0,
     });
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ knownAnswers: { known: "answer" } }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.equal(received.length, 5);
-    assert.equal(received.at(-1)?.postId, "agent-5");
-    assert.deepEqual(noticeBody, {
-      message: "@helper-agent Nice, but need human guidance to proceed.",
-    });
+    assert.deepEqual(received.map((m) => m.postId), ["101", "102", "103", "104", "105"]);
+    assert.deepEqual(sent, [{ message: "@helper-agent Nice, but need human guidance to proceed." }]);
   });
 
   it("does not reset the inter-agent pause counter for an untagged human message", async () => {
-    const agentPosts: MattermostPost[] = Array.from({ length: 5 }, (_, i) => ({
-      id: `agent-${i + 1}`,
-      create_at: 200 + i,
-      agent_id: "helper-agent",
-      message: `agent turn ${i + 1}`,
-      channel_id: "chan-123",
-    }));
-    const posts: MattermostPost[] = [
-      ...agentPosts,
-      {
-        id: "human-untagged",
-        create_at: 300,
-        human_id: 1,
-        message: "please continue",
-        channel_id: "chan-123",
-      },
-      {
-        id: "agent-after-untagged-human",
-        create_at: 301,
-        agent_id: "helper-agent",
-        message: "agent turn after untagged human",
-        channel_id: "chan-123",
-      },
-    ];
-    const ac = new AbortController();
-    let noticeBody: Record<string, unknown> | undefined;
-    const stub = installFetchStub((url, init) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-            inter_agent_mode_enabled: true,
-            inter_agent_message_limit: 5,
-          },
-        };
-      }
-      if (url.endsWith("/api/agentic/auth/challenge")) {
-        return { body: { session_token: "s1", challenge: "known" } };
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/posts") && init?.method === "POST") {
-        noticeBody = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
-        ac.abort();
-        return { body: { id: "notice" } };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received, sent } = await run({
+      listing: () => ({ channels: [row()], inter_agent_mode_enabled: true, inter_agent_message_limit: 5 }),
+      posts: [
+        ...Array.from({ length: 5 }, (_, i) => agentPost(101 + i)),
+        post(106, { message: "please continue" }),
+        agentPost(107),
+      ],
+      account: { knownAnswers: { known: "answer" } },
+      until: ({ sent }) => sent.length > 0,
     });
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ knownAnswers: { known: "answer" } }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(received.map((m) => m.postId), [
-      ...agentPosts.map((p) => p.id),
-      "human-untagged",
-    ]);
-    assert.deepEqual(noticeBody, {
-      message: "@helper-agent Nice, but need human guidance to proceed.",
-    });
+    assert.deepEqual(received.map((m) => m.postId), ["101", "102", "103", "104", "105", "106"]);
+    assert.deepEqual(sent, [{ message: "@helper-agent Nice, but need human guidance to proceed." }]);
   });
 
   it("resets the inter-agent pause counter only when a human tags this agent", async () => {
-    const agentPosts: MattermostPost[] = Array.from({ length: 5 }, (_, i) => ({
-      id: `agent-${i + 1}`,
-      create_at: 200 + i,
-      agent_id: "helper-agent",
-      message: `agent turn ${i + 1}`,
-      channel_id: "chan-123",
-    }));
-    const posts: MattermostPost[] = [
-      ...agentPosts,
-      {
-        id: "human-reset",
-        create_at: 300,
-        human_id: 1,
-        message: "@bot-agent please continue",
-        channel_id: "chan-123",
-      },
-      {
-        id: "agent-after-reset",
-        create_at: 301,
-        agent_id: "helper-agent",
-        message: "agent turn after reset",
-        channel_id: "chan-123",
-      },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-            inter_agent_mode_enabled: true,
-            inter_agent_message_limit: 5,
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received } = await run({
+      listing: () => ({ channels: [row()], inter_agent_mode_enabled: true, inter_agent_message_limit: 5 }),
+      posts: [
+        ...Array.from({ length: 5 }, (_, i) => agentPost(101 + i)),
+        post(106, { message: "@bot-agent please continue" }),
+        agentPost(107),
+      ],
+      until: dispatched(7),
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          if (received.length === 7) ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      [...agentPosts.map((p) => p.id), "human-reset", "agent-after-reset"],
-    );
+    assert.deepEqual(received.map((m) => m.postId), ["101", "102", "103", "104", "105", "106", "107"]);
   });
 
   it("filters system messages (non-empty type)", async () => {
-    const posts: MattermostPost[] = [
-      {
-        id: "sys",
-        create_at: 200,
-        human_id: 1,
-        message: "joined",
-        channel_id: "chan-123",
-        type: "system_join_channel",
-      },
-      { id: "msg", create_at: 300, human_id: 1, message: "yo", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub(() => ({
-      body: {
-        order: posts.map((p) => p.id),
-        posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-      },
-    }));
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["msg"],
-    );
+    const { received } = await run({ posts: [post(101, { type: "system_join_channel" }), post(102)] });
+    assert.deepEqual(received.map((m) => m.postId), ["102"]);
   });
 
   it("skips deleted posts", async () => {
-    const posts: MattermostPost[] = [
-      {
-        id: "del",
-        create_at: 200,
-        human_id: 1,
-        message: "gone",
-        channel_id: "chan-123",
-        delete_at: 210,
-      },
-      { id: "live", create_at: 300, human_id: 1, message: "stays", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub(() => ({
-      body: {
-        order: posts.map((p) => p.id),
-        posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-      },
-    }));
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["live"],
-    );
+    const { received } = await run({ posts: [post(101, { delete_at: 101_500 }), post(102)] });
+    assert.deepEqual(received.map((m) => m.postId), ["102"]);
   });
 
-  it("honors seenPostIds to suppress outbound echoes", async () => {
-    const posts: MattermostPost[] = [
-      { id: "p1", create_at: 200, human_id: 1, message: "seen", channel_id: "chan-123" },
-      { id: "p2", create_at: 300, human_id: 1, message: "new", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub(() => ({
-      body: {
-        order: posts.map((p) => p.id),
-        posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-      },
-    }));
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        seenPostIds: new Set(["p1"]),
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["p2"],
-    );
-  });
-
-  it("does not re-dispatch the same post on a second poll pass", async () => {
-    const posts: MattermostPost[] = [
-      { id: "only", create_at: 200, human_id: 1, message: "once", channel_id: "chan-123" },
-    ];
-    let passes = 0;
-    const stub = installFetchStub(() => {
-      passes += 1;
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+  it("does not re-dispatch the same post on repeated poll passes", async () => {
+    const { received } = await run({
+      posts: [post(101)],
+      until: ({ calls }) => hits(calls, "/chan-123/posts") >= 3,
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    const done = runInboundPoller({
-      client: makeClient(),
-      account: makeAccount(),
-      abortSignal: ac.signal,
-      initialCursor: 150,
-      pollIntervalMs: 1,
-      ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-        received.push(msg);
-      },
-    });
-    // Wait until we have at least 3 poll passes so the cursor has definitely
-    // advanced past `only` on pass 1 and held through passes 2 and 3.
-    while (passes < 3 && !ac.signal.aborted) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    ac.abort();
-    await done;
-    stub.restore();
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["only"],
-      "same post must not dispatch twice across repeated polls",
-    );
-    assert.ok(passes >= 3);
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
   });
 
   it("keeps running after a transient network error and logs it", async () => {
-    let callCount = 0;
-    const stub = installFetchStub(() => {
-      callCount += 1;
-      if (callCount === 1) throw new Error("network flap");
-      return {
-        body: {
-          order: ["p1"],
-          posts: {
-            p1: { id: "p1", create_at: 300, human_id: 1, message: "recovered", channel_id: "chan-123" },
-          },
-        },
-      };
-    });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
     const warns: string[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        log: { warn: (m) => warns.push(m) },
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    // Either path can carry the transient error: ``listChannels failed``
-    // (the new fan-out path) or ``inbound poll failed`` (the per-channel
-    // fetch). We just need proof that the poller noticed and kept going.
-    assert.ok(
-      warns.some(
-        (l) => l.includes("inbound poll failed") || l.includes("listChannels failed"),
-      ),
-    );
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["p1"],
-    );
+    let flaps = 0;
+    const { received } = await run({
+      posts: [post(101)],
+      route: () => {
+        if (flaps++ === 0) throw new Error("network flap");
+      },
+      poller: { log: { warn: (msg) => warns.push(msg) } },
+    });
+    assert.ok(warns.some((msg) => msg.includes("listChannels failed")));
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
   });
 
   it("auto-dispatches in a discovered direct channel without an @mention", async () => {
-    // listChannels returns a non-fallback direct channel. A plain user post
-    // there should be picked up because direct == 1:1 surface; the mention
-    // gate is dropped. The fallback chan-123 is NOT in the listing.
-    const posts: MattermostPost[] = [
-      { id: "p1", create_at: 200, human_id: 1, message: "hey", channel_id: "dm-with-bot" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [
-              { channel_id: "dm-with-bot", channel_type: "direct" },
-            ],
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received } = await run({
+      listing: () => ({ channels: [row({ channel_id: "dm-with-bot" })] }),
+      posts: [post(101, { channel_id: "dm-with-bot", message: "hey" })],
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["p1"],
-    );
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
     assert.equal(received[0]?.channelId, "dm-with-bot");
   });
 
   it("auto-dispatches in a named agent chat without an @mention", async () => {
-    const posts: MattermostPost[] = [
-      { id: "p1", create_at: 200, human_id: 1, message: "hey", channel_id: "named-chat" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "named-chat", channel_type: "agent_chat" }],
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received } = await run({
+      listing: () => ({ channels: [row({ channel_id: "named-chat", channel_type: "agent_chat" })] }),
+      posts: [post(101, { channel_id: "named-chat", message: "hey" })],
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(received.map((m) => m.postId), ["p1"]);
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
     assert.equal(received[0]?.channelType, "agent_chat");
   });
 
   it("blocks addressed inbound posts from senders outside non-empty allowFrom", async () => {
-    const posts: MattermostPost[] = [
-      { id: "blocked", create_at: 200, human_id: 1, message: "nope", channel_id: "chan-123" },
-      { id: "allowed", create_at: 300, human_id: 2, message: "yes", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const warns: string[] = [];
+    const { received } = await run({
+      posts: [post(101), post(102, { human_id: 2 })],
+      account: { allowFrom: ["human:2"] },
+      poller: { log: { warn: (msg) => warns.push(msg) } },
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    const warnings: string[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ allowFrom: ["human:2"] }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        log: { warn: (msg) => warnings.push(msg) },
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["allowed"],
-    );
-    assert.ok(
-      warnings.some((msg) => msg.includes("inbound blocked by allowFrom sender=human:1")),
-      "blocked sender is logged",
-    );
+    assert.deepEqual(received.map((m) => m.postId), ["102"]);
+    assert.ok(warns.some((msg) => msg.includes("inbound blocked by allowFrom sender=human:1")), "blocked sender is logged");
   });
 
   it("treats empty allowFrom as allow-all", async () => {
-    const posts: MattermostPost[] = [
-      { id: "human", create_at: 200, human_id: 1, message: "hello", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
-    });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ allowFrom: [] }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["human"],
-    );
+    const { received } = await run({ posts: [post(101)], account: { allowFrom: [] } });
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
   });
 
   it('treats a "*" entry in allowFrom as allow-all, not as a literal sender id', async () => {
-    // `"*"` is OpenClaw's canonical allow-everyone entry (its shared matcher in
-    // src/plugin-sdk/allow-from.ts special-cases it). Clawbits matched entries
-    // by exact set membership, so an operator writing the documented OpenClaw
-    // form got the OPPOSITE of what they asked for: no sender key ever equals
-    // "*", so a non-empty list denied every sender and the channel went silent.
-    const posts: MattermostPost[] = [
-      { id: "from-1", create_at: 200, human_id: 1, message: "hello", channel_id: "chan-123" },
-      { id: "from-9", create_at: 300, human_id: 9, message: "also hello", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "chan-123", channel_type: "direct" }],
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const warns: string[] = [];
+    const { received } = await run({
+      posts: [post(101), post(102, { human_id: 9 })],
+      account: { allowFrom: ["*"] },
+      poller: { log: { warn: (msg) => warns.push(msg) } },
+      until: dispatched(2),
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    const warnings: string[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ allowFrom: ["*"] }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        log: { warn: (msg) => warnings.push(msg) },
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          if (received.length === 2) ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["from-1", "from-9"],
-      "every sender is admitted under a wildcard allowlist",
-    );
-    assert.ok(
-      !warnings.some((msg) => msg.includes("inbound blocked by allowFrom")),
-      "no sender is blocked under a wildcard allowlist",
-    );
+    assert.deepEqual(received.map((m) => m.postId), ["101", "102"], "every sender is admitted under a wildcard allowlist");
+    assert.ok(!warns.some((msg) => msg.includes("inbound blocked by allowFrom")), "no sender is blocked under a wildcard allowlist");
   });
 
   it("requires an @mention in non-direct channels discovered via listChannels", async () => {
-    // A public/group channel returned by listChannels. The bot is a member
-    // but the post doesn't mention @bot-agent — dispatch must be skipped.
-    const posts: MattermostPost[] = [
-      { id: "no-mention", create_at: 200, human_id: 1, message: "general chatter", channel_id: "team-room" },
-      {
-        id: "mentioned",
-        create_at: 300,
-        human_id: 1,
-        message: "@bot-agent @bot-agent please help",
-        channel_id: "team-room",
-      }
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [
-              { channel_id: "team-room", channel_type: "public" },
-            ],
-          },
-        };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+    const { received } = await run({
+      listing: () => ({ channels: [row({ channel_id: "team-room", channel_type: "public" })] }),
+      posts: [
+        post(101, { channel_id: "team-room", message: "general chatter" }),
+        post(102, { channel_id: "team-room", message: "@bot-agent @bot-agent please help" }),
+      ],
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        ownerHumanIds: new Set([1]),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    // Only the mentioned post dispatches; the un-mentioned one is filtered.
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["mentioned"],
-    );
+    assert.deepEqual(received.map((m) => m.postId), ["102"]);
     assert.equal(received[0]?.text, "@bot-agent please help");
   });
 
   it("aborts cleanly on abortSignal mid-sleep without pending dispatches", async () => {
-    const stub = installFetchStub(() => ({ body: { order: [], posts: {} } }));
-    const ac = new AbortController();
-    let dispatches = 0;
-    const done = runInboundPoller({
-      client: makeClient(),
-      account: makeAccount(),
-      abortSignal: ac.signal,
-      initialCursor: 1000,
-      // Long interval so we spend most time in the sleep.
-      pollIntervalMs: 100_000,
-      ownerHumanIds: new Set([1]),
-      onInboundMessage: () => {
-        dispatches += 1;
+    const { received } = await run({ poller: { pollIntervalMs: 100_000 }, ms: 20 });
+    assert.deepEqual(received, []);
+  });
+});
+
+describe("runInboundPoller — durable inbound", () => {
+  it("acks the admitted post's serial while its turn is still running", async () => {
+    let ackedMidTurn = false;
+    const { acks } = await run({
+      posts: [post(100), post(101)],
+      onMessage: async (_msg, _turn, { acks }) => {
+        await waitFor(() => acks.length > 0);
+        ackedMidTurn = acks.length > 0;
       },
     });
-    // Let the first poll run, then abort mid-sleep.
-    await new Promise((r) => setTimeout(r, 20));
-    ac.abort();
-    await done;
-    stub.restore();
-    assert.equal(dispatches, 0);
+    assert.equal(ackedMidTurn, true, "the ack does not wait for the turn to settle");
+    assert.deepEqual(acks, [[ROOM, 101]]);
+  });
+
+  it("never acks the agent's own posts or anyone's unsettled draft", async () => {
+    const { received, acks } = await run({
+      posts: [
+        post(100),
+        agentPost(101, { agent_id: "bot-agent", status: "streaming", message: "" }),
+        agentPost(102, { agent_id: "other-agent", status: "streaming", message: "" }),
+        post(103),
+      ],
+    });
+    assert.deepEqual(received.map((m) => m.postId), ["103"]);
+    assert.deepEqual(acks, [[ROOM, 103]]);
+  });
+
+  it("dispatches a post seen by the WebSocket, a reconcile and a fallback poll once", async () => {
+    const posts = [post(101)];
+    let polls = 0;
+    const { received, calls } = await run({
+      ws: [{ type: "post.created", channel_id: ROOM, data: posts[0] }],
+      posts,
+      route: (url) => {
+        if (!url.endsWith("/chan-123/posts")) return;
+        polls += 1;
+        if (polls === 1) socket?.close();
+        if (polls === 2) posts.push(post(102));
+      },
+      until: dispatched(2),
+    });
+    assert.deepEqual(received.map((m) => m.postId), ["101", "102"]);
+    assert.equal(hits(calls, "/chan-123/posts"), 2, "one reconcile over the socket, one poll after it dropped");
+  });
+
+  it("turns a lobstertalk.consider nudge for an already-seen, un-mentioned post into one attention turn", async () => {
+    const seen = post(101, { message: "anyone know how to reset the widget?" });
+    const nudge = { type: "lobstertalk.consider", channel_id: ROOM, data: seen };
+    const { received } = await run({
+      listing: () => ({ channels: [row({ channel_type: "public" })] }),
+      ws: [
+        { type: "post.created", channel_id: ROOM, data: seen },
+        nudge,
+        nudge,
+        { type: "post.created", channel_id: ROOM, data: post(102, { message: "@bot-agent thanks" }) },
+      ],
+      until: dispatched(2),
+    });
+    assert.deepEqual(received.map((m) => [m.postId, m.attention]), [["101", true], ["102", undefined]]);
+  });
+
+  it("does not replay history for a channel with no read pointer, and acks its latest post", async () => {
+    const { received, acks, calls } = await run({
+      listing: () => ({ channels: [row({ last_read_post_id: null, latest_post_id: 102 })] }),
+      posts: [post(101), post(102), post(103)],
+    });
+    assert.deepEqual(received.map((m) => m.postId), ["103"]);
+    assert.deepEqual(acks[0], [ROOM, 102]);
+    assert.equal(calls.some((url) => url.includes("after_post_id")), false);
+  });
+
+  it("seeds a channel with no read pointer and no latest post from its first page", async () => {
+    const posts = [post(101), post(102)];
+    let polls = 0;
+    const { received, acks } = await run({
+      listing: () => ({ channels: [{ channel_id: ROOM, channel_type: "direct" }] }),
+      posts,
+      route: (url) => {
+        if (url.endsWith("/chan-123/posts") && ++polls === 2) posts.push(post(103));
+      },
+    });
+    assert.deepEqual(received.map((m) => m.postId), ["103"]);
+    assert.deepEqual(acks, [[ROOM, 103]]);
+  });
+
+  it("retries a delivery that throws before adoption, flagging the last attempt", async () => {
+    const attempts: Array<boolean | undefined> = [];
+    const { received } = await run({
+      posts: [post(101)],
+      onMessage: (_msg, turn) => {
+        attempts.push(turn?.lastAttempt);
+        if (attempts.length < 3) throw new Error("gateway busy");
+      },
+    });
+    assert.deepEqual(attempts, [false, false, true]);
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
+  });
+
+  it("reaches stopTurn for the running turn when turn.stop arrives", async () => {
+    let stopped = false;
+    const { received } = await run({
+      ws: [{ type: "post.created", channel_id: ROOM, data: post(101) }],
+      onMessage: async () => {
+        const ref = { id: 1, stop: async () => void (stopped = true) };
+        registerOpenDraft("default", ROOM, ref);
+        socket?.push({ type: "turn.stop", channel_id: ROOM });
+        await waitFor(() => stopped);
+        unregisterOpenDraft("default", ROOM, ref);
+      },
+    });
+    assert.equal(stopped, true, "the stop is not queued behind the turn it stops");
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
   });
 });
 
@@ -1467,290 +778,93 @@ describe("buildPriorContext", () => {
 });
 
 describe("runInboundPoller — pre-tag channel backlog", () => {
-  // A public channel where the agent does NOT require response approval and a
-  // backlog budget is configured. Two un-mentioned chatter posts precede a
-  // mention; the dispatched mention should carry both as read-only context.
-  const posts: MattermostPost[] = [
-    { id: "c1", create_at: 200, human_id: 1, message: "anyone around?", channel_id: "team-room" },
-    { id: "c2", create_at: 250, human_id: 2, message: "deploy is green", channel_id: "team-room" },
-    { id: "m1", create_at: 300, human_id: 1, message: "@bot-agent status?", channel_id: "team-room" },
-    { id: "m2", create_at: 400, human_id: 1, message: "@bot-agent and now?", channel_id: "team-room" },
+  const TEAM = "team-room";
+  const chatter = [
+    post(101, { channel_id: TEAM, message: "anyone around?" }),
+    post(102, { channel_id: TEAM, human_id: 2, message: "deploy is green" }),
+    post(103, { channel_id: TEAM, message: "@bot-agent status?" }),
   ];
-
-  function stubFor(requireApproval: boolean) {
-    return installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "team-room", channel_type: "public" }],
-            require_response_approval: requireApproval,
-          },
-        };
-      }
-      // Posts endpoint (with or without ?limit) returns the full set.
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
+  const later = [
+    post(104, { channel_id: TEAM, human_id: 2, message: "build finished" }),
+    post(105, { channel_id: TEAM, message: "@bot-agent and now?" }),
+  ];
+  const inRoom = (posts: MattermostPost[], s: Scenario = {}): Promise<Run> =>
+    run({
+      listing: () => ({ channels: [row({ channel_id: TEAM, channel_type: "public" })] }),
+      posts,
+      account: { channelContextBacklog: 50 },
+      ...s,
     });
-  }
 
   it("catches up on new messages on every mention (watermark dedupes)", async () => {
-    // c1/c2 precede the first tag; c3 arrives between the two tags. Each tag
-    // should surface only what's new since the agent last looked — never a
-    // re-read.
-    const set: MattermostPost[] = [
-      { id: "c1", create_at: 200, human_id: 1, message: "anyone around?", channel_id: "team-room" },
-      { id: "c2", create_at: 250, human_id: 2, message: "deploy is green", channel_id: "team-room" },
-      { id: "m1", create_at: 300, human_id: 1, message: "@bot-agent status?", channel_id: "team-room" },
-      { id: "c3", create_at: 350, human_id: 2, message: "build finished", channel_id: "team-room" },
-      { id: "m2", create_at: 400, human_id: 1, message: "@bot-agent and now?", channel_id: "team-room" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: {
-            channels: [{ channel_id: "team-room", channel_type: "public" }],
-            require_response_approval: false,
-          },
-        };
-      }
-      return {
-        body: {
-          order: set.map((p) => p.id),
-          posts: Object.fromEntries(set.map((p) => [p.id, p])),
-        },
-      };
+    const { received } = await inRoom([...chatter, ...later], {
+      poller: { contextWatermarks: memoryStore() },
+      until: dispatched(2),
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ channelContextBacklog: 50 }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        watermarkStore: ChannelWatermarkStore.inMemory(),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          if (received.length >= 2) ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["m1", "m2"],
-    );
-    assert.deepEqual(
-      received[0]?.priorContext?.map((p) => p.postId),
-      ["c1", "c2"],
-      "first tag catches up on prior chatter",
-    );
-    assert.deepEqual(
-      received[1]?.priorContext?.map((p) => p.postId),
-      ["c3"],
-      "second tag surfaces only the message since the first tag — not re-reading c1/c2/m1",
-    );
+    assert.deepEqual(received.map((m) => m.postId), ["103", "105"]);
+    assert.deepEqual(received[0]?.priorContext?.map((p) => p.postId), ["101", "102"], "first tag catches up on prior chatter");
+    assert.deepEqual(received[1]?.priorContext?.map((p) => p.postId), ["104"], "second tag surfaces only what is new since the first");
   });
 
   it("gathers backlog regardless of the agent's response-approval flag", async () => {
-    // `require_response_approval: true` no longer suppresses context ingestion —
-    // that flag governs the inbound approval workflow, not the backlog.
-    const stub = stubFor(true);
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ channelContextBacklog: 50 }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        watermarkStore: ChannelWatermarkStore.inMemory(),
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.equal(received[0]?.postId, "m1");
-    assert.deepEqual(
-      received[0]?.priorContext?.map((p) => p.postId),
-      ["c1", "c2"],
-      "backlog gathered even when require_response_approval is true",
-    );
+    const { received } = await inRoom(chatter, {
+      listing: () => ({ channels: [row({ channel_id: TEAM, channel_type: "public" })], require_response_approval: true }),
+    });
+    assert.equal(received[0]?.postId, "103");
+    assert.deepEqual(received[0]?.priorContext?.map((p) => p.postId), ["101", "102"]);
   });
 
   it("does not gather backlog when the budget is zero", async () => {
-    const stub = stubFor(false);
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ channelContextBacklog: 0 }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
+    const { received } = await inRoom(chatter, { account: { channelContextBacklog: 0 } });
+    assert.equal(received[0]?.postId, "103");
     assert.equal(received[0]?.priorContext, undefined, "backlog disabled → no context");
   });
 
   it("gathers backlog for the configured fallback channel when discovery says it is public", async () => {
-    const stub = stubFor(false);
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ channelId: "team-room", channelContextBacklog: 50 }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-    }
-    assert.equal(received[0]?.postId, "m1");
-    assert.deepEqual(
-      received[0]?.priorContext?.map((p) => p.postId),
-      ["c1", "c2"],
-      "configured public channel is not treated as fallback operator DM",
-    );
+    const { received } = await inRoom(chatter, { account: { channelId: TEAM, channelContextBacklog: 50 } });
+    assert.equal(received[0]?.postId, "103");
+    assert.deepEqual(received[0]?.priorContext?.map((p) => p.postId), ["101", "102"], "configured public channel is not treated as fallback operator DM");
   });
 
-  it("does not re-read history across a restart (persisted watermark)", async () => {
-    // A watermark store shared across two poller lifetimes simulates a
-    // gateway restart: the store survives, the in-memory dedupe does not.
-    const store = ChannelWatermarkStore.inMemory();
+  it("does not re-read history across a restart (shared context watermark store)", async () => {
+    const store = memoryStore<number>();
+    const first = await inRoom(chatter, { poller: { contextWatermarks: store } });
+    assert.deepEqual(first.received[0]?.priorContext?.map((p) => p.postId), ["101", "102"]);
 
-    function runWith(set: MattermostPost[], initialCursor: number) {
-      const stub = installFetchStub((url) => {
-        if (url.endsWith("/api/agentic/mm/channels")) {
-          return {
-            body: {
-              channels: [{ channel_id: "team-room", channel_type: "public" }],
-              require_response_approval: false,
-            },
-          };
-        }
-        return {
-          body: {
-            order: set.map((p) => p.id),
-            posts: Object.fromEntries(set.map((p) => [p.id, p])),
-          },
-        };
-      });
-      const ac = new AbortController();
-      const received: InboundMessage[] = [];
-      return runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ channelContextBacklog: 50 }),
-        abortSignal: ac.signal,
-        initialCursor,
-        pollIntervalMs: 1,
-        watermarkStore: store,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      })
-        .then(() => received)
-        .finally(() => stub.restore());
-    }
-
-    // Run 1: first mention m1 catches up on c1 + c2; watermark advances to 300.
-    const run1 = await runWith(
-      [
-        { id: "c1", create_at: 200, human_id: 1, message: "anyone around?", channel_id: "team-room" },
-        { id: "c2", create_at: 250, human_id: 2, message: "deploy is green", channel_id: "team-room" },
-        { id: "m1", create_at: 300, human_id: 1, message: "@bot-agent status?", channel_id: "team-room" },
-      ],
-      150,
-    );
-    assert.deepEqual(
-      run1[0]?.priorContext?.map((p) => p.postId),
-      ["c1", "c2"],
-    );
-
-    // Run 2 (restart): a new untagged post c3 then a new mention m2. The
-    // backlog must contain ONLY c3 — c1/c2/m1 were already shown (<= watermark).
-    const run2 = await runWith(
-      [
-        { id: "c1", create_at: 200, human_id: 1, message: "anyone around?", channel_id: "team-room" },
-        { id: "c2", create_at: 250, human_id: 2, message: "deploy is green", channel_id: "team-room" },
-        { id: "m1", create_at: 300, human_id: 1, message: "@bot-agent status?", channel_id: "team-room" },
-        { id: "c3", create_at: 350, human_id: 2, message: "build finished", channel_id: "team-room" },
-        { id: "m2", create_at: 400, human_id: 1, message: "@bot-agent and now?", channel_id: "team-room" },
-      ],
-      320,
-    );
-    assert.equal(run2[0]?.postId, "m2");
-    assert.deepEqual(
-      run2[0]?.priorContext?.map((p) => p.postId),
-      ["c3"],
-      "only the message that arrived since the last seen post is surfaced",
-    );
-  });
-
-  it("finishes an MCP sign-in from the agent WebSocket, reports it, then wakes the agent", async () => {
-    setMcpOAuthRuntime({
-      system: { runCommandWithTimeout: async () => ({ code: 0, stdout: "", stderr: "" }) },
-    } as unknown as OpenClawPluginApi["runtime"]);
-    const ws = installMockWebSocket([
-      { type: "snapshot", data: { channels: [{ channel_id: "room-1", channel_type: "public" }] } },
-      {
-        type: "mcp.oauth.code",
-        data: { server: "agentpit", code: "c1", state: "s1", channel_id: "room-1", human_id: 7 },
-      },
-    ]);
-    const reported: unknown[] = [];
-    const stub = installFetchStub((url, init) => {
-      if (url.endsWith("/api/agentic/mcp-oauth/result")) reported.push(JSON.parse(String(init?.body)));
-      return { body: { channels: [], posts: {}, order: [] } };
+    const second = await inRoom([...chatter, ...later], {
+      listing: () => ({ channels: [row({ channel_id: TEAM, channel_type: "public", last_read_post_id: 103, latest_post_id: 103 })] }),
+      poller: { contextWatermarks: store },
     });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ config: { websocketEnabled: true } }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 10_000,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-      ws.restore();
-    }
+    assert.equal(second.received[0]?.postId, "105");
+    assert.deepEqual(second.received[0]?.priorContext?.map((p) => p.postId), ["104"], "only what arrived since the last shown post");
+    assert.equal(store.rows.get(`default:${TEAM}`), 105_000);
+  });
+});
 
+describe("runInboundPoller — agent WebSocket and SSE", () => {
+  it("finishes an MCP sign-in from the agent WebSocket, reports it, then wakes the agent", async () => {
+    setRuntime({
+      system: { runCommandWithTimeout: async () => ({ code: 0, stdout: "", stderr: "" }) },
+    } as unknown as PluginRuntime);
+    const reported: unknown[] = [];
+    const turns: Array<InboundTurn | undefined> = [];
+    const { received } = await run({
+      ws: [
+        { type: "snapshot", data: { channels: [{ channel_id: "room-1", channel_type: "public" }] } },
+        {
+          type: "mcp.oauth.code",
+          data: { server: "agentpit", code: "c1", state: "s1", channel_id: "room-1", human_id: 7 },
+        },
+      ],
+      route: (url, init) => {
+        if (url.endsWith("/api/agentic/mcp-oauth/result")) reported.push(JSON.parse(String(init?.body)));
+      },
+      onMessage: (_msg, turn) => void turns.push(turn),
+    });
     assert.deepEqual(reported, [{ state: "s1", connected: true }]);
-    assert.equal(received.length, 1);
-    assert.equal(received[0]?.channelId, "room-1");
-    assert.equal(received[0]?.senderId, "human:7");
+    assert.deepEqual(received.map((m) => [m.postId, m.channelId, m.senderId]), [["mcp-oauth-s1", "room-1", "human:7"]]);
     assert.match(received[0]?.text ?? "", /Signed in to MCP server "agentpit"/);
+    assert.equal(turns[0]?.lastAttempt, false, "the wake runs as a durable turn");
   });
 
   it("forwards skills.sync and automation.sync to the companion's loops", async () => {
@@ -1771,1070 +885,318 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
     );
     const woken: string[] = [];
     const unsubscribe = handoff?.onCompanionWake?.((nudge, accountId) => woken.push(`${nudge}:${accountId}`));
-    const post = { id: "ws-1", create_at: 200, human_id: 1, message: "hi", channel_id: "chan-123" };
-    const ws = installMockWebSocket([
-      { type: "skills.sync" },
-      { type: "automation.sync" },
-      { type: "post.created", channel_id: "chan-123", data: post },
-    ]);
-    const stub = installFetchStub(() => ({
-      body: { channels: [{ channel_id: "chan-123", channel_type: "direct" }] },
-    }));
-    const ac = new AbortController();
     try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ config: { websocketEnabled: true } }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 10_000,
-        onInboundMessage: () => ac.abort(),
+      await run({
+        ws: [{ type: "skills.sync" }, { type: "automation.sync" }, { type: "post.created", channel_id: ROOM, data: post(101) }],
       });
     } finally {
       unsubscribe?.();
-      stub.restore();
-      ws.restore();
     }
-
     assert.deepEqual(woken, ["skills.sync:default", "automation.sync:default"]);
   });
 
   it("dispatches post.created over the agent WebSocket without per-channel SSE or post polling", async () => {
-    const post = {
-      id: "ws-1",
-      create_at: 200,
-      human_id: 1,
-      message: "hello over ws",
-      channel_id: "chan-123",
-    };
-    const ws = installMockWebSocket([{ type: "post.created", channel_id: "chan-123", data: post }]);
-
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: { channels: [{ channel_id: "chan-123", channel_type: "direct" }] },
-        };
-      }
-      throw new Error(`unexpected fallback request while websocket is primary: ${url}`);
+    const { received, calls } = await run({
+      ws: [{ type: "post.created", channel_id: ROOM, data: post(101, { message: "hello over ws" }) }],
+      account: { endpoint: "http://fc.example/base" },
+      poller: { pollIntervalMs: 10_000 },
     });
-
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: new ClawBitsClient({ endpoint: "http://fc.example/base", apiKey: "test-key" }),
-        account: makeAccount({
-          endpoint: "http://fc.example/base",
-          config: { websocketEnabled: true },
-        }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 10_000,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-      ws.restore();
-    }
-
-    assert.deepEqual(received.map((m) => m.postId), ["ws-1"]);
-    assert.deepEqual(ws.urls, ["ws://fc.example/base/api/agentic/mm/events/ws"]);
-    assert.deepEqual(ws.authorizations, ["Bearer test-key"]);
-    assert.equal(
-      stub.calls.some((url) => url.includes("/api/agentic/mm/channels/chan-123/events")),
-      false,
-    );
-    assert.equal(
-      stub.calls.some((url) => url.includes("/api/agentic/mm/channels/chan-123/posts")),
-      false,
-    );
+    assert.deepEqual(received.map((m) => m.postId), ["101"]);
+    assert.deepEqual(opened, [{ url: "ws://fc.example/base/api/agentic/mm/events/ws", auth: "Bearer test-key" }]);
+    assert.equal(calls.some((url) => url.includes("/chan-123/events") || url.includes("/chan-123/posts")), false);
   });
 
-  // `mutualist.consider` is the pre-rename name for the same control event and
-  // is still accepted, so a server that hasn't been redeployed yet keeps
-  // nudging agents on this build. Both names must behave identically.
-  for (const eventType of ["lobstertalk.consider", "mutualist.consider"]) {
-    it(`dispatches a ${eventType} nudge for an un-mentioned channel post as an attention turn`, async () => {
-      // Public channel, no @mention: without the nudge this post would be backlog
-      // only. The consider control event must force it to dispatch and
-      // flag it `attention` so the agent is framed reply-only-if-useful.
-      const post = {
-        id: "ws-att-1",
-        create_at: 200,
-        human_id: 1,
-        message: "anyone know how to reset the widget?",
-        channel_id: "chan-123",
-      };
-      const event = { type: eventType, channel_id: "chan-123", data: post };
-      const originalWebSocket = globalThis.WebSocket;
-      class MockWebSocket {
-        url: string;
-        #listeners = new Map<string, Set<(event: unknown) => void>>();
-        constructor(url: string) {
-          this.url = url;
-          queueMicrotask(() => {
-            this.emit("open", {});
-            this.emit("message", { data: JSON.stringify(event) });
-          });
-        }
-        addEventListener(type: string, listener: (event: unknown) => void): void {
-          const listeners = this.#listeners.get(type) ?? new Set();
-          listeners.add(listener);
-          this.#listeners.set(type, listeners);
-        }
-        removeEventListener(type: string, listener: (event: unknown) => void): void {
-          this.#listeners.get(type)?.delete(listener);
-        }
-        close(): void {
-          this.emit("close", { code: 1000, reason: "" });
-        }
-        emit(type: string, event: unknown): void {
-          for (const listener of this.#listeners.get(type) ?? []) listener(event);
-        }
-      }
-      globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
-
-      const stub = installFetchStub((url) => {
-        if (url.endsWith("/api/agentic/mm/channels")) {
-          return { body: { channels: [{ channel_id: "chan-123", channel_type: "public" }] } };
-        }
-        if (url.includes("/api/agentic/mm/channels/chan-123/posts")) {
-          return { body: { posts: [] } };
-        }
-        return { body: {} };
-      });
-
-      const ac = new AbortController();
-      const received: InboundMessage[] = [];
-      try {
-        await runInboundPoller({
-          client: new ClawBitsClient({ endpoint: "http://fc.example/base", apiKey: "test-key" }),
-          account: makeAccount({
-            endpoint: "http://fc.example/base",
-            config: { websocketEnabled: true },
-          }),
-          abortSignal: ac.signal,
-          initialCursor: 150,
-          pollIntervalMs: 10_000,
-          onInboundMessage: (msg) => {
-            received.push(msg);
-            ac.abort();
-          },
-        });
-      } finally {
-        stub.restore();
-        globalThis.WebSocket = originalWebSocket;
-      }
-
-      assert.deepEqual(received.map((m) => m.postId), ["ws-att-1"]);
-      assert.equal(received[0]!.attention, true);
-    });
-  }
-
-  it("learns a WebSocket-pushed channel.added before dispatching a new-channel post", async () => {
-    const addedChannel = {
-      channel_id: "chan-new",
-      channel_type: "direct",
-      display_name: "new dm",
-    };
-    const post = {
-      id: "ws-new-channel",
-      create_at: 220,
-      human_id: 1,
-      message: "hello on new channel",
-      channel_id: "chan-new",
-    };
-    const originalWebSocket = globalThis.WebSocket;
-    class MockWebSocket {
-      #listeners = new Map<string, Set<(event: unknown) => void>>();
-      constructor(_url: string) {
-        queueMicrotask(() => {
-          this.emit("open", {});
-          this.emit("message", {
-            data: JSON.stringify({
-              type: "channel.added",
-              channel_id: "chan-new",
-              data: addedChannel,
-            }),
-          });
-          this.emit("message", {
-            data: JSON.stringify({ type: "post.created", channel_id: "chan-new", data: post }),
-          });
-        });
-      }
-      addEventListener(type: string, listener: (event: unknown) => void): void {
-        const listeners = this.#listeners.get(type) ?? new Set();
-        listeners.add(listener);
-        this.#listeners.set(type, listeners);
-      }
-      removeEventListener(type: string, listener: (event: unknown) => void): void {
-        this.#listeners.get(type)?.delete(listener);
-      }
-      close(): void {
-        this.emit("close", { code: 1000, reason: "" });
-      }
-      emit(type: string, event: unknown): void {
-        for (const listener of this.#listeners.get(type) ?? []) listener(event);
-      }
-    }
-    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
-
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return { body: { channels: [{ channel_id: "chan-123", channel_type: "direct" }] } };
-      }
-      throw new Error(`unexpected request while websocket is primary: ${url}`);
-    });
-
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ config: { websocketEnabled: true } }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 10_000,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
+  it("learns WebSocket-pushed channels, seeding a baseline only from their latest_post_id", async () => {
+    const { received } = await run({
+      ws: [
+        { type: "channel.added", channel_id: "chan-new", data: { channel_id: "chan-new", channel_type: "direct" } },
+        {
+          type: "channel.added",
+          channel_id: "chan-seeded",
+          data: { channel_id: "chan-seeded", channel_type: "direct", latest_post_id: 300 },
         },
-      });
-    } finally {
-      stub.restore();
-      globalThis.WebSocket = originalWebSocket;
-    }
-
-    assert.deepEqual(received.map((m) => m.postId), ["ws-new-channel"]);
+        { type: "post.created", channel_id: "chan-seeded", data: post(300, { channel_id: "chan-seeded" }) },
+        { type: "post.created", channel_id: "chan-new", data: post(7, { channel_id: "chan-new" }) },
+        { type: "post.created", channel_id: "chan-seeded", data: post(301, { channel_id: "chan-seeded" }) },
+      ],
+      poller: { pollIntervalMs: 10_000 },
+      until: dispatched(2),
+    });
+    assert.deepEqual(received.map((m) => [m.channelId, m.postId]), [["chan-new", "7"], ["chan-seeded", "301"]]);
   });
 
   it("does not refresh channel control on every fallback tick while WebSocket is healthy", async () => {
-    const originalWebSocket = globalThis.WebSocket;
-    class MockWebSocket {
-      #listeners = new Map<string, Set<(event: unknown) => void>>();
-      constructor(_url: string) {
-        queueMicrotask(() => this.emit("open", {}));
-      }
-      addEventListener(type: string, listener: (event: unknown) => void): void {
-        const listeners = this.#listeners.get(type) ?? new Set();
-        listeners.add(listener);
-        this.#listeners.set(type, listeners);
-      }
-      removeEventListener(type: string, listener: (event: unknown) => void): void {
-        this.#listeners.get(type)?.delete(listener);
-      }
-      close(): void {
-        this.emit("close", { code: 1000, reason: "" });
-      }
-      emit(type: string, event: unknown): void {
-        for (const listener of this.#listeners.get(type) ?? []) listener(event);
-      }
-    }
-    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
-
-    let channelListCalls = 0;
-    let postPolls = 0;
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        channelListCalls += 1;
-        return {
-          body: { channels: [{ channel_id: "chan-123", channel_type: "direct" }] },
-        };
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/posts")) {
-        postPolls += 1;
-        return { body: { order: [], posts: {} } };
-      }
-      throw new Error(`unexpected request: ${url}`);
+    const { calls } = await run({
+      ws: [],
+      poller: { websocketReconcileIntervalMs: 60_000, websocketControlRefreshIntervalMs: 60_000 },
+      until: () => false,
+      ms: 25,
     });
-
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 25);
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ config: { websocketEnabled: true } }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        websocketReconcileIntervalMs: 60_000,
-        websocketControlRefreshIntervalMs: 60_000,
-        onInboundMessage: () => {},
-      });
-    } finally {
-      clearTimeout(timer);
-      stub.restore();
-      globalThis.WebSocket = originalWebSocket;
-    }
-
-    assert.equal(channelListCalls, 1);
-    assert.ok(postPolls <= 1, "post reconcile should not run on every fallback tick either");
+    assert.equal(hits(calls, "/api/agentic/mm/channels"), 1);
+    assert.ok(hits(calls, "/chan-123/posts") <= 1, "post reconcile should not run on every fallback tick either");
   });
 
-  it("uses rare WebSocket reconcile to recover an unseen post older than the cursor", async () => {
-    const missed = {
-      id: "missed-human",
-      create_at: 200,
-      human_id: 1,
-      message: "@bot-agent missed this",
-      channel_id: "chan-123",
-    };
-    const selfLater = {
-      id: "self-later",
-      create_at: 300,
-      agent_id: "bot-agent",
-      message: "self echo",
-      channel_id: "chan-123",
-    };
-    const originalWebSocket = globalThis.WebSocket;
-    let socket: { emit: (type: string, event: unknown) => void } | undefined;
-    class MockWebSocket {
-      #listeners = new Map<string, Set<(event: unknown) => void>>();
-      constructor(_url: string) {
-        socket = this;
-        queueMicrotask(() => this.emit("open", {}));
-      }
-      addEventListener(type: string, listener: (event: unknown) => void): void {
-        const listeners = this.#listeners.get(type) ?? new Set();
-        listeners.add(listener);
-        this.#listeners.set(type, listeners);
-      }
-      removeEventListener(type: string, listener: (event: unknown) => void): void {
-        this.#listeners.get(type)?.delete(listener);
-      }
-      close(): void {
-        this.emit("close", { code: 1000, reason: "" });
-      }
-      emit(type: string, event: unknown): void {
-        for (const listener of this.#listeners.get(type) ?? []) listener(event);
-      }
-    }
-    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
-
-    const ac = new AbortController();
-    let postPolls = 0;
-    const stub = installFetchStub((url) => {
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return {
-          body: { channels: [{ channel_id: "chan-123", channel_type: "direct" }] },
-        };
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/posts")) {
-        postPolls += 1;
-        if (postPolls === 1) {
-          queueMicrotask(() => {
-            socket?.emit("message", {
-              data: JSON.stringify({ type: "post.created", channel_id: "chan-123", data: selfLater }),
-            });
-            socket?.emit("message", { data: JSON.stringify({ type: "resync_required" }) });
-          });
-          return { body: { order: [], posts: {} } };
-        }
-        return {
-          body: {
-            order: [missed.id, selfLater.id],
-            posts: { [missed.id]: missed, [selfLater.id]: selfLater },
-          },
-        };
-      }
-      throw new Error(`unexpected request: ${url}`);
+  it("uses rare WebSocket reconcile to recover an unseen post below the acked read pointer", async () => {
+    const missed = post(101, { message: "@bot-agent missed this" });
+    const later = post(102);
+    let polls = 0;
+    const { received, acks, calls } = await run({
+      ws: [],
+      route: (url) => {
+        if (!url.endsWith("/chan-123/posts")) return;
+        if (++polls > 1) return json(postsBody([missed, later]));
+        socket?.push({ type: "post.created", channel_id: ROOM, data: later });
+        socket?.push({ type: "resync_required" });
+        return json(postsBody([]));
+      },
+      poller: { websocketReconcileIntervalMs: 60_000 },
+      until: dispatched(2),
     });
-
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount({ config: { websocketEnabled: true } }),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 1,
-        websocketReconcileIntervalMs: 60_000,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      stub.restore();
-      globalThis.WebSocket = originalWebSocket;
-    }
-
-    assert.deepEqual(received.map((m) => m.postId), ["missed-human"]);
-    assert.equal(postPolls, 2);
+    assert.deepEqual(received.map((m) => m.postId), ["102", "101"]);
+    assert.deepEqual(acks, [[ROOM, 102]], "the recovered post never moves the pointer back");
+    assert.equal(hits(calls, "/chan-123/posts"), 2);
   });
 
-  it("serializes back-to-back SSE dispatches so one agent turn runs at a time", async () => {
-    const posts = [
-      {
-        id: "sse-1",
-        create_at: 200,
-        human_id: 1,
-        message: "first",
-        channel_id: "chan-123",
-      },
-      {
-        id: "sse-2",
-        create_at: 201,
-        human_id: 1,
-        message: "second",
-        channel_id: "chan-123",
-      },
-    ];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return new Response(
-          JSON.stringify({ channels: [{ channel_id: "chan-123", channel_type: "direct" }] }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/events")) {
-        const stream = new ReadableStream({
-          start(controller) {
-            for (const post of posts) {
-              const event = { type: "post.created", channel_id: "chan-123", data: post };
-              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
-            }
-          },
-        });
-        return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
-      }
-      return new Response(JSON.stringify({ order: [], posts: {} }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as typeof fetch;
-
-    const ac = new AbortController();
-    const order: string[] = [];
+  it("dispatches SSE posts without waiting for a poll, one agent turn at a time", async () => {
+    const frames = [post(101), post(102)]
+      .map((p) => `data: ${JSON.stringify({ type: "post.created", channel_id: ROOM, data: p })}\n\n`)
+      .join("");
     let active = 0;
     let maxActive = 0;
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 10_000,
-        websocketEnabled: false,
-        onInboundMessage: async (msg) => {
-          active += 1;
-          maxActive = Math.max(maxActive, active);
-          order.push(msg.postId);
-          if (msg.postId === "sse-1") {
-            await new Promise((resolve) => setTimeout(resolve, 20));
-          }
-          active -= 1;
-          if (order.length >= 2) ac.abort();
-        },
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-
-    assert.deepEqual(order, ["sse-1", "sse-2"]);
+    const { received } = await run({
+      route: (url) =>
+        url.endsWith("/chan-123/events")
+          ? new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode(frames)) }))
+          : undefined,
+      poller: { pollIntervalMs: 10_000 },
+      onMessage: async (msg) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        if (msg.postId === "101") await new Promise((resolve) => setTimeout(resolve, 20));
+        active -= 1;
+      },
+      until: dispatched(2),
+    });
+    assert.deepEqual(received.map((m) => m.postId), ["101", "102"]);
     assert.equal(maxActive, 1);
   });
-
-  it("expires queued SSE posts that wait past the inbound queue TTL", async () => {
-    const posts = [
-      {
-        id: "sse-1",
-        create_at: 200,
-        human_id: 1,
-        message: "first",
-        channel_id: "chan-123",
-      },
-      {
-        id: "sse-2",
-        create_at: 201,
-        human_id: 1,
-        message: "second",
-        channel_id: "chan-123",
-      },
-    ];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return new Response(
-          JSON.stringify({ channels: [{ channel_id: "chan-123", channel_type: "direct" }] }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/events")) {
-        const stream = new ReadableStream({
-          start(controller) {
-            for (const post of posts) {
-              const event = { type: "post.created", channel_id: "chan-123", data: post };
-              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
-            }
-          },
-        });
-        return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
-      }
-      return new Response(JSON.stringify({ order: [], posts: {} }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as typeof fetch;
-
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    const warnings: string[] = [];
-    let currentNow = 0;
-    const failTimer = setTimeout(() => ac.abort(), 500);
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 10_000,
-        websocketEnabled: false,
-        inboundQueueTtlMs: 5,
-        now: () => currentNow,
-        log: {
-          warn: (msg) => {
-            warnings.push(msg);
-            if (msg.includes("inbound queue expired sse-2")) ac.abort();
-          },
-        },
-        onInboundMessage: async (msg) => {
-          received.push(msg);
-          if (msg.postId === "sse-1") {
-            await new Promise((resolve) => setTimeout(resolve, 20));
-            currentNow = 20;
-          }
-        },
-      });
-    } finally {
-      clearTimeout(failTimer);
-      globalThis.fetch = originalFetch;
-    }
-
-    assert.deepEqual(received.map((m) => m.postId), ["sse-1"]);
-    assert.ok(
-      warnings.some((msg) => msg.includes("inbound queue expired sse-2")),
-      "second SSE post expired in the queue",
-    );
-  });
-
-  it("dispatches post.created over SSE without waiting for the next poll", async () => {
-    const post = {
-      id: "sse-1",
-      create_at: 200,
-      human_id: 1,
-      message: "hello over sse",
-      channel_id: "chan-123",
-    };
-    const event = { type: "post.created", channel_id: "chan-123", data: post };
-    const calls: string[] = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
-      calls.push(url);
-      if (url.endsWith("/api/agentic/mm/channels")) {
-        return new Response(
-          JSON.stringify({ channels: [{ channel_id: "chan-123", channel_type: "direct" }] }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.endsWith("/api/agentic/mm/channels/chan-123/events")) {
-        const stream = new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
-          },
-        });
-        return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
-      }
-      return new Response(JSON.stringify({ order: [], posts: {} }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }) as typeof fetch;
-
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        initialCursor: 150,
-        pollIntervalMs: 10_000,
-        websocketEnabled: false,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-          ac.abort();
-        },
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-
-    assert.deepEqual(received.map((m) => m.postId), ["sse-1"]);
-    assert.ok(calls.some((url) => url.endsWith("/api/agentic/mm/channels/chan-123/events")));
-  });
-
 });
-
-// ---------------------------------------------------------------------------
-// Boot catch-up.
-//
-// Every other runInboundPoller test in this file hands the poller an explicit
-// `initialCursor`, which means the production default — `?? now()`, the thing
-// that silently drops everything sent while the VM was restarting — was never
-// exercised. These tests deliberately omit it.
-// ---------------------------------------------------------------------------
-
-const NOW = 1_700_000_000_000;
-
-/** Drive the poller with a frozen clock and no `initialCursor`, so the real
- *  resume-floor logic runs. Aborts on the first dispatch, or after a short
- *  idle when nothing is dispatched. */
-async function runCatchUpHarness(opts: {
-  posts: MattermostPost[];
-  account?: Partial<ResolvedClawBitsAccount>;
-  watermarks?: ChannelWatermarkStore;
-  pollerOverrides?: Record<string, unknown>;
-}): Promise<InboundMessage[]> {
-  const stub = installFetchStub(() => ({
-    body: {
-      order: opts.posts.map((p) => p.id),
-      posts: Object.fromEntries(opts.posts.map((p) => [p.id, p])),
-    },
-  }));
-  const ac = new AbortController();
-  const received: InboundMessage[] = [];
-  const timer = setTimeout(() => ac.abort(), 60);
-  try {
-    await runInboundPoller({
-      client: makeClient(),
-      account: makeAccount(opts.account),
-      abortSignal: ac.signal,
-      pollIntervalMs: 1,
-      now: () => NOW,
-      ...(opts.watermarks ? { watermarkStore: opts.watermarks } : {}),
-      onInboundMessage: (msg) => {
-        received.push(msg);
-        ac.abort();
-      },
-      ...opts.pollerOverrides,
-    });
-  } finally {
-    clearTimeout(timer);
-    stub.restore();
-  }
-  return received;
-}
-
-describe("runInboundPoller — boot catch-up", () => {
-  it("dispatches a message that arrived while the gateway was down", async () => {
-    // The reported bug: post created 60s before the plugin started. Under the
-    // old `cursor = now()` seed this was fetched and then dropped on a
-    // timestamp compare.
-    const received = await runCatchUpHarness({
-      posts: [
-        {
-          id: "missed",
-          create_at: NOW - 60_000,
-          human_id: 1,
-          message: "did the env var take effect?",
-          channel_id: "chan-123",
-        },
-      ],
-    });
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["missed"],
-    );
-    assert.equal(received[0]?.catchUp, true);
-  });
-
-  it("does not replay a message the agent already answered", async () => {
-    // A settled (published) self post after the trigger proves the reply landed.
-    const received = await runCatchUpHarness({
-      posts: [
-        { id: "q", create_at: NOW - 60_000, human_id: 1, message: "ping", channel_id: "chan-123" },
-        {
-          id: "a",
-          create_at: NOW - 59_000,
-          agent_id: "bot-agent",
-          status: "published",
-          message: "pong",
-          channel_id: "chan-123",
-        },
-      ],
-    });
-    assert.deepEqual(received, []);
-  });
-
-  it("DOES replay when the agent's reply was only a half-streamed draft", async () => {
-    // The turn died mid-reply. Live activity appends partial assistant text
-    // into the streaming draft, so this row has a non-empty message and passes
-    // isUserAuthoredPost — treating it as proof of an answer would clamp away
-    // the question permanently, and the server reaper deletes the evidence
-    // five minutes later.
-    const received = await runCatchUpHarness({
-      posts: [
-        { id: "q", create_at: NOW - 60_000, human_id: 1, message: "ping", channel_id: "chan-123" },
-        {
-          id: "half",
-          create_at: NOW - 59_000,
-          agent_id: "bot-agent",
-          status: "streaming",
-          message: "Sure, let me che",
-          channel_id: "chan-123",
-        },
-      ],
-    });
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["q"],
-    );
-  });
-
-  it("collapses several missed messages into ONE turn with the rest as context", async () => {
-    // Dispatch is serial at three layers; N turns would take minutes and start
-    // expiring against inboundQueueTtlMs.
-    const received = await runCatchUpHarness({
-      posts: [
-        { id: "m1", create_at: NOW - 90_000, human_id: 1, message: "you there?", channel_id: "chan-123" },
-        { id: "m2", create_at: NOW - 80_000, human_id: 1, message: "need the token", channel_id: "chan-123" },
-        { id: "m3", create_at: NOW - 70_000, human_id: 1, message: "hello?", channel_id: "chan-123" },
-      ],
-    });
-    assert.equal(received.length, 1, "exactly one turn");
-    assert.equal(received[0]?.postId, "m3", "newest addressed post is the trigger");
-    assert.deepEqual(
-      received[0]?.priorContext?.map((p) => p.postId),
-      ["m1", "m2"],
-      "the older ones ride along as context",
-    );
-    assert.equal(received[0]?.catchUp, true, "context must be framed as unanswered");
-  });
-
-  it("resumes from the persisted cursor, not the window", async () => {
-    const store = ChannelWatermarkStore.inMemory();
-    // A turn for m1 finished before the restart; m2 did not.
-    store.set("default", "cursor:chan-123", NOW - 85_000);
-    const received = await runCatchUpHarness({
-      posts: [
-        { id: "m1", create_at: NOW - 90_000, human_id: 1, message: "answered", channel_id: "chan-123" },
-        { id: "m2", create_at: NOW - 80_000, human_id: 1, message: "not answered", channel_id: "chan-123" },
-      ],
-      watermarks: store,
-    });
-    assert.deepEqual(
-      received.map((m) => m.postId),
-      ["m2"],
-    );
-    assert.equal(received[0]?.priorContext, undefined, "m1 is below the cursor, not context");
-  });
-
-  it("ignores messages older than the cold look-back window", async () => {
-    // No persisted cursor (first boot, or a recreate wiped the file): the
-    // window is the only bound, and it must not replay ancient history.
-    const received = await runCatchUpHarness({
-      posts: [
-        { id: "ancient", create_at: NOW - 48 * 3_600_000, human_id: 1, message: "old", channel_id: "chan-123" },
-      ],
-    });
-    assert.deepEqual(received, []);
-  });
-
-  it("does not replay history when catchUpEnabled is false", async () => {
-    const received = await runCatchUpHarness({
-      posts: [
-        { id: "missed", create_at: NOW - 60_000, human_id: 1, message: "hi", channel_id: "chan-123" },
-      ],
-      pollerOverrides: { catchUpEnabled: false },
-    });
-    assert.deepEqual(received, []);
-  });
-
-  it("persists a resume cursor for a DM, which the old watermark path never did", async () => {
-    const store = ChannelWatermarkStore.inMemory();
-    await runCatchUpHarness({
-      posts: [
-        { id: "missed", create_at: NOW - 60_000, human_id: 1, message: "hi", channel_id: "chan-123" },
-      ],
-      watermarks: store,
-    });
-    assert.equal(
-      store.get("default", "cursor:chan-123") !== undefined,
-      true,
-      "a durable cursor must exist for the operator/direct channel",
-    );
-  });
-
-  it("degrades to ONE bounded turn when the control fetch keeps failing", async () => {
-    // If the boot control fetch fails, catch-up defers briefly (holding
-    // realtime startup so a live settle can't ack past the unread gap), then
-    // proceeds against the fallback channel set. The contract under failure:
-    // exactly one catch-up turn — the newest addressed post as the trigger
-    // with the older backlog as context — and NEVER a per-post burst.
-    const posts: MattermostPost[] = [
-      { id: "b1", create_at: NOW - 90_000, human_id: 1, message: "one", channel_id: "chan-123" },
-      { id: "b2", create_at: NOW - 80_000, human_id: 1, message: "two", channel_id: "chan-123" },
-      { id: "b3", create_at: NOW - 70_000, human_id: 1, message: "three", channel_id: "chan-123" },
-    ];
-    const stub = installFetchStub((url) => {
-      if (url.includes("/channels") && !url.includes("/posts")) {
-        return { body: { detail: "boom" }, status: 500 };
-      }
-      return {
-        body: {
-          order: posts.map((p) => p.id),
-          posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-        },
-      };
-    });
-    const ac = new AbortController();
-    const received: InboundMessage[] = [];
-    const timer = setTimeout(() => ac.abort(), 80);
-    try {
-      await runInboundPoller({
-        client: makeClient(),
-        account: makeAccount(),
-        abortSignal: ac.signal,
-        pollIntervalMs: 1,
-        now: () => NOW,
-        onInboundMessage: (msg) => {
-          received.push(msg);
-        },
-      });
-    } finally {
-      clearTimeout(timer);
-      stub.restore();
-    }
-    assert.equal(received.length, 1, "a deferred catch-up must not turn into a per-post burst");
-    assert.equal(received[0]?.postId, "b3", "the newest addressed post is the single trigger");
-    assert.equal(received[0]?.catchUp, true, "the turn is framed as catch-up");
-    assert.deepEqual(
-      (received[0]?.priorContext ?? []).map((p) => p.postId),
-      ["b1", "b2"],
-      "the older backlog rides as context, not as extra turns",
-    );
-  });
-
-  it("skips a channel whose missed posts never address the agent", async () => {
-    // A shared room that took traffic while the agent was away, with no
-    // mention, must produce zero turns.
-    const received = await runCatchUpHarness({
-      posts: [
-        { id: "chatter", create_at: NOW - 60_000, human_id: 1, message: "unrelated", channel_id: "team-room" },
-      ],
-      account: { channelId: "team-room-not-this", config: { websocketEnabled: false } },
-    });
-    assert.deepEqual(received, []);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Boot catch-up — server-cursor mode (`last_read_post_id` on the channel
-// payload). The pointer is the resume point: the gap is drained with
-// `after_post_id` paging, and the ack advances only on settle.
-// ---------------------------------------------------------------------------
-
-/** Serial-id posts `from..to` (inclusive), one minute apart, oldest first. */
-function serialPosts(
-  channelId: string,
-  from: number,
-  to: number,
-  build: (serial: number) => Partial<MattermostPost> = () => ({}),
-): MattermostPost[] {
-  const posts: MattermostPost[] = [];
-  for (let serial = from; serial <= to; serial += 1) {
-    posts.push({
-      id: String(serial),
-      create_at: NOW - (to - serial + 1) * 60_000,
-      human_id: 1,
-      message: `msg ${serial}`,
-      channel_id: channelId,
-      ...build(serial),
-    });
-  }
-  return posts;
-}
-
-function postsBody(posts: MattermostPost[]): unknown {
-  return {
-    order: posts.map((p) => p.id),
-    posts: Object.fromEntries(posts.map((p) => [p.id, p])),
-  };
-}
-
-async function runServerCursorHarness(opts: {
-  channel: {
-    channel_type?: string | null;
-    latest_post_id?: number | null;
-    last_read_post_id?: number | null;
-  };
-  gapPosts: MattermostPost[];
-  account?: Partial<ResolvedClawBitsAccount>;
-  watermarks?: ChannelWatermarkStore;
-  /** Control payload extras (snoozed etc.) per call index; the last entry
-   *  repeats for later calls. */
-  controlSequence?: Array<Record<string, unknown>>;
-  abortAfterMs?: number;
-  abortOnMessage?: boolean;
-}): Promise<{ received: InboundMessage[]; calls: string[]; reads: string[] }> {
-  const reads: string[] = [];
-  let controlCalls = 0;
-  const stub = installFetchStub((url, init) => {
-    if (url.endsWith("/read")) {
-      reads.push(String(init?.body ?? ""));
-      return { body: { channel_id: "chan-123", last_read_post_id: 0 } };
-    }
-    if (url.includes("/mm/channels") && !url.includes("/posts") && !url.includes("/events")) {
-      const extras =
-        opts.controlSequence?.[Math.min(controlCalls, (opts.controlSequence?.length ?? 1) - 1)] ??
-        {};
-      controlCalls += 1;
-      return {
-        body: {
-          channels: [
-            {
-              channel_id: "chan-123",
-              channel_type: opts.channel.channel_type ?? "direct",
-              latest_post_id: opts.channel.latest_post_id ?? null,
-              last_read_post_id: opts.channel.last_read_post_id ?? null,
-            },
-          ],
-          ...extras,
-        },
-      };
-    }
-    if (url.includes("/posts")) {
-      const match = /after_post_id=(\d+)/.exec(url);
-      if (match) {
-        const after = Number(match[1]);
-        return { body: postsBody(opts.gapPosts.filter((p) => Number(p.id) > after)) };
-      }
-      return { body: postsBody(opts.gapPosts) };
-    }
-    return { body: { detail: "unexpected" }, status: 500 };
-  });
-  const ac = new AbortController();
-  const received: InboundMessage[] = [];
-  const timer = setTimeout(() => ac.abort(), opts.abortAfterMs ?? 80);
-  try {
-    await runInboundPoller({
-      client: makeClient(),
-      account: makeAccount(opts.account),
-      abortSignal: ac.signal,
-      pollIntervalMs: 1,
-      now: () => NOW,
-      ...(opts.watermarks ? { watermarkStore: opts.watermarks } : {}),
-      onInboundMessage: (msg) => {
-        received.push(msg);
-        if (opts.abortOnMessage !== false) ac.abort();
-      },
-    });
-  } finally {
-    clearTimeout(timer);
-    stub.restore();
-  }
-  return { received, calls: stub.calls, reads };
-}
 
 describe("runInboundPoller — server-cursor catch-up", () => {
-  it("drains the after_post_id gap and replays the newest addressed post with the rest as context", async () => {
-    const { received, calls, reads } = await runServerCursorHarness({
-      channel: { channel_type: "direct", latest_post_id: 30, last_read_post_id: 10 },
-      gapPosts: serialPosts("chan-123", 11, 30),
+  it("admits the newest addressed gap post as one turn with the rest as context, acking the newest serial", async () => {
+    const { received, calls, acks } = await run({
+      listing: () => ({ channels: [row({ latest_post_id: 106 })] }),
+      posts: [post(101), post(102), post(103), post(104), post(105), post(106, { type: "system_join_channel" })],
+      until: ticks(2),
     });
-    assert.equal(received.length, 1, "exactly one catch-up turn");
-    assert.equal(received[0]?.postId, "30", "newest gap post is the trigger");
-    assert.equal(received[0]?.catchUp, true);
-    assert.deepEqual(
-      (received[0]?.priorContext ?? []).map((p) => p.postId),
-      serialPosts("chan-123", 11, 29).map((p) => p.id),
-      "older gap posts ride as context",
-    );
-    assert.equal(
-      calls.some((u) => u.includes("after_post_id=10")),
-      true,
-      "the drain resumes from the server pointer",
-    );
-    assert.equal(reads.length, 1, "the settled turn acks the pointer once");
-    assert.equal(JSON.parse(reads[0]!).post_id, 30, "ack lands on the trigger serial");
+    assert.deepEqual(received.map((m) => [m.postId, m.catchUp]), [["105", true]], "exactly one catch-up turn");
+    assert.deepEqual(received[0]?.priorContext?.map((p) => p.postId), ["101", "102", "103", "104"]);
+    assert.ok(calls.some((url) => url.includes("after_post_id=100")), "the drain resumes from the server pointer");
+    assert.deepEqual(acks, [[ROOM, 106]]);
   });
 
   it("skips the drain entirely when the pointer already covers the newest post", async () => {
-    const { received, calls } = await runServerCursorHarness({
-      channel: { channel_type: "direct", latest_post_id: 30, last_read_post_id: 30 },
-      gapPosts: [],
+    const { received, calls } = await run({
+      listing: () => ({ channels: [row({ last_read_post_id: 120, latest_post_id: 120 })] }),
+      until: ticks(2),
     });
     assert.deepEqual(received, []);
-    assert.equal(
-      calls.some((u) => u.includes("after_post_id=")),
-      false,
-      "a quiet channel costs zero cursor reads",
-    );
+    assert.equal(calls.some((url) => url.includes("after_post_id=")), false, "a quiet channel costs zero cursor reads");
   });
 
   it("catch-up auto-dispatches named agent chats without an @mention", async () => {
-    const { received } = await runServerCursorHarness({
-      channel: { channel_type: "agent_chat", latest_post_id: 12, last_read_post_id: 10 },
-      gapPosts: serialPosts("chan-123", 11, 12),
+    const { received } = await run({
+      listing: () => ({ channels: [row({ channel_type: "agent_chat", latest_post_id: 102 })] }),
+      posts: [post(101), post(102)],
     });
-    assert.equal(received.length, 1);
-    assert.equal(received[0]?.channelType, "agent_chat");
-    assert.equal(received[0]?.catchUp, true);
+    assert.deepEqual(received.map((m) => [m.postId, m.channelType, m.catchUp]), [["102", "agent_chat", true]]);
   });
 
   it("acks past an examined gap that never addresses the agent", async () => {
-    const { received, reads } = await runServerCursorHarness({
-      channel: { channel_type: "public", latest_post_id: 15, last_read_post_id: 10 },
-      gapPosts: serialPosts("chan-123", 11, 15),
-      // Not the operator channel: un-mentioned shared-room chatter.
-      account: { channelId: "another-chan", config: { websocketEnabled: false } },
+    const { received, acks } = await run({
+      listing: () => ({ channels: [row({ channel_type: "public", latest_post_id: 105 })] }),
+      posts: [post(101), post(102), post(103), post(104), post(105)],
+      account: { channelId: "another-chan" },
+      until: ticks(2),
     });
     assert.deepEqual(received, [], "nothing addressed → no turn");
-    assert.equal(reads.length >= 1, true, "the examined gap is acked");
-    assert.equal(
-      JSON.parse(reads[0]!).post_id,
-      15,
-      "ack covers the newest examined serial so the gap is not re-drained every boot",
-    );
+    assert.deepEqual(acks, [[ROOM, 105]], "the gap is not re-drained every boot");
+  });
+
+  it("does not replay history when catchUpEnabled is false", async () => {
+    const { received, calls } = await run({
+      listing: () => ({ channels: [row({ latest_post_id: 102 })] }),
+      posts: [post(101), post(102)],
+      poller: { catchUpEnabled: false },
+      until: ticks(2),
+    });
+    assert.deepEqual(received, []);
+    assert.equal(calls.some((url) => url.includes("after_post_id=")), false);
   });
 
   it("runs catch-up at unsnooze when the agent booted snoozed", async () => {
-    const { received } = await runServerCursorHarness({
-      channel: { channel_type: "direct", latest_post_id: 12, last_read_post_id: 10 },
-      gapPosts: serialPosts("chan-123", 11, 12),
-      controlSequence: [{ snoozed: true }, { snoozed: false }],
-      abortAfterMs: 150,
+    const { received } = await run({
+      listing: (call) => ({ channels: [row({ latest_post_id: 102 })], snoozed: call === 1 }),
+      posts: [post(101), post(102)],
     });
-    assert.equal(received.length, 1, "the boot gap survives a snoozed boot and replays at unsnooze");
-    assert.equal(received[0]?.postId, "12");
-    assert.equal(received[0]?.catchUp, true);
+    assert.deepEqual(received.map((m) => [m.postId, m.catchUp]), [["102", true]]);
   });
 
-  it("leaves the durable cursor and the server pointer untouched on a transient refusal", async () => {
-    const store = ChannelWatermarkStore.inMemory();
-    const { received, reads } = await runServerCursorHarness({
-      channel: { channel_type: "direct", latest_post_id: 12, last_read_post_id: 10 },
-      gapPosts: serialPosts("chan-123", 11, 12),
-      // The sender is not on the allowlist: the recovered trigger is blocked
-      // AFTER catch-up picked it — a transient refusal (the operator can
-      // widen the list), so nothing durable may advance past the post.
-      account: { allowFrom: ["human:999"], config: { websocketEnabled: false } },
-      watermarks: store,
+  it("falls back to the configured channel without replaying it when the control fetch keeps failing", async () => {
+    const posts = [post(101), post(102)];
+    let polls = 0;
+    const { received } = await run({
+      posts,
+      route: (url) => {
+        if (url.endsWith("/api/agentic/mm/channels")) return json({ detail: "boom" }, 500);
+        if (url.endsWith("/chan-123/posts") && ++polls === 2) posts.push(post(103));
+      },
     });
-    assert.deepEqual(received, [], "blocked sender → no dispatch");
-    assert.equal(reads.length, 0, "no server ack for a transiently refused post");
-    assert.equal(
-      store.get("default", "cursor:chan-123"),
-      undefined,
-      "no durable watermark either — the next boot must retry the gap",
+    assert.deepEqual(received.map((m) => [m.postId, m.channelType, m.catchUp]), [["103", null, undefined]]);
+  });
+});
+
+describe("runInboundPoller — UI actions", () => {
+  const TEAM = "team-room";
+  const DEPLOY = { name: "deploy", sourceComponentId: "go", context: { target: ["staging"] } };
+  const team = (fields: Record<string, unknown> = {}) => () => ({ channels: [row({ channel_id: TEAM, channel_type: "public", ...fields })] });
+  const surface = (id: number, agentId: string) => agentPost(id, { channel_id: TEAM, agent_id: agentId, message: "Deploy where?" });
+  const click = (id: number, surfaceId: number, agentId: string) =>
+    post(id, { channel_id: TEAM, message: "Deploy: Staging", ui_action: DEPLOY, parent_preview: { post_id: surfaceId, agent_id: agentId } });
+
+  it("dispatches a click on this agent's own UI block in a group chat, carrying its action", async () => {
+    const { received } = await run({ listing: team(), posts: [surface(101, "bot-agent"), click(102, 101, "bot-agent")] });
+    assert.deepEqual(received.map((m) => [m.postId, m.text, m.uiAction]), [["102", "Deploy: Staging", { ...DEPLOY, surfacePostId: 101 }]]);
+  });
+
+  it("leaves a click on another agent's UI block to that agent", async () => {
+    const { received } = await run({
+      listing: team(),
+      posts: [surface(101, "helper-agent"), click(102, 101, "helper-agent"), post(103, { channel_id: TEAM, message: "@bot-agent hi" })],
+    });
+    assert.deepEqual(received.map((m) => [m.postId, m.uiAction]), [["103", undefined]]);
+  });
+
+  it("replays a click on this agent's UI block that arrived while it was down", async () => {
+    const { received } = await run({ listing: team({ latest_post_id: 102 }), posts: [surface(101, "bot-agent"), click(102, 101, "bot-agent")] });
+    assert.deepEqual(received.map((m) => [m.postId, m.catchUp, m.uiAction?.surfacePostId]), [["102", true, 101]]);
+  });
+});
+
+describe("runInboundPoller — questions", () => {
+  const QID = `ask_${"b".repeat(32)}`;
+  const PICK = { name: "oc.question", sourceComponentId: "c3", context: { optionValue: "staging" } };
+  const card = (id: number) => agentPost(id, { agent_id: "bot-agent", message: "Deploy where?" });
+  const pick = (id: number, cardId: number) =>
+    post(id, { message: "Staging", ui_action: PICK, parent_preview: { post_id: cardId, agent_id: "bot-agent" } });
+  const { resolveOption } = questionGatewayRuntime;
+  const resolved: Array<Parameters<typeof resolveOption>[0]> = [];
+  const closes: unknown[] = [];
+  const route = (url: string, init?: RequestInit): void => {
+    if (url.endsWith("/ui/close")) closes.push([new URL(url).pathname, JSON.parse(String(init?.body))]);
+  };
+  const answering = (status: string) => {
+    questionGatewayRuntime.resolveOption = async (params) => {
+      resolved.push(params);
+      return { status };
+    };
+  };
+
+  beforeEach(() => {
+    setRuntime({ config: { current: () => ({}) }, state: memoryState() } as unknown as PluginRuntime);
+    __resetQuestionsForTest();
+    resolved.length = 0;
+    closes.length = 0;
+  });
+
+  afterEach(() => {
+    questionGatewayRuntime.resolveOption = resolveOption;
+  });
+
+  it("answers the card's question with the clicked option, stops waiting at once and starts no turn", async () => {
+    await bindQuestion("default", "101", { channelId: ROOM, questionId: QID });
+    markQuestionWaiting("default", ROOM, QID);
+    answering("answered");
+    const { received } = await run({ posts: [card(101), pick(102, 101)], route, until: () => resolved.length > 0 });
+    assert.deepEqual(received, []);
+    const params = resolved[0]!;
+    assert.deepEqual([params.questionId, params.optionValue, params.senderId], [QID, "staging", "human:1"]);
+    assert.equal(questionWaiting("default", ROOM), false);
+    assert.deepEqual(closes, [], "core's finalize closes an answered card");
+  });
+
+  it("closes a card no question is bound to", async () => {
+    answering("answered");
+    const { received } = await run({ posts: [card(101), pick(102, 101)], route, until: () => closes.length > 0 });
+    assert.deepEqual(received, []);
+    assert.deepEqual(resolved, []);
+    assert.deepEqual(closes, [["/api/agentic/mm/posts/101/ui/close", { text: "No longer open" }]]);
+  });
+
+  it("leaves a card core is about to close to core", async () => {
+    await bindQuestion("default", "101", { channelId: ROOM, questionId: QID });
+    questionFinalizing("default", "101", true);
+    answering("already-terminal");
+    const { received } = await run({ posts: [card(101), pick(102, 101)], route, until: () => resolved.length > 0 });
+    assert.deepEqual(received, []);
+    assert.deepEqual(closes, []);
+  });
+
+  it("closes a card whose question is no longer pending", async () => {
+    await bindQuestion("default", "101", { channelId: ROOM, questionId: QID });
+    answering("already-terminal");
+    const { received } = await run({ posts: [card(101), pick(102, 101)], route, until: () => closes.length > 0 });
+    assert.deepEqual(received, []);
+    assert.equal(resolved.length, 1);
+    assert.deepEqual(closes, [["/api/agentic/mm/posts/101/ui/close", { text: "No longer open" }]]);
+  });
+
+  it("hands a typed post in a chat waiting on a question to core at once, past the asking turn", async () => {
+    const posts = [post(101, { message: "deploy it" })];
+    const { received } = await run({
+      posts,
+      until: dispatched(2),
+      onMessage: async (msg, _turn, out) => {
+        if (msg.postId !== "101") return;
+        markQuestionWaiting("default", ROOM, QID);
+        posts.push(post(102, { message: "@bot-agent, staging" }));
+        await waitFor(() => out.received.length > 0);
+      },
+    });
+    assert.deepEqual(
+      received.map((m) => [m.postId, m.text, m.questionAnswer]),
+      [
+        ["102", "staging", true],
+        ["101", "deploy it", undefined],
+      ],
     );
+  });
+
+  it("moves a typed answer whose question ended before it was delivered to an ordinary turn", async () => {
+    await bindQuestion("default", "101", { channelId: ROOM, questionId: QID });
+    markQuestionWaiting("default", ROOM, QID);
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    questionGatewayRuntime.resolveOption = async (params) => {
+      resolved.push(params);
+      await gate;
+      return { status: "answered" };
+    };
+    const posts = [card(101), pick(102, 101), post(103, { message: "@bot-agent staging" })];
+    setTimeout(release, 50);
+    const { received } = await run({ posts, route, until: dispatched(1) });
+    assert.deepEqual(received.map((m) => [m.postId, m.questionAnswer]), [["103", undefined]]);
+  });
+
+  it("leaves a post in a chat waiting on nothing to an ordinary turn", async () => {
+    markQuestionWaiting("default", "other-room", QID);
+    const { received } = await run({ posts: [post(101, { message: "@bot-agent staging" })] });
+    assert.deepEqual(received.map((m) => [m.postId, m.text, m.questionAnswer]), [["101", "@bot-agent staging", undefined]]);
+  });
+
+  it("leaves a command in a waiting chat to an ordinary turn", async () => {
+    markQuestionWaiting("default", ROOM, QID);
+    const { received } = await run({ posts: [post(101, { message: "/new" })] });
+    assert.deepEqual(received.map((m) => [m.postId, m.text, m.questionAnswer]), [["101", "/new", undefined]]);
   });
 });

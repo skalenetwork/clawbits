@@ -270,7 +270,7 @@ describe("a game move's sends", () => {
   ];
 
   it("are refused in the game's own session and nowhere else", () => {
-    for (const tool of ["message", "sessions_send", "clawbits_mcp_connect", "clawbits_react"]) {
+    for (const tool of ["message", "sessions_send", "clawbits_mcp_connect", "clawbits_react", "clawbits_ui"]) {
       assert.equal(gameTurnToolBlock(tool, GAME_KEY)?.block, true, tool);
       for (const key of CHAT_KEYS) assert.equal(gameTurnToolBlock(tool, key), undefined, `${tool} in ${key}`);
     }
@@ -356,7 +356,7 @@ describe("a game move's sends", () => {
         );
       }
       posted.push(u);
-      return new Response(JSON.stringify({ id: "p1" }), { status: 200 });
+      return new Response(JSON.stringify({ post_id: "p1" }), { status: 200 });
     }) as typeof fetch;
     try {
       await assert.rejects(
@@ -365,7 +365,7 @@ describe("a game move's sends", () => {
       );
       await assert.rejects(outboundAdapter.sendText!({ cfg, to: "channel:widget-w1", text: "x" }));
       const result = await outboundAdapter.sendText!({ cfg, to: "dm-1", text: "nightly digest" });
-      assert.equal((result as { channelId?: string }).channelId, "dm-1");
+      assert.equal(result.target?.id, "dm-1");
     } finally {
       globalThis.fetch = originalFetch;
     }

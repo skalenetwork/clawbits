@@ -2,8 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { CHANNEL_ID } from "./accounts.js";
 import { type ClawBitsClient, timedRequest } from "./client.js";
 import { logWarn } from "./file-logger.js";
-
-type Runtime = OpenClawPluginApi["runtime"];
+import { type PluginRuntime as Runtime, pluginRuntime } from "./runtime.js";
 
 export interface McpSignIn {
   server: string;
@@ -41,8 +40,6 @@ const BUSY_ATTEMPTS = 3;
 const BUSY_WAIT_MS = 1_000;
 const CLI_TIMEOUT_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-
-let runtime: Runtime | undefined;
 
 export function isMcpSignIn(data: unknown): data is McpSignIn {
   const signIn = data as Partial<McpSignIn> | null;
@@ -117,10 +114,6 @@ export async function connectMcpServer(
   return (await request<{ url: string }>(client, "POST", "/api/agentic/mcp-oauth/links", link)).url;
 }
 
-export function setMcpOAuthRuntime(rt: Runtime): void {
-  runtime = rt;
-}
-
 /** In Clawbits chats, MCP sign-in goes through `clawbits_mcp_connect`; a bare login's localhost callback never reaches the agent. Blocks unless the turn provably came from another channel. */
 export function registerMcpLoginGuard(api: OpenClawPluginApi): void {
   api.on?.(
@@ -152,6 +145,7 @@ async function probe(rt: Runtime, server: string): Promise<string> {
 
 /** Redeem a relayed code with the engine's own CLI, which holds the PKCE verifier; report it, then tell the agent whether the server works. */
 export async function finishMcpSignIn({ server, code, state }: McpSignIn, client: ClawBitsClient): Promise<string> {
+  const runtime = pluginRuntime();
   const exchange = runtime ? await mcp(runtime, ["login", server, `--code=${code}`]) : undefined;
   const connected = exchange?.ok === true;
   await request(client, "POST", "/api/agentic/mcp-oauth/result", { state, connected }).catch((err: unknown) =>

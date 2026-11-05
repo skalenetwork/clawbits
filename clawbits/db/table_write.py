@@ -19,6 +19,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, delete, select, update
 
+from clawbits.a2ui.models import AgentSurfaceCreate, PostUi, UiAction
 from clawbits.agent_marks import DAY_MARKS, TRACK_MARKS, DayTrack, MarkKind
 from clawbits.avatars.config import CURRENT_AVATAR_VERSION
 from clawbits.datastructures.agent_id import AgentId
@@ -2874,6 +2875,8 @@ class TableWrite:
         status: str = "published",
         parent_post_id: int | None = None,
         trace_id: str | None = None,
+        client_key: str | None = None,
+        surface: AgentSurfaceCreate | None = None,
     ) -> int:
         from clawbits.db.table_read import TableRead
 
@@ -2889,9 +2892,12 @@ class TableWrite:
             status=effective_status,
             parent_post_id=parent_post_id,
             trace_id=trace_id,
+            client_key=client_key,
         )
         session.add(post)
         session.flush()
+        if surface is not None:
+            post.ui = surface.to_ui(f"post-{post.post_id}").model_dump()
         if effective_status == "published":
             TableWrite._set_channel_preview(
                 session, channel_id, message,
@@ -2911,6 +2917,8 @@ class TableWrite:
         link_preview: dict | None = None,
         trace_id: str | None = None,
         widget_id: str | None = None,
+        client_key: str | None = None,
+        ui_action: UiAction | None = None,
     ) -> int:
         from clawbits.db.table_read import TableRead
 
@@ -2924,6 +2932,8 @@ class TableWrite:
             link_preview=link_preview,
             trace_id=trace_id,
             widget_id=widget_id,
+            client_key=client_key,
+            ui_action=None if ui_action is None else ui_action.model_dump(),
         )
         session.add(post)
         session.flush()
@@ -3331,11 +3341,12 @@ class TableWrite:
 
         * post must exist
         * post must be human-authored by ``human_id``
+        * post must not be a UI action, whose text the server built from the surface
         * post must be ``published`` (drafts/streaming/rejected are out of scope)
         * ``new_message`` must be non-empty
 
         Raises ``LookupError`` if missing, ``PermissionError`` for wrong author,
-        ``ValueError`` for status or empty-message violations. Stamps ``edited_at``
+        ``ValueError`` for UI action, status or empty-message violations. Stamps ``edited_at``
         so the UI can render the "(edited)" marker.
 
         ``link_preview`` is a tri-state: ``_Sentinel`` (the default) means
@@ -3348,6 +3359,8 @@ class TableWrite:
             raise LookupError(f"post {post_id} not found")
         if post.human_id != human_id or post.agent_id is not None:
             raise PermissionError("only the author can edit this post")
+        if post.ui_action is not None:
+            raise ValueError(f"post {post_id} is a UI action and not editable")
         if post.status != "published":
             raise ValueError(f"post {post_id} is not editable (status={post.status})")
         if not new_message.strip():
@@ -3364,6 +3377,29 @@ class TableWrite:
         # chats list forever. A no-op for older posts.
         TableWrite._recompute_channel_preview(session, post.channel_id)
         return post
+
+    @staticmethod
+    def close_mm_post_ui(session: Session, post_id: int, agent_id: str, text: str) -> bool:
+        """Close the agent's own surface: renderers disable its controls and show ``text``.
+
+        Idempotent: a closed surface stays closed, and only the first close bumps ``rev``. Returns
+        whether this call closed it. Raises ``LookupError`` when the post is missing,
+        ``PermissionError`` when another author wrote it and ``ValueError`` when it has no surface.
+        """
+        post = session.get(MmPost, post_id, with_for_update=True, populate_existing=True)
+        if post is None:
+            raise LookupError(f"post {post_id} not found")
+        if post.agent_id != agent_id:
+            raise PermissionError("not the post owner")
+        if post.ui is None:
+            raise ValueError(f"post {post_id} has no UI surface")
+        ui = PostUi.model_validate(post.ui)
+        if ui.closed is not None:
+            return False
+        post.ui = ui.closed_with(text).model_dump()
+        session.add(post)
+        session.flush()
+        return True
 
     @staticmethod
     def set_mm_post_link_preview(
@@ -3622,6 +3658,7 @@ class TableWrite:
         finalise: bool = False,
         cancel: bool = False,
         steps: list[dict] | None = None,
+        client_key: str | None = None,
     ) -> MmPost | None:
         """Patch a streaming post in place (agent-streamed reply).
 
@@ -3665,6 +3702,7 @@ class TableWrite:
             # tagging the agent in the first place.
             post.status = "published"
             post.steps = steps
+            post.client_key = client_key
         post.updated_at = datetime.now(UTC)
         session.add(post)
         session.flush()

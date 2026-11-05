@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { ClawBitsClient } from "../src/client.js";
-import { connectMcpServer, finishMcpSignIn, isMcpSignIn, registerMcpLoginGuard, setMcpOAuthRuntime } from "../src/mcp-oauth.js";
+import { connectMcpServer, finishMcpSignIn, isMcpSignIn, registerMcpLoginGuard } from "../src/mcp-oauth.js";
+import { setRuntime } from "../src/runtime.js";
 
 const CALLBACK = "https://app.clawbits.ai/oauth/mcp/callback";
 const AUTHORIZE = `https://auth.example.com/authorize?state=s1&redirect_uri=${encodeURIComponent(CALLBACK)}`;
@@ -41,7 +42,7 @@ function install(servers: Record<string, unknown>, answer: (args: string[]) => C
       },
     },
   } as unknown as OpenClawPluginApi["runtime"];
-  setMcpOAuthRuntime(runtime);
+  setRuntime(runtime);
   registerMcpLoginGuard({ on: (name: string, fn: Hook) => hooks.set(name, fn) } as unknown as OpenClawPluginApi);
   const client = {
     request: async (method: string, path: string, opts: { json?: unknown }) => {

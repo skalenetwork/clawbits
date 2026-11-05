@@ -31,11 +31,25 @@ export interface ChannelCreate {
   [key: string]: unknown;
 }
 
+/** A UI block as the agent sends it (the server's `AgentSurfaceCreate`): A2UI v1.0 components in a
+ *  flat list, one with id "root", the starting data model, and whether its first click closes it.
+ *  The server validates it and writes the post's text. */
+export interface AgentSurfaceCreate {
+  components: Array<Record<string, unknown>>;
+  dataModel?: Record<string, unknown>;
+  once?: boolean;
+}
+
 export interface ChannelPost {
-  message: string;
+  message?: string;
   /** Pre-uploaded attachment ids to bind to this post (see tools/mattermost
    *  `directFileUpload` / `requestFileUpload`). Server cap: 5 per post. */
   file_ids?: string[];
+  client_key?: string;
+  trace_id?: string;
+  parent_post_id?: number;
+  /** Sent with no message: the server writes the post's text from it. */
+  surface?: AgentSurfaceCreate;
   [key: string]: unknown;
 }
 
@@ -79,8 +93,6 @@ export interface ClawBitsAccountConfig {
   websocketReconcileIntervalMs?: number;
   /** Milliseconds between channel/settings refreshes while WebSocket is healthy. */
   websocketControlRefreshIntervalMs?: number;
-  /** Milliseconds an inbound post may wait in the local dispatch queue before it is dropped. */
-  inboundQueueTtlMs?: number;
   /**
    * Run the one-shot catch-up pass at gateway start, so messages that arrived
    * while the agent was down (a reef restart, an image upgrade, a crash) are

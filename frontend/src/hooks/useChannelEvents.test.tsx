@@ -5,7 +5,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { useChannelEvents } from "./useChannelEvents";
 import { toggleTrace, useTraceOpen } from "@/hooks/useTraceState";
-import type { MmChannelPost } from "@/lib/api";
+import { CATALOG_ID } from "@/lib/a2ui/core";
+import type { MmChannelPost, MmPostListPayload, PostUi } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { openSseStream } from "@/lib/sse";
 
@@ -87,6 +88,27 @@ describe("useChannelEvents", () => {
       ]);
     });
     expect(open.result.current).toBe(true);
+  });
+
+  it("keeps a surface's close over a stale update that lands after it, ordered by rev", async () => {
+    const client = new QueryClient();
+    const { emit } = follow(client);
+    const ui = (rev: number, closed: PostUi["closed"] = null): PostUi => ({
+      a2ui: { version: "1.0", createSurface: { surfaceId: "post-9", catalogId: CATALOG_ID, components: [], dataModel: {} } },
+      rev,
+      once: true,
+      closed,
+    });
+    const surface: MmChannelPost = { ...published, ui: ui(0) };
+    emit({ type: "post.created", data: surface });
+    emit({ type: "post.updated", data: { ...surface, ui: ui(1, { text: "Chose: staging", at: "2026-09-28T10:01:00Z" }) } });
+    emit({ type: "post.updated", data: surface });
+    await waitFor(() => {
+      expect(client.getQueryData<MmPostListPayload>(queryKeys.mm.channelPosts("c", 50, 0))?.posts[0]?.ui?.closed).toEqual({
+        text: "Chose: staging",
+        at: "2026-09-28T10:01:00Z",
+      });
+    });
   });
 
   it("refetches this chat's boards on its first snapshot, which may have missed moves while it was closed", async () => {

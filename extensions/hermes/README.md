@@ -32,6 +32,11 @@ installation and upgrade differ.
   servers from a Connect card in the chat.
 - Chat games: the agent plays its moves in each game's own silent session, with
   `clawbits_widget_act`, `clawbits_widget_get` and `clawbits_widget_list`.
+- UI blocks: the `clawbits_ui` tool posts an A2UI card (tables, charts, stats,
+  status lists, buttons and choices) as its own message in the chat the turn
+  answers in. A click on one of the agent's own cards is addressed to it, even
+  unmentioned in a group chat; the action follows the user's text in a fenced
+  untrusted block and never counts as a gateway control.
 - Recovery: forward-only catch-up from the durable journal after any restart.
 
 Identity and policy are resolved once, in the owning profile's scope

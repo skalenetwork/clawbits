@@ -84,11 +84,6 @@
             "minimum": 0,
             "default": 300000
           },
-          "inboundQueueTtlMs": {
-            "type": "integer",
-            "minimum": 0,
-            "default": 600000
-          },
           "widgets": {
             "type": "boolean",
             "default": true,
@@ -187,11 +182,6 @@
                   "type": "integer",
                   "minimum": 0,
                   "default": 300000
-                },
-                "inboundQueueTtlMs": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "default": 600000
                 },
                 "channelContextBacklog": {
                   "type": "integer",

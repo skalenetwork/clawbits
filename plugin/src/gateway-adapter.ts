@@ -1,17 +1,17 @@
 import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import { dispatchInboundDirectDm } from "openclaw/plugin-sdk/channel-inbound";
+import { bindIngressLifecycleToReplyOptions, sendDurableMessageBatch } from "openclaw/plugin-sdk/channel-outbound";
 import { CHANNEL_ID, listClawBitsAccountIds } from "./accounts.js";
 import { buildAgentBody, clawbitsSessionId } from "./agent-body.js";
-import { ChannelWatermarkStore } from "./channel-watermarks.js";
 import { saveInboundAttachmentsForAgent } from "./attachments.js";
 import {
   registerOpenDraft,
   unregisterOpenDraft,
   type OpenDraftRef,
 } from "./draft-registry.js";
-import { finishReporting, lastActivity, turnSteps } from "./activity/reporter.js";
-import { finishStreaming, streamedText } from "./activity/stream-patcher.js";
+import { finishReporting, lastActivity, takeTurnSteps, turnSteps } from "./activity/reporter.js";
+import { finishStreaming, restartStreaming, streamedText } from "./activity/stream-patcher.js";
 import {
   registerInFlightTurn,
   unregisterInFlightTurn,
@@ -32,6 +32,7 @@ import {
 import {
   runInboundPoller,
   type InboundMessage,
+  type InboundTurn,
 } from "./inbound-poller.js";
 import { runLivenessPinger } from "./liveness.js";
 import {
@@ -52,7 +53,8 @@ import type { DraftPatch } from "./tools/realtime.js";
 import * as versionTools from "./tools/version.js";
 import type { VersionCheckResponse } from "./tools/version.js";
 import type { ResolvedClawBitsAccount } from "./types.js";
-import { runOutsideGatewayRootWork } from "./gateway-root-work.js";
+import { questionWaiting } from "./questions.js";
+import { pluginRuntime } from "./runtime.js";
 import { getWidget, listWidgets } from "./widgets/api.js";
 import { agentCapabilities, GAME_ROUTE_PROBE, type GameRoute } from "./widgets/capability.js";
 import {
@@ -76,12 +78,7 @@ type ChannelGatewayAdapter<ResolvedAccount> = NonNullable<
 >;
 type DirectDmRoutePeer = Parameters<typeof dispatchInboundDirectDm>[0]["peer"];
 type DirectDmChannelRuntime = Parameters<typeof dispatchInboundDirectDm>[0]["channelRuntime"];
-
-// Shared across every account started in this process: a single file-backed
-// watermark store so the catch-up backlog isn't re-injected after a restart.
-// Keyed internally by (accountId, channelId), so one instance is safe for all
-// accounts. `load()` is guarded, so repeated startAccount calls load once.
-const channelWatermarkStore = ChannelWatermarkStore.fileBacked();
+type DeliverPayload = Parameters<Parameters<typeof dispatchInboundDirectDm>[0]["deliver"]>[0];
 
 // Cadence for re-asserting the "generating" presence pill during a turn. The
 // server stores that status with a ~15s TTL (clawbits/realtime/bus.py
@@ -202,6 +199,19 @@ export function tagReplyBody(body: string, senderTag?: string): string {
   return `${leading}${tag} ${rest}`;
 }
 
+/** A final the outbound queue kept after proving it never reached the chat: the queue posts it once
+ *  the backend is back. Reporting it as failed instead leaves core owing a "couldn't confirm" notice,
+ *  which it posts on the next turn even though the reply lands. */
+function heldForRetry(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "queueCustody" in error &&
+    error.queueCustody === "held" &&
+    "sentBeforeError" in error &&
+    error.sentBeforeError === false
+  );
+}
+
 function normalizeSessionCommand(text: string): string | null {
   const trimmed = text.trim();
   const match = /^\/(new|reset|start|clear)(?=\s|$)/iu.exec(trimmed);
@@ -289,11 +299,15 @@ export async function dispatchInboundMessage(
   ctx: ChannelGatewayContext<ResolvedClawBitsAccount>,
   msg: InboundMessage,
   deps: DispatchInboundDeps = {},
+  turn?: InboundTurn,
 ): Promise<void> {
   const fileCount = msg.files?.length ?? 0;
   // A game move (widgets/wake.ts): the agent's turn in a chat game, run in the game's own session
   // and silent. Its brief holds the seat's private cards, so it never reaches the log either.
   const game = msg.widget;
+  // A typed answer to the question its chat waits on: core hands it to the asking turn, so it opens
+  // nothing of its own and cannot wait for the dispatch guard that turn holds.
+  const answer = msg.questionAnswer === true;
   consoleErrorWithFile(
     `[clawbits/${ctx.accountId}] dispatchInboundMessage post=${msg.postId} sender=${msg.senderId} channel=${msg.channelId} files=${fileCount} text=${game ? "(game move)" : JSON.stringify(msg.text)}`,
   );
@@ -332,8 +346,9 @@ export async function dispatchInboundMessage(
       msg.channelType === null ||
       msg.channelType === "direct");
   const isOperatorDm =
-    !game && msg.channelType === "direct" && msg.channelId === ctx.account.channelId;
-  // Let only the configured operator DM run session admin commands.
+    !game && !msg.uiAction && msg.channelType === "direct" && msg.channelId === ctx.account.channelId;
+  // Let only what the operator types in the configured operator DM run session admin commands; a
+  // click's text is the agent's, never a command.
   // Private/group/public channels — and other direct chats — stay ordinary text.
   const operatorDmSessionCommand = isOperatorDm ? normalizeSessionCommand(msg.text) : null;
   const operatorDmUsageCommand = isOperatorDm ? normalizeUsageCommand(msg.text) : null;
@@ -486,7 +501,7 @@ export async function dispatchInboundMessage(
   const isInstantHostCommand = /^\/usage(?:\s|$)/iu.test(effectiveText.trim());
   // A move shows nothing in chat while it runs: no shimmer, no "generating" pill.
   const usePreOpenShimmer =
-    !game && (isDirectChannel || groupChannelShimmer) && !isInstantHostCommand;
+    !game && !answer && (isDirectChannel || groupChannelShimmer) && !isInstantHostCommand;
 
   // Routing decision (dev-only): DM vs channel, route peer, recipient. Useful
   // when diagnosing "agent doesn't reply in a channel"; gated behind
@@ -502,22 +517,19 @@ export async function dispatchInboundMessage(
   // routes) still delivers replies. The two requests are independent,
   // so race them to save a network RTT.
   //
-  // The draft id lives in a shared mutable ref registered with the draft
-  // registry: replies that bypass ``deliver`` (codex message-tool sends
-  // routed through outbound ``sendText``) claim it from there and finalize
-  // the draft in place instead of minting a second post — otherwise the
-  // shimmer and the real reply coexist until this turn settles. Each
-  // consumer empties ``draftRef.id`` synchronously before its PATCH, so
-  // deliver / sendText / the cleanup paths below never double-handle it.
-  const draftRef: OpenDraftRef = { id: undefined };
-  // Interval that renews the "generating" pill for the life of the turn (see
-  // GENERATING_HEARTBEAT_MS). Started once the shimmer opens, cleared in
-  // clearGenerating() at turn end.
+  // Every reply leaves through outbound ``sendText``, which claims the draft
+  // from the registry and finalizes it in place; a send without a draft
+  // posts with the turn's trace id and parent.
   let generatingHeartbeat: ReturnType<typeof setInterval> | undefined;
   // LobsterTalk attention replies thread under the post that triggered them —
   // nobody tagged the agent, so without the quoted parent the reply reads as
   // a non-sequitur in a busy channel. Ordinary mention/DM replies stay flat.
   const attentionParentId = msg.attention && realPostId !== undefined ? Number(realPostId) : undefined;
+  const draftRef: OpenDraftRef = {
+    id: undefined,
+    ...(msg.traceId ? { traceId: msg.traceId } : {}),
+    ...(attentionParentId !== undefined ? { parentPostId: attentionParentId } : {}),
+  };
   if (client && usePreOpenShimmer) {
     const [statusResult, draftResult] = await Promise.allSettled([
       realtimeTools.setAgentStatus(client, conversationId, "generating"),
@@ -534,6 +546,7 @@ export async function dispatchInboundMessage(
     // Keep the pill lit: the initial set above expires after the server TTL,
     // so re-assert it on an interval until clearGenerating() flips to online.
     generatingHeartbeat = setInterval(() => {
+      if (questionWaiting(ctx.accountId, conversationId)) return;
       const activity = activityTurn && lastActivity(activityTurn);
       void realtimeTools.setAgentStatus(client, conversationId, "generating", activity).catch(() => {});
     }, GENERATING_HEARTBEAT_MS);
@@ -562,7 +575,7 @@ export async function dispatchInboundMessage(
   // run can still be bound to a lone DM turn (turn-registry rule 3) and stream its
   // thinking there; registered, it binds to this turn by its session key and says nothing.
   const activityTurn: InFlightTurn | undefined =
-    client && (game || accountStreaming || accountLiveActivity)
+    client && !answer && (game || accountStreaming || accountLiveActivity)
       ? registerInFlightTurn({
           accountId: ctx.accountId,
           channelId: conversationId,
@@ -579,6 +592,12 @@ export async function dispatchInboundMessage(
     return steps ? { steps } : {};
   };
   draftRef.finish = finish;
+  draftRef.handOver = async () => {
+    const text = activityTurn ? (await restartStreaming(activityTurn)).trim() : "";
+    if (!text) return undefined;
+    const steps = activityTurn && (await takeTurnSteps(activityTurn));
+    return { replace: text, ...(steps ? { steps } : {}) };
+  };
 
   const clearGenerating = async (): Promise<void> => {
     if (generatingHeartbeat !== undefined) {
@@ -596,140 +615,33 @@ export async function dispatchInboundMessage(
     }
   };
 
-  // Idempotency guard for ``deliver``. OpenClaw's dispatch path can fire
-  // the callback more than once per inbound (streaming intermediate
-  // payload, delivery-queue retry, etc.). The first non-empty payload
-  // patches the streaming draft and publishes it; an IDENTICAL later
-  // payload is a queue retry and is dropped. A DISTINCT later payload is
-  // content — a block-streaming host legitimately delivers a reply as
-  // several payloads — so it posts as a follow-up message instead of
-  // being silently dropped (which would truncate the reply to its first
-  // block; LIVE_AGENT_ACTIVITY_PLAN §3.5).
   let delivered = false;
   let lastDeliveredBody: string | undefined;
 
-  const deliver = async (payload: { text?: string; body?: string; [key: string]: unknown }) => {
-    if (game) {
-      // A move says nothing in chat, NO_REPLY or not: the board shows it.
-      pluginDebug(`deliver dropped the text of game move ${msg.postId}`);
-      return;
-    }
-    consoleErrorWithFile(
-      `[clawbits/${ctx.accountId}] deliver invoked for ${msg.postId}: ${JSON.stringify(payload)}`,
-    );
-    pluginDebug(
-      `Delivering. Clawbits reply pipeline reached the plugin — post=${msg.postId} draftPostId=${String(draftRef.id ?? "(none)")} payloadKeys=${JSON.stringify(Object.keys(payload ?? {}))}.`,
-    );
-    const rawBody =
-      (typeof payload?.text === "string" && payload.text) ||
-      (typeof payload?.body === "string" && payload.body) ||
-      "";
-    if (!rawBody) {
-      pluginDebug(
-        `deliver got EMPTY body for ${msg.postId} (payloadKeys=${JSON.stringify(Object.keys(payload ?? {}))}) — nothing to post`,
-      );
-      return;
-    }
-    const body = tagReplyBody(rawBody, msg.senderTag);
-    if (!client || !answers) {
-      logWarn(
-        ctx.log,
-        `[clawbits/${ctx.accountId}] deliver dropped reply for ${msg.postId}: gateway client/answers missing`,
-      );
-      return;
-    }
-    if (delivered) {
-      if (body === lastDeliveredBody) {
-        // Queue retry of the payload we already published — drop.
-        pluginDebug(
-          `Skipping duplicate deliver for ${msg.postId}: identical re-send.`,
-        );
-        return;
-      }
-      // Distinct continuation payload: post it as a follow-up so no text
-      // is lost. Loud log — today's hosts run with block streaming off, so
-      // seeing this means the host's dispatch behavior changed.
-      consoleErrorWithFile(
-        `[clawbits/${ctx.accountId}] deliver got a second DISTINCT payload for ${msg.postId} — posting follow-up instead of dropping (block-streamed host?)`,
-      );
-      await withChallenge(client, answers, (ans) =>
-        mmTools.postToChannel(
-          client,
-          conversationId,
-          {
-            message: body,
-            ...(msg.traceId ? { trace_id: msg.traceId } : {}),
-          },
-          ans,
-        ),
-      );
-      lastDeliveredBody = body;
-      setStatus?.({
-        accountId: ctx.accountId,
-        lastOutboundAt: Date.now(),
-        lastError: null,
-      });
-      return;
-    }
-    // Claim the draft synchronously: once ``draftRef.id`` is cleared, the
-    // outbound sendText path and the turn-end cleanup below both skip it.
-    const draftPostId = draftRef.id;
-    draftRef.id = undefined;
-    if (draftPostId !== undefined) {
-      // Finalise the streaming post in place — one PATCH replaces the
-      // body, server flips ``status`` from streaming to published, and
-      // the UI stops shimmering. Approval gating no longer applies to
-      // the agent's reply (it now applies to inbound human messages),
-      // so we always finalise to published.
-      try {
-        await realtimeTools.patchDraftPost(client, conversationId, draftPostId, {
-          replace: body,
-          done: true,
-          ...(await finish()),
-        });
-      } catch (err) {
-        logWarn(
-          ctx.log,
-          `[clawbits/${ctx.accountId}] patchDraftPost failed for ${msg.postId}: ${String((err as Error)?.message ?? err)} — falling back to single-POST delivery`,
-        );
-        await withChallenge(client, answers, (ans) =>
-          mmTools.postToChannel(
-            client,
-            conversationId,
-            {
-              message: body,
-              ...(msg.traceId ? { trace_id: msg.traceId } : {}),
-              ...(attentionParentId !== undefined
-                ? { parent_post_id: attentionParentId }
-                : {}),
-            },
-            ans,
-          ),
-        );
-      }
-    } else {
-      await withChallenge(client, answers, (ans) =>
-        mmTools.postToChannel(
-          client,
-          conversationId,
-          {
-            message: body,
-            ...(msg.traceId ? { trace_id: msg.traceId } : {}),
-            ...(attentionParentId !== undefined
-              ? { parent_post_id: attentionParentId }
-              : {}),
-          },
-          ans,
-        ),
-      );
-    }
-    delivered = true;
-    lastDeliveredBody = body;
-    setStatus?.({
+  // Hands each final to OpenClaw's durable outbound queue, which sends it through outbound
+  // ``sendText`` keyed by its delivery intent, so a crash or retry never posts it twice.
+  const deliver = async (payload: DeliverPayload) => {
+    if (game) return;
+    const text = payload.text ? tagReplyBody(payload.text, msg.senderTag) : undefined;
+    const media = payload.mediaUrl ?? payload.mediaUrls?.[0];
+    if (!text && !media) return;
+    if (text === lastDeliveredBody && !media) return;
+    lastDeliveredBody = text;
+    const sent = await sendDurableMessageBatch({
+      cfg: ctx.cfg,
+      channel: CHANNEL_ID,
+      to: conversationId,
       accountId: ctx.accountId,
-      lastOutboundAt: Date.now(),
-      lastError: null,
+      payloads: [{ ...payload, replyToId: undefined, ...(text ? { text } : {}) }],
+      durability: "required",
     });
+    if (sent.status === "failed" && heldForRetry(sent.error)) {
+      logWarn(ctx.log, `[clawbits/${ctx.accountId}] reply to ${msg.postId} queued for retry: ${String(sent.error)}`);
+      return;
+    }
+    if (sent.status === "failed" || sent.status === "partial_failed") throw sent.error;
+    delivered = true;
+    setStatus?.({ accountId: ctx.accountId, lastOutboundAt: Date.now(), lastError: null });
   };
 
   // The turn and a `/stop` aimed at it share one route: OpenClaw only aborts
@@ -767,7 +679,9 @@ export async function dispatchInboundMessage(
     provider: CHANNEL_ID,
     surface: CHANNEL_ID,
     originatingChannel: CHANNEL_ID,
-    originatingTo: recipientAddr,
+    // Where core delivers on its own (ask_user, restart notices): a DM's own channel, since a peer
+    // address resolves to the owner's DM.
+    originatingTo: isDirectChannel && !game ? `clawbits:channel:${conversationId}` : recipientAddr,
   };
   const routeContext = {
     // A move's conversation is its game; the chat stays its native channel, so a
@@ -794,19 +708,17 @@ export async function dispatchInboundMessage(
     if (stopRequested) return;
     stopRequested = true;
     try {
-      await runOutsideGatewayRootWork(() =>
-        dispatchInboundDirectDm({
-          ...route,
-          rawBody: "/stop",
-          commandBody: "/stop",
-          commandAuthorized: true,
-          messageId: `stop-${msg.postId}`,
-          extraContext: { ...routeContext, CommandSource: "text" },
-          deliver: async () => {},
-          onRecordError: warnStop,
-          onDispatchError: warnStop,
-        }),
-      );
+      await dispatchInboundDirectDm({
+        ...route,
+        rawBody: "/stop",
+        commandBody: "/stop",
+        commandAuthorized: true,
+        messageId: `stop-${msg.postId}`,
+        extraContext: { ...routeContext, CommandSource: "text" },
+        deliver: async () => {},
+        onRecordError: warnStop,
+        onDispatchError: warnStop,
+      });
       logInfo(ctx.log, `[clawbits/${ctx.accountId}] stopped turn for ${msg.postId}`);
     } catch (err) {
       warnStop(err);
@@ -814,12 +726,22 @@ export async function dispatchInboundMessage(
   };
   // Not for a move: it has no draft, and `turn.stop` / an outbound send in the chat
   // must keep reaching the chat's own turn.
-  if (!game) registerOpenDraft(ctx.accountId, conversationId, draftRef);
+  if (!game && !answer) registerOpenDraft(ctx.accountId, conversationId, draftRef);
 
   // Set right before the runtime dispatch; read in ``finally`` so the
   // ``agent_turn`` span fires on success and error alike. 0 until set.
   let dispatchSpanStart = 0;
   let failed = false;
+  let adopted = false;
+  const adoption = turn
+    ? bindIngressLifecycleToReplyOptions({
+        ...turn.lifecycle,
+        onAdopted: async () => {
+          adopted = true;
+          await turn.lifecycle.onAdopted();
+        },
+      })
+    : {};
   // Held until the move settles: the game's session is never deleted under it.
   const releaseGameSession =
     game && dispatchGuardTarget ? holdGameSession(dispatchGuardTarget.sessionKey) : undefined;
@@ -839,29 +761,31 @@ export async function dispatchInboundMessage(
     // dispatch in, the ``deliver`` callback out), so no OpenClaw-side change is
     // needed to measure it.
     dispatchSpanStart = Date.now();
-    await withInboundDispatchGuard(dispatchGuardTarget, async () => {
-      if (deps.modelSelection && dispatchGuardTarget?.agentId) {
+    const guarded = answer ? undefined : dispatchGuardTarget;
+    await withInboundDispatchGuard(guarded, async () => {
+      if (deps.modelSelection && guarded?.agentId) {
         const ownerChannelId =
           isDirectChannel &&
           ctx.account.channelId &&
-          dispatchGuardTarget.sessionKey === operatorDmRoute(ctx.accountId)?.sessionKey
+          guarded.sessionKey === operatorDmRoute(ctx.accountId)?.sessionKey
             ? ctx.account.channelId
             : conversationId;
         await convergeSession(
-          { agentId: dispatchGuardTarget.agentId, sessionKey: dispatchGuardTarget.sessionKey },
+          { agentId: guarded.agentId, sessionKey: guarded.sessionKey },
           deps.modelSelection.channels.get(ownerChannelId) ?? INHERIT,
           ctx.log,
         );
       }
       return dispatchInboundDirectDm({
         ...route,
+        ...adoption,
         rawBody: msg.text,
         // `rawBody` stays untouched (audit trail); `bodyForAgent` carries the
         // ClawBits preamble plus any attachment summary so the model knows
         // what environment it's in and what files came along. The hashed
         // per-chat session id lets the agent report a stable session id without
         // a tool call or exposing the raw channel id.
-        bodyForAgent: buildAgentBody(effectiveText, {
+        bodyForAgent: answer ? msg.text : buildAgentBody(effectiveText, {
           files: msg.files,
           savedByFileId,
           sessionId: game ? undefined : clawbitsSessionId(conversationId),
@@ -886,6 +810,7 @@ export async function dispatchInboundMessage(
           // messages reach the model under an explicit instruction to ignore
           // them, and the agent answers only the trigger.
           catchUp: msg.catchUp,
+          uiAction: msg.uiAction,
         }),
         commandBody: effectiveText,
         commandAuthorized: isAuthorizedCommand ? true : undefined,
@@ -953,6 +878,7 @@ export async function dispatchInboundMessage(
       }`,
     );
     failed = true;
+    if (turn && !adopted) throw err;
   } finally {
     releaseGameSession?.();
     unregisterOpenDraft(ctx.accountId, conversationId, draftRef);
@@ -1007,7 +933,7 @@ export async function dispatchInboundMessage(
           leftoverDraftId,
           partial
             ? { replace: tagReplyBody(`${partial}\n\n_(stopped)_`, msg.senderTag), done: true, ...(await finish()) }
-            : failed && !stopRequested
+            : failed && !stopRequested && (adopted || !turn || turn.lastAttempt)
               ? { replace: "_(reply failed to generate)_", done: true, ...(await finish()) }
               : { cancel: true },
         );
@@ -1018,8 +944,8 @@ export async function dispatchInboundMessage(
         );
       }
     }
-    // A move never flipped the status, so it doesn't flip it back either.
-    if (!game) await clearGenerating();
+    // A move and an answer never flipped the status, so they don't flip it back either.
+    if (!game && !answer) await clearGenerating();
   }
 }
 
@@ -1195,6 +1121,12 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
       logInfo(ctx.log, `[clawbits/${ctx.accountId}] gateway idle: account not fully configured`);
       return;
     }
+    const state = pluginRuntime()?.state;
+    if (!state) {
+      ctx.setStatus?.({ accountId: ctx.accountId, running: false, lastError: "plugin runtime unavailable" });
+      logWarn(ctx.log, `[clawbits/${ctx.accountId}] gateway idle: plugin runtime unavailable`);
+      return;
+    }
     const client = buildClientForAccount(account);
     const answers = resolveKnownAnswers(account.knownAnswers);
 
@@ -1258,18 +1190,15 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
       onCapabilitiesChanged: onCompanionToolsChanged,
     });
 
-
-    // Inbound gating moved server-side: the agentic GET only returns
-    // posts that have already been approved (or were authored by the
-    // agent's own approver), so the poller can dispatch every mention
-    // it sees without an explicit owner-author check.
+    const modelChoices = state.openKeyedStore<ModelChoice>({ namespace: "model-choice", maxEntries: 1_000 });
     let modelSelection: ModelSelection | undefined;
     await runInboundPoller({
       client,
       account,
       abortSignal: ctx.abortSignal,
       log: ctx.log,
-      watermarkStore: channelWatermarkStore,
+      queue: () => state.openChannelIngressQueue({ accountId: ctx.accountId }),
+      contextWatermarks: state.openKeyedStore<number>({ namespace: "context-watermarks", maxEntries: 10_000 }),
       onModelSelection: (selection) => {
         modelSelection = selection;
         const route = operatorDmRoute(ctx.accountId);
@@ -1277,7 +1206,7 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
         void convergeAgentDefault(
           { accountId: ctx.accountId, agentId: route.agentId },
           selection.agentDefault,
-          channelWatermarkStore,
+          modelChoices,
           ctx.log,
         );
         if (route.sessionKey && account.channelId) {
@@ -1290,15 +1219,18 @@ export const gatewayAdapter: ChannelGatewayAdapter<ResolvedClawBitsAccount> = {
       },
       onWidgetEnded: ({ widgetId }) => endGameSession(ctx, widgetId),
       onGameSessionSweep: (serial, seated) => sweepGameSessions(ctx, client, serial, ctx.abortSignal, seated),
-      onInboundMessage: (msg) =>
-        runOutsideGatewayRootWork(() =>
-          dispatchInboundMessage(ctx, msg, {
+      onInboundMessage: (msg, turn) =>
+        dispatchInboundMessage(
+          ctx,
+          msg,
+          {
             client,
             answers,
             setStatus: ctx.setStatus,
             groupChannelShimmer: account.groupChannelShimmer,
             modelSelection,
-          }),
+          },
+          turn,
         ),
     });
   },

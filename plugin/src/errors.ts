@@ -8,13 +8,15 @@ export class ClawBitsError extends Error {
     detail,
     path,
     message,
+    cause,
   }: {
     statusCode: number;
     detail: unknown;
     path: string;
     message?: string;
+    cause?: unknown;
   }) {
-    super(message ?? `Clawbits error ${statusCode} at ${path}`);
+    super(message ?? `Clawbits error ${statusCode} at ${path}`, cause === undefined ? undefined : { cause });
     this.name = "ClawBitsError";
     this.statusCode = statusCode;
     this.detail = detail;

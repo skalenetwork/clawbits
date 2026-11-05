@@ -15,6 +15,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from clawbits.a2ui.models import PostUi, UiAction, UiActionRequest
+from clawbits.a2ui.validate import build_action, closed_by
 from clawbits.cloudflare.r2_presign import R2Presigner
 from clawbits.datastructures.agent_id import AgentId
 from clawbits.datastructures.mm_models import (
@@ -897,6 +899,58 @@ def _create_usage_reply(
     )
 
 
+def _create_human_post(
+    db: Session,
+    channel_id: str,
+    human_id: int,
+    message: str,
+    parent_post_id: int | None,
+    trace_id: str | None = None,
+    client_key: str | None = None,
+    ui_action: UiAction | None = None,
+) -> int:
+    """Publish the caller's post and mark the channel read up to it. ``@``-tags are limited to
+    agents the caller may contact; ``ValueError`` for a parent the post may not reply to."""
+    for agent_id in TableRead.find_tagged_agents_in_channel(db, channel_id, message):
+        if not TableRead.can_tag_agent(db, agent_id, human_id=human_id):
+            raise HTTPException(status_code=403, detail=f"Not permitted to tag agent '{agent_id}'")
+    post_id = TableWrite.create_mm_post_human(
+        db, channel_id, human_id, message,
+        status="published",
+        parent_post_id=parent_post_id,
+        trace_id=trace_id,
+        client_key=client_key,
+        ui_action=ui_action,
+    )
+    TableWrite.mark_mm_channel_read(db, channel_id, human_id, post_id)
+    return post_id
+
+
+def _announce_human_post(request: Request, db: Session, post: MmPostResponse) -> list[int]:
+    """After the commit: ``post.created`` to every member (their unread and push), Lobstertalk,
+    and the author's ``channel.read`` and cleared presence. Returns the members it reached."""
+    channel_id = post.channel_id
+    member_human_ids = TableRead.get_mm_channel_human_member_ids(db, channel_id)
+    attention_ctx = build_attention_context(db, channel_id)
+    bus = get_bus()
+    fire_and_forget(
+        publish_post_created(bus, channel_id, post.model_dump(), member_human_ids=member_human_ids)
+    )
+    if attention_ctx is not None:
+        fire_and_forget(
+            consider_post(
+                post=post.model_dump(),
+                channel_id=channel_id,
+                context=attention_ctx,
+                author_agent_id=None,
+                engine=request.app._engine,
+            )
+        )
+    fire_and_forget(publish_channel_read(bus, post.human_id, channel_id, post.post_id))
+    fire_and_forget(bus.presence_clear(channel_id, "human", post.human_id))
+    return member_human_ids
+
+
 @human_mm_router.post("/api/human/mm/channels/{channel_id}/posts", response_model=MmPostResponse)
 def create_post(
     channel_id: str,
@@ -918,15 +972,9 @@ def create_post(
 
     with _get_db(request) as db:
         _require_human_member(db, channel_id, user["id"])
-        for agent_id in TableRead.find_tagged_agents_in_channel(db, channel_id, body.message):
-            if not TableRead.can_tag_agent(db, agent_id, human_id=user["id"]):
-                raise HTTPException(
-                    status_code=403, detail=f"Not permitted to tag agent '{agent_id}'"
-                )
         try:
-            post_id = TableWrite.create_mm_post_human(
+            post_id = _create_human_post(
                 db, channel_id, user["id"], body.message,
-                status="published",
                 parent_post_id=body.parent_post_id,
                 trace_id=body.trace_id,
             )
@@ -941,7 +989,6 @@ def create_post(
             titled = TableRead.get_mm_channel(db, channel_id)
             if titled is not None:
                 TableRead.apply_dm_peers(db, [titled], user["id"])
-        TableWrite.mark_mm_channel_read(db, channel_id, user["id"], post_id)
         usage_reply_id = (
             _create_usage_reply(db, channel_id, post_id, body.trace_id)
             if body.message.strip().lower() == "/cb-usage"
@@ -956,27 +1003,11 @@ def create_post(
         response = MmPostResponse(
             **_with_file_urls(request, [post])[0], client_msg_uuid=body.client_msg_uuid
         )
-        member_human_ids = TableRead.get_mm_channel_human_member_ids(db, channel_id)
-        attention_ctx = build_attention_context(db, channel_id)
+        member_human_ids = _announce_human_post(request, db, response)
 
     bus = get_bus()
-    fire_and_forget(
-        publish_post_created(
-            bus, channel_id, response.model_dump(), member_human_ids=member_human_ids
-        )
-    )
     if titled is not None:
         fire_and_forget(publish_channel_added(bus, user["id"], MmChannelResponse(**titled).model_dump()))
-    if attention_ctx is not None:
-        fire_and_forget(
-            consider_post(
-                post=response.model_dump(),
-                channel_id=channel_id,
-                context=attention_ctx,
-                author_agent_id=None,
-                engine=request.app._engine,
-            )
-        )
     for usage_reply in usage_replies:
         fire_and_forget(
             publish_post_created(
@@ -984,9 +1015,58 @@ def create_post(
                 member_human_ids=member_human_ids,
             )
         )
-    fire_and_forget(publish_channel_read(bus, user["id"], channel_id, post_id))
-    fire_and_forget(bus.presence_clear(channel_id, "human", user["id"]))
     fire_and_forget(_embed_link_preview(request.app._engine, post_id, body.message))
+    return response
+
+
+@human_mm_router.post("/api/human/mm/posts/{post_id}/ui/actions", response_model=MmPostResponse)
+def post_ui_action(
+    post_id: int,
+    body: UiActionRequest,
+    request: Request,
+    user: dict = Depends(get_current_human_user),
+):
+    """Click a Button on an agent's surface: the server builds the action from the stored
+    component and posts it as the caller's reply to the surface, and a ``once`` surface closes in
+    the same transaction, keeping the values sent. Outside a DM with the agent, the caller needs
+    ``can_tag`` on it. A replayed ``client_key`` answers with the post it made."""
+    with _get_db(request) as db:
+        surface = db.get(MmPost, post_id, with_for_update=True, populate_existing=True)
+        if surface is None:
+            raise HTTPException(status_code=404, detail="Post not found")
+        channel_id = surface.channel_id
+        _require_human_member(db, channel_id, user["id"])
+        if surface.ui is None:
+            raise HTTPException(status_code=404, detail="Post has no UI surface")
+        in_dm = TableRead.dm_agent_peer(db, channel_id) == surface.agent_id
+        if not in_dm and not TableRead.can_tag_agent(db, surface.agent_id, human_id=user["id"]):
+            raise HTTPException(status_code=403, detail="Not permitted to contact this agent")
+        client_key = f"h{user['id']}:{body.client_key}"
+        if replayed := TableRead.get_mm_post_by_human_client_key(db, channel_id, user["id"], client_key):
+            return MmPostResponse(**TableRead.hydrate_mm_posts(db, [replayed])[0])
+        ui = PostUi.model_validate(surface.ui)
+        if ui.closed is not None:
+            raise HTTPException(status_code=409, detail="Surface is closed")
+        if ui.rev != body.rev:
+            raise HTTPException(status_code=409, detail=f"Surface is at rev {ui.rev}")
+        built = build_action(ui, body)
+        if isinstance(built, list):
+            raise HTTPException(status_code=422, detail=" ".join(problem["error"]["message"] for problem in built))
+        action, message = built
+        action_id = _create_human_post(
+            db, channel_id, user["id"], message,
+            parent_post_id=post_id,
+            client_key=client_key,
+            ui_action=action,
+        )
+        if ui.once:
+            surface.ui = closed_by(ui, action, message).model_dump()
+        db.commit()
+        response = _rehydrate_post_response(db, action_id)
+        _announce_human_post(request, db, response)
+        closed = _rehydrate_post_response(db, post_id) if ui.once else None
+    if closed is not None:
+        fire_and_forget(publish_post_updated(get_bus(), channel_id, closed.model_dump()))
     return response
 
 

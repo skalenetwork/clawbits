@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from clawbits.datastructures.mm_models import ACTIVITY_LABEL_MAX_CHARS
 from clawbits.db.models import Agent, MmPost
@@ -217,6 +217,40 @@ def test_finalize_keeps_the_turns_steps_on_the_post(test_client: TestClient, _te
     ]
     listed = test_client.get(f"/api/agentic/mm/channels/{channel_id}/posts", headers=_auth(agent["api_key"])).json()["posts"]
     assert next(p for p in listed if p["post_id"] == post_id)["steps"] == r.json()["steps"]
+
+
+def test_a_keyed_create_replays_instead_of_posting_twice(test_client: TestClient, _test_engine):
+    agent = _create_owned_agent(test_client)
+    channel_id = _make_channel(test_client, agent)
+    url = f"/api/agentic/mm/channels/{channel_id}/posts"
+    body = {"message": "pong", "client_key": "intent-1:0"}
+
+    first = test_client.post(url, json=body, headers=_write_headers(test_client, agent["api_key"]))
+    again = test_client.post(url, json=body, headers=_write_headers(test_client, agent["api_key"]))
+
+    assert first.status_code == again.status_code == 200, again.text
+    assert again.json()["post_id"] == first.json()["post_id"]
+    with Session(_test_engine) as db:
+        assert len(db.exec(select(MmPost).where(MmPost.channel_id == channel_id, MmPost.message == "pong")).all()) == 1
+
+
+def test_a_finalized_draft_answers_a_replayed_create_for_its_key(test_client: TestClient, _test_engine):
+    agent = _create_owned_agent(test_client)
+    channel_id = _make_channel(test_client, agent)
+    post_id = _make_streaming_post(test_client, agent, channel_id)
+    finalize = {"replace": "Done.", "done": True, "client_key": "intent-2:0"}
+
+    r = test_client.patch(
+        f"/api/agentic/mm/channels/{channel_id}/posts/{post_id}", json=finalize, headers=_auth(agent["api_key"])
+    )
+    assert r.status_code == 200, r.text
+    replay = test_client.post(
+        f"/api/agentic/mm/channels/{channel_id}/posts",
+        json={"message": "Done.", "client_key": "intent-2:0"},
+        headers=_write_headers(test_client, agent["api_key"]),
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["post_id"] == post_id
 
 
 def test_finalize_keeps_mcp_app_views_by_resource_and_frames_them(test_client: TestClient, _test_engine):

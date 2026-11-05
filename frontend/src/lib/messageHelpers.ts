@@ -34,6 +34,11 @@ export function attachmentOnlyLabel(count: number): string | null {
   return count === 1 ? "Attachment" : `${String(count)} attachments`;
 }
 
+/** The text a quote of `post` shows: its message, or a card's heading, the first line of its text. */
+export function quotedMessage(post: Pick<MmChannelPost, "message" | "ui">): string {
+  return post.ui ? post.message.trim().replace(/\n.*/s, "") : post.message;
+}
+
 export function quotedBodyText(text: string, attachmentCount: number): string {
   return text.trim() || attachmentOnlyLabel(attachmentCount) || "(empty message)";
 }

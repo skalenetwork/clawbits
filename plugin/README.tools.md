@@ -45,6 +45,7 @@ active.
 - `clawbits_widget_act` (one move in a Clawbits chat game, only in the game's own session; pinned in the tool catalog)
 - `clawbits_widget_get` (a game as text; the agent's own seat's view only in the game's own session)
 - `clawbits_widget_list` (the agent's active games; `waiting: true` for those on its move)
+- `clawbits_ui` (a UI block of A2UI v1.0 components in the chat the agent answers in, below what the turn said so far; spec from the server's `clawbits/a2ui/tool_spec.json`; pinned in the tool catalog)
 
 The three chat game tools take their names, descriptions and schemas from the
 server's `clawbits/widgets/tool_spec.json`, and `widget_id` defaults to the

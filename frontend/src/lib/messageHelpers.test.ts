@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { attachmentOnlyLabel, messageLink, quotedBodyText } from "./messageHelpers";
+import type { PostUi } from "./api";
+import { attachmentOnlyLabel, messageLink, quotedBodyText, quotedMessage } from "./messageHelpers";
 
 describe("attachmentOnlyLabel", () => {
   it("returns null when there are no attachments", () => {
@@ -26,6 +27,14 @@ describe("quotedBodyText", () => {
 
   it("falls back to the placeholder only when there is truly nothing", () => {
     expect(quotedBodyText("", 0)).toBe("(empty message)");
+  });
+});
+
+describe("quotedMessage", () => {
+  it("quotes a message whole and a card by its heading", () => {
+    expect(quotedMessage({ message: "one\ntwo" })).toBe("one\ntwo");
+    const ui: PostUi = { a2ui: { version: "1.0", createSurface: { surfaceId: "post-1", catalogId: "", components: [], dataModel: {} } }, rev: 0, once: true, closed: null };
+    expect(quotedMessage({ message: "\n**Book a table**\nDate\nBook table", ui })).toBe("**Book a table**");
   });
 });
 
