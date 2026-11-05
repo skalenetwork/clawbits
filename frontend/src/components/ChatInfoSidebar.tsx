@@ -89,7 +89,9 @@ export default function ChatInfoSidebar({ channelId, open, onClose }: {
             {isWidgetChat(channel) && (
               <SidebarMenuItem>
                 <label
-                  title={orgWidgets ? undefined : "Turned off for this organization"}
+                  title={!orgWidgets
+                    ? "Turned off for this organization"
+                    : channel.widgets_supported === false ? "This agent can't play games now" : undefined}
                   className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm text-muted-foreground [&>svg]:size-4 [&>svg]:shrink-0"
                 >
                   <ChessPawn/>

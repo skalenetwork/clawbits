@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { Ban, ChevronDown, ChevronUp, PanelRightClose, X } from "lucide-react";
+import { PanelToggle } from "@/components/chat/ChannelHeaderPills";
 import { SIDEBAR_SCROLL } from "@/components/ProgressiveBlur";
 import { PANEL_ICON_BUTTON, RightPanelSlotContext } from "@/components/sidebars/rightPanelContext";
 import { Button } from "@/components/ui/button";
@@ -23,9 +24,9 @@ import "./widgets.css";
 
 const WidgetPanel = lazy(() => import("./WidgetPanel"));
 
-/** How long a game seen ending keeps its result open before it folds to its strip. */
+/** How long a game seen ending keeps its result open before it folds away. */
 const RESULT_HOLD_MS = 6_000;
-/** Below this a window has no room for the chat beside an open column, so a running game waits as its strip. */
+/** Below this a window has no room for the chat beside an open column, so a running game waits folded. */
 const ROOMY_PX = 1180;
 /** From this width the game column sits beside Info, Attachments or Pinned rather than under them. */
 const BESIDE_PANELS_PX = 1600;
@@ -60,7 +61,7 @@ function useMinWidth(px: number, otherwise: boolean): boolean {
 /** What the panel shows of a game, from the view this device chose. A running game opens on a wide screen and waits
  *  in its bar on a narrow one until the player says otherwise; a collapsed one never opens by itself. One seen ending
  *  while open, or found ended where its player left it open, keeps its result open a moment (counted only while in
- *  sight), then folds to its strip, where it waits to be dismissed. */
+ *  sight), then folds away (to its toggle, or its bar), where it waits to be dismissed. */
 function useGameView(
   widget: Widget,
   { narrow, paused, picked }: { narrow: boolean; paused: boolean; picked: boolean },
@@ -85,7 +86,7 @@ function useGameView(
     }, RESULT_HOLD_MS);
     return () => { window.clearTimeout(timer); };
   }, [holding, paused, widgetId]);
-  const shown = view === "dismissed" ? "none" : holding || (active ? openWhileActive : view === "open") ? "open" : "strip";
+  const shown = view === "dismissed" ? "none" : holding || (active ? openWhileActive : view === "open") ? "open" : "collapsed";
   return {
     shown,
     open: () => { setWidgetView(widgetId, "open"); },
@@ -101,7 +102,7 @@ function useGameView(
   };
 }
 
-/** The game in a few words for its strip and its bar, and their name for a screen reader, which says the turn and
+/** The game in a few words for its toggle and its bar, and their name for a screen reader, which says the turn and
  *  the chat's score too. */
 function summaryOf(widget: Widget, userId: number | null) {
   const seat = seatOf(widget, userId);
@@ -170,125 +171,132 @@ function EndGame({ widget, className }: { widget: Widget; className: string }) {
   );
 }
 
-/** The chat's game at the right edge of a wide screen, in the right panels' frame: open beside the chat, or collapsed
- *  to a strip with the game's glyph, its state and a dot when it's your move. Info, Attachments and Pinned cover it
- *  while they're open, but on a very wide screen it sits beside them. */
-export function GameColumn({ covered, ...props }: GameProps & { covered: boolean }) {
+/** The chat's game at the right edge of a wide screen, in the right panels' frame, open beside the chat or folded
+ *  away. Its toggle in the chat's header, beside Attachments, shows or hides it, with a dot when it's your move. Info,
+ *  Attachments and Pinned cover it while they're open, but on a very wide screen it sits beside them. */
+export function GameColumn({ covered, toggleSlot, onReveal, ...props }: GameProps & {
+  covered: boolean;
+  /** Where its toggle goes in the chat's header. */
+  toggleSlot: HTMLElement | null;
+  /** Closes the panel covering it, so its toggle brings it forward. */
+  onReveal: () => void;
+}) {
   const slot = useContext(RightPanelSlotContext);
   const { data: widget } = useWidget(props.widgetId);
   // A widget shows only in the chat it lives in.
   if (!slot || !widget || widget.channel_id !== props.channelId) return null;
   return createPortal(
-    <Column widget={widget} userId={props.userId} picked={props.picked} covered={covered} onDismiss={props.onDismiss} />,
+    <Column
+      widget={widget}
+      userId={props.userId}
+      picked={props.picked}
+      covered={covered}
+      toggleSlot={toggleSlot}
+      onReveal={onReveal}
+      onDismiss={props.onDismiss}
+    />,
     slot,
   );
 }
 
-function Column({ widget, userId, picked, covered, onDismiss }: {
+function Column({ widget, userId, picked, covered, toggleSlot, onReveal, onDismiss }: {
   widget: Widget;
   userId: number | null;
   picked: boolean;
   covered: boolean;
+  toggleSlot: HTMLElement | null;
+  onReveal: () => void;
   onDismiss: () => void;
 }) {
   const roomy = useMinWidth(ROOMY_PX, true);
   const besidePanels = useMinWidth(BESIDE_PANELS_PX, false);
   const hidden = covered && !besidePanels;
   const game = useGameView(widget, { narrow: !roomy, paused: hidden, picked }, onDismiss);
-  const { seat, title, status, myMove, score, label } = summaryOf(widget, userId);
+  const { seat, title, myMove, score, label } = summaryOf(widget, userId);
   const active = widget.status === "active";
   const shown = hidden ? "none" : game.shown;
-  // A click that swaps the open column for its strip, or back, hands focus to the control that takes its place.
-  const refocus = useRef(false);
-  const collapseRef = useRef<HTMLButtonElement>(null);
-  const stripRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!refocus.current) return;
-    refocus.current = false;
-    (game.shown === "open" ? collapseRef : stripRef).current?.focus();
-  }, [game.shown]);
+  const open = shown === "open";
+  // The toggle stays in the header while the column comes and goes, so Hide hands it the focus.
+  const toggleRef = useRef<HTMLButtonElement>(null);
   // Boards side by side (a fleet each) take a wider column.
   const wide = (widget.scene.boards?.length ?? 1) > 1;
-  return (
-    <aside
-      aria-label="Game"
-      data-state={shown}
-      aria-hidden={shown === "none"}
-      inert={shown === "none"}
-      className={cn(
-        "relative z-[45] hidden shrink-0 overflow-hidden bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-linear md:flex",
-        shown === "none" ? "w-0" : shown === "strip" ? "w-12" : wide ? "w-[26rem]" : "w-[22rem]",
-      )}
+  const toggle = game.shown !== "none" && (
+    <PanelToggle
+      ref={toggleRef}
+      open={open}
+      onToggle={() => {
+        if (open) {
+          game.collapse();
+          return;
+        }
+        // Brought forward over a panel covering it.
+        if (hidden) onReveal();
+        game.open();
+      }}
+      noun="game"
+      detail={label}
     >
-      {game.shown === "open" ? (
-        <div className={cn("flex shrink-0 flex-col", wide ? "w-[26rem]" : "w-[22rem]")}>
-          <div className="px-2">
-            <div data-tauri-drag-region className="flex h-(--header-height) items-center gap-1 pl-2.5">
-              <h2 className="flex min-w-0 flex-1 items-center gap-2 text-[13px] font-medium">
-                <KindGlyph kind={widget.kind} aria-hidden className="size-4 shrink-0" />
-                <span className="truncate">{title}</span>
-                {score && <ScoreChip score={score} />}
-              </h2>
-              {active && seat && <EndGame widget={widget} className={PANEL_ICON_BUTTON} />}
-              {!active && (
-                <button type="button" aria-label="Dismiss game" title="Dismiss game" onClick={game.dismiss} className={PANEL_ICON_BUTTON}>
-                  <X className="size-4" />
+      <span className="relative grid shrink-0 place-items-center">
+        <KindGlyph kind={widget.kind} aria-hidden className="size-3.5" />
+        {/* The turn, said by the label too, not only by this dot. */}
+        {myMove && (
+          <span aria-hidden className="wgt absolute -top-1 -right-1.5 size-2 rounded-full bg-(--w-primary) ring-2 ring-background" />
+        )}
+      </span>
+    </PanelToggle>
+  );
+  return (
+    <>
+      {toggleSlot && toggle && createPortal(toggle, toggleSlot)}
+      <aside
+        aria-label="Game"
+        data-state={shown}
+        aria-hidden={!open}
+        inert={!open}
+        className={cn(
+          "relative z-[45] hidden shrink-0 overflow-hidden bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-linear md:flex",
+          !open ? "w-0" : wide ? "w-[26rem]" : "w-[22rem]",
+        )}
+      >
+        {game.shown === "open" && (
+          <div className={cn("flex shrink-0 flex-col", wide ? "w-[26rem]" : "w-[22rem]")}>
+            <div className="px-2">
+              <div data-tauri-drag-region className="flex h-(--header-height) items-center gap-1 pl-2.5">
+                <h2 className="flex min-w-0 flex-1 items-center gap-2 text-[13px] font-medium">
+                  <KindGlyph kind={widget.kind} aria-hidden className="size-4 shrink-0" />
+                  <span className="truncate">{title}</span>
+                  {score && <ScoreChip score={score} />}
+                </h2>
+                {active && seat && <EndGame widget={widget} className={PANEL_ICON_BUTTON} />}
+                {!active && (
+                  <button type="button" aria-label="Dismiss game" title="Dismiss game" onClick={game.dismiss} className={PANEL_ICON_BUTTON}>
+                    <X className="size-4" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-expanded
+                  aria-label="Hide game"
+                  title="Hide game"
+                  onClick={() => {
+                    game.collapse();
+                    toggleRef.current?.focus();
+                  }}
+                  className={PANEL_ICON_BUTTON}
+                >
+                  <PanelRightClose className="size-4" />
                 </button>
-              )}
-              <button
-                ref={collapseRef}
-                type="button"
-                aria-expanded
-                aria-label="Collapse game"
-                title="Collapse game"
-                onClick={() => {
-                  refocus.current = true;
-                  game.collapse();
-                }}
-                className={PANEL_ICON_BUTTON}
-              >
-                <PanelRightClose className="size-4" />
-              </button>
+              </div>
+            </div>
+            <div className={SIDEBAR_SCROLL}>
+              <Suspense fallback={<WidgetSkeleton />}>
+                <WidgetPanel widget={widget} userId={userId} />
+              </Suspense>
             </div>
           </div>
-          <div className={SIDEBAR_SCROLL}>
-            <Suspense fallback={<WidgetSkeleton />}>
-              <WidgetPanel widget={widget} userId={userId} />
-            </Suspense>
-          </div>
-        </div>
-      ) : (
-        <div className="flex w-12 shrink-0 flex-col items-center gap-1 pb-2">
-          <button
-            ref={stripRef}
-            type="button"
-            aria-expanded={false}
-            aria-label={label}
-            title="Show game"
-            onClick={() => {
-              refocus.current = true;
-              game.open();
-            }}
-            className="wgt flex min-h-0 w-full flex-1 flex-col items-center gap-2 outline-none hover:bg-[var(--sb-hover)] focus-visible:shadow-[inset_0_0_0_2px_var(--w-primary)]"
-          >
-            <span className="relative grid h-(--header-height) shrink-0 place-items-center">
-              <KindGlyph kind={widget.kind} aria-hidden className="size-5 text-(--w-on-primary-container)" />
-              {/* The turn, said by the label too, not only by this dot. */}
-              {myMove && (
-                <span aria-hidden className="absolute top-[calc(50%-0.875rem)] -right-1.5 size-2.5 rounded-full bg-(--w-primary) ring-2 ring-sidebar" />
-              )}
-            </span>
-            {score && <ScoreChip score={score} />}
-            <span className="min-h-0 truncate text-[13px] text-(--w-on-surface-variant) [writing-mode:vertical-rl]">{status}</span>
-          </button>
-          {!active && (
-            <button type="button" aria-label="Dismiss game" title="Dismiss game" onClick={game.dismiss} className={PANEL_ICON_BUTTON}>
-              <X className="size-4" />
-            </button>
-          )}
-        </div>
-      )}
-    </aside>
+        )}
+      </aside>
+    </>
   );
 }
 

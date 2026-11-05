@@ -4,6 +4,7 @@ import {
   actOnWidget,
   getWidget,
   getWidgetScore,
+  HttpError,
   listActiveWidgets,
   type Widget,
   type WidgetAction,
@@ -11,7 +12,7 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { openSseStream } from "@/lib/sse";
 import { errMsg, toast } from "@/lib/toast";
-import { applyWidget, applyWidgetEvent, freshActiveWidgets, freshWidget, scoreLine } from "@/lib/widgets";
+import { applyWidget, applyWidgetEvent, freshActiveWidgets, freshWidget, offers, scoreLine } from "@/lib/widgets";
 
 /** One widget; `widget.updated` keeps it live, so no polling. A slow answer never undoes a newer rev an event brought
  *  while it was out. */
@@ -75,12 +76,21 @@ export function useScoreLine(channelId: string, userId: number | null, enabled: 
   return scoreLine(useWidgetScore(channelId, enabled).data, userId);
 }
 
-/** Act as the viewer's seat. A rejected action refetches, since the board it was taken on may be stale. */
+/** Act as the viewer's seat. One refused because the board changed meanwhile (409) goes once more on the fresh board
+ *  while that board still offers it to `seat`, and is dropped without a word otherwise: the fresh board shows why. Any
+ *  other refusal says so, and refetches, since the board it was taken on may be stale. */
 export function useWidgetAction() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ widget, action }: { widget: Widget; action: WidgetAction }) =>
-      actOnWidget(widget.widget_id, action, widget.rev),
+    mutationFn: async ({ widget, action, seat = null }: { widget: Widget; action: WidgetAction; seat?: string | null }) => {
+      try {
+        return await actOnWidget(widget.widget_id, action, widget.rev);
+      } catch (e) {
+        if (!(e instanceof HttpError) || e.status !== 409) throw e;
+        const fresh = freshWidget(qc, await getWidget(widget.widget_id));
+        return offers(fresh, seat, action) ? actOnWidget(widget.widget_id, action, fresh.rev) : fresh;
+      }
+    },
     onSuccess: (fresh) => { applyWidget(qc, fresh); },
     onError: (e, { widget }) => {
       toast.error(errMsg(e, "That didn't go through"));
