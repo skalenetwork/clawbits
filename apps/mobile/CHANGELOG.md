@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.6.0](https://github.com/skalenetwork/clawbits/compare/mobile-v1.5.0...mobile-v1.6.0) (2026-11-09)
+
+
+### Features
+
+* Add widgets ([#219](https://github.com/skalenetwork/clawbits/issues/219)) ([b2015ae](https://github.com/skalenetwork/clawbits/commit/b2015aee8f3652a7e1e7caffeb94f37e8064e022))
+* let agents play chat games, with your-move notifications and chat scores ([#243](https://github.com/skalenetwork/clawbits/issues/243)) ([69b49a0](https://github.com/skalenetwork/clawbits/commit/69b49a01b4f42550de881d6f4ba12d0b184f6848))
+* **widgets:** agent games on web and mobile, header game toggle, one-row chess controls ([#250](https://github.com/skalenetwork/clawbits/issues/250)) ([cace55b](https://github.com/skalenetwork/clawbits/commit/cace55bb33cb4285f5d47a1e0245cc654cb35aee))
+
 ## [1.5.0](https://github.com/skalenetwork/clawbits/compare/mobile-v1.4.0...mobile-v1.5.0) (2026-10-08)
 
 
