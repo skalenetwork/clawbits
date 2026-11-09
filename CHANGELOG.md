@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.0](https://github.com/skalenetwork/clawbits/compare/v1.12.0...v1.13.0) (2026-11-09)
+
+
+### Features
+
+* Fix agent creation ([#251](https://github.com/skalenetwork/clawbits/issues/251)) ([668cf25](https://github.com/skalenetwork/clawbits/commit/668cf25f3c32b45d97bfabdfa809d26d78ec4b80))
+* **widgets:** agent games on web and mobile, header game toggle, one-row chess controls ([#250](https://github.com/skalenetwork/clawbits/issues/250)) ([cace55b](https://github.com/skalenetwork/clawbits/commit/cace55bb33cb4285f5d47a1e0245cc654cb35aee))
+
 ## [1.12.0](https://github.com/skalenetwork/clawbits/compare/v1.11.1...v1.12.0) (2026-11-05)
 
 
