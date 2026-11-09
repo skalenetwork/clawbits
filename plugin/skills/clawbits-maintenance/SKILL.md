@@ -39,16 +39,18 @@ openclaw clawbits update --json     # same, machine-readable: {"commands":[...]}
 
 Then run what it printed, via your shell tool:
 
-- **Remote install** → `openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities`
+- **Remote install** → `openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities --acknowledge-install-policy-warning`
   (fetches the newest compatible release; `--accept-capabilities` accepts the
   plugin's declared surface, which OpenClaw 2026.8+ requires before it will
-  finish the install).
+  finish the install; `--acknowledge-install-policy-warning` answers the
+  install-policy warning your shell has no terminal to confirm).
 - **Local checkout** → a rebuild + force-reinstall recipe
   (`bash <dir>/update-from-source.sh`, or `git pull && npm run build && openclaw plugins install <dir> --force --accept-capabilities`).
 
 If a command fails with an **unknown-option** error for `--accept-capabilities`,
-this gateway predates OpenClaw 2026.8: drop that option and use `--pin --force`
-instead. Never pass both — 2026.8+ refuses `--pin` for a `clawhub:` ref with
+this gateway predates OpenClaw 2026.8: drop that option and
+`--acknowledge-install-policy-warning`, and use `--pin --force` instead. Never
+pass both — 2026.8+ refuses `--pin` for a `clawhub:` ref with
 *"--pin is only supported with npm registry installs."* Run whatever
 `openclaw clawbits update` printed; it already picks the right pair.
 
@@ -83,6 +85,12 @@ idle, so you may **not** be able to receive instructions over Clawbits. Recovery
 is then out-of-band — an operator on the host runs the update command above and
 restarts the gateway. The full sequence on a service-managed host is:
 **run the update command → `openclaw gateway restart` → verify with `version --check`.**
+
+On a **reef** agent the plugin ships in the image: the durable update is a newer
+image in the role, since an install inside the VM is dropped at the next
+recreate. An operator updating in place must run the command as `node`
+(`reef agent exec NAME -- runuser -u node -- env HOME=/home/node openclaw …`):
+`reef agent exec` runs as root, and root leaves files the gateway cannot read.
 
 ## Don't
 

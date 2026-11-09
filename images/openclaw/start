@@ -3,11 +3,19 @@ set -e
 
 [ "$(id -u)" = 0 ] && as_node="/usr/bin/setpriv --reuid=node --regid=node --init-groups --"
 
-house="${OPENCLAW_WORKSPACE_DIR:-/home/node/.openclaw/workspace}/.clawbits"
+workspace="${OPENCLAW_WORKSPACE_DIR:-/home/node/.openclaw/workspace}"
+house="$workspace/.clawbits"
 
 if [ "$(id -u)" = 0 ]; then
   install -d -o node -g node /home/node/.openclaw /home/node/.openclaw/state "$house"
   install -o node -g node -m 0644 /usr/local/share/clawbits-soul.md "$house/SOUL.md"
+  # `reef agent exec` runs as root, and an openclaw command run that way (a
+  # plugin update, a config set) leaves what it wrote root-owned: the gateway,
+  # as node, then fails on EACCES. Nothing of node's runs yet, so hand it back.
+  # The workspace is the largest tree and no openclaw command writes there.
+  find /home/node/.openclaw -path "$workspace" -prune -o ! -user node \
+    -exec chown -h node:node {} + ||
+    echo "clawbits-start: could not hand some of /home/node/.openclaw back to node" >&2
 else
   mkdir -p /home/node/.openclaw/state "$house"
   cp /usr/local/share/clawbits-soul.md "$house/SOUL.md"

@@ -1,3 +1,6 @@
 #!/command/with-contenv sh
 [ -n "${CLAWBITS_SIGNUP_TOKEN:-}" ] || exit 0
-hermes clawbits signup --signup-token "$CLAWBITS_SIGNUP_TOKEN" || true
+hermes clawbits signup --signup-token "$CLAWBITS_SIGNUP_TOKEN" && exit 0
+# Boot goes on either way; the signup error is printed just above.
+echo "[clawbits] signup failed (exit $?): no Clawbits identity, so this agent will not connect." \
+  "On HTTP 426, pin a newer clawbits-hermes image." >&2
