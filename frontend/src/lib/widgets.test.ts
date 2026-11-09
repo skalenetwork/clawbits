@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 
-import type { Widget, WidgetScore } from "@/lib/api";
+import type { MmChannel, Org, Widget, WidgetScore } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   applyWidget,
   applyWidgetEvent,
   boardsBySeat,
   endOf,
+  isWidgetChat,
   linkedGameOf,
+  moveClock,
   notesOf,
+  offers,
   panelGameOf,
   resultOf,
   scoreLabel,
@@ -20,6 +23,7 @@ import {
   statusOf,
   waitingOn,
   waitsOn,
+  widgetsAvailable,
 } from "@/lib/widgets";
 
 const widget = (over: Partial<Widget> = {}): Widget => ({
@@ -153,7 +157,7 @@ describe("panelGameOf", () => {
   it("shows the running game, else the latest posted, else the one last seen running", () => {
     expect(panelGameOf(none)).toBeNull();
     expect(panelGameOf({ ...none, active: "w2", posted: "w2", lastActive: "w2" })).toBe("w2");
-    // Ended, its message loaded: it stays as its strip.
+    // Ended, its message loaded: it stays, folded.
     expect(panelGameOf({ ...none, posted: "w2", lastActive: "w2" })).toBe("w2");
     // Ended with its message too far back to be loaded: the game last seen running keeps its result in view.
     expect(panelGameOf({ ...none, lastActive: "w2" })).toBe("w2");
@@ -247,5 +251,85 @@ describe("applyWidgetEvent", () => {
     expect(stale()).toBe(false);
     applyWidgetEvent(qc, widget({ rev: 4, status: "finished", outcome: { winner: "white" } }));
     expect(stale()).toBe(true);
+  });
+});
+
+describe("where games run", () => {
+  const org = { widgets_enabled: true } as Org;
+  const chat = (over: Partial<MmChannel>) => ({ channel_type: "direct", widgets_enabled: true, ...over }) as MmChannel;
+
+  it("runs them in a DM between people, from an older server too", () => {
+    expect(widgetsAvailable(chat({ dm_peer_human_id: 2, widgets_supported: true }), org)).toBe(true);
+    expect(widgetsAvailable(chat({ dm_peer_human_id: 2 }), org)).toBe(true);
+    expect(widgetsAvailable(chat({ dm_peer_human_id: 2 }), { widgets_enabled: false } as Org)).toBe(false);
+    expect(widgetsAvailable(chat({ dm_peer_human_id: 2, widgets_enabled: false }), org)).toBe(false);
+  });
+
+  it("runs them with an agent in a DM or an agent chat, starting one only while the agent can play", () => {
+    for (const channel_type of ["direct", "agent_chat"] as const) {
+      const able = chat({ channel_type, dm_peer_agent_id: "a1", widgets_supported: true });
+      const unable = chat({ channel_type, dm_peer_agent_id: "a1", widgets_supported: false });
+      expect([isWidgetChat(able), widgetsAvailable(able, org)]).toEqual([true, true]);
+      // Its switch and a running game still show while it can't start one: snoozed, say.
+      expect([isWidgetChat(unable), widgetsAvailable(unable, org)]).toEqual([true, false]);
+    }
+  });
+
+  it("runs none with an agent on an older server, nor in a group", () => {
+    expect(isWidgetChat(chat({ channel_type: "agent_chat", dm_peer_agent_id: "a1" }))).toBe(false);
+    expect(isWidgetChat(chat({ dm_peer_agent_id: "a1" }))).toBe(false);
+    expect(isWidgetChat(chat({ channel_type: "private", widgets_supported: false }))).toBe(false);
+    expect(isWidgetChat(undefined)).toBe(false);
+  });
+});
+
+describe("offers", () => {
+  const live = widget({
+    scene: {
+      v: 1,
+      input: { white: { action: "move", pick: { e2: ["e3", "e4"] }, tap: ["h8"] } },
+      actions: {
+        white: [
+          { type: "resign", label: "Resign" },
+          { type: "draw", label: "Draw offered", disabled: true },
+          { type: "bet", label: "Bet", args: { hand: 1 }, amount: { arg: "chips", min: 10, max: 100, step: 10, value: 20 } },
+        ],
+        black: [{ type: "accept", label: "Accept" }],
+      },
+    },
+  });
+
+  it("finds a move still on the board for the seat: a pick to one of its places, or a tap", () => {
+    expect(offers(live, "white", { type: "move", args: { from: "e2", to: "e4" } })).toBe(true);
+    expect(offers(live, "white", { type: "move", args: { from: "e2", to: "e5" } })).toBe(false);
+    expect(offers(live, "white", { type: "move", args: { at: "h8" } })).toBe(true);
+    expect(offers(live, "white", { type: "move", args: { at: "a1" } })).toBe(false);
+  });
+
+  it("finds a button with the same args, an amount within its bounds, never a state shown greyed", () => {
+    expect(offers(live, "white", { type: "resign" })).toBe(true);
+    expect(offers(live, "white", { type: "draw" })).toBe(false);
+    expect(offers(live, "white", { type: "bet", args: { hand: 1, chips: 50 } })).toBe(true);
+    expect(offers(live, "white", { type: "bet", args: { hand: 1, chips: 500 } })).toBe(false);
+    expect(offers(live, "white", { type: "bet", args: { hand: 2, chips: 50 } })).toBe(false);
+  });
+
+  it("offers nothing to another seat's move, a spectator, or a game that's over", () => {
+    expect(offers(live, "black", { type: "resign" })).toBe(false);
+    expect(offers(live, null, { type: "resign" })).toBe(false);
+    expect(offers({ ...live, status: "finished" }, "white", { type: "resign" })).toBe(false);
+  });
+});
+
+describe("moveClock", () => {
+  const at = Date.UTC(2026, 10, 5, 15, 0, 0);
+
+  it("counts from the server's naive UTC time, or a zoned one, in minutes and seconds", () => {
+    expect(moveClock("2026-11-05 15:00:00", at + 7_000)).toBe("0:07");
+    expect(moveClock("2026-11-05T15:00:00Z", at + 750_000)).toBe("12:30");
+  });
+
+  it("never runs below zero where the clocks disagree", () => {
+    expect(moveClock("2026-11-05 15:00:10", at)).toBe("0:00");
   });
 });
