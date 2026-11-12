@@ -71,8 +71,13 @@ DEFAULT_PLUGIN_KIND = PLUGIN_KIND_OPENCLAW
 
 # How each kind names its clawbits component, for the "how do I fix this" hint in
 # the 426. Telling a Hermes operator to run `openclaw plugins update` is noise.
+# OpenClaw gets the plugin's own command, not `openclaw plugins update clawbits`:
+# that reuses the stored spec, a no-op on a pinned install, and a reef image keeps
+# its install record in a state database the state volume hides.
 _UPDATE_HINT = {
-    PLUGIN_KIND_OPENCLAW: "Run `openclaw plugins update clawbits`.",
+    PLUGIN_KIND_OPENCLAW: (
+        "Run `openclaw clawbits update` (prints the right command for this install)."
+    ),
     PLUGIN_KIND_HERMES: (
         "Update the bundled Clawbits Hermes plugin (extensions/hermes) and rebuild "
         "the agent's image."

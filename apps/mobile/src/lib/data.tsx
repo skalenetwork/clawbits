@@ -15,6 +15,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useEffectEvent, useState, type ReactNode } from "react";
 import { Alert, AppState } from "react-native";
+import { agentOffline } from "./agents";
 import { api, apiUrl, ApiError, channelPath } from "./api";
 import { endChannelTurns, memberStatus, presenceSnapshot, replyPublished } from "./liveTurn";
 import { askAfresh } from "./push-target";
@@ -25,6 +26,7 @@ import {
   removePost,
   type ChatEvent,
   type History,
+  type OrgAgent,
   type Post,
 } from "./models";
 import { useSession } from "./session";
@@ -35,6 +37,7 @@ import {
   applyWidgetEvent,
   freshActiveWidgets,
   freshWidget,
+  offers,
   widgetKey,
   widgetScoreKey,
   type Widget,
@@ -175,6 +178,66 @@ export function useOrganizations() {
   return { ...query, organizations, selected };
 }
 
+export const orgAgentsKey = (org: string) => ["agents", org] as const;
+
+/** The org's agents: who runs each, its last alive ping and whether it plays games. `agent.status` events keep the
+ *  pings fresh. */
+export function useOrgAgents(org: string | undefined, enabled = true) {
+  const { session } = useSession();
+  return useQuery({
+    queryKey: orgAgentsKey(org ?? ""),
+    enabled: enabled && org != null,
+    staleTime: 60_000,
+    queryFn: async ({ signal }) => (await api.agents(session!.token, org!, signal)).agents,
+  });
+}
+
+/** Whether an agent player is offline, from the selected org's agents and a clock, as the web judges it. Never for a
+ *  person (null), nor for an agent this phone hasn't heard of. */
+export function useAgentOffline(agentId: string | null): boolean {
+  const { selected } = useOrganizations();
+  const agents = useOrgAgents(selected?.org_id, agentId != null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (agentId == null) return;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [agentId]);
+  const agent = agentId == null ? undefined : agents.data?.find((item) => item.agent_id === agentId);
+  return agentOffline(agent?.last_alive_at, now);
+}
+
+/** "Can play games" for an agent of the org: the switch moves at once and goes back if the server refuses. The
+ *  agent's chats may start, or stop offering, games now, so they're asked again. */
+export function useAgentGamesSwitch(org: string | undefined) {
+  const { session } = useSession();
+  const client = useQueryClient();
+  const key = orgAgentsKey(org ?? "");
+  const set = (agentId: string, enabled: boolean) =>
+    client.setQueryData<OrgAgent[]>(key, (agents) =>
+      agents?.map((agent) => (agent.agent_id === agentId ? { ...agent, widgets_enabled: enabled } : agent)),
+    );
+  return useMutation({
+    mutationFn: ({ agent, enabled }: { agent: string; enabled: boolean }) =>
+      api.setAgentGames(session!.token, org!, agent, enabled),
+    onMutate: async ({ agent, enabled }) => {
+      await client.cancelQueries({ queryKey: key });
+      set(agent, enabled);
+    },
+    onSuccess: (saved) => {
+      set(saved.agent_id, saved.widgets_enabled);
+    },
+    onError: (error, { agent, enabled }) => {
+      set(agent, !enabled);
+      Alert.alert("Could not switch games", error instanceof Error ? error.message : "Please try again.");
+    },
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ["channels"] });
+      void client.invalidateQueries({ queryKey: ["channel"] });
+    },
+  });
+}
+
 export function useHistory(id: string) {
   const { session } = useSession();
   const client = useQueryClient();
@@ -298,6 +361,12 @@ export function useLiveEvents(channel?: string, enabled = true): boolean {
         inOrder(() => {
           presenceSnapshot(channel, members);
         });
+      } else if (incoming.type === "agent.status") {
+        // A ping keeps an agent player off "Offline" without asking for the whole list again.
+        const { agent_id, last_alive_at } = incoming.data;
+        client.setQueriesData<OrgAgent[]>({ queryKey: ["agents"] }, (agents) =>
+          agents?.map((agent) => (agent.agent_id === agent_id ? { ...agent, last_alive_at } : agent)),
+        );
       } else if (incoming.type === "widget.updated") {
         applyWidgetEvent(client, incoming.data);
       } else if (incoming.type === "widget.turn") {
@@ -443,13 +512,22 @@ export function useWidgetScore(channel: string, enabled: boolean) {
   });
 }
 
-/** Act as the viewer's seat. A refused action refetches, since the scene it was taken on may be stale. */
+/** Act as the viewer's seat. One refused because the scene changed meanwhile (409) goes once more on the fresh scene
+ *  while it still offers it to `seat`, and is dropped without a word otherwise: the fresh scene shows why. Any other
+ *  refusal says so, and refetches, since the scene it was taken on may be stale. */
 export function useWidgetAction() {
   const { token } = useSession();
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ widget, action }: { widget: Widget; action: WidgetAction }) =>
-      api.actOnWidget(token() ?? "", widget.widget_id, action, widget.rev),
+    mutationFn: async ({ widget, action, seat = null }: { widget: Widget; action: WidgetAction; seat?: string | null }) => {
+      try {
+        return await api.actOnWidget(token() ?? "", widget.widget_id, action, widget.rev);
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 409) throw error;
+        const fresh = freshWidget(client, await api.widget(token() ?? "", widget.widget_id));
+        return offers(fresh, seat, action) ? api.actOnWidget(token() ?? "", widget.widget_id, action, fresh.rev) : fresh;
+      }
+    },
     onSuccess: (fresh) => {
       applyWidget(client, fresh);
     },

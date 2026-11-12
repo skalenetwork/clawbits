@@ -1,9 +1,12 @@
 import { useState, type ButtonHTMLAttributes } from "react";
 import { Minus, Plus, ScrollText, Undo2 } from "lucide-react";
+import { useAgentStatus } from "@/hooks/useAgentPresence";
+import { useNow } from "@/hooks/useNow";
 import { useWidgetAction } from "@/hooks/useWidget";
 import type { Widget, WidgetSceneAction, WidgetSceneAmount, WidgetSeat } from "@/lib/api";
+import { AGENT_AVATAR_SHAPE } from "@/lib/avatarShapes";
 import { cn } from "@/lib/utils";
-import { boardsBySeat, drawsChessPieces, notesOf, resultOf, seatOf, waitsOn, type WidgetEnd } from "@/lib/widgets";
+import { boardsBySeat, drawsChessPieces, moveClock, notesOf, resultOf, seatOf, waitsOn, type WidgetEnd } from "@/lib/widgets";
 import { ActionFace, EndGlyph } from "./ActionGlyph";
 import { PieceSetSwitch } from "./PieceSetSwitch";
 import { SceneView } from "./SceneView";
@@ -56,7 +59,7 @@ function ActionButton({ glyph, label, tone = "tonal", bare, className, ...props 
       title={label}
       {...props}
       className={cn(
-        "wgt-capsule inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-1.5 px-2.5 outline-none",
+        "wgt-capsule inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-1.5 px-2 outline-none",
         "focus-visible:shadow-[0_0_0_2px_var(--w-surface),0_0_0_4px_var(--w-primary)] disabled:opacity-50",
         CAPSULE_TONE[tone],
         className,
@@ -173,13 +176,14 @@ const SEAT_TONE = [
   "border border-(--w-seat-2-edge) bg-(--w-seat-2) text-(--w-on-seat-2)",
 ];
 
-/** A seat's initial in a circle of its own tone, ringed while the seat is to move. Given a label, it stands for the
- *  seat alone. */
-function SeatAvatar({ name, seat, toAct, label, className }: {
+/** A seat's initial in a circle of its own tone, ringed while the seat is to move; an agent's in its species' soft
+ *  square with the bot tail, as everywhere else. Given a label, it stands for the seat alone. */
+function SeatAvatar({ name, seat, toAct, agent = false, label, className }: {
   name: string;
   /** The seat's place in the widget's order, which picks its tone. */
   seat: number;
   toAct: boolean;
+  agent?: boolean;
   label?: string;
   className?: string;
 }) {
@@ -190,7 +194,8 @@ function SeatAvatar({ name, seat, toAct, label, className }: {
       aria-hidden={label ? undefined : true}
       title={label}
       className={cn(
-        "grid shrink-0 place-items-center rounded-full font-semibold transition-shadow motion-reduce:transition-none",
+        "grid shrink-0 place-items-center font-semibold transition-shadow motion-reduce:transition-none",
+        agent ? AGENT_AVATAR_SHAPE : "rounded-full",
         SEAT_TONE[Math.max(0, seat) % SEAT_TONE.length],
         toAct && "shadow-[0_0_0_2px_var(--w-surface),0_0_0_4px_var(--w-primary)]",
         className,
@@ -201,8 +206,29 @@ function SeatAvatar({ name, seat, toAct, label, className }: {
   );
 }
 
-/** A seat at its end of the row beneath the boards: its avatar and, facing the middle, its name. The avatar carries
- *  the name for a screen reader, so the words on show aren't read twice. */
+/** The time an agent has taken over its move so far, from when the move came to it. */
+function Thinking({ since }: { since: string }) {
+  const now = useNow(1_000);
+  return <>Thinking… <span className="tabular-nums">{moveClock(since, now)}</span></>;
+}
+
+/** What an agent player is doing, in a few muted words by its name: offline, or thinking over its move. Nothing for a
+ *  person, nor for an agent waiting on the other player. */
+function AgentState({ seat, widget, className }: { seat: WidgetSeat; widget: Widget; className?: string }) {
+  // An agent this page knows nothing of yet reads as setting up, never as offline.
+  const status = useAgentStatus(seat.agent_id, null);
+  if (seat.agent_id == null) return null;
+  const thinking = waitsOn(widget, seat.seat);
+  if (status !== "offline" && !thinking) return null;
+  return (
+    <span className={cn("text-[0.75rem] leading-snug text-(--w-on-surface-variant)", className)}>
+      {status === "offline" ? "Offline" : <Thinking since={widget.updated_at} />}
+    </span>
+  );
+}
+
+/** A seat at its end of the row beneath the boards: its avatar and, facing the middle, its name, with an agent's state
+ *  beneath. The avatar carries the name for a screen reader, so the words on show aren't read twice. */
 function SeatBadge({ seat, widget, userId, mirrored = false }: {
   seat: WidgetSeat;
   widget: Widget;
@@ -214,18 +240,23 @@ function SeatBadge({ seat, widget, userId, mirrored = false }: {
   const you = seat.human_id != null && seat.human_id === userId;
   const toAct = waitsOn(widget, seat.seat);
   return (
-    <div className={cn("flex min-w-0 items-center gap-2", mirrored ? "flex-row-reverse justify-self-end" : "justify-self-start")}>
+    // Never wider than its column: a name keeps its whole width otherwise and runs into the middle.
+    <div className={cn("flex min-w-0 max-w-full items-center gap-2", mirrored ? "flex-row-reverse justify-self-end" : "justify-self-start")}>
       <SeatAvatar
         name={name}
         seat={widget.seats.findIndex((s) => s.seat === seat.seat)}
         toAct={toAct}
+        agent={seat.agent_id != null}
         label={`${name}${you ? " (you)" : ""}${toAct ? ", to move" : ""}`}
         className="size-10 text-[0.875rem]"
       />
-      <span aria-hidden className="min-w-0 truncate text-[0.875rem] leading-snug font-medium">
-        {name}
-        {you && <span className="font-normal text-(--w-on-surface-variant)"> (you)</span>}
-      </span>
+      <div className={cn("flex min-w-0 flex-col", mirrored && "items-end")}>
+        <span aria-hidden className="max-w-full truncate text-[0.875rem] leading-snug font-medium">
+          {name}
+          {you && <span className="font-normal text-(--w-on-surface-variant)"> (you)</span>}
+        </span>
+        <AgentState seat={seat} widget={widget} className="max-w-full truncate" />
+      </div>
     </div>
   );
 }
@@ -247,6 +278,7 @@ function SeatLine({ seat, widget, userId, className }: {
         name={name}
         seat={widget.seats.findIndex((s) => s.seat === seat.seat)}
         toAct={toAct}
+        agent={seat.agent_id != null}
         className="size-7 text-[0.75rem]"
       />
       <span className="min-w-0 text-[0.875rem] leading-snug font-medium break-words">
@@ -260,6 +292,7 @@ function SeatLine({ seat, widget, userId, className }: {
       <span className={cn("text-[0.75rem] leading-snug text-(--w-on-surface-variant) tabular-nums", !note && "capitalize")}>
         {note ?? seat.seat}
       </span>
+      <AgentState seat={seat} widget={widget} />
     </div>
   );
 }
@@ -294,11 +327,11 @@ export default function WidgetPanel({ widget, userId, variant = "card", classNam
 
   const run = (a: WidgetSceneAction) => {
     setConfirming(null);
-    act.mutate({ widget, action: a.args ? { type: a.type, args: a.args } : { type: a.type } });
+    act.mutate({ widget, seat: mySeat, action: a.args ? { type: a.type, args: a.args } : { type: a.type } });
   };
 
   const view = (
-    <SceneView scene={scene} seat={mySeat} busy={act.isPending} onAct={(action) => { act.mutate({ widget, action }); }} />
+    <SceneView scene={scene} seat={mySeat} busy={act.isPending} onAct={(action) => { act.mutate({ widget, seat: mySeat, action }); }} />
   );
   // The game's notes, all of them, the latest in view: while open they take the middle.
   const history = notes && log.length > 0 ? (
@@ -326,23 +359,24 @@ export default function WidgetPanel({ widget, userId, variant = "card", classNam
             title="Cancel"
             onClick={() => { setConfirming(null); }}
             className={cn(
-              "wgt-capsule grid size-10 place-items-center outline-none focus-visible:shadow-[0_0_0_2px_var(--w-surface),0_0_0_4px_var(--w-primary)]",
+              "wgt-capsule grid size-9 place-items-center outline-none focus-visible:shadow-[0_0_0_2px_var(--w-surface),0_0_0_4px_var(--w-primary)]",
               CAPSULE_TONE.ghost,
             )}
           >
-            <Undo2 aria-hidden className="size-[1.125rem]" />
+            <Undo2 aria-hidden className="size-4" />
           </button>
           <ActionButton glyph={pending.type} label={pending.label} tone="danger" disabled={act.isPending} onClick={() => { run(pending); }} />
         </>
       ) : (
         actions.map((a) => a.amount ? (
-          // Keyed by rev too, so each new scene starts the pick from the server's suggestion.
+          // Keyed by its bounds too: new bounds start the pick from the server's suggestion, while a move elsewhere
+          // (the other player's bet) leaves it be.
           <AmountAction
-            key={`${actionKey(a)}:${String(widget.rev)}`}
+            key={`${actionKey(a)}:${String(a.amount.min)}-${String(a.amount.max)}/${String(a.amount.step)}`}
             action={a}
             amount={a.amount}
             busy={act.isPending}
-            onRun={(args) => { act.mutate({ widget, action: { type: a.type, args } }); }}
+            onRun={(args) => { act.mutate({ widget, seat: mySeat, action: { type: a.type, args } }); }}
           />
         ) : a.disabled ? (
           // A state, not a control: no button that can't be pressed.
@@ -351,7 +385,7 @@ export default function WidgetPanel({ widget, userId, variant = "card", classNam
             role="img"
             aria-label={a.label}
             title={a.label}
-            className="wgt-capsule inline-flex h-10 min-w-10 items-center justify-center gap-1.5 px-2.5 text-(--w-on-surface-variant) shadow-[inset_0_0_0_1px_var(--w-outline-variant)]"
+            className="wgt-capsule inline-flex h-9 min-w-9 items-center justify-center gap-1.5 px-2 text-(--w-on-surface-variant) shadow-[inset_0_0_0_1px_var(--w-outline-variant)]"
           >
             <ActionFace type={a.type} label={a.label} />
           </span>
@@ -369,6 +403,8 @@ export default function WidgetPanel({ widget, userId, variant = "card", classNam
     </div>
   ) : null;
   const ending = result ? <Result end={result.end} headline={result.headline} reason={scene.status?.text} /> : null;
+  // The notes, or how it ended, take the moves' place.
+  const rowMoves = history == null && ending == null ? moves : null;
   // The notes' switch and the piece set: kept apart from the moves, and in reach while the notes are open.
   const tools = (log.length > 0 || chessPieces) && (
     <div className="flex items-center gap-2">
@@ -381,11 +417,11 @@ export default function WidgetPanel({ widget, userId, variant = "card", classNam
           title={notes ? "Hide game notes" : "Show game notes"}
           onClick={() => { setNotes(!notes); }}
           className={cn(
-            "wgt-capsule grid size-10 place-items-center outline-none focus-visible:shadow-[0_0_0_2px_var(--w-surface),0_0_0_4px_var(--w-primary)]",
+            "wgt-capsule grid size-9 place-items-center outline-none focus-visible:shadow-[0_0_0_2px_var(--w-surface),0_0_0_4px_var(--w-primary)]",
             notes ? CAPSULE_TONE.tonal : CAPSULE_TONE.ghost,
           )}
         >
-          <ScrollText aria-hidden className="size-[1.125rem]" />
+          <ScrollText aria-hidden className="size-4" />
         </button>
       )}
       {chessPieces && <PieceSetSwitch />}
@@ -424,24 +460,26 @@ export default function WidgetPanel({ widget, userId, variant = "card", classNam
           <SeatLine seat={top} widget={widget} userId={userId} className="[grid-area:top]" />
           <div className="min-w-0 self-start [grid-area:board]">{view}</div>
           <SeatLine seat={bottom} widget={widget} userId={userId} className="[grid-area:bottom]" />
-          {/* The middle, between the players: the moves under the status, the notes while open, or how it ended. */}
+          {/* The middle, between the players: the status, the notes while open, or how it ended; beneath it one row,
+              the moves in the room the tools leave and the tools at its end. It wraps only where a column is too
+              narrow for both, the tools then on a line of their own. */}
           <div className="flex min-h-0 min-w-0 flex-col gap-2 px-1.5 py-1 [grid-area:meta]">
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2">
-              {history ?? ending ?? (
-                <>
-                  {scene.status && (
-                    <p
-                      role="status"
-                      className={cn("text-center text-[0.9375rem] leading-snug text-pretty", STATUS_TONE[scene.status.tone] ?? STATUS_TONE.neutral)}
-                    >
-                      {scene.status.text}
-                    </p>
-                  )}
-                  {moves}
-                </>
-              )}
+              {history ?? ending ?? (scene.status && (
+                <p
+                  role="status"
+                  className={cn("text-center text-[0.9375rem] leading-snug text-pretty", STATUS_TONE[scene.status.tone] ?? STATUS_TONE.neutral)}
+                >
+                  {scene.status.text}
+                </p>
+              ))}
             </div>
-            {tools && <div className="flex justify-end">{tools}</div>}
+            {(rowMoves ?? tools) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {rowMoves && <div className="flex min-w-0 flex-1 basis-auto justify-center">{rowMoves}</div>}
+                {tools && <div className="ml-auto">{tools}</div>}
+              </div>
+            )}
           </div>
         </div>
       )}

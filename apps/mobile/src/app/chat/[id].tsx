@@ -366,7 +366,7 @@ function Conversation({ id }: { id: string }) {
     try {
       if (!active?.widgets_enabled) {
         const allowed = await new Promise<boolean>((resolve) => {
-          Alert.alert("Widgets are off in this chat", "Turn them on for both of you?", [
+          Alert.alert("Widgets are off in this chat", "Turn them on for this chat?", [
             { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
             { text: "Turn On", onPress: () => resolve(true) },
           ]);

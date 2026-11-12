@@ -17,10 +17,13 @@ import {
   freshActiveWidgets,
   freshWidget,
   fanMargin,
+  isWidgetChat,
   lastWidgetId,
   logLine,
+  moveClock,
   normalizeBoards,
   notesOf,
+  offers,
   parseCard,
   resultOf,
   scoreLabel,
@@ -111,13 +114,25 @@ describe("seats and where games run", () => {
     expect(seatOf(widget(1), 9)).toBeNull();
   });
 
-  test("a game needs a chat between two people in an org that allows them", () => {
+  test("a game needs a one-to-one chat in an org that allows them", () => {
     const dm = { channel_type: "direct", dm_peer_human_id: 2 } as Channel;
     const org = { widgets_enabled: true } as Organization;
     expect(canPlay(dm, org)).toBe(true);
     expect(canPlay(dm, { widgets_enabled: false } as Organization)).toBe(false);
     expect(canPlay({ channel_type: "direct", dm_peer_human_id: null } as Channel, org)).toBe(false);
-    expect(canPlay({ channel_type: "agent_chat" } as Channel, org)).toBe(false);
+    expect(canPlay({ channel_type: "public", widgets_supported: false } as Channel, org)).toBe(false);
+  });
+
+  test("with an agent, in a DM or an agent chat, only while the agent can play", () => {
+    const org = { widgets_enabled: true } as Organization;
+    for (const channel_type of ["direct", "agent_chat"] as const) {
+      const able = { channel_type, dm_peer_agent_id: "a1", widgets_supported: true } as Channel;
+      const unable = { ...able, widgets_supported: false };
+      expect([isWidgetChat(able), canPlay(able, org)]).toEqual([true, true]);
+      expect([isWidgetChat(unable), canPlay(unable, org)]).toEqual([true, false]);
+      // An older server says nothing about agents, and runs no games with them.
+      expect(isWidgetChat({ channel_type, dm_peer_agent_id: "a1" } as Channel)).toBe(false);
+    }
   });
 });
 
@@ -362,5 +377,60 @@ describe("the chat's score", () => {
     expect(scoreLine({ mine: 0, theirs: 1, draws: 0, them: null })).toBe("You 0 – 1 your opponent");
     expect(scoreLabel({ mine: 3, theirs: 2, draws: 2, them: "Bob" })).toBe("score you 3, Bob 2, 2 draws");
     expect(scoreLabel({ mine: 3, theirs: 2, draws: 0, them: "Bob" })).toBe("score you 3, Bob 2");
+  });
+});
+
+describe("offers", () => {
+  const live: Widget = {
+    ...widget(4),
+    seats: [
+      { seat: "white", human_id: 1, agent_id: null, display_name: "Alice" },
+      { seat: "black", human_id: null, agent_id: "a1", display_name: "Deep Blue" },
+    ],
+    scene: {
+      v: 1,
+      input: { white: { action: "move", pick: { e2: ["e3", "e4"] }, tap: ["h8"] } },
+      actions: {
+        white: [
+          { type: "resign", label: "Resign" },
+          { type: "draw", label: "Draw offered", disabled: true },
+          { type: "bet", label: "Bet", args: { hand: 1 }, amount: { arg: "chips", min: 10, max: 100, step: 10, value: 20 } },
+        ],
+      },
+    },
+  };
+
+  test("a move still on the seat's board: a pick to one of its places, or a tap", () => {
+    expect(offers(live, "white", { type: "move", args: { from: "e2", to: "e4" } })).toBe(true);
+    expect(offers(live, "white", { type: "move", args: { from: "e2", to: "e5" } })).toBe(false);
+    expect(offers(live, "white", { type: "move", args: { at: "h8" } })).toBe(true);
+    expect(offers(live, "white", { type: "move", args: { at: "a1" } })).toBe(false);
+  });
+
+  test("a button with the same args, an amount within its bounds, never a state shown greyed", () => {
+    expect(offers(live, "white", { type: "resign" })).toBe(true);
+    expect(offers(live, "white", { type: "draw" })).toBe(false);
+    expect(offers(live, "white", { type: "bet", args: { hand: 1, chips: 50 } })).toBe(true);
+    expect(offers(live, "white", { type: "bet", args: { hand: 1, chips: 500 } })).toBe(false);
+  });
+
+  test("nothing for another seat, a spectator, or a game that's over", () => {
+    expect(offers(live, "black", { type: "resign" })).toBe(false);
+    expect(offers(live, null, { type: "resign" })).toBe(false);
+    expect(offers({ ...live, status: "finished" }, "white", { type: "resign" })).toBe(false);
+  });
+});
+
+describe("moveClock", () => {
+  const at = Date.UTC(2026, 10, 5, 15, 0, 0);
+
+  test("counts from the server's naive UTC time, or a zoned one", () => {
+    expect(moveClock("2026-11-05 15:00:00", at + 7_000)).toBe("0:07");
+    expect(moveClock("2026-11-05T15:00:00Z", at + 750_000)).toBe("12:30");
+  });
+
+  test("never runs below zero, nor on a time it can't read", () => {
+    expect(moveClock("2026-11-05 15:00:10", at)).toBe("0:00");
+    expect(moveClock("soon", at)).toBe("0:00");
   });
 });

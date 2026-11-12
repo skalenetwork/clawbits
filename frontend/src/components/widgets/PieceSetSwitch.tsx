@@ -26,11 +26,11 @@ export function PieceSetSwitch({ className }: { className?: string }) {
           title={label}
           onClick={() => { setPieceSet(set); }}
           className={cn(
-            "grid size-7 place-items-center rounded-full outline-none transition-opacity focus-visible:shadow-[0_0_0_2px_var(--w-primary)]",
+            "grid size-6.5 place-items-center rounded-full outline-none transition-opacity focus-visible:shadow-[0_0_0_2px_var(--w-primary)]",
             current === set ? "bg-(--w-surface) shadow-(--w-elevation-1)" : "opacity-60 hover:opacity-100",
           )}
         >
-          <Sprite name="chess.wN" set={set} className="size-6" />
+          <Sprite name="chess.wN" set={set} className="size-5.5" />
         </button>
       ))}
     </div>

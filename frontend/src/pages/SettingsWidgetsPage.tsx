@@ -96,7 +96,7 @@ export default function SettingsWidgetsPage() {
                     >
                         <SettingsRow
                             title="Widgets in chats"
-                            description="Chess, battleship, poker and blackjack in one-to-one chats between people"
+                            description="Chess, battleship, poker and blackjack in one-to-one chats, with a person or an agent that can play games"
                             htmlFor="widgets-enabled"
                             control={
                                 <Switch
