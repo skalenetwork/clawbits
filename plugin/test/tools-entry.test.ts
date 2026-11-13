@@ -730,35 +730,35 @@ describe("clawbits companion plugin", () => {
     await assert.rejects(executeTool(telegram, { server: "linear" }), /only while answering in a Clawbits chat/);
   });
 
-  it("posts the Connect link to the chat the agent is answering in", async () => {
-    const { api } = configuredApi();
-    Object.assign(api.runtime, {
-      config: {
-        mutateConfigFile: async ({ mutate }: { mutate: (draft: Record<string, unknown>) => void }) => {
-          mutate({});
-        },
-      },
-      system: {
-        runCommandWithTimeout: async (argv: string[]) => ({
-          code: 0,
-          stderr: "",
-          stdout: argv.includes("login") ? 'Open this URL to authorize "linear":\nhttps://auth.example.com/a\n' : "",
-        }),
-      },
+  it("posts the Connect link the channel's sign-in returns to the chat the agent is answering in", async () => {
+    const runtime = runtimeWithHandoff();
+    const started: unknown[] = [];
+    registerSlimChannelHandoff(runtime, "0.25.0", undefined, async (_client, channelId, connect, agentDir) => {
+      started.push([channelId, connect, agentDir]);
+      return "https://app.clawbits.test/connect/abc";
     });
-    const connect = registeredTools(api, { messageChannel: "clawbits", nativeChannelId: "room-7" })
+    const { api } = pluginApi({ accounts: { default: { ...DEFAULT_ACCOUNT } } }, { runtime });
+    const connect = registeredTools(api, { messageChannel: "clawbits", nativeChannelId: "room-7", agentDir: "/agents/main" })
       .find(({ tool }) => tool.name === "clawbits_mcp_connect")?.tool;
     assert.ok(connect);
     const posted: unknown[] = [];
-    await callWithMockedFetch(connect, { server: "linear", url: "https://mcp.linear.app/mcp" }, (input, init) => {
+    const { result } = await callWithMockedFetch(connect, { server: "linear", url: "https://mcp.linear.app/mcp" }, (input, init) => {
       const target = String(input);
       if (target.endsWith("/api/agentic/auth/challenge")) return challengeResponse();
-      if (target.endsWith("/mcp-oauth/redirect")) return jsonResponse({ url: "https://app.clawbits.test/oauth/mcp/callback" });
-      if (target.endsWith("/mcp-oauth/links")) return jsonResponse({ url: "https://app.clawbits.test/connect/abc" });
       posted.push([new URL(target).pathname, (JSON.parse(String(init?.body)) as { message?: string }).message]);
       return jsonResponse({ post_id: 1 });
     });
+    assert.deepEqual(started, [["room-7", { server: "linear", url: "https://mcp.linear.app/mcp" }, "/agents/main"]]);
     assert.deepEqual(posted, [["/api/agentic/mm/channels/room-7/posts", "https://app.clawbits.test/connect/abc"]]);
+    assert.deepEqual(result, { status: "card_posted" });
+  });
+
+  it("asks for a channel update when the channel cannot hold an MCP sign-in", async () => {
+    const { api } = pluginApi({ accounts: { default: { ...DEFAULT_ACCOUNT } } }, { runtime: runtimeWithHandoff("0.17.0") });
+    const connect = registeredTools(api, { messageChannel: "clawbits", nativeChannelId: "room-7" })
+      .find(({ tool }) => tool.name === "clawbits_mcp_connect")?.tool;
+    assert.ok(connect);
+    await assert.rejects(executeTool(connect, { server: "linear", url: "https://mcp.linear.app/mcp" }), /Update the Clawbits channel plugin/);
   });
 
   it("reacts to a post through the companion tool", async () => {

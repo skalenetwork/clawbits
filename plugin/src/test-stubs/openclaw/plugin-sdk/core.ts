@@ -15,6 +15,9 @@ export function defineChannelPluginEntry<
       if (api.registrationMode === undefined || api.registrationMode === "full") {
         entry.registerFull?.(api);
       }
+      if (api.registrationMode === undefined || api.registrationMode === "full" || api.registrationMode === "discovery") {
+        (entry.registerCapabilities as ((api: Record<string, any>) => void) | undefined)?.(api);
+      }
     },
   };
 }
