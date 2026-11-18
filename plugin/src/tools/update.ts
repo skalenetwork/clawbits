@@ -10,7 +10,7 @@
 // Provisioning model: agents are installed as a REMOTE ClawHub package. The
 // canonical self-update re-fetches the newest compatible build:
 //
-//     openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities
+//     openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities --acknowledge-install-policy-warning
 //
 // (`--force` overwrites in place; the version-less spec resolves to the newest
 // compatible release.)
@@ -37,6 +37,15 @@
 //    has. Clawbits is not in OpenClaw's official plugin/channel catalogs, so it
 //    gets no `official` exemption from `src/plugins/capability-consent.ts`.
 //    The option does not exist before 2026.8, hence the printed fallback.
+//
+// 4. `--acknowledge-install-policy-warning` is REQUIRED for an agent's own
+//    shell. ClawHub tags both packages `review-required` (its trust scan reports
+//    `suspicious`), which `security.installPolicy` can raise as a warning. With
+//    no TTY OpenClaw cannot prompt
+//    (`src/cli/install-policy-warning-acknowledgement.ts`), so an
+//    unacknowledged warning ends the install. The reef image build passes the
+//    same flag. `install` has it by 2026.9.4; this plugin needs 2026.9.7
+//    (`minGatewayVersion`).
 //
 // `--from-source` is unaffected by (2) but still needs (3) on 2026.8+.
 //
@@ -76,12 +85,15 @@ const TOOLS_CLAWHUB_SPEC = `clawhub:${TOOLS_PACKAGE_NAME}`;
  *
  *  Version-less channel spec → newest compatible; `--force` overwrites the
  *  current install in place; `--accept-capabilities` clears 2026.8's consent
- *  gate. No `--pin`: see the fallback commands below. */
+ *  gate; `--acknowledge-install-policy-warning` clears the install-policy
+ *  warning a TTY-less shell cannot answer. No `--pin`: see the fallback
+ *  commands below. */
 function remoteUpdateCommands(toolsVersion: string | null): string[] {
   const toolsSpec = toolsVersion ? `${TOOLS_CLAWHUB_SPEC}@${toolsVersion}` : TOOLS_CLAWHUB_SPEC;
+  const flags = "--force --accept-capabilities --acknowledge-install-policy-warning";
   return [
-    `openclaw plugins install ${CLAWHUB_SPEC} --force --accept-capabilities`,
-    `openclaw plugins install ${toolsSpec} --force --accept-capabilities`,
+    `openclaw plugins install ${CLAWHUB_SPEC} ${flags}`,
+    `openclaw plugins install ${toolsSpec} ${flags}`,
   ];
 }
 
@@ -106,7 +118,8 @@ const UPDATE_VERSION_NOTE =
   `\`openclaw plugins list --json\` reports it — so the two halves stay matched.`;
 const UPDATE_FALLBACK_NOTE =
   "If either fails with an unknown-option error, this gateway predates OpenClaw 2026.8 — " +
-  "re-run that command with `--pin --force` and without `--accept-capabilities`.";
+  "re-run that command with `--pin --force` and without `--accept-capabilities` or " +
+  "`--acknowledge-install-policy-warning`.";
 
 export interface UpdateCliOptions {
   /** Developer escape hatch: rebuild + force-reinstall from a local checkout. */

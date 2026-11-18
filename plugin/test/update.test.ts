@@ -14,8 +14,8 @@ const CHECKOUT = path.resolve(import.meta.dirname, "..");
 // printed alongside as a fallback. Both are pinned here so a silent revert to
 // the old single-command shape fails loudly.
 const REMOTE_CMDS = [
-  "openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities",
-  "openclaw plugins install clawhub:clawbits-openclaw-tools --force --accept-capabilities",
+  "openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities --acknowledge-install-policy-warning",
+  "openclaw plugins install clawhub:clawbits-openclaw-tools --force --accept-capabilities --acknowledge-install-policy-warning",
 ];
 const REMOTE_FALLBACK_CMDS = [
   "openclaw plugins install clawhub:clawbits-openclaw-plugin --pin --force",
@@ -107,6 +107,19 @@ describe("runUpdateCommand", () => {
         "openclaw 2026.8 fails preflight with '--pin is only supported with npm registry installs.'",
       );
       assert.ok(command.includes("--accept-capabilities"));
+    }
+  });
+
+  it("acknowledges the install-policy warning an agent's shell cannot answer", () => {
+    // ClawHub tags both packages review-required, and an agent's exec has no
+    // TTY for OpenClaw's acknowledgement prompt, so without the flag the
+    // warning ends the install. The pre-2026.8 fallback has no such option.
+    const { events } = captureJson(() => runUpdateCommand(ctxWith({}), { json: true }));
+    for (const command of events[0]!.commands as string[]) {
+      assert.ok(command.includes("--acknowledge-install-policy-warning"), command);
+    }
+    for (const command of events[0]!.fallback_commands as string[]) {
+      assert.ok(!command.includes("--acknowledge-install-policy-warning"), command);
     }
   });
 

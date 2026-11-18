@@ -257,6 +257,19 @@ def test_switching_an_agents_games_off_ends_them(test_client, monkeypatch):
     assert _start(test_client, bob, dm).status_code == 422
 
 
+def test_the_orgs_agents_list_says_whether_each_plays_games(test_client):
+    alice, _, agent, org_id, _ = _setup(test_client, "awlist")
+
+    def listed() -> bool:
+        r = test_client.get(f"/api/human/orgs/{org_id}/agents", headers=auth_headers(alice["access_token"]))
+        assert r.status_code == 200, r.text
+        return next(a for a in r.json()["agents"] if a["agent_id"] == agent["agent_id"])["widgets_enabled"]
+
+    assert listed() is True
+    assert _settings(test_client, alice, org_id, agent["agent_id"], widgets_enabled=False).status_code == 200
+    assert listed() is False
+
+
 def test_an_org_owner_may_switch_an_agents_games_but_nothing_else(test_client):
     alice, bob, agent, org_id, _ = _setup(test_client, "awowner")
     carol = register_human(test_client, "awowner-carol@test.com", "Carol")

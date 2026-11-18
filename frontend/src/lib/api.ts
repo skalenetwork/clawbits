@@ -85,6 +85,8 @@ export interface AgentProfile extends AgentUser {
   lobstertalk_ollama_model?: string | null;
   lobstertalk_interval_seconds?: number;
   lobstertalk_message_limit?: number;
+  /** "Can play games": people may start chat games with it. */
+  widgets_enabled?: boolean;
 }
 
 export type OrgRole = "owner" | "member";
@@ -137,9 +139,19 @@ async function readDetail(res: Response): Promise<string> {
   }
 }
 
+/** A refused request: its message, and its HTTP status for a caller that branches on it. */
+export class HttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function send(url: string, { detail, ...init }: Init = {}): Promise<Response> {
   const res = await fetch(url, { credentials: "include", ...init });
-  if (!res.ok) throw new Error(detail ? await readDetail(res) : await res.text());
+  if (!res.ok) throw new HttpError(res.status, detail ? await readDetail(res) : await res.text());
   return res;
 }
 
@@ -971,6 +983,9 @@ export interface MmChannel {
   avatar?: AvatarRef | null;
   /** The chat's own widgets switch; widgets also need the org's. */
   widgets_enabled?: boolean;
+  /** A game can start here: a DM between people, or a 1:1 with an agent able and allowed to play. An older server
+   *  sends none and runs no games with agents. */
+  widgets_supported?: boolean;
   /** An active widget here waits on the viewer: the sidebar's quiet "your move". */
   widget_turn?: boolean;
 }
@@ -1422,6 +1437,7 @@ export interface AgentSettingsResponse {
   lobstertalk_ollama_model: string | null;
   lobstertalk_interval_seconds: number;
   lobstertalk_message_limit: number;
+  widgets_enabled: boolean;
 }
 
 export async function updateAgentSettings(
@@ -1437,6 +1453,8 @@ export async function updateAgentSettings(
     lobstertalk_ollama_model?: string;
     lobstertalk_interval_seconds?: number;
     lobstertalk_message_limit?: number;
+    /** "Can play games"; off ends its games. */
+    widgets_enabled?: boolean;
   },
 ) {
   return request<AgentSettingsResponse>(agentUrl(orgId, agentId, "/settings"), json("PATCH", settings));

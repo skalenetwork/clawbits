@@ -1,12 +1,14 @@
 import { SymbolView, type SFSymbol } from "expo-symbols";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
-import { useWidgetAction } from "@/lib/data";
+import { avatarRadius } from "@/components/ui";
+import { useAgentOffline, useWidgetAction } from "@/lib/data";
 import {
   actionKey,
   boardsBySeat,
   drawsChessPieces,
   logLine,
+  moveClock,
   notesOf,
   resultOf,
   seatOf,
@@ -45,7 +47,7 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
   // The game's notes (its moves, its hands) wait behind a button.
   const [notes, setNotes] = useState(false);
   const send = (type: string, args?: Record<string, unknown>) => {
-    act.mutate({ widget, action: args ? { type, args } : { type } });
+    act.mutate({ widget, seat: mySeat, action: args ? { type, args } : { type } });
   };
   /** An action that asks first (resign, all-in) does so in the system's own alert. */
   const run = (action: WidgetSceneAction, args = action.args) => {
@@ -64,7 +66,7 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
   };
   /** Ending asks first in the same alert: it stops the game for both players. */
   const end = () => {
-    Alert.alert("End this game?", "It stops for both of you, with no winner.", [
+    Alert.alert("End this game?", "It stops for both players, with no winner.", [
       { text: "Cancel", style: "cancel" },
       { text: "End Game", style: "destructive", onPress: () => send("end", {}) },
     ]);
@@ -82,7 +84,7 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
       seat={mySeat}
       busy={act.isPending}
       onAct={(action) => {
-        act.mutate({ widget, action });
+        act.mutate({ widget, seat: mySeat, action });
       }}
     />
   );
@@ -101,9 +103,10 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
       >
         {actions.map((action) =>
           action.amount ? (
-            // Keyed by rev too, so each new scene starts the pick from the server's suggestion.
+            // Keyed by its bounds too: new bounds start the pick from the server's suggestion, while a move elsewhere
+            // (the other player's bet) leaves it be.
             <AmountControl
-              key={`${actionKey(action)}:${widget.rev}`}
+              key={`${actionKey(action)}:${action.amount.min}-${action.amount.max}/${action.amount.step}`}
               action={action}
               amount={action.amount}
               busy={act.isPending}
@@ -137,6 +140,8 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
   const ending = result ? (
     <Result end={result.end} headline={result.headline} reason={scene.status?.text} palette={palette} />
   ) : null;
+  // The notes, or how it ended, take the moves' place.
+  const rowMoves = history == null && ending == null ? moves : null;
   // The notes' switch, the piece set and End: kept apart from the moves, and in reach while the notes are open.
   const tools =
     log || chessPieces || canEnd ? (
@@ -199,27 +204,30 @@ export function WidgetPanel({ widget, userId }: { widget: Widget; userId: number
         <>
           <SeatLine seat={top} widget={widget} userId={userId} palette={palette} />
           {view}
-          {/* The middle, between the players: the moves under the status, the notes while open, or how it ended. */}
+          {/* The middle, between the players: the status, the notes while open, or how it ended; beneath it one row,
+              the moves in the room the tools leave and the tools at its end. It wraps only where the screen is too
+              narrow for both, the tools then on a line of their own. */}
           <View style={s.middle}>
             {history ??
-              ending ?? (
-                <>
-                  {scene.status ? (
-                    <Text
-                      style={[
-                        s.status,
-                        { color: statusColor },
-                        (scene.status.tone === "info" || scene.status.tone === "danger") && s.strong,
-                      ]}
-                    >
-                      {scene.status.text}
-                    </Text>
-                  ) : null}
-                  {moves}
-                </>
-              )}
+              ending ??
+              (scene.status ? (
+                <Text
+                  style={[
+                    s.status,
+                    { color: statusColor },
+                    (scene.status.tone === "info" || scene.status.tone === "danger") && s.strong,
+                  ]}
+                >
+                  {scene.status.text}
+                </Text>
+              ) : null)}
           </View>
-          {tools ? <View style={s.toolsRow}>{tools}</View> : null}
+          {rowMoves || tools ? (
+            <View style={s.actionRow}>
+              {rowMoves ? <View style={s.rowMoves}>{rowMoves}</View> : null}
+              {tools ? <View style={s.rowTools}>{tools}</View> : null}
+            </View>
+          ) : null}
           <SeatLine seat={bottom} widget={widget} userId={userId} palette={palette} />
         </>
       )}
@@ -254,13 +262,14 @@ function PieceSetSwitch({ palette }: { palette: WidgetPalette }) {
   );
 }
 
-/** A seat's initial in a circle of its own tone, ringed while the seat is to move; large beneath a board, where it
- *  stands alone. Each player wears their seat's tone, ivory or ebony as the chess sides, which no action wears, so a
- *  person never reads as a button. */
+/** A seat's initial in a circle of its own tone, ringed while the seat is to move; an agent's in its species' shape
+ *  with the bot tail, as everywhere else; large beneath a board, where it stands alone. Each player wears their seat's
+ *  tone, ivory or ebony as the chess sides, which no action wears, so a person never reads as a button. */
 function SeatAvatar({
   name,
   seat,
   toAct,
+  agent = false,
   large = false,
   palette,
 }: {
@@ -268,6 +277,7 @@ function SeatAvatar({
   /** The seat's place in the widget's order, which picks its tone. */
   seat: number;
   toAct: boolean;
+  agent?: boolean;
   large?: boolean;
   palette: WidgetPalette;
 }) {
@@ -279,6 +289,7 @@ function SeatAvatar({
     <View
       style={[
         large ? s.badge : s.initial,
+        agent && avatarRadius("agent"),
         { backgroundColor: fill, borderWidth: 1, borderColor: edge },
         // An outline, so the ring takes no room and nothing shifts when the turn passes.
         toAct && { outlineWidth: 2, outlineOffset: 2, outlineColor: palette.primary },
@@ -310,24 +321,63 @@ function SeatBadge({
   const name = seat.display_name ?? "Player";
   const you = seat.human_id != null && seat.human_id === userId;
   const toAct = waitsOn(widget, seat.seat);
+  const state = useAgentState(seat, toAct);
   return (
     <View
       accessible
-      accessibilityLabel={[name, you && "you", toAct && "to move", status].filter(Boolean).join(", ")}
+      accessibilityLabel={[name, you && "you", toAct && state !== "thinking" && "to move", state, status]
+        .filter(Boolean)
+        .join(", ")}
       style={[s.badgeRow, mirrored && { flexDirection: "row-reverse" }]}
     >
       <SeatAvatar
         name={name}
         seat={widget.seats.findIndex((item) => item.seat === seat.seat)}
         toAct={toAct}
+        agent={seat.agent_id != null}
         large
         palette={palette}
       />
-      <Text numberOfLines={1} style={[s.seatName, { color: palette.onSurface }]}>
-        {name}
-        {you ? <Text style={{ fontWeight: "400", color: palette.onSurfaceVariant }}> (you)</Text> : null}
-      </Text>
+      <View style={[s.badgeNames, mirrored && { alignItems: "flex-end" }]}>
+        <Text numberOfLines={1} style={[s.seatName, { color: palette.onSurface }]}>
+          {name}
+          {you ? <Text style={{ fontWeight: "400", color: palette.onSurfaceVariant }}> (you)</Text> : null}
+        </Text>
+        <AgentState state={state} since={widget.updated_at} palette={palette} />
+      </View>
     </View>
+  );
+}
+
+/** What an agent player is doing: offline, or thinking over its move. Nothing for a person, nor for an agent waiting
+ *  on the other player. */
+function useAgentState(seat: WidgetSeat | undefined, toAct: boolean): "offline" | "thinking" | null {
+  const offline = useAgentOffline(seat?.agent_id ?? null);
+  if (seat?.agent_id == null) return null;
+  return offline ? "offline" : toAct ? "thinking" : null;
+}
+
+/** An agent player's state in a few muted words by its name. */
+function AgentState({ state, since, palette }: { state: "offline" | "thinking" | null; since: string; palette: WidgetPalette }) {
+  if (state === "thinking") return <Thinking since={since} palette={palette} />;
+  return state === "offline" ? (
+    <Text numberOfLines={1} style={[s.seatNote, { color: palette.onSurfaceVariant }]}>
+      Offline
+    </Text>
+  ) : null;
+}
+
+/** The time an agent has taken over its move so far, from when the move came to it. */
+function Thinking({ since, palette }: { since: string; palette: WidgetPalette }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <Text numberOfLines={1} style={[s.seatNote, { color: palette.onSurfaceVariant }]}>
+      Thinking… {moveClock(since, now)}
+    </Text>
   );
 }
 
@@ -342,16 +392,19 @@ function SeatLine({
   userId: number;
   palette: WidgetPalette;
 }) {
+  const toAct = seat != null && waitsOn(widget, seat.seat);
+  const state = useAgentState(seat, toAct);
   if (!seat) return null;
   const name = seat.display_name ?? "Player";
   const you = seat.human_id != null && seat.human_id === userId;
-  const toAct = waitsOn(widget, seat.seat);
   // A kind may say more about a seat than its name, e.g. its chips; that line takes the name's place.
   const note = widget.scene.seat_notes?.[seat.seat] ?? seat.seat.charAt(0).toUpperCase() + seat.seat.slice(1);
   return (
     <View
       accessible
-      accessibilityLabel={[name, you && "you", note, toAct && "to move"].filter(Boolean).join(", ")}
+      accessibilityLabel={[name, you && "you", note, toAct && state !== "thinking" && "to move", state]
+        .filter(Boolean)
+        .join(", ")}
       style={s.seat}
     >
       {/* The seat to move is ringed; the status line says it in words, the label for VoiceOver. */}
@@ -359,6 +412,7 @@ function SeatLine({
         name={name}
         seat={widget.seats.findIndex((item) => item.seat === seat.seat)}
         toAct={toAct}
+        agent={seat.agent_id != null}
         palette={palette}
       />
       <Text numberOfLines={1} style={[s.seatName, { color: palette.onSurface }]}>
@@ -368,6 +422,7 @@ function SeatLine({
       <Text numberOfLines={1} style={[s.seatNote, { color: palette.onSurfaceVariant }]}>
         {note}
       </Text>
+      <AgentState state={state} since={widget.updated_at} palette={palette} />
     </View>
   );
 }
@@ -602,7 +657,9 @@ const s = StyleSheet.create({
   card: { gap: 10, padding: 12, borderRadius: 22, borderCurve: "continuous" },
   end: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
   tools: { flexDirection: "row", alignItems: "center", gap: 8 },
-  toolsRow: { flexDirection: "row", justifyContent: "flex-end" },
+  actionRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
+  rowMoves: { flexGrow: 1, alignItems: "center" },
+  rowTools: { marginLeft: "auto" },
   switch: { flexDirection: "row", gap: 2, padding: 2, borderRadius: 999 },
   switchOption: { width: 30, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center" },
   seat: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32 },
@@ -612,6 +669,8 @@ const s = StyleSheet.create({
   badgeRow: { flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 1, maxWidth: "34%" },
   badge: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
   badgeText: { fontSize: 15, fontWeight: "600" },
+  // The name, and an agent's state beneath it.
+  badgeNames: { flexShrink: 1 },
   seatName: { flexShrink: 1, fontSize: 15, lineHeight: 20, fontWeight: "500" },
   seatNote: { flexShrink: 1, fontSize: 13, lineHeight: 18, fontVariant: ["tabular-nums"] },
   status: { fontSize: 17, lineHeight: 22, textAlign: "center" },

@@ -57,9 +57,10 @@ export function BoardView({
   const [shown, setShown] = useState(scene);
   const [wasBusy, setWasBusy] = useState(busy);
   if (shown !== scene) {
-    // A new scene answers whatever was in flight, so the local guesses go.
+    // A new scene answers whatever was in flight, so the local guesses go. A token held meanwhile (the other player
+    // moved) stays held while it may still move.
     setShown(scene);
-    setSelected(null);
+    if (selected != null && !input?.pick?.[selected]) setSelected(null);
     setPending(null);
     setChoosing(null);
   }

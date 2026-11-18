@@ -7,6 +7,7 @@ import {
   Link,
   Section,
   Text,
+  Toggle,
 } from "@expo/ui/swift-ui";
 import {
   disabled as disabledModifier,
@@ -15,7 +16,9 @@ import {
 } from "@expo/ui/swift-ui/modifiers";
 import { useState } from "react";
 import { Alert } from "react-native";
+import { agentName, gameSwitchAgents } from "@/lib/agents";
 import { api, ApiError } from "@/lib/api";
+import { useAgentGamesSwitch, useOrganizations, useOrgAgents } from "@/lib/data";
 import { useSession } from "@/lib/session";
 import { useHostColorScheme } from "@/components/ui";
 
@@ -28,6 +31,11 @@ export default function Settings() {
   const colorScheme = useHostColorScheme();
   const name = session?.user.display_name?.trim() || "—";
   const email = session?.user.email ?? "";
+  // "Can play games" for the agents this person runs, or all of the org's for its owner.
+  const { selected: organization } = useOrganizations();
+  const agents = useOrgAgents(organization?.org_id);
+  const games = useAgentGamesSwitch(organization?.org_id);
+  const switchable = gameSwitchAgents(agents.data ?? [], organization);
 
   const confirmSignOut = () => {
     Alert.alert("Sign out?", undefined, [
@@ -85,6 +93,26 @@ export default function Settings() {
             <Text modifiers={[lineLimit(1)]}>{email}</Text>
           </LabeledContent>
         </Section>
+        {switchable.length > 0 ? (
+          <Section
+            title="Agents"
+            footer={<Text>People can start chat games like chess with them. Turning one off ends its games.</Text>}
+          >
+            {switchable.map((agent) => (
+              <Toggle
+                key={agent.agent_id}
+                isOn={Boolean(agent.widgets_enabled)}
+                onIsOnChange={(enabled) => {
+                  games.mutate({ agent: agent.agent_id, enabled });
+                }}
+                modifiers={[disabledModifier(games.isPending && games.variables?.agent === agent.agent_id)]}
+              >
+                <Text modifiers={[lineLimit(1)]}>{agentName(agent)}</Text>
+                <Text>Can play games</Text>
+              </Toggle>
+            ))}
+          </Section>
+        ) : null}
         <Section>
           <Button
             label="Sign out"

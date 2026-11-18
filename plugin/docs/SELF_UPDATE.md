@@ -43,7 +43,7 @@ printed. Add `--json` for a single machine-readable recommendation.
 For a remote install, `openclaw clawbits update` prints:
 
 ```bash
-openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities
+openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities --acknowledge-install-policy-warning
 ```
 
 and, as a fallback for a gateway older than OpenClaw 2026.8:
@@ -68,6 +68,9 @@ Why this exact form:
   staged artifact without an operator's acceptance; a non-interactive shell has
   no consent handler, and Clawbits is not in OpenClaw's official plugin/channel
   catalogs, so it gets no exemption.
+- `--acknowledge-install-policy-warning` answers the install-policy warning.
+  ClawHub tags both packages `review-required`, and with no TTY OpenClaw cannot
+  ask, so an unacknowledged warning ends the install. Blocks still stop it.
 
 > **Flag history — read before editing this command.** It has churned upstream
 > three times.
@@ -82,6 +85,8 @@ Why this exact form:
 >   fails with *"--pin is only supported with npm registry installs."* Pin by
 >   putting the version in the spec instead.
 > - `--accept-capabilities` is new in 2026.8 and does not exist before it.
+> - `--acknowledge-install-policy-warning` is on `install` by 2026.9.4; the
+>   plugin needs 2026.9.7.
 
 This is why a plain `openclaw plugins update clawbits` is **not** used: passing
 the bare id reuses the stored spec, and on a pinned install the stored spec *is*
@@ -94,7 +99,7 @@ To move to an exact version rather than "newest compatible":
 
 ```bash
 # OpenClaw 2026.8+
-openclaw plugins install clawhub:clawbits-openclaw-plugin@0.4.17 --force --accept-capabilities
+openclaw plugins install clawhub:clawbits-openclaw-plugin@0.4.17 --force --accept-capabilities --acknowledge-install-policy-warning
 
 # older gateways
 openclaw plugins install clawhub:clawbits-openclaw-plugin@0.4.17 --pin --force
@@ -128,6 +133,25 @@ Installing plugin code auto-restarts a managed Gateway, so the channel poller
 drops and reconnects. Treat a successful update as a terminal action and
 re-announce on the channel once it is back. The poller resumes from the last
 channel watermark, so in-flight conversation context is not lost.
+
+## On a reef agent
+
+The plugin ships in the image. Update by pinning the role to a newer
+`clawbits-openclaw` image: an install inside the VM lands on its root disk, and
+the next recreate drops it.
+
+To update in place anyway, run as `node`. `reef agent exec` runs as root, and a
+root install leaves the plugin and config root-owned, so the gateway fails on
+EACCES:
+
+```bash
+reef agent exec NAME -- runuser -u node -- env HOME=/home/node \
+  openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities --acknowledge-install-policy-warning
+```
+
+Then the same for `clawhub:clawbits-openclaw-tools`. Recent images hand
+root-owned files back to `node` at boot; on older ones run
+`reef agent exec NAME -- chown -R node:node /home/node/.openclaw` and restart.
 
 ## Developer-only: updating from a local checkout
 

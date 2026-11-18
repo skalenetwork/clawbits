@@ -421,6 +421,8 @@ def _agent_payload(db, row: Agent, user: dict) -> dict:
         "inter_agent_mode_enabled": row.inter_agent_mode_enabled,
         "snoozed": row.snoozed,
         "inter_agent_message_limit": row.inter_agent_message_limit,
+        # "Can play games": the list carries it too, for a client that switches it from a list.
+        "widgets_enabled": row.widgets_enabled,
         "is_operator": TableRead.is_agent_operator(db, row.agent_id, user["id"]),
         "can_dm": TableRead.can_dm_agent(db, row.agent_id, human_id=user["id"]),
         "can_tag": TableRead.can_tag_agent(db, row.agent_id, human_id=user["id"]),

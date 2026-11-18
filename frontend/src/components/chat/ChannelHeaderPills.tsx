@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 import { PresenceDot } from "@/components/PresenceDot";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -19,11 +19,16 @@ export function PanelToggle({
   open,
   onToggle,
   noun,
+  detail,
+  ref,
   children,
 }: {
   open: boolean;
   onToggle: () => void;
   noun: string;
+  /** How what it shows stands, e.g. a game's state: said after its name, and beneath it in the tooltip. */
+  detail?: string;
+  ref?: Ref<HTMLButtonElement>;
   children: ReactNode;
 }) {
   const label = `${open ? "Hide" : "Show"} ${noun}`;
@@ -32,10 +37,11 @@ export function PanelToggle({
       <TooltipTrigger
         render={
           <button
+            ref={ref}
             type="button"
             onClick={onToggle}
             aria-pressed={open}
-            aria-label={label}
+            aria-label={detail ? `${label}, ${detail}` : label}
             className={cn(
               "flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors",
               open
@@ -47,7 +53,14 @@ export function PanelToggle({
           </button>
         }
       />
-      <TooltipContent side="bottom" align="end">{label}</TooltipContent>
+      <TooltipContent side="bottom" align="end">
+        {detail ? (
+          <span className="flex flex-col gap-0.5">
+            {label}
+            <span className="text-background/70">{detail}</span>
+          </span>
+        ) : label}
+      </TooltipContent>
     </Tooltip>
   );
 }

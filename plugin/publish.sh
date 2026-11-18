@@ -167,5 +167,5 @@ echo "  openclaw plugins install clawhub:clawbits-openclaw-plugin@${VERSION} --a
 echo "Install with (pre-2026.8 gateway, no --accept-capabilities option):"
 echo "  openclaw plugins install clawhub:clawbits-openclaw-plugin --pin"
 echo "Self-update later with: openclaw clawbits update"
-echo "  → prints: openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities"
+echo "  → prints: openclaw plugins install clawhub:clawbits-openclaw-plugin --force --accept-capabilities --acknowledge-install-policy-warning"
 echo "    (re-fetches the newest compatible release; prints the pre-2026.8 form as a fallback)"

@@ -57,7 +57,8 @@ const ACTION: Record<string, Glyph> = {
   accept_draw: "equal.circle",
   resign: "flag.fill",
   decline_draw: "xmark",
-  abort: "xmark",
+  // The game thrown away before it began, no result: never Decline's ✕ beside it.
+  abort: "trash",
   fold: "xmark",
   shuffle: "shuffle",
   ready: "checkmark",

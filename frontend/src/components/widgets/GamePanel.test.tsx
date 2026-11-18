@@ -83,13 +83,21 @@ function withCache(widget: Widget) {
   return { client, wrapper };
 }
 
-function column(widget: Widget, { userId = 1, covered = false, picked = false, onDismiss = vi.fn() } = {}) {
+function column(widget: Widget, { userId = 1, covered = false, picked = false, onDismiss = vi.fn(), onReveal = vi.fn() } = {}) {
   const { client, wrapper } = withCache(widget);
-  const props = { widgetId: widget.widget_id, channelId: "c1", userId, picked, onDismiss };
+  // The chat header's place for the game's toggle.
+  const header = document.createElement("div");
+  document.body.append(header);
+  const props = { widgetId: widget.widget_id, channelId: "c1", userId, picked, onDismiss, onReveal, toggleSlot: header };
   const view = render(<GameColumn {...props} covered={covered} />, { wrapper });
-  // Hidden while covered or dismissed, when it has no name to find it by.
+  // Hidden while covered, folded or dismissed, when it has no name to find it by.
   const aside = () => document.querySelector<HTMLElement>('aside[aria-label="Game"]');
-  return { client, aside, rerender: (next: { covered: boolean }) => { view.rerender(<GameColumn {...props} {...next} />); } };
+  return {
+    client,
+    aside,
+    header,
+    rerender: (next: { covered: boolean }) => { view.rerender(<GameColumn {...props} {...next} />); },
+  };
 }
 
 // The panel loads its board lazily, and a busy runner can take longer than findBy's one second to
@@ -117,33 +125,54 @@ describe("GameColumn", () => {
     expect(aside()).toHaveAttribute("data-state", "open");
   });
 
-  it("collapses to a strip that this device remembers, and never opens by itself", async () => {
+  it("hides to its toggle in the chat's header, which this device remembers, and never opens by itself", async () => {
     const storage = stubStorage();
     const game = chess();
-    const { client, aside } = column(game);
+    const { client, aside, header } = column(game);
     await screen.findByRole("region", { name: "Chess" });
-    fireEvent.click(screen.getByRole("button", { name: "Collapse game" }));
-    expect(aside()).toHaveAttribute("data-state", "strip");
+    // Open, its toggle in the header is pressed, and hides it as Attachments' does.
+    const toggle = within(header).getByRole("button", { name: "Hide game, Chess, White to move, your move" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Hide game" }));
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
+    expect(aside()).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByRole("region", { name: "Chess" })).toBeNull();
     expect(storage.setItem).toHaveBeenCalledWith(`fc_widget_view_${game.widget_id}`, "collapsed");
-    // The strip: the game's glyph and how it stands, the turn said in words too.
-    const strip = screen.getByRole("button", { name: "Chess, White to move, your move" });
-    expect(strip).toHaveAttribute("aria-expanded", "false");
-    // Moves come and go, and the strip stays a strip, even when the move comes back to you.
+    // Folded, the toggle alone: the game's glyph, how it stands said in words, the turn too.
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(toggle).toHaveAccessibleName("Show game, Chess, White to move, your move");
+    // Moves come and go, and it stays folded, even when the move comes back to you.
     act(() => { applyWidget(client, { ...game, rev: 4, turn: "black", scene: { ...game.scene, status: { text: "Black to move", tone: "neutral" } } }); });
-    expect(screen.getByRole("button", { name: "Chess, Black to move" })).toBeInTheDocument();
+    expect(toggle).toHaveAccessibleName("Show game, Chess, Black to move");
     act(() => { applyWidget(client, { ...game, rev: 5 }); });
-    expect(aside()).toHaveAttribute("data-state", "strip");
-    fireEvent.click(screen.getByRole("button", { name: "Chess, White to move, your move" }));
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
+    fireEvent.click(toggle);
     expect(aside()).toHaveAttribute("data-state", "open");
     expect(storage.setItem).toHaveBeenLastCalledWith(`fc_widget_view_${game.widget_id}`, "open");
+    // Pressed again, it hides the game again.
+    fireEvent.click(toggle);
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
   });
 
-  it("opens a game as its strip where this device collapsed it before", () => {
+  it("opens a game folded where this device hid it before", () => {
     const game = chess();
     stubStorage({ [`fc_widget_view_${game.widget_id}`]: "collapsed" });
-    const { aside } = column(game);
-    expect(aside()).toHaveAttribute("data-state", "strip");
+    const { aside, header } = column(game);
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
     expect(screen.queryByRole("region", { name: "Chess" })).toBeNull();
+    expect(within(header).getByRole("button", { name: /^Show game, Chess/ })).toBeInTheDocument();
+  });
+
+  it("brings the game forward over a panel covering it", () => {
+    stubStorage();
+    const onReveal = vi.fn();
+    const { aside, header, rerender } = column(chess(), { covered: true, onReveal });
+    expect(aside()).toHaveAttribute("data-state", "none");
+    const toggle = within(header).getByRole("button", { name: /^Show game/ });
+    fireEvent.click(toggle);
+    expect(onReveal).toHaveBeenCalledOnce();
+    rerender({ covered: false });
+    expect(aside()).toHaveAttribute("data-state", "open");
   });
 
   it("offers End game only to a player while the game runs, and sends `end` once confirmed", async () => {
@@ -167,11 +196,11 @@ describe("GameColumn", () => {
     expect(screen.queryByRole("button", { name: "End game" })).toBeNull();
   });
 
-  it("keeps a game that ends in view with its result, then folds it to a strip that may be dismissed", async () => {
+  it("keeps a game that ends in view with its result, then folds it to its toggle until it's dismissed", async () => {
     const storage = stubStorage();
     const game = chess();
     const onDismiss = vi.fn();
-    const { client, aside } = column(game, { onDismiss });
+    const { client, aside, header } = column(game, { onDismiss });
     await screen.findByRole("region", { name: "Chess" });
     vi.useFakeTimers();
     act(() => {
@@ -187,10 +216,12 @@ describe("GameColumn", () => {
     expect(aside()).toHaveAttribute("data-state", "open");
     expect(screen.getByRole("status")).toHaveTextContent("You won");
     act(() => { vi.advanceTimersByTime(6_000); });
-    expect(aside()).toHaveAttribute("data-state", "strip");
-    expect(screen.getByRole("button", { name: "Chess, You won · Checkmate" })).toBeInTheDocument();
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
+    fireEvent.click(within(header).getByRole("button", { name: "Show game, Chess, You won · Checkmate" }));
+    expect(aside()).toHaveAttribute("data-state", "open");
     fireEvent.click(screen.getByRole("button", { name: "Dismiss game" }));
     expect(aside()).toHaveAttribute("data-state", "none");
+    expect(header).toBeEmptyDOMElement();
     expect(onDismiss).toHaveBeenCalledOnce();
     expect(storage.setItem).toHaveBeenLastCalledWith(`fc_widget_view_${game.widget_id}`, "dismissed");
   });
@@ -198,11 +229,11 @@ describe("GameColumn", () => {
   it("leaves a collapsed game collapsed when it ends", () => {
     const game = chess();
     stubStorage({ [`fc_widget_view_${game.widget_id}`]: "collapsed" });
-    const { client, aside } = column(game);
+    const { client, aside, header } = column(game);
     const stopped = { ...game.scene, status: { text: "A player ended it", tone: "neutral" } };
     act(() => { applyWidget(client, { ...game, rev: 4, status: "aborted", turn: null, outcome: { reason: "stopped" }, scene: stopped }); });
-    expect(aside()).toHaveAttribute("data-state", "strip");
-    expect(screen.getByRole("button", { name: "Chess, Ended · A player ended it" })).toBeInTheDocument();
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
+    expect(within(header).getByRole("button", { name: "Show game, Chess, Ended · A player ended it" })).toBeInTheDocument();
   });
 
   it("shows the result once of a game found over where it would be open, then folds it", () => {
@@ -212,7 +243,7 @@ describe("GameColumn", () => {
     const { aside } = column(over);
     expect(aside()).toHaveAttribute("data-state", "open");
     act(() => { vi.advanceTimersByTime(6_000); });
-    expect(aside()).toHaveAttribute("data-state", "strip");
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
     expect(storage.setItem).toHaveBeenLastCalledWith(`fc_widget_view_${over.widget_id}`, "collapsed");
   });
 
@@ -235,7 +266,7 @@ describe("GameColumn", () => {
     rerender({ covered: false });
     expect(aside()).toHaveAttribute("data-state", "open");
     act(() => { vi.advanceTimersByTime(6_000); });
-    expect(aside()).toHaveAttribute("data-state", "strip");
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
   });
 
   it("sits beside an open panel on a very wide screen", () => {
@@ -245,25 +276,22 @@ describe("GameColumn", () => {
     expect(aside()).toHaveAttribute("data-state", "open");
   });
 
-  it("waits as its strip where the window has no room for the chat beside it", () => {
+  it("waits folded where the window has no room for the chat beside it", () => {
     stubStorage();
     stubWidth(1000);
     const { aside, rerender } = column(chess());
-    expect(aside()).toHaveAttribute("data-state", "strip");
+    expect(aside()).toHaveAttribute("data-state", "collapsed");
     rerender({ covered: true });
     expect(aside()).toHaveAttribute("data-state", "none");
   });
 
-  it("hands focus to the strip on Collapse, and back to Collapse when the strip opens", () => {
+  it("hands focus to its toggle when Hide takes the column away", () => {
     stubStorage();
-    column(chess());
-    const collapse = screen.getByRole("button", { name: "Collapse game" });
-    expect(collapse).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(collapse);
-    const strip = screen.getByRole("button", { name: "Chess, White to move, your move" });
-    expect(strip).toHaveFocus();
-    fireEvent.click(strip);
-    expect(screen.getByRole("button", { name: "Collapse game" })).toHaveFocus();
+    const { header } = column(chess());
+    const hide = screen.getByRole("button", { name: "Hide game" });
+    expect(hide).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(hide);
+    expect(within(header).getByRole("button", { name: /^Show game/ })).toHaveFocus();
   });
 
   it("says it's your move by the seats the game waits on, the turn where a server sends none", () => {
@@ -280,11 +308,11 @@ describe("GameColumn", () => {
     });
     stubStorage({ [`fc_widget_view_${setup.widget_id}`]: "collapsed" });
     column(setup);
-    expect(screen.getByRole("button", { name: "Battleship, Place your fleet, your move" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show game, Battleship, Place your fleet, your move" })).toBeInTheDocument();
     const older = chess({ turn: "black" });
     stubStorage({ [`fc_widget_view_${older.widget_id}`]: "collapsed" });
     column({ ...older, scene: { ...older.scene, status: { text: "Black to move", tone: "neutral" } } }, { userId: 2 });
-    expect(screen.getByRole("button", { name: "Chess, Black to move, your move" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show game, Chess, Black to move, your move" })).toBeInTheDocument();
   });
 });
 
@@ -345,12 +373,13 @@ describe("score chip", () => {
     expect(screen.getByRole("heading", { name: "Chess, score you 2, Bob 1, 1 draw" })).toBeInTheDocument();
   });
 
-  it("shows it on the strip and the bar, from each player's side, and in their names", () => {
-    const strip = scored(2, 1, 0);
-    stubStorage({ [`fc_widget_view_${strip.widget_id}`]: "collapsed" });
-    column(strip, { userId: 2 });
-    expect(screen.getByRole("button", { name: "Chess, White to move, score you 1, Alice 2" })).toContainElement(chip());
-    expect(chip()?.textContent).toMatch(/^1–2/);
+  it("says it in the header toggle's name and shows it on the bar, from each player's side", () => {
+    const folded = scored(2, 1, 0);
+    stubStorage({ [`fc_widget_view_${folded.widget_id}`]: "collapsed" });
+    const { header } = column(folded, { userId: 2 });
+    // An icon alone, as Attachments': the score is in its name and tooltip.
+    expect(within(header).getByRole("button", { name: "Show game, Chess, White to move, score you 1, Alice 2" })).toBeInTheDocument();
+    expect(chip()).toBeNull();
     cleanup();
     const bar = scored(2, 1, 0);
     const { wrapper } = withCache(bar);

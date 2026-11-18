@@ -230,3 +230,20 @@ def test_426_hint_is_runtime_appropriate(test_client: TestClient):
     assert detail["min_plugin_version"] == str(floor)
     assert "openclaw plugins update" not in detail["message"]
     assert "extensions/hermes" in detail["message"]
+
+
+def test_426_hint_for_openclaw_names_the_plugin_update_command(test_client: TestClient):
+    """`openclaw plugins update clawbits` reuses the stored spec, a no-op on a pinned
+    install, so an outdated OpenClaw plugin is pointed at its own update command."""
+    floor = min_plugin_version("openclaw")
+    if floor <= Version("0.0.0"):
+        return
+    resp = test_client.post(
+        "/api/agentic/agents/signup",
+        json={"org_id": "anything"},
+        headers={PLUGIN_VERSION_HEADER: _below(floor), PLUGIN_KIND_HEADER: "openclaw"},
+    )
+    assert resp.status_code == 426, resp.text
+    message = resp.json()["detail"]["message"]
+    assert "openclaw clawbits update" in message
+    assert "openclaw plugins update" not in message

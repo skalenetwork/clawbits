@@ -438,7 +438,7 @@ const composer = StyleSheet.create({
   },
 });
 
-function avatarRadius(shape: "human" | "agent" | "channel") {
+export function avatarRadius(shape: "human" | "agent" | "channel") {
   if (shape === "channel") return { borderRadius: 12 };
   if (shape === "agent")
     return {

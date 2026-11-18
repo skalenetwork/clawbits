@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { Avatar, Channel, Organization } from "./models";
+import { serverTime } from "./agents";
 
 /** Chat widgets: games the server runs inside a chat. Each change arrives as a declarative scene (boards, cards,
  *  what the viewer may pick, which buttons it has); nothing here knows a rule, so a new kind needs no release. */
@@ -292,6 +293,36 @@ export function waitsOn(widget: Widget, seat: string | null): boolean {
   return seat != null && waitingOn(widget).includes(seat);
 }
 
+/** How long a move has been waited on, from the server's time it came (`updated_at`, naive UTC or zoned ISO), as a
+ *  clock: `0:07`, `12:30`. */
+export function moveClock(since: string, now: number): string {
+  const at = serverTime(since);
+  const seconds = Number.isNaN(at) ? 0 : Math.max(0, Math.floor((now - at) / 1_000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** Whether the widget still offers the seat this action, as a button (an amount within its bounds) or on its board,
+ *  so a move refused because the board changed meanwhile may be sent again on the fresh one. */
+export function offers(widget: Widget, seat: string | null, action: WidgetAction): boolean {
+  if (seat == null || widget.status !== "active") return false;
+  const args = action.args ?? {};
+  const same = (a: Record<string, unknown> | undefined, b: Record<string, unknown>) =>
+    JSON.stringify(a ?? {}) === JSON.stringify(b);
+  const button = (widget.scene.actions?.[seat] ?? []).some((offer) => {
+    if (offer.disabled || offer.type !== action.type) return false;
+    if (!offer.amount) return same(offer.args, args);
+    const { [offer.amount.arg]: value, ...rest } = args;
+    return typeof value === "number" && value >= offer.amount.min && value <= offer.amount.max && same(offer.args, rest);
+  });
+  if (button) return true;
+  const input = widget.scene.input?.[seat];
+  if (input?.action !== action.type) return false;
+  if (typeof args.at === "string") return input.tap?.includes(args.at) ?? false;
+  return (
+    typeof args.from === "string" && typeof args.to === "string" && (input.pick?.[args.from]?.includes(args.to) ?? false)
+  );
+}
+
 /** A game's name: its scene's title, else its kind's. */
 export function widgetTitle(widget: Widget): string {
   return widget.scene.title ?? WIDGET_KINDS.find((item) => item.kind === widget.kind)?.label ?? widget.kind;
@@ -354,15 +385,19 @@ export function scoreLabel(score: Score): string {
 export const widgetOpenKey = (widgetId: string) => `clawbits.widget-bar.open.${widgetId}`;
 export const widgetDismissedKey = (widgetId: string) => `clawbits.widget-bar.dismissed.${widgetId}`;
 
-/** Widgets run in one-to-one chats between people. */
+/** Widgets run in one-to-one chats: a DM between people, or a person's DM or agent chat with an agent. A server that
+ *  sends no `widgets_supported` predates agent players and refuses agent chats. */
 export function isWidgetChat(channel: Channel | undefined): boolean {
-  return channel?.channel_type === "direct" && channel.dm_peer_human_id != null;
+  if (!channel) return false;
+  if (channel.channel_type === "direct" && channel.dm_peer_human_id != null) return true;
+  return (channel.channel_type === "direct" || channel.channel_type === "agent_chat")
+    && channel.dm_peer_agent_id != null && channel.widgets_supported != null;
 }
 
-/** A game can start here: a chat between two people, in an org that allows them. The chat's own switch is asked
- *  for on the way. */
+/** A game can start here: a chat that runs them, in an org that allows them, with an agent able and allowed to play
+ *  if it's against one. The chat's own switch is asked for on the way. */
 export function canPlay(channel: Channel | undefined, org: Organization | undefined): boolean {
-  return isWidgetChat(channel) && Boolean(org?.widgets_enabled);
+  return isWidgetChat(channel) && channel?.widgets_supported !== false && Boolean(org?.widgets_enabled);
 }
 
 /** Actions may share a type (bets of two sizes), so each is told apart by its args too. */

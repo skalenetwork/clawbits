@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { MmChannel, Org, Widget, WidgetScene, WidgetScore, WidgetScorePlayer } from "@/lib/api";
+import type { MmChannel, Org, Widget, WidgetAction, WidgetScene, WidgetScore, WidgetScorePlayer } from "@/lib/api";
+import { parseUtcTimestamp } from "@/lib/formatting";
 import { queryKeys } from "@/lib/queryKeys";
 
 /** Fold a fresh widget into its caches; an older rev never overwrites a newer one. The widget's own entry keeps
@@ -85,7 +86,7 @@ export function resultOf(widget: Widget, seat: string | null): { end: WidgetEnd;
   return { end, headline: winner ? `${winner} won` : HEADLINE[end] };
 }
 
-/** A widget's state in a few words, for its strip, its bar and its line in the chat: the scene's status while it
+/** A widget's state in a few words, for its toggle, its bar and its line in the chat: the scene's status while it
  *  runs; once over, how it ended and why (`Ended · A player ended it`), as the phone app says it. */
 export function statusOf(widget: Widget, seat: string | null): string {
   const reason = widget.scene.status?.text;
@@ -121,6 +122,31 @@ export function waitingOn(widget: Widget): string[] {
 /** Whether the game waits on this seat: for the viewer's seat, "your move". */
 export function waitsOn(widget: Widget, seat: string | null): boolean {
   return seat != null && waitingOn(widget).includes(seat);
+}
+
+/** How long a move has been waited on, from the server's time it came (`updated_at`), as a clock: `0:07`, `12:30`. */
+export function moveClock(since: string, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - parseUtcTimestamp(since).getTime()) / 1_000));
+  return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** Whether the widget still offers the seat this action, as a button (an amount within its bounds) or on its board,
+ *  so a move refused because the board changed meanwhile may be sent again on the fresh one. */
+export function offers(widget: Widget, seat: string | null, action: WidgetAction): boolean {
+  if (seat == null || widget.status !== "active") return false;
+  const args = action.args ?? {};
+  const same = (a: Record<string, unknown> | undefined, b: Record<string, unknown>) => JSON.stringify(a ?? {}) === JSON.stringify(b);
+  const button = (widget.scene.actions?.[seat] ?? []).some((offer) => {
+    if (offer.disabled || offer.type !== action.type) return false;
+    if (!offer.amount) return same(offer.args, args);
+    const { [offer.amount.arg]: value, ...rest } = args;
+    return typeof value === "number" && value >= offer.amount.min && value <= offer.amount.max && same(offer.args, rest);
+  });
+  if (button) return true;
+  const input = widget.scene.input?.[seat];
+  if (input?.action !== action.type) return false;
+  if (typeof args.at === "string") return input.tap?.includes(args.at) ?? false;
+  return typeof args.from === "string" && typeof args.to === "string" && (input.pick?.[args.from]?.includes(args.to) ?? false);
 }
 
 /** Whether a scene draws chess pieces, so the piece-set switch belongs beside it. */
@@ -200,11 +226,17 @@ export function scoreLine(score: WidgetScore | undefined, userId: number | null)
   return tallyLine(players.map((p) => ({ name: name(p), wins: p.wins })), score.draws);
 }
 
-/** Widgets run in one-to-one chats between people, with both the org's and the chat's switch on. */
+/** Widgets run in one-to-one chats: a DM between people, or a person's DM or agent chat with an agent. A server that
+ *  sends no `widgets_supported` predates agent players and refuses agent chats. */
 export function isWidgetChat(channel: MmChannel | undefined): boolean {
-  return channel?.channel_type === "direct" && channel.dm_peer_human_id != null;
+  if (!channel) return false;
+  if (channel.channel_type === "direct" && channel.dm_peer_human_id != null) return true;
+  return (channel.channel_type === "direct" || channel.channel_type === "agent_chat")
+    && channel.dm_peer_agent_id != null && channel.widgets_supported != null;
 }
 
+/** A game can start here: both the org's and the chat's switch on and, with an agent, one able and allowed to play. */
 export function widgetsAvailable(channel: MmChannel | undefined, org: Org | null): boolean {
-  return isWidgetChat(channel) && Boolean(channel?.widgets_enabled) && Boolean(org?.widgets_enabled);
+  return isWidgetChat(channel) && channel?.widgets_supported !== false
+    && Boolean(channel?.widgets_enabled) && Boolean(org?.widgets_enabled);
 }
