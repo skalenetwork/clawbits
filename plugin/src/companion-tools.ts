@@ -12,7 +12,7 @@ import { buildClientForAccount } from "./client-factory.js";
 import type { ClawBitsClient } from "./client.js";
 import { frameEmailForDm } from "./email-dm-frame.js";
 import { logWarn } from "./file-logger.js";
-import { connectMcpServer, type McpConnect } from "./mcp-oauth.js";
+import type { McpConnect } from "./mcp-oauth.js";
 import { readSlimChannelHandoff } from "./service-handoff.js";
 import { getAgentInfo, updateAgentDescription } from "./tools/agents.js";
 import {
@@ -631,8 +631,7 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
         "Sign in to an OAuth MCP server (Linear, Notion, AgentPit and the like) so its tools " +
         "become yours. Posts a Connect card in this Clawbits chat; the user signs in from it " +
         "and you get a message when the sign-in finishes. Use it instead of openclaw mcp " +
-        "login, whose localhost callback cannot reach you here. Returns card_posted, or " +
-        "signed_in when the server needs no sign-in.",
+        "login, whose localhost callback cannot reach you here. Returns card_posted.",
       parameters: {
         type: "object",
         required: ["server", "url"],
@@ -650,9 +649,10 @@ export function registerClawbitsTools(api: OpenClawPluginApi): void {
         signal?.throwIfAborted();
         const channelId = ctx.messageChannel === CHANNEL_ID ? ctx.nativeChannelId : undefined;
         if (!channelId) throw new Error("clawbits_mcp_connect works only while answering in a Clawbits chat.");
+        const startMcpSignIn = readSlimChannelHandoff(api.runtime)?.startMcpSignIn;
+        if (!startMcpSignIn) throw new Error("Update the Clawbits channel plugin to connect MCP servers.");
         const { client, account } = clientForConfig(api.config, ctx.agentAccountId);
-        const link = await connectMcpServer(api.runtime, client, channelId, params);
-        if (!link) return jsonResult({ status: "signed_in" });
+        const link = await startMcpSignIn(client, channelId, params, ctx.agentDir);
         const requestSignal = toolRequestSignal(signal, TOOL_REQUEST_TIMEOUT_MS);
         await withChallenge(
           client,

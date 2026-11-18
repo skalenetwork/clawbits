@@ -4,6 +4,7 @@ import { registerClawBitsCli } from "./cli.js";
 import { clawbitsChannelPlugin } from "./plugin.js";
 import { registerMcpApps } from "./activity/mcp-apps.js";
 import { registerActivitySubscription } from "./activity/subscription.js";
+import { registerMcpAuthProvider, startMcpSignIn } from "./mcp-oauth.js";
 import { postSurface } from "./outbound-adapter.js";
 import {
   registerSlimChannelHandoff,
@@ -43,7 +44,7 @@ export default defineChannelPluginEntry({
     // Public runtime-context marker consumed by the companion plugin. An old
     // channel has no marker, so a newly installed companion remains idle and
     // cannot duplicate the old channel-owned background services.
-    const handoff = registerSlimChannelHandoff(api.runtime, PLUGIN_VERSION, postSurface);
+    const handoff = registerSlimChannelHandoff(api.runtime, PLUGIN_VERSION, postSurface, startMcpSignIn);
     api.on?.("gateway_stop", () => handoff?.dispose());
 
     // Live activity belongs to the channel: lifecycle/assistant/thinking/tool
@@ -53,6 +54,8 @@ export default defineChannelPluginEntry({
     // A chat game move speaks to nobody: its run's sends are refused (widgets/session.ts).
     registerGameTurnGuards(api);
   },
+  // Refreshes the MCP sign-ins the channel saves as auth profiles (mcp-oauth.ts).
+  registerCapabilities: registerMcpAuthProvider,
 });
 
 export { clawbitsChannelPlugin } from "./plugin.js";

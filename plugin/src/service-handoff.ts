@@ -1,4 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { ClawBitsClient } from "./client.js";
+import type { McpConnect } from "./mcp-oauth.js";
 import type { AgentSurfaceCreate } from "./types.js";
 
 export const CLAWBITS_SERVICE_HANDOFF_CAPABILITY = "service-handoff";
@@ -19,6 +21,14 @@ export type PostSurface = (
   surface: AgentSurfaceCreate,
 ) => Promise<SurfacePosted>;
 
+/** Starts an MCP sign-in and returns the connect link to post. */
+export type StartMcpSignIn = (
+  client: ClawBitsClient,
+  channelId: string,
+  connect: McpConnect,
+  agentDir?: string,
+) => Promise<string>;
+
 export interface ClawBitsServiceHandoff {
   channelVersion: string;
   servicesMovedTo: "clawbits-tools";
@@ -32,6 +42,9 @@ export interface ClawBitsServiceHandoff {
   /** Posts an agent's UI block in a chat, below what its turn has said so far. The channel owns
    *  the turn's draft, so the companion's `clawbits_ui` posts through it. Absent on older channels. */
   postSurface?: PostSurface;
+  /** The channel receives the code an MCP sign-in returns, so it holds the sign-in the companion's
+   *  `clawbits_mcp_connect` starts. Absent on older channels. */
+  startMcpSignIn?: StartMcpSignIn;
 }
 
 interface RuntimeContextRegistry {
@@ -131,6 +144,7 @@ export function registerSlimChannelHandoff(
   runtime: RuntimeWithContexts | undefined,
   channelVersion: string,
   postSurface?: PostSurface,
+  startMcpSignIn?: StartMcpSignIn,
 ): { dispose(): void } | undefined {
   return runtime?.channel?.runtimeContexts?.register({
     channelId: "clawbits",
@@ -142,6 +156,7 @@ export function registerSlimChannelHandoff(
       onCompanionWake,
       reportCompanionTools,
       ...(postSurface ? { postSurface } : {}),
+      ...(startMcpSignIn ? { startMcpSignIn } : {}),
     },
   });
 }

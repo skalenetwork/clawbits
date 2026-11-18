@@ -6,6 +6,9 @@ import { type KeyedStore, type PluginRuntime, pluginRuntime } from "./runtime.js
 
 type SessionEntry = NonNullable<ReturnType<PluginRuntime["agent"]["session"]["getSessionEntry"]>>;
 type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["entries"]>[string];
+/** `agents.list`, the roster before `agents.entries`; OpenClaw 2026.11 dropped it from the type. */
+type LegacyAgents = { list?: Array<AgentEntry & { id: string }> };
+const legacyList = (cfg: OpenClawConfig) => (cfg.agents as LegacyAgents | undefined)?.list;
 
 export type ModelChoice = { model: string | null; thinking: string | null };
 
@@ -87,7 +90,7 @@ function rosterEntry(cfg: OpenClawConfig, agentId: string): AgentEntry | undefin
     const key = Object.keys(agents.entries).find((id) => id.trim().toLowerCase() === agentId);
     return key === undefined ? undefined : agents.entries[key];
   }
-  return agents?.list?.find((entry) => entry.id.trim().toLowerCase() === agentId);
+  return legacyList(cfg)?.find((entry) => entry.id.trim().toLowerCase() === agentId);
 }
 
 function rosterChoice(cfg: OpenClawConfig, agentId: string): ModelChoice {
@@ -234,7 +237,7 @@ async function writeAgentDefault(
       mutate: (draft) => {
         if (plan.model) {
           setAgentEffectiveModelPrimary(draft, target.agentId, plan.model, { target: "agent" });
-        } else if (thinking && draft.agents?.entries === undefined && draft.agents?.list === undefined) {
+        } else if (thinking && draft.agents?.entries === undefined && legacyList(draft) === undefined) {
           draft.agents = { ...draft.agents, entries: { [target.agentId]: {} } };
         }
         const entry = rosterEntry(draft, target.agentId);

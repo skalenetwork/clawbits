@@ -5,6 +5,9 @@
   "channels": [
     "clawbits"
   ],
+  "providers": [
+    "clawbits-mcp"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

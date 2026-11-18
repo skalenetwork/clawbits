@@ -17,6 +17,7 @@ import {
   type InboundTurn,
   type MattermostPost,
 } from "../src/inbound-poller.js";
+import { resetMcpOAuthStores } from "../src/mcp-oauth.js";
 import { __resetQuestionsForTest, bindQuestion, markQuestionWaiting, questionFinalizing, questionWaiting } from "../src/questions.js";
 import { setRuntime, type PluginRuntime } from "../src/runtime.js";
 import { type ClawBitsServiceHandoff, registerSlimChannelHandoff } from "../src/service-handoff.js";
@@ -843,9 +844,17 @@ describe("runInboundPoller — pre-tag channel backlog", () => {
 
 describe("runInboundPoller — agent WebSocket and SSE", () => {
   it("finishes an MCP sign-in from the agent WebSocket, reports it, then wakes the agent", async () => {
-    setRuntime({
-      system: { runCommandWithTimeout: async () => ({ code: 0, stdout: "", stderr: "" }) },
-    } as unknown as PluginRuntime);
+    const state = memoryState();
+    setRuntime({ state, config: { mutateConfigFile: async () => undefined } } as unknown as PluginRuntime);
+    resetMcpOAuthStores();
+    await state.openKeyedStore<unknown>({ namespace: "mcp-sign-ins", maxEntries: 1 }).register("agentpit", {
+      url: "https://api.agentpit.dev/mcp",
+      redirectUri: "https://app.clawbits.ai/oauth/mcp/callback",
+      verifier: "v1",
+      tokenEndpoint: "https://auth.agentpit.dev/token",
+      clientId: "client-1",
+      authMethod: "none",
+    });
     const reported: unknown[] = [];
     const turns: Array<InboundTurn | undefined> = [];
     const { received } = await run({
@@ -858,6 +867,7 @@ describe("runInboundPoller — agent WebSocket and SSE", () => {
       ],
       route: (url, init) => {
         if (url.endsWith("/api/agentic/mcp-oauth/result")) reported.push(JSON.parse(String(init?.body)));
+        if (url === "https://auth.agentpit.dev/token") return json({ access_token: "a1", refresh_token: "r1", expires_in: 60 });
       },
       onMessage: (_msg, turn) => void turns.push(turn),
     });

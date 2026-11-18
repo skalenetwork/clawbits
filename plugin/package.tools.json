@@ -40,8 +40,8 @@
       "minGatewayVersion": "2026.9.7"
     },
     "build": {
-      "openclawVersion": "2026.9.7",
-      "pluginSdkVersion": "2026.9.7"
+      "openclawVersion": "2026.11.3",
+      "pluginSdkVersion": "2026.11.3"
     },
     "configSchema": {
       "type": "object",
