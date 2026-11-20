@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.25.0...openclaw-plugin-v0.26.0) (2026-11-20)
+
+
+### Features
+
+* Fix agent creation ([#251](https://github.com/skalenetwork/clawbits/issues/251)) ([668cf25](https://github.com/skalenetwork/clawbits/commit/668cf25f3c32b45d97bfabdfa809d26d78ec4b80))
+
+
+### Bug Fixes
+
+* sign in to MCP servers from the plugin, keeping tokens in an OpenClaw auth profile ([#255](https://github.com/skalenetwork/clawbits/issues/255)) ([3574663](https://github.com/skalenetwork/clawbits/commit/35746633f73cf2562851c3e1f45409336a2d843f))
+
 ## [0.25.0](https://github.com/skalenetwork/clawbits/compare/openclaw-plugin-v0.24.1...openclaw-plugin-v0.25.0) (2026-11-05)
 
 
