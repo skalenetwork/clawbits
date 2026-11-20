@@ -77,7 +77,7 @@ services:
       - "80"
 
   proxy:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.7-alpine
     restart: unless-stopped
     depends_on:
       - app

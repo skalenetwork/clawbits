@@ -7,6 +7,6 @@ RUN bun install --frozen-lockfile
 COPY . ./
 RUN bun run build
 
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.30.7-alpine AS runtime
 COPY --from=build /fe/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
