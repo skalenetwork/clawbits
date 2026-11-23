@@ -140,7 +140,7 @@ jobs:
                 echo "::group::$pkg on openclaw@$sdk"
                 rm -rf node_modules
                 npm install --ignore-scripts --no-audit --no-fund --package-lock=false --no-save "openclaw@$sdk"
-                node "$GITHUB_WORKSPACE/plugin/validate-artifact.mjs" "$kind" .
+                HOME="$(mktemp -d)" node "$GITHUB_WORKSPACE/plugin/validate-artifact.mjs" "$kind" .
                 echo "::endgroup::"
               done
             popd >/dev/null
